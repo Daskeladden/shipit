@@ -1,0 +1,41 @@
+# Emacs backup files
+*~
+\#*\#
+.\#*
+
+# Emacs auto-save files
+.#*
+
+# Compiled files
+*.elc
+
+# Generated autoloads
+*-autoloads.el
+
+# Git worktrees
+.worktrees/
+
+# Package directories
+.packages/
+.claude/
+
+# Local docs and plans
+docs/
+ACTIVITY_ALIGNMENT.md
+AGENTS.md
+CHANGELOG.md
+.plan.md
+
+# IDE config
+claude-code-ide-extended-config.*
+
+# Backup and test files
+*.bak
+*.backup
+*-test.el
+simple-*.el
+etag-*.el
+
+# Generated scripts
+scripts/
+test-output.log

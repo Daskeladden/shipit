@@ -1787,30 +1787,10 @@ Updates both the API and local state."
           (setq count (1+ count)))))
     (message "%s %d files" (if target "Marked" "Unmarked") count)))
 
-(defun shipit--refresh-file-viewed-indicator (filename was-viewed)
-  "Update the viewed indicator for FILENAME in the current buffer.
-WAS-VIEWED is the previous state (before toggle)."
-  (save-excursion
-    (goto-char (point-min))
-    (let ((inhibit-read-only t))
-      (while (not (eobp))
-        (when (equal (get-text-property (point) 'shipit-file-path) filename)
-          (let* ((line-start (line-beginning-position))
-                 (line-end (line-end-position))
-                 (saved-props (text-properties-at line-start)))
-            ;; Find and replace just the icon character, preserving properties
-            (goto-char line-start)
-            (when (re-search-forward "^ \\([✓ ]\\) " line-end t)
-              (let ((icon-start (match-beginning 1))
-                    (icon-end (match-end 1))
-                    (new-icon (if was-viewed " " "✓")))
-                (goto-char icon-start)
-                (delete-region icon-start icon-end)
-                (insert (if was-viewed " " (propertize "✓" 'face 'success)))
-                ;; Re-apply properties on the modified region
-                (add-text-properties line-start (line-end-position) saved-props)))
-            (goto-char (line-end-position))))
-        (forward-line 1)))))
+(defun shipit--refresh-file-viewed-indicator (_filename _was-viewed)
+  "Refresh the files section to update viewed indicators."
+  (when (fboundp 'shipit--refresh-files-section-only)
+    (shipit--refresh-files-section-only)))
 
 (provide 'shipit-commands)
 ;;; shipit-commands.el ends here

@@ -3304,8 +3304,8 @@ Used for targeted refresh - preserves section structure."
               t)))
       ;; No files at all
       (insert "   No files changed\n"))
-    ;; Ensure section has content marker (no extra newline)
-    (insert "")))
+    ;; Trailing newline to preserve section boundary
+    (insert "\n")))
 
 (defun shipit--refresh-file-inline-comment-section (file-path pr-number repo)
   "Refresh inline comments for a single FILE-PATH without full PR buffer refresh.

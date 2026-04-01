@@ -1398,10 +1398,14 @@ Tries multiple data sources: completion table, then cache."
 ;; This provides rich annotations when marginalia is available
 ;; We only provide our unified annotator and none - no 'builtin' since the
 ;; metadata annotation-function doesn't use marginalia--fields for alignment
-(defvar marginalia-annotator-registry)  ; Silence byte-compiler
 (with-eval-after-load 'marginalia
-  (add-to-list 'marginalia-annotator-registry
-               '(shipit-pr shipit--pr-annotate-unified none)))
+  (cond
+   ((boundp 'marginalia-annotators)
+    (add-to-list 'marginalia-annotators
+                 '(shipit-pr shipit--pr-annotate-unified none)))
+   ((boundp 'marginalia-annotator-registry)
+    (add-to-list 'marginalia-annotator-registry
+                 '(shipit-pr shipit--pr-annotate-unified none)))))
 
 ;; Make magit-section-post-command-hook safe when magit-root-section is nil
 ;; This can happen when the hook leaks to non-magit buffers (e.g., embark-collect)

@@ -1377,10 +1377,9 @@ RET opens the repo in a shipit repo buffer if REPO-NAME is non-nil,
 otherwise opens in browser."
   (when url
     (let ((start (point)))
-      (magit-insert-heading
-        (format "%s Repo URL:  %s"
-                (shipit--get-pr-field-icon "links" "🔗")
-                (propertize url 'face 'link)))
+      (insert (format "%s Repo URL:  %s\n"
+                      (shipit--get-pr-field-icon "links" "🔗")
+                      (propertize url 'face 'link)))
       (let ((ov (make-overlay start (point)))
             (keymap (make-sparse-keymap)))
         (set-keymap-parent keymap (current-local-map))

@@ -3809,7 +3809,8 @@ FILE-PATH is used for targeted section refresh when deleting inline/file-level c
   (unless (and comment-id (or (stringp comment-id) (numberp comment-id)))
     (error "shipit: comment-id must be a string or number, got %s: %S" (type-of comment-id) comment-id))
 
-  (let* ((repo (or (cadr shipit--current-displayed-pr)
+  (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
+                   (cadr shipit--current-displayed-pr)
                    (shipit--get-repo-from-remote)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
@@ -3917,8 +3918,8 @@ FILE-PATH is used for targeted section refresh when deleting inline/file-level c
   "Get the HEAD SHA for PR-NUMBER."
   (let* ((displayed-pr-number (car-safe shipit--current-displayed-pr))
          (displayed-repo (cadr shipit--current-displayed-pr))
-         ;; Use the repo from last-displayed-pr if available, otherwise from remote
-         (repo (or displayed-repo (shipit--get-repo-from-remote)))
+         (repo (or (bound-and-true-p shipit-buffer-repo)
+                   displayed-repo (shipit--get-repo-from-remote)))
          (resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
@@ -3933,7 +3934,8 @@ FILE-PATH is used for targeted section refresh when deleting inline/file-level c
   "Reply to an existing inline comment on PR-NUMBER.
 If FILE-PATH is provided, uses targeted section refresh for better performance.
 Otherwise, falls back to full PR buffer refresh."
-  (let* ((repo (or (cadr shipit--current-displayed-pr)
+  (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
+                   (cadr shipit--current-displayed-pr)
                    (shipit--get-repo-from-remote)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
@@ -4001,7 +4003,8 @@ Otherwise, falls back to full PR buffer refresh."
 (defun shipit--add-general-comment-to-pr (pr-number body &optional skip-refresh)
   "Add a general comment to PR-NUMBER.
 If SKIP-REFRESH is non-nil, don't trigger buffer refresh (for editor with live preview)."
-  (let* ((repo (or (cadr shipit--current-displayed-pr)
+  (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
+                   (cadr shipit--current-displayed-pr)
                    (shipit--get-repo-from-remote)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
@@ -4061,7 +4064,8 @@ GitLab replies require a discussion ID; GitHub uses comment ID directly."
   "Reply to a general comment PARENT-COMMENT-ID on PR-NUMBER with BODY.
 Uses discussion_id from cache for GitLab, or comment ID for GitHub.
 If SKIP-REFRESH is non-nil, don't trigger buffer refresh (for editor with live preview)."
-  (let* ((repo (or (cadr shipit--current-displayed-pr)
+  (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
+                   (cadr shipit--current-displayed-pr)
                    (shipit--get-repo-from-remote)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
@@ -4185,7 +4189,8 @@ Otherwise, use issues comments endpoint for general comments."
   (unless (and new-body (stringp new-body) (not (string-empty-p new-body)))
     (error "shipit: new-body must be a non-empty string, got %s: %S" (type-of new-body) new-body))
 
-  (let* ((repo (or (cadr shipit--current-displayed-pr)
+  (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
+                   (cadr shipit--current-displayed-pr)
                    (shipit--get-repo-from-remote)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
@@ -4206,7 +4211,8 @@ Otherwise, use issues comments endpoint for general comments."
 
     (condition-case err
         (let ((response-data (funcall (plist-get backend :edit-comment)
-                                      config comment-id new-body is-inline-comment pr-num)))
+                                      config comment-id new-body is-inline-comment
+                                      (when is-review pr-num))))
           (if response-data
               (progn
                 ;; Update edited comment body in caches (don't clear — targeted refresh reads from cache)
@@ -4245,7 +4251,8 @@ Otherwise, use issues comments endpoint for general comments."
 
 (defun shipit--edit-pr-description (pr-number new-body)
   "Edit PR description for PR-NUMBER to have NEW-BODY text."
-  (let* ((repo (or (cadr shipit--current-displayed-pr)
+  (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
+                   (cadr shipit--current-displayed-pr)
                    (shipit--get-repo-from-remote)))
          (resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))

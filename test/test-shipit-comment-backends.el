@@ -348,7 +348,7 @@ THEN backend :edit-comment is called with correct args."
           (should (= 500 (plist-get captured-args :comment-id)))
           (should (string= "Updated" (plist-get captured-args :body)))
           (should (eq t (plist-get captured-args :is-inline)))
-          (should (= 42 (plist-get captured-args :pr-number))))))))
+          (should-not (plist-get captured-args :pr-number)))))))
 
 (ert-deftest test-shipit-delete-comment-dispatches-to-backend ()
   "GIVEN a mock comment backend

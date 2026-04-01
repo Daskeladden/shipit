@@ -2128,21 +2128,30 @@ Inserts literal @ if cancelled or no users found."
                     (cdr (or (assq 'number created) (assq 'id created)))))))
       ('issue-comment
        (shipit-issues--add-comment repo pr-number content)
-       (when (buffer-live-p source-buffer)
-         (with-current-buffer source-buffer
-           (shipit-issue-buffer-refresh)))
+       (let ((buf source-buffer))
+         (run-with-timer 0 nil
+                         (lambda ()
+                           (when (buffer-live-p buf)
+                             (with-current-buffer buf
+                               (shipit-issue-buffer-refresh))))))
        (message "Comment added"))
       ('issue-comment-edit
        (shipit-issues--edit-comment repo comment-id content)
-       (when (buffer-live-p source-buffer)
-         (with-current-buffer source-buffer
-           (shipit-issue-buffer-refresh)))
+       (let ((buf source-buffer))
+         (run-with-timer 0 nil
+                         (lambda ()
+                           (when (buffer-live-p buf)
+                             (with-current-buffer buf
+                               (shipit-issue-buffer-refresh))))))
        (message "Comment updated"))
       ('issue-description
        (shipit-issues--update-description repo pr-number content)
-       (when (buffer-live-p source-buffer)
-         (with-current-buffer source-buffer
-           (shipit-issue-buffer-refresh)))
+       (let ((buf source-buffer))
+         (run-with-timer 0 nil
+                         (lambda ()
+                           (when (buffer-live-p buf)
+                             (with-current-buffer buf
+                               (shipit-issue-buffer-refresh))))))
        (message "Issue description updated"))
       ('discussion-comment
        (let ((discussion-id shipit-editor--discussion-id))

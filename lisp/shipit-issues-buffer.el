@@ -250,6 +250,10 @@ buffer-local overrides so the issue fetches use the correct backend
         (issue-number shipit-issue-buffer-number))
     (shipit--debug-log "Refreshing issue buffer for #%s in %s" issue-number repo)
     (message "Loading issue #%s..." issue-number)
+    ;; Invalidate ETag cache so we get fresh data
+    (when (fboundp 'shipit-gh-etag-invalidate-endpoint)
+      (shipit-gh-etag-invalidate-endpoint
+       (format "/repos/%s/issues/%s" repo issue-number)))
     (let ((issue-data (shipit-issues--fetch-issue repo issue-number)))
       (when issue-data
         (setq shipit-issue-buffer-data issue-data)

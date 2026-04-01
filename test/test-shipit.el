@@ -1455,7 +1455,39 @@ THEN backend :edit-comment is called with is-inline=nil and no pr-number."
       (should (= 12345 (plist-get captured-args :comment-id)))
       (should (string= "Updated comment body" (plist-get captured-args :body)))
       (should-not (plist-get captured-args :is-inline))
-      (should (= 42 (plist-get captured-args :pr-number))))))
+      (should-not (plist-get captured-args :pr-number)))))
+
+(ert-deftest test-shipit-edit-comment-uses-buffer-repo-over-stale-global ()
+  "GIVEN shipit-buffer-repo set to 'correct/repo'
+   AND shipit--current-displayed-pr pointing to 'stale/repo'
+   WHEN editing a comment
+   THEN the backend receives config for 'correct/repo', not 'stale/repo'."
+  (let ((captured-config nil)
+        (shipit-github-token "test-token")
+        (shipit-comment-backends nil)
+        (shipit-pr-backend 'mock)
+        (shipit-pr-backend-config nil)
+        ;; Stale global from a different buffer
+        (shipit--current-displayed-pr '(99 "stale/repo"))
+        (shipit--comment-type-cache (make-hash-table :test 'equal)))
+    (puthash 500 nil shipit--comment-type-cache)
+    ;; Buffer-local repo should take precedence
+    (setq-local shipit-buffer-repo "correct/repo")
+    (shipit-comment-register-backend
+     'mock
+     (list :name "Mock"
+           :fetch-general-comments #'ignore :fetch-inline-comments #'ignore
+           :add-general-comment #'ignore :add-inline-comment #'ignore
+           :reply-to-comment #'ignore
+           :edit-comment (lambda (config comment-id body &optional is-inline pr-number)
+                           (setq captured-config config)
+                           '((body . "edited")))
+           :delete-comment #'ignore :toggle-reaction #'ignore :fetch-reactions #'ignore))
+    (cl-letf (((symbol-function 'shipit--update-comment-body-display) #'ignore))
+      (shipit--edit-comment 500 "edited" nil)
+      (should captured-config)
+      ;; Config should be resolved from "correct/repo", not "stale/repo"
+      (should (equal "correct/repo" (plist-get captured-config :repo))))))
 
 (ert-deftest test-shipit-edit-inline-comment-endpoint ()
   "GIVEN an inline comment (is-inline-comment = t)

@@ -1307,6 +1307,14 @@ ACTION function takes no args, executes the handler behavior."
 
 ;; Register all dwim handlers with mutually exclusive matchers
 (shipit-register-dwim-handler
+ 'subscription
+ (lambda () (get-text-property (point) 'shipit-repo-subscription))
+ (lambda ()
+   (if (fboundp 'shipit-repo-subscription)
+       (shipit-repo-subscription)
+     (user-error "shipit-repo-buffer not loaded"))))
+
+(shipit-register-dwim-handler
  'description-section
  (lambda () (and (fboundp 'magit-current-section)
                  (magit-section-match '(shipit-description) (magit-current-section))

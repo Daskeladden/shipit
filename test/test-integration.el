@@ -34,6 +34,7 @@
 (require 'shipit-issues)
 (require 'shipit-gitlab-http)
 (require 'shipit-notifications)
+(require 'shipit-repo-buffer)
 
 (ert-deftest test-required-dependencies-available ()
   "Verify that all required external dependencies are available."

@@ -124,6 +124,9 @@ Each function is called with SECTION. Return non-nil if handled.")
 (declare-function shipit-approve "shipit-commands")
 (declare-function shipit-suggestion-or-approve "shipit-pr-actions")
 (declare-function shipit-merge "shipit-pr-actions")
+(declare-function shipit-repo-subscription "shipit-repo-buffer")
+(declare-function shipit--subscription-state-from-api "shipit-repo-buffer")
+(declare-function shipit--subscription-state-label "shipit-repo-buffer")
 (declare-function shipit-request-changes "shipit-commands")
 
 ;; Forward declarations for helper functions
@@ -483,6 +486,8 @@ section and search for the child by name."
     (define-key map (kbd "M") #'shipit-mark-all-files-viewed)
     ;; Merge
     (define-key map (kbd "M-m") #'shipit-merge)
+    ;; Subscription
+    (define-key map (kbd "w") #'shipit-repo-subscription)
     (define-key map (kbd "+") 'shipit-load-more-files)
 
     ;; Buffer management
@@ -945,6 +950,23 @@ REPO is the repository, PR-NUMBER is the PR number."
             (magit-insert-heading (format "%s State:     %s"
                             (shipit--get-pr-state-icon display-state state-emoji)
                             (shipit--colorize-pr-state display-state))))))
+
+      ;; Insert subscription status (if backend supports it)
+      (shipit--time-operation "insert subscription"
+        (let* ((resolved (shipit-pr--resolve-for-repo repo))
+               (backend (car resolved))
+               (fn (plist-get backend :get-repo-subscription)))
+          (when fn
+            (require 'shipit-repo-buffer)
+            (let* ((sub-data (funcall fn (cdr resolved)))
+                   (state (shipit--subscription-state-from-api sub-data))
+                   (label (shipit--subscription-state-label state)))
+              (magit-insert-section (pr-subscription nil)
+                (magit-insert-heading
+                  (propertize (format "%s Watching:  %s"
+                                      (shipit--get-pr-field-icon "notification" "\U0001f514")
+                                      label)
+                              'shipit-repo-subscription t)))))))
 
       (shipit--time-operation "insert URL section"
         (shipit--insert-pr-url-section pr-data))

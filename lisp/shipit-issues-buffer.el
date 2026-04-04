@@ -27,6 +27,9 @@
 (require 'shipit-render)
 
 ;; Forward declarations
+(declare-function shipit-repo-subscription "shipit-repo-buffer")
+(declare-function shipit--subscription-state-from-api "shipit-repo-buffer")
+(declare-function shipit--subscription-state-label "shipit-repo-buffer")
 (declare-function shipit-issues--fetch-issue "shipit-issues")
 (declare-function shipit-issues--fetch-comments "shipit-issues")
 (declare-function shipit-issues--fetch-comments-async "shipit-issues")
@@ -160,6 +163,8 @@
     (define-key map (kbd "M-;") #'shipit-dwim)
     (define-key map (kbd "RET") #'shipit-issue--ret-dwim)
     (define-key map (kbd "L") #'shipit-toggle-timestamp-format)
+    ;; Subscription
+    (define-key map (kbd "w") #'shipit-repo-subscription)
     map)
   "Keymap for `shipit-issue-mode'.")
 
@@ -462,6 +467,20 @@ buffer-local overrides so the issue fetches use the correct backend
               (insert (format "   %s Milestone: %s\n"
                               (shipit--get-pr-field-icon "milestone" "🎯")
                               (propertize title 'face 'font-lock-constant-face)))))))
+      ;; Subscription status
+      (let* ((resolved (shipit-pr--resolve-for-repo repo))
+             (backend (car resolved))
+             (fn (plist-get backend :get-repo-subscription)))
+        (when fn
+          (require 'shipit-repo-buffer)
+          (let* ((sub-data (funcall fn (cdr resolved)))
+                 (state (shipit--subscription-state-from-api sub-data))
+                 (label (shipit--subscription-state-label state)))
+            (insert (propertize
+                     (format "   %s Watching:  %s\n"
+                             (shipit--get-pr-field-icon "notification" "\U0001f514")
+                             label)
+                     'shipit-repo-subscription t)))))
       (insert "\n"))))
 
 (defun shipit-issue--insert-description-section (repo issue-data issue-number)
@@ -1230,7 +1249,17 @@ Called both at load time (if shipit-magit loaded) and via `with-eval-after-load'
      'issue-comment
      (lambda () (and (derived-mode-p 'shipit-issue-mode)
                      (shipit-issue--comment-id-at-point)))
-     #'shipit-issue--comment-actions)))
+     #'shipit-issue--comment-actions)
+
+    ;; Subscription — registered after metadata so it matches first (LIFO)
+    (shipit-register-dwim-handler
+     'issue-subscription
+     (lambda () (and (derived-mode-p 'shipit-issue-mode)
+                     (get-text-property (point) 'shipit-repo-subscription)))
+     (lambda ()
+       (if (fboundp 'shipit-repo-subscription)
+           (shipit-repo-subscription)
+         (user-error "shipit-repo-buffer not loaded"))))))
 
 ;; Register now if shipit-pr-actions is already loaded
 (shipit-issue--register-dwim-handlers)

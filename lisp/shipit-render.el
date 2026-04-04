@@ -4118,6 +4118,7 @@ Returns (octicon . color) or nil."
     ("project" '("project" . "#0366d6"))                            ; Blue - Project/board
     ("clock" '("clock" . "#999999"))                                ; Gray - Time/recent
     ("issues" '("issue-opened" . "#28a745"))                        ; Green - Issues list
+    ("notification" '("bell" . "#0366d6"))                           ; Blue - Notification/subscription
     (_ nil)))
 
 (defun shipit--get-pr-field-icon (field-type emoji-fallback)

@@ -49,6 +49,7 @@
 (declare-function shipit-discussions-open-buffer "shipit-discussions-buffer")
 (declare-function shipit--find-section-by-type "shipit-sections")
 (declare-function shipit--get-github-username "shipit-lib")
+(declare-function shipit-notifications-buffer--rerender "shipit-notifications-buffer")
 
 ;; Forward variable declarations
 (defvar shipit-render-markdown)
@@ -163,6 +164,11 @@ Captured when filter is initiated so refresh works from minibuffer context.")
   "Cached list of names/usernames that identify the current user.
 Includes GitHub username and git user.name for cross-backend matching.")
 
+(defvar-local shipit-repo-buffer-subscription nil
+  "Cached subscription data for this repo buffer.
+An alist from the API, nil for participating, or symbol
+`not-supported' when the backend lacks :get-repo-subscription.")
+
 ;;; Mode definition
 
 (defvar shipit-repo-mode-map
@@ -176,6 +182,11 @@ Includes GitHub username and git user.name for cross-backend matching.")
     (define-key map (kbd "f") #'shipit-repo-buffer-filter)
     (define-key map (kbd "RET") #'shipit-repo-buffer--ret-action)
     (define-key map [return] #'shipit-repo-buffer--ret-action)
+    ;; Subscription
+    (define-key map (kbd "w") #'shipit-repo-subscription)
+    ;; DWIM
+    (define-key map (kbd "SPC") #'shipit-repo-buffer-dwim)
+    (define-key map (kbd "M-;") #'shipit-repo-buffer-dwim)
     map)
   "Keymap for `shipit-repo-mode'.")
 
@@ -365,6 +376,13 @@ Creates or reuses the buffer *shipit-repo: REPO*."
       (setq shipit-repo-buffer-data (plist-get result :data))
       (setq shipit-repo-buffer-readme (plist-get result :readme))
       (setq shipit-repo-buffer-languages (plist-get result :languages))
+      (setq shipit-repo-buffer-subscription
+            (let* ((resolved (shipit-pr--resolve-for-repo repo))
+                   (backend (car resolved))
+                   (fn (plist-get backend :get-repo-subscription)))
+              (if fn
+                  (funcall fn (cdr resolved))
+                'not-supported)))
       (setq shipit-repo-buffer-open-prs (shipit-repo-buffer--fetch-open-prs repo))
       (setq shipit-repo-buffer-closed-prs (shipit-repo-buffer--fetch-closed-prs repo))
       (setq shipit-repo-buffer-open-issues (shipit-repo-buffer--fetch-open-issues repo))
@@ -427,6 +445,7 @@ as a child languages sub-section."
         (insert (format "   %s %s\n"
                         (shipit--get-pr-field-icon "description" "\U0001f4dd")
                         description)))
+      (shipit-repo-buffer--insert-subscription-line)
       (when html-url
         (add-text-properties (point-min) (point)
                              `(shipit-repo-url ,html-url)))
@@ -861,6 +880,9 @@ others open in browser.  With prefix arg, show action menu instead.
 Otherwise, delegate to `magit-section-toggle'."
   (interactive)
   (cond
+   ;; Subscription line
+   ((get-text-property (point) 'shipit-repo-subscription)
+    (shipit-repo-subscription))
    ;; Load more button
    ((get-text-property (point) 'shipit-repo-load-more)
     (shipit-repo-buffer--load-more-at-point))
@@ -1160,6 +1182,205 @@ to refresh, so this works correctly from minibuffer context."
               (put-text-property body-start (point) 'magit-section section))
             (oset section end (point-marker))
             (oset section content (copy-marker content-pos))))))))
+
+;;; Subscription
+
+(defun shipit--subscription-state-from-api (data)
+  "Derive subscription state string from API DATA.
+Returns \"watching\", \"ignoring\", or \"participating\".
+Checks ignored first since it takes precedence regardless of subscribed."
+  (cond
+   ((null data) "participating")
+   ((eq (cdr (assq 'ignored data)) t)
+    "ignoring")
+   ((eq (cdr (assq 'subscribed data)) t)
+    "watching")
+   (t "participating")))
+
+(defun shipit--subscription-state-label (state)
+  "Return human-readable label for subscription STATE string."
+  (cond
+   ((equal state "watching") "All Activity")
+   ((equal state "participating") "Participating and @mentions")
+   ((equal state "ignoring") "Ignoring")))
+
+(defun shipit-repo-buffer--insert-subscription-line ()
+  "Insert the Watching: line in the header if subscription data is available.
+Skips rendering when `shipit-repo-buffer-subscription' is `not-supported'."
+  (unless (eq shipit-repo-buffer-subscription 'not-supported)
+    (let* ((state (shipit--subscription-state-from-api
+                   shipit-repo-buffer-subscription))
+           (label (shipit--subscription-state-label state)))
+      (insert (propertize
+               (format "   %s Watching:  %s\n"
+                       (shipit--get-pr-field-icon "notification" "\U0001f514")
+                       label)
+               'shipit-repo-subscription t)))))
+
+(defun shipit--repo-get-subscription (repo)
+  "Get subscription state for REPO via backend.
+Returns the raw API data or nil.
+Signals user-error if backend doesn't support subscriptions."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :get-repo-subscription)))
+    (unless fn
+      (user-error "Subscription management not yet supported for %s backend"
+                  (plist-get backend :name)))
+    (funcall fn config)))
+
+(defun shipit--repo-set-subscription (repo state)
+  "Set subscription STATE for REPO via backend."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :set-repo-subscription)))
+    (unless fn
+      (user-error "Subscription management not yet supported for %s backend"
+                  (plist-get backend :name)))
+    (funcall fn config state)))
+
+
+(defun shipit--current-buffer-repo ()
+  "Return the repository string for the current buffer.
+Works in repo, PR, and issue buffers."
+  (or (bound-and-true-p shipit-repo-buffer-repo)
+      (bound-and-true-p shipit-buffer-repo)
+      (bound-and-true-p shipit-issue-buffer-repo)))
+
+(defun shipit--refresh-subscription-in-buffer (repo)
+  "Refresh the Watching: line in the current buffer for REPO.
+Finds the line by text property and updates the label text in place."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (fn (plist-get backend :get-repo-subscription))
+         (sub-data (when fn (funcall fn (cdr resolved))))
+         (state (shipit--subscription-state-from-api sub-data))
+         (label (shipit--subscription-state-label state))
+         (inhibit-read-only t))
+    ;; Update repo buffer cache if in repo mode
+    (when (derived-mode-p 'shipit-repo-mode)
+      (setq shipit-repo-buffer-subscription sub-data))
+    ;; Find the existing Watching: line and replace just the label
+    (save-excursion
+      (goto-char (point-min))
+      (when (search-forward "Watching:  " nil t)
+        (let ((label-start (point))
+              (label-end (line-end-position)))
+          (delete-region label-start label-end)
+          (insert label))))))
+
+(defun shipit--remove-repo-notifications (repo)
+  "Remove all notifications for REPO from the in-memory cache.
+Re-renders the notifications buffer if it exists."
+  (when (and (boundp 'shipit--notification-pr-activities)
+             shipit--notification-pr-activities)
+    (let ((keys-to-remove nil))
+      (maphash (lambda (key activity)
+                 (when (equal (cdr (assq 'repo activity)) repo)
+                   (push key keys-to-remove)))
+               shipit--notification-pr-activities)
+      (dolist (key keys-to-remove)
+        (remhash key shipit--notification-pr-activities)))
+    ;; Re-render notifications buffer if open
+    (let ((buf (get-buffer "*shipit-notifications*")))
+      (when (and buf (buffer-live-p buf))
+        (with-current-buffer buf
+          (shipit-notifications-buffer--rerender))))))
+
+(defun shipit-repo-buffer--subscription-confirm (state)
+  "Set subscription to STATE and refresh.
+Works from repo, PR, and issue buffers."
+  (let ((repo (shipit--current-buffer-repo)))
+    (shipit--repo-set-subscription repo state)
+    (shipit--refresh-subscription-in-buffer repo)
+    ;; When ignoring, mark all repo notifications as read on GitHub
+    ;; and remove them from the local cache
+    (when (equal state "ignoring")
+      (let* ((resolved (shipit-pr--resolve-for-repo repo))
+             (backend (car resolved))
+             (fn (plist-get backend :mark-repo-notifications-read)))
+        (when fn (funcall fn (cdr resolved))))
+      (shipit--remove-repo-notifications repo))
+    (message "Subscription changed to: %s"
+             (shipit--subscription-state-label state))))
+
+(defun shipit-repo-buffer--sub-watch ()
+  "Set subscription to watching (All Activity)."
+  (interactive)
+  (shipit-repo-buffer--subscription-confirm "watching"))
+
+(defun shipit-repo-buffer--sub-participating ()
+  "Set subscription to participating."
+  (interactive)
+  (shipit-repo-buffer--subscription-confirm "participating"))
+
+(defun shipit-repo-buffer--sub-ignore ()
+  "Set subscription to ignoring."
+  (interactive)
+  (shipit-repo-buffer--subscription-confirm "ignoring"))
+
+(defvar shipit--subscription-transient-data nil
+  "Subscription data fetched when the transient opens.
+Dynamically bound during transient display.")
+
+(defvar shipit--subscription-transient-repo nil
+  "Repo string for the current subscription transient.
+Dynamically bound during transient display.")
+
+(transient-define-prefix shipit-repo-subscription ()
+  "Manage repository notification subscription."
+  [:class transient-column
+   :description
+   (lambda ()
+     (let* ((state (shipit--subscription-state-from-api
+                    shipit--subscription-transient-data))
+            (label (shipit--subscription-state-label state)))
+       (format "Subscription for %s\n\n  Current: %s"
+               (or shipit--subscription-transient-repo "?") label)))
+   :setup-children
+   (lambda (_)
+     (let* ((current (shipit--subscription-state-from-api
+                      shipit--subscription-transient-data)))
+       (mapcar
+        (lambda (entry)
+          (let* ((key (nth 0 entry))
+                 (state (nth 1 entry))
+                 (cmd (nth 2 entry))
+                 (label (shipit--subscription-state-label state))
+                 (label (if (equal state current)
+                            (concat label "  <- current")
+                          label)))
+            (transient-parse-suffix
+             transient--prefix
+             (list key label cmd))))
+        '(("w" "watching" shipit-repo-buffer--sub-watch)
+          ("p" "participating" shipit-repo-buffer--sub-participating)
+          ("i" "ignoring" shipit-repo-buffer--sub-ignore)))))]
+  (interactive)
+  (let ((repo (shipit--current-buffer-repo)))
+    (unless repo
+      (user-error "No repository context in this buffer"))
+    (let* ((resolved (shipit-pr--resolve-for-repo repo))
+           (backend (car resolved))
+           (fn (plist-get backend :get-repo-subscription)))
+      (unless fn
+        (user-error "Subscription management not yet supported for %s backend"
+                    (plist-get backend :name)))
+      (setq shipit--subscription-transient-repo repo)
+      (setq shipit--subscription-transient-data
+            (funcall fn (cdr resolved))))
+    (transient-setup 'shipit-repo-subscription)))
+
+(defun shipit-repo-buffer-dwim ()
+  "Context-sensitive action in repo buffer."
+  (interactive)
+  (cond
+   ((get-text-property (point) 'shipit-repo-subscription)
+    (shipit-repo-subscription))
+   (t
+    (shipit-repo-buffer--ret-action))))
 
 (provide 'shipit-repo-buffer)
 ;;; shipit-repo-buffer.el ends here

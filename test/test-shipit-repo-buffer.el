@@ -828,7 +828,9 @@ THEN no issues or discussions sections are present."
               ((symbol-function 'shipit-repo-buffer--fetch-closed-issues)
                (lambda (_repo) nil))
               ((symbol-function 'shipit-repo-buffer--fetch-discussions)
-               (lambda (_repo) '(((number . 3) (title . "Discussion"))))))
+               (lambda (_repo) '(((number . 3) (title . "Discussion")))))
+              ((symbol-function 'shipit-pr-github--get-repo-subscription)
+               (lambda (_config) nil)))
       (with-temp-buffer
         (shipit-repo-mode)
         (setq shipit-repo-buffer-repo "test/repo")

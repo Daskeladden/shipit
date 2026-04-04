@@ -905,6 +905,39 @@ Returns the JSON alist from GET /repos/{owner}/{repo}."
     (shipit--debug-log "GitHub PR backend: fetching repo info for %s" repo)
     (shipit--api-request endpoint)))
 
+(defun shipit-pr-github--get-repo-subscription (config)
+  "Get subscription for repo in CONFIG.
+Returns subscription alist or nil if not subscribed (404)."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/subscription" repo)))
+    (shipit--debug-log "GitHub PR backend: fetching subscription for %s" repo)
+    (shipit--api-request endpoint)))
+
+(defun shipit-pr-github--set-repo-subscription (config state)
+  "Set subscription STATE for repo in CONFIG.
+STATE is \"watching\", \"participating\", or \"ignoring\"."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/subscription" repo)))
+    (shipit--debug-log "GitHub PR backend: setting subscription for %s to %s" repo state)
+    (cond
+     ((equal state "watching")
+      (shipit--api-request-post endpoint
+                                '((subscribed . t) (ignored . :json-false))
+                                "PUT"))
+     ((equal state "ignoring")
+      (shipit--api-request-post endpoint
+                                '((ignored . t))
+                                "PUT"))
+     ((equal state "participating")
+      (shipit--api-request-post endpoint nil "DELETE")))))
+
+(defun shipit-pr-github--mark-repo-notifications-read (config)
+  "Mark all notifications for repo in CONFIG as read on GitHub."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/notifications" repo)))
+    (shipit--debug-log "GitHub PR backend: marking all notifications read for %s" repo)
+    (shipit--api-request-post endpoint nil "PUT")))
+
 (defun shipit-pr-github--fetch-readme (config)
   "Fetch repository README using CONFIG.
 Calls GET /repos/{owner}/{repo}/readme, decodes base64 content.
@@ -1177,6 +1210,9 @@ Returns list of team data alists."
        :fetch-repo-info #'shipit-pr-github--fetch-repo-info
        :fetch-readme #'shipit-pr-github--fetch-readme
        :fetch-languages #'shipit-pr-github--fetch-languages
+       :get-repo-subscription #'shipit-pr-github--get-repo-subscription
+       :set-repo-subscription #'shipit-pr-github--set-repo-subscription
+       :mark-repo-notifications-read #'shipit-pr-github--mark-repo-notifications-read
        :classify-url #'shipit-pr-github--classify-url
        :fetch-file-viewed-states #'shipit-pr-github--fetch-file-viewed-states
        :mark-file-viewed #'shipit-pr-github--mark-file-viewed

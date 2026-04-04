@@ -245,6 +245,8 @@ THEN both Child Work Items and Linked Work Items sections appear
                                         (summary . "Blocked task")
                                         (status . "Open")
                                         (assignee . "Bob")))))))
+      (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
+                 (lambda (_config) nil)))
       (magit-insert-section (shipit-issue)
         (shipit-issue--insert-metadata-section "test/repo" issue-data)
         (shipit-issue--insert-child-items-section "test/repo" issue-data)
@@ -258,7 +260,7 @@ THEN both Child Work Items and Linked Work Items sections appear
         (should (string-match-p "PRJ-20" buf-text))
         ;; THEN metadata section does NOT contain issuelink keys
         ;; (issuelinks moved to their own section)
-        ))))
+        )))))
 
 ;;; Icon Column Type Tests
 

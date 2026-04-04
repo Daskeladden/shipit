@@ -196,7 +196,9 @@ THEN a buffer with the correct name is created in shipit-issue-mode."
             ((symbol-function 'shipit--get-repo-root)
              (lambda () "/tmp"))
             ((symbol-function 'shipit--get-repo-from-remote)
-             (lambda () "owner/repo")))
+             (lambda () "owner/repo"))
+            ((symbol-function 'shipit-pr-github--get-repo-subscription)
+             (lambda (_config) nil)))
     (let ((buf (get-buffer "*shipit-issue: owner/repo#42*")))
       (when buf (kill-buffer buf)))
     (unwind-protect
@@ -881,7 +883,9 @@ THEN reactions are fetched (not skipped by a hard-coded backend check)."
               ((symbol-function 'shipit--get-repo-root)
                (lambda () "/tmp"))
               ((symbol-function 'shipit--get-repo-from-remote)
-               (lambda () "owner/repo")))
+               (lambda () "owner/repo"))
+              ((symbol-function 'shipit-pr-github--get-repo-subscription)
+               (lambda (_config) nil)))
       (let ((buf (get-buffer "*shipit-issue: owner/repo#99*")))
         (when buf (kill-buffer buf)))
       (unwind-protect

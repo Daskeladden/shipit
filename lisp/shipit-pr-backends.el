@@ -95,6 +95,8 @@
 ;;   :browse-discussion-url   — (config number) → URL string
 ;;   :fetch-user-teams        — (config) → list of team data alists
 ;;   :fetch-merge-methods     — (config) → list of allowed merge method strings
+;;   :get-repo-subscription   — (config) → subscription alist or nil
+;;   :set-repo-subscription   — (config state) → result
 
 ;;; Code:
 

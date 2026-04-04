@@ -72,6 +72,7 @@ test-unit: compile
 		-l test/test-shipit-suggestions.el \
 		-l test/test-shipit-notifications-rss.el \
 		-l test/test-shipit-actions-timestamps.el \
+		-l test/test-shipit-merge.el \
 		-f ert-run-tests-batch-and-exit
 
 # Run integration tests

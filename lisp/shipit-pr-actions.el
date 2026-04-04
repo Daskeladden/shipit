@@ -30,6 +30,7 @@
 (require 'shipit-http)
 (require 'shipit-pr-backends)
 (require 'shipit-render)
+(require 'transient)
 
 (eval-when-compile
   (require 'magit-section))
@@ -38,6 +39,7 @@
 ;; Forward declarations
 (declare-function shipit--debug-log "shipit-core")
 (declare-function shipit-open-pr-buffer "shipit-buffer")
+(declare-function shipit-buffer-refresh "shipit-buffer")
 (declare-function shipit-editor-open "shipit-editor")
 (declare-function shipit--edit-comment-interactive "shipit-commands")
 (declare-function shipit-mark-activities-read "shipit-commands")
@@ -552,6 +554,9 @@ Dispatches to the active PR backend's :update-pr and comment backend."
     (when (and is-author is-open)
       (push "Close PR" actions)
       (push "Close PR with comment" actions))
+    ;; Merge option for open PRs (available to all users, not just author)
+    (when is-open
+      (push "Merge" actions))
     ;; Show action menu
     (let ((choice (completing-read "PR action: " (nreverse actions) nil t)))
       (cond
@@ -581,6 +586,8 @@ Dispatches to the active PR backend's :update-pr and comment backend."
                :source-buffer (current-buffer)
                :pr-number pr-number
                :repo repo)))
+       ((string= choice "Merge")
+        (shipit-merge))
        (t (message "No action selected"))))))
 
 (defun shipit--edit-description ()
@@ -1992,6 +1999,152 @@ target lines in the file.  Requires the PR branch to be checked out."
   (if (get-text-property (point) 'shipit-suggestion)
       (shipit-apply-suggestion-at-point)
     (shipit-approve)))
+
+;;; Merge
+
+(defun shipit--merge-guard (pr-data)
+  "Signal user-error if PR-DATA is not in a mergeable state.
+Checks actual state via `shipit--get-pr-actual-state' and the
+draft field separately (GitHub returns state=open for drafts)."
+  (let ((state (shipit--get-pr-actual-state pr-data))
+        (draft (cdr (assq 'draft pr-data))))
+    (cond
+     ((string= state "merged")
+      (user-error "PR is already merged"))
+     ((string= state "closed")
+      (user-error "PR is closed"))
+     ((and draft (not (eq draft :json-false)))
+      (user-error "PR is a draft — mark as ready before merging")))))
+
+(defun shipit--merge-get-methods (repo)
+  "Get allowed merge methods for REPO via backend.
+Signals user-error if backend does not support :fetch-merge-methods."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :fetch-merge-methods)))
+    (unless fn
+      (user-error "Merge not yet supported for %s backend"
+                  (plist-get backend :name)))
+    (funcall fn config)))
+
+(defun shipit--merge-ready-p (pr-data)
+  "Return non-nil if PR-DATA indicates the PR can be merged.
+Checks mergeable_state for \"clean\" or falls back to the mergeable boolean."
+  (let ((mergeable-state (cdr (assq 'mergeable_state pr-data)))
+        (mergeable (cdr (assq 'mergeable pr-data))))
+    (or (and (stringp mergeable-state) (string= mergeable-state "clean"))
+        (and (null mergeable-state) (eq mergeable t)))))
+
+(defun shipit--merge-pr-execute (repo number method)
+  "Merge PR NUMBER in REPO using METHOD.
+Dispatches to the backend :merge-pr operation and refreshes the buffer."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :merge-pr)))
+    (funcall fn config number method)
+    (message "PR #%d merged via %s" number method)
+    (shipit-buffer-refresh)))
+
+(defun shipit--merge-method-label (method)
+  "Return display label for merge METHOD string."
+  (cond
+   ((string= method "merge") "Merge commit")
+   ((string= method "squash") "Squash and merge")
+   ((string= method "rebase") "Rebase and merge")))
+
+(defun shipit--merge-method-key (method)
+  "Return transient key for merge METHOD string."
+  (cond
+   ((string= method "merge") "m")
+   ((string= method "squash") "s")
+   ((string= method "rebase") "r")))
+
+(defun shipit--merge-confirm-and-execute (method)
+  "Confirm and execute merge via METHOD using buffer-local PR context."
+  (let ((repo (bound-and-true-p shipit-buffer-repo))
+        (number (bound-and-true-p shipit-buffer-pr-number)))
+    (when (yes-or-no-p (format "Merge PR #%d via %s? " number method))
+      (shipit--merge-pr-execute repo number method))))
+
+(defun shipit-merge--do-merge ()
+  "Merge via merge commit."
+  (interactive)
+  (shipit--merge-confirm-and-execute "merge"))
+
+(defun shipit-merge--do-squash ()
+  "Merge via squash."
+  (interactive)
+  (shipit--merge-confirm-and-execute "squash"))
+
+(defun shipit-merge--do-rebase ()
+  "Merge via rebase."
+  (interactive)
+  (shipit--merge-confirm-and-execute "rebase"))
+
+(defvar shipit--merge-suffix-commands
+  '(("merge" . shipit-merge--do-merge)
+    ("squash" . shipit-merge--do-squash)
+    ("rebase" . shipit-merge--do-rebase))
+  "Alist mapping merge method strings to their interactive commands.")
+
+(defun shipit-merge--quit ()
+  "Dismiss the merge transient."
+  (interactive)
+  (transient-quit-one))
+
+(transient-define-prefix shipit-merge ()
+  "Merge the current pull request."
+  [:class transient-column
+   :description
+   (lambda ()
+     (let* ((repo (bound-and-true-p shipit-buffer-repo))
+            (number (bound-and-true-p shipit-buffer-pr-number))
+            (pr-data (bound-and-true-p shipit-buffer-pr-data))
+            (base-ref (cdr (assq 'ref (cdr (assq 'base pr-data)))))
+            (readiness (shipit--get-pr-merge-readiness repo number)))
+       (format "Merge PR #%s into %s\n\n  Status: %s"
+               (or number "?") (or base-ref "?") readiness)))
+   :setup-children
+   (lambda (_)
+     (let* ((pr-data (bound-and-true-p shipit-buffer-pr-data))
+            (repo (bound-and-true-p shipit-buffer-repo))
+            (ready (shipit--merge-ready-p pr-data))
+            (methods (when ready (shipit--merge-get-methods repo))))
+       (cond
+        ;; Ready with methods: show merge options
+        (methods
+         (mapcar
+          (lambda (method)
+            (let ((cmd (cdr (assoc method shipit--merge-suffix-commands))))
+              (transient-parse-suffix
+               transient--prefix
+               (list (shipit--merge-method-key method)
+                     (shipit--merge-method-label method)
+                     cmd))))
+          methods))
+        ;; Ready but no methods: repo doesn't allow direct merges
+        (ready
+         (list (transient-parse-suffix
+                transient--prefix
+                (list "q"
+                      (propertize "No direct merge methods available"
+                                  'face 'warning)
+                      'shipit-merge--quit))))
+        ;; Not ready: blocked
+        (t
+         (list (transient-parse-suffix
+                transient--prefix
+                (list "q"
+                      (propertize "Resolve blocking issues before merging"
+                                  'face 'warning)
+                      'shipit-merge--quit)))))))]
+  (interactive)
+  (unless (derived-mode-p 'shipit-mode)
+    (user-error "Not in a shipit buffer"))
+  (shipit--merge-guard (bound-and-true-p shipit-buffer-pr-data))
+  (transient-setup 'shipit-merge))
 
 (provide 'shipit-pr-actions)
 ;;; shipit-pr-actions.el ends here

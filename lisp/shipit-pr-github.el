@@ -72,6 +72,32 @@ TITLE, BODY, BASE branch, HEAD branch."
     (shipit--debug-log "GitHub PR backend: merging PR #%s in %s via %s" number repo method)
     (shipit--api-request-post endpoint data "PUT")))
 
+(defvar shipit--merge-methods-cache (make-hash-table :test 'equal)
+  "Session cache of allowed merge methods per repo.")
+
+(defun shipit--merge-methods-cache-clear (repo)
+  "Clear cached merge methods for REPO."
+  (remhash repo shipit--merge-methods-cache))
+
+(defun shipit-pr-github--fetch-merge-methods (config)
+  "Fetch allowed merge methods for repo in CONFIG.
+Returns a list of strings: \"merge\", \"squash\", \"rebase\".
+Results are cached per-repo for the session."
+  (let* ((repo (plist-get config :repo))
+         (cached (gethash repo shipit--merge-methods-cache)))
+    (or cached
+        (let* ((endpoint (format "/repos/%s" repo))
+               (data (shipit--api-request endpoint))
+               (methods nil))
+          (when (not (eq (cdr (assq 'allow_rebase_merge data)) :json-false))
+            (push "rebase" methods))
+          (when (not (eq (cdr (assq 'allow_squash_merge data)) :json-false))
+            (push "squash" methods))
+          (when (not (eq (cdr (assq 'allow_merge_commit data)) :json-false))
+            (push "merge" methods))
+          (puthash repo methods shipit--merge-methods-cache)
+          methods))))
+
 (defun shipit-pr-github--update-pr (config number data)
   "Update PR NUMBER using CONFIG with DATA alist."
   (let* ((repo (plist-get config :repo))
@@ -1166,6 +1192,7 @@ Returns list of team data alists."
        :browse-repo-url (lambda (config)
                           (format "https://github.com/%s" (plist-get config :repo)))
        :build-search-query-parts #'shipit--build-advanced-search-query
+       :fetch-merge-methods #'shipit-pr-github--fetch-merge-methods
        :invalidate-pr-cache (lambda (config pr-number)
                               (shipit-gh-etag-invalidate-endpoint
                                (format "/repos/%s/pulls/%s"

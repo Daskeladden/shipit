@@ -123,6 +123,7 @@ Each function is called with SECTION. Return non-nil if handled.")
 (declare-function shipit-comment "shipit-commands")
 (declare-function shipit-approve "shipit-commands")
 (declare-function shipit-suggestion-or-approve "shipit-pr-actions")
+(declare-function shipit-merge "shipit-pr-actions")
 (declare-function shipit-request-changes "shipit-commands")
 
 ;; Forward declarations for helper functions
@@ -480,6 +481,8 @@ section and search for the child by name."
     (define-key map (kbd "f") #'shipit-files-filter)
     (define-key map (kbd "m") #'shipit-toggle-file-viewed)
     (define-key map (kbd "M") #'shipit-mark-all-files-viewed)
+    ;; Merge
+    (define-key map (kbd "M-m") #'shipit-merge)
     (define-key map (kbd "+") 'shipit-load-more-files)
 
     ;; Buffer management
@@ -831,6 +834,11 @@ REPO is the repository name (owner/repo format)."
   ;; Clear ALL caches including ETags - fail fast if these don't exist
   (shipit-clear-all-caches)
   (shipit-gh-etag-clear-all)
+
+  ;; Clear merge methods cache for this repo
+  (when (and (fboundp 'shipit--merge-methods-cache-clear)
+             (bound-and-true-p shipit-buffer-repo))
+    (shipit--merge-methods-cache-clear shipit-buffer-repo))
 
   ;; Clear comment caches
   (when (boundp 'shipit--cached-general-comments)

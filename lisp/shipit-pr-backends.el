@@ -94,6 +94,7 @@
 ;;   :fetch-notifications     — (config params &optional force-fresh) → list
 ;;   :browse-discussion-url   — (config number) → URL string
 ;;   :fetch-user-teams        — (config) → list of team data alists
+;;   :fetch-merge-methods     — (config) → list of allowed merge method strings
 
 ;;; Code:
 

@@ -2102,6 +2102,65 @@ Dispatches to the backend :merge-pr operation and refreshes the buffer."
   (interactive)
   (transient-quit-one))
 
+(defun shipit--merge-blocking-reasons (repo number pr-data)
+  "Return list of strings explaining why PR NUMBER in REPO is blocked.
+Checks reviews, status checks, and mergeable state from PR-DATA."
+  (let* ((mergeable-state (cdr (assq 'mergeable_state pr-data)))
+         (resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (reasons nil))
+    ;; Check reviews
+    (let ((reviews-fn (plist-get backend :fetch-reviews))
+          (base-ref (cdr (assq 'ref (cdr (assq 'base pr-data))))))
+      (when reviews-fn
+        (let* ((reviews (funcall reviews-fn config number))
+               (approved (cl-count-if
+                          (lambda (r) (string= (cdr (assq 'state r)) "APPROVED"))
+                          reviews))
+               (changes (cl-count-if
+                         (lambda (r) (string= (cdr (assq 'state r)) "CHANGES_REQUESTED"))
+                         reviews))
+               (protection (when (and base-ref
+                                      (plist-get backend :fetch-branch-protection))
+                             (funcall (plist-get backend :fetch-branch-protection)
+                                      config base-ref)))
+               (required (when protection
+                           (cdr (assq 'required-approving-review-count protection)))))
+          (when (and (stringp mergeable-state) (string= mergeable-state "blocked"))
+            (cond
+             ((and required (> required 0))
+              (push (format "Reviews: %d/%d required approvals" approved required)
+                    reasons))
+             ((= approved 0)
+              (push "Reviews: no approvals" reasons))))
+          (when (> changes 0)
+            (push (format "Reviews: %d changes requested" changes) reasons)))))
+    ;; Check status checks
+    (let ((checks-fn (plist-get backend :fetch-checks)))
+      (when checks-fn
+        (let* ((checks (funcall checks-fn config number))
+               (total (length checks))
+               (passed (cl-count-if
+                        (lambda (c) (string= (cdr (assq 'conclusion c)) "success"))
+                        checks))
+               (failed (cl-count-if
+                        (lambda (c) (member (cdr (assq 'conclusion c))
+                                            '("failure" "timed_out")))
+                        checks))
+               (pending (- total passed failed)))
+          (when (> failed 0)
+            (push (format "Checks: %d/%d failed" failed total) reasons))
+          (when (> pending 0)
+            (push (format "Checks: %d/%d still running" pending total) reasons)))))
+    ;; Merge conflicts
+    (when (and (stringp mergeable-state) (string= mergeable-state "dirty"))
+      (push "Merge conflicts with base branch" reasons))
+    ;; Behind base
+    (when (and (stringp mergeable-state) (string= mergeable-state "behind"))
+      (push "Branch is behind base — update required" reasons))
+    (or (nreverse reasons) (list "Merge is blocked"))))
+
 (transient-define-prefix shipit-merge ()
   "Merge the current pull request."
   [:class transient-column
@@ -2118,6 +2177,7 @@ Dispatches to the backend :merge-pr operation and refreshes the buffer."
    (lambda (_)
      (let* ((pr-data (bound-and-true-p shipit-buffer-pr-data))
             (repo (bound-and-true-p shipit-buffer-repo))
+            (number (bound-and-true-p shipit-buffer-pr-number))
             (ready (shipit--merge-ready-p pr-data))
             (methods (when ready (shipit--merge-get-methods repo))))
        (cond
@@ -2140,14 +2200,17 @@ Dispatches to the backend :merge-pr operation and refreshes the buffer."
                       (propertize "No direct merge methods available"
                                   'face 'warning)
                       'shipit-merge--quit))))
-        ;; Not ready: blocked
+        ;; Not ready: show specific blocking reasons
         (t
-         (list (transient-parse-suffix
-                transient--prefix
-                (list "q"
-                      (propertize "Resolve blocking issues before merging"
-                                  'face 'warning)
-                      'shipit-merge--quit)))))))]
+         (let ((reasons (shipit--merge-blocking-reasons repo number pr-data)))
+           (mapcar
+            (lambda (reason)
+              (transient-parse-suffix
+               transient--prefix
+               (list "q"
+                     (propertize reason 'face 'warning)
+                     'shipit-merge--quit)))
+            reasons))))))]
   (interactive)
   (unless (derived-mode-p 'shipit-mode)
     (user-error "Not in a shipit buffer"))

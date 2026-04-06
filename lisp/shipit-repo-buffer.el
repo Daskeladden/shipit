@@ -242,6 +242,24 @@ Signals error if the backend does not support :fetch-repo-info."
                          (error nil)))))
       (list :data repo-data :readme readme :languages languages))))
 
+(defun shipit-repo-buffer--issue-backend-available-p ()
+  "Return non-nil if an issue backend matches the current repo's forge.
+Prevents falling back to GitHub issue search for non-GitHub repos."
+  (let ((pr-backend-id shipit-pr-backend))
+    (cond
+     ;; GitHub PR backend — GitHub issue backend is always available
+     ((eq pr-backend-id 'github) t)
+     ;; For non-GitHub backends, check if the issue backend matches
+     ;; the PR backend (not falling back to GitHub default)
+     (t (and (boundp 'shipit-issue-backend)
+             shipit-issue-backend
+             (eq shipit-issue-backend pr-backend-id))))))
+
+(defun shipit-repo-buffer--discussions-available-p ()
+  "Return non-nil if discussions are available for the current repo's forge.
+Discussions are currently GitHub-only."
+  (eq shipit-pr-backend 'github))
+
 (defun shipit-repo-buffer--fetch-open-prs (repo)
   "Fetch open PRs for REPO via backend :search.
 Returns list of PR alists, or nil on failure.
@@ -287,7 +305,8 @@ Sets `shipit-repo-buffer-closed-prs-has-more' as side effect."
 Returns list of issue alists, or nil on failure.
 Sets `shipit-repo-buffer-open-issues-has-more' as side effect."
   (when (and (boundp 'shipit-issues-enabled) shipit-issues-enabled
-             (fboundp 'shipit-issue--resolve-for-repo))
+             (fboundp 'shipit-issue--resolve-for-repo)
+             (shipit-repo-buffer--issue-backend-available-p))
     (condition-case nil
         (let* ((resolved (shipit-issue--resolve-for-repo repo))
                (backend (car resolved))
@@ -310,7 +329,8 @@ Sets `shipit-repo-buffer-open-issues-has-more' as side effect."
 Returns list of issue alists, or nil on failure.
 Sets `shipit-repo-buffer-closed-issues-has-more' as side effect."
   (when (and (boundp 'shipit-issues-enabled) shipit-issues-enabled
-             (fboundp 'shipit-issue--resolve-for-repo))
+             (fboundp 'shipit-issue--resolve-for-repo)
+             (shipit-repo-buffer--issue-backend-available-p))
     (condition-case nil
         (let* ((resolved (shipit-issue--resolve-for-repo repo))
                (backend (car resolved))
@@ -330,7 +350,8 @@ Sets `shipit-repo-buffer-closed-issues-has-more' as side effect."
   "Fetch recent discussions for REPO.
 Returns list of discussion alists, or nil on failure."
   (when (and (boundp 'shipit-discussions-enabled) shipit-discussions-enabled
-             (fboundp 'shipit-discussion--search))
+             (fboundp 'shipit-discussion--search)
+             (shipit-repo-buffer--discussions-available-p))
     (condition-case nil
         (shipit-discussion--search
          repo (list "--limit=25"))
@@ -339,17 +360,18 @@ Returns list of discussion alists, or nil on failure."
 ;;; Entry point
 
 ;;;###autoload
-(defun shipit-open-repo-buffer (repo)
+(defun shipit-open-repo-buffer (repo &optional backend-id backend-config)
   "Open a dedicated landing page buffer for REPO (owner/name).
-Creates or reuses the buffer *shipit-repo: REPO*."
+Creates or reuses the buffer *shipit-repo: REPO*.
+BACKEND-ID and BACKEND-CONFIG override auto-detection when provided."
   (interactive
    (list (read-string "Repository (owner/repo): "
                       (shipit--get-repo-from-remote))))
   (let* ((buf-name (format "*shipit-repo: %s*" repo))
          (existing (get-buffer buf-name))
          ;; Resolve backend in calling buffer (which has git context)
-         (caller-backend (shipit-pr--backend-id))
-         (caller-config shipit-pr-backend-config)
+         (caller-backend (or backend-id (shipit-pr--backend-id)))
+         (caller-config (or backend-config shipit-pr-backend-config))
          (caller-root (when (equal (shipit--get-repo-from-remote) repo)
                         (locate-dominating-file default-directory ".git"))))
     (if existing
@@ -1210,11 +1232,17 @@ Skips rendering when `shipit-repo-buffer-subscription' is `not-supported'."
   (unless (eq shipit-repo-buffer-subscription 'not-supported)
     (let* ((state (shipit--subscription-state-from-api
                    shipit-repo-buffer-subscription))
-           (label (shipit--subscription-state-label state)))
+           (label (shipit--subscription-state-label state))
+           (repo (or (bound-and-true-p shipit-repo-buffer-repo) ""))
+           (resolved (shipit-pr--resolve-for-repo repo))
+           (backend (car resolved))
+           (star-fn (plist-get backend :get-repo-starred))
+           (starred (when star-fn (funcall star-fn (cdr resolved)))))
       (insert (propertize
-               (format "   %s Watching:  %s\n"
+               (format "   %s Watching:  %s%s\n"
                        (shipit--get-pr-field-icon "notification" "\U0001f514")
-                       label)
+                       label
+                       (shipit--star-indicator starred))
                'shipit-repo-subscription t)))))
 
 (defun shipit--repo-get-subscription (repo)
@@ -1258,6 +1286,9 @@ Finds the line by text property and updates the label text in place."
          (sub-data (when fn (funcall fn (cdr resolved))))
          (state (shipit--subscription-state-from-api sub-data))
          (label (shipit--subscription-state-label state))
+         (star-fn (plist-get backend :get-repo-starred))
+         (starred (when star-fn (funcall star-fn (cdr resolved))))
+         (full-label (concat label (shipit--star-indicator starred)))
          (inhibit-read-only t))
     ;; Update repo buffer cache if in repo mode
     (when (derived-mode-p 'shipit-repo-mode)
@@ -1269,7 +1300,7 @@ Finds the line by text property and updates the label text in place."
         (let ((label-start (point))
               (label-end (line-end-position)))
           (delete-region label-start label-end)
-          (insert label))))))
+          (insert full-label))))))
 
 (defun shipit--remove-repo-notifications (repo)
   "Remove all notifications for REPO from the in-memory cache.
@@ -1303,6 +1334,12 @@ Works from repo, PR, and issue buffers."
              (fn (plist-get backend :mark-repo-notifications-read)))
         (when fn (funcall fn (cdr resolved))))
       (shipit--remove-repo-notifications repo))
+    ;; Refresh subscriptions buffer if open
+    (let ((buf (get-buffer "*shipit-subscriptions*")))
+      (when (and buf (buffer-live-p buf))
+        (with-current-buffer buf
+          (when (fboundp 'shipit-subscriptions-refresh)
+            (shipit-subscriptions-refresh)))))
     (message "Subscription changed to: %s"
              (shipit--subscription-state-label state))))
 
@@ -1329,6 +1366,23 @@ Dynamically bound during transient display.")
   "Repo string for the current subscription transient.
 Dynamically bound during transient display.")
 
+(defvar shipit--subscription-transient-starred nil
+  "Star status fetched when the transient opens.")
+
+(defun shipit-repo-buffer--sub-toggle-star ()
+  "Toggle star status for the current repo."
+  (interactive)
+  (let* ((repo shipit--subscription-transient-repo)
+         (resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (set-fn (plist-get backend :set-repo-starred))
+         (new-state (not shipit--subscription-transient-starred)))
+    (when set-fn
+      (funcall set-fn config new-state)
+      (setq shipit--subscription-transient-starred new-state)
+      (message "%s %s" (if new-state "Starred" "Unstarred") repo))))
+
 (transient-define-prefix shipit-repo-subscription ()
   "Manage repository notification subscription."
   [:class transient-column
@@ -1337,27 +1391,45 @@ Dynamically bound during transient display.")
      (let* ((state (shipit--subscription-state-from-api
                     shipit--subscription-transient-data))
             (label (shipit--subscription-state-label state)))
-       (format "Subscription for %s\n\n  Current: %s"
-               (or shipit--subscription-transient-repo "?") label)))
+       (format "Subscription for %s%s\n\n  Current: %s"
+               (or shipit--subscription-transient-repo "?")
+               (shipit--star-indicator shipit--subscription-transient-starred)
+               label)))
    :setup-children
    (lambda (_)
      (let* ((current (shipit--subscription-state-from-api
-                      shipit--subscription-transient-data)))
-       (mapcar
-        (lambda (entry)
-          (let* ((key (nth 0 entry))
-                 (state (nth 1 entry))
-                 (cmd (nth 2 entry))
-                 (label (shipit--subscription-state-label state))
-                 (label (if (equal state current)
-                            (concat label "  <- current")
-                          label)))
-            (transient-parse-suffix
-             transient--prefix
-             (list key label cmd))))
-        '(("w" "watching" shipit-repo-buffer--sub-watch)
-          ("p" "participating" shipit-repo-buffer--sub-participating)
-          ("i" "ignoring" shipit-repo-buffer--sub-ignore)))))]
+                      shipit--subscription-transient-data))
+            (sub-entries
+             (mapcar
+              (lambda (entry)
+                (let* ((key (nth 0 entry))
+                       (state (nth 1 entry))
+                       (cmd (nth 2 entry))
+                       (label (shipit--subscription-state-label state))
+                       (label (if (equal state current)
+                                  (concat label "  <- current")
+                                label)))
+                  (transient-parse-suffix
+                   transient--prefix
+                   (list key label cmd))))
+              '(("w" "watching" shipit-repo-buffer--sub-watch)
+                ("p" "participating" shipit-repo-buffer--sub-participating)
+                ("i" "ignoring" shipit-repo-buffer--sub-ignore))))
+            ;; Star toggle suffix (conditional on backend support)
+            (star-entry
+             (let* ((resolved (shipit-pr--resolve-for-repo
+                               (or shipit--subscription-transient-repo "")))
+                    (backend (car resolved))
+                    (has-star (plist-get backend :set-repo-starred)))
+               (when has-star
+                 (list (transient-parse-suffix
+                        transient--prefix
+                        (list "s"
+                              (if shipit--subscription-transient-starred
+                                  "Unstar repo"
+                                "Star repo")
+                              'shipit-repo-buffer--sub-toggle-star)))))))
+       (append sub-entries star-entry)))]
   (interactive)
   (let ((repo (shipit--current-buffer-repo)))
     (unless repo
@@ -1370,7 +1442,10 @@ Dynamically bound during transient display.")
                     (plist-get backend :name)))
       (setq shipit--subscription-transient-repo repo)
       (setq shipit--subscription-transient-data
-            (funcall fn (cdr resolved))))
+            (funcall fn (cdr resolved)))
+      (setq shipit--subscription-transient-starred
+            (let ((star-fn (plist-get backend :get-repo-starred)))
+              (when star-fn (funcall star-fn (cdr resolved))))))
     (transient-setup 'shipit-repo-subscription)))
 
 (defun shipit-repo-buffer-dwim ()

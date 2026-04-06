@@ -2547,7 +2547,7 @@ When :backend-id is present, passes it through so the correct forge is used."
     (pcase type
       ('pr (shipit-open-pr-buffer number repo backend-id))
       ('issue (shipit-issues-open-buffer number repo backend-id backend-config))
-      ('repo (shipit-open-repo-buffer repo))
+      ('repo (shipit-open-repo-buffer repo backend-id backend-config))
       ('actions-run
        (shipit-open-actions-run repo
                                 (plist-get classified :run-id)
@@ -4119,6 +4119,7 @@ Returns (octicon . color) or nil."
     ("clock" '("clock" . "#999999"))                                ; Gray - Time/recent
     ("issues" '("issue-opened" . "#28a745"))                        ; Green - Issues list
     ("notification" '("bell" . "#0366d6"))                           ; Blue - Notification/subscription
+    ("star" '("star-fill" . "#e3b341"))                              ; Yellow - Starred
     (_ nil)))
 
 (defun shipit--get-pr-field-icon (field-type emoji-fallback)

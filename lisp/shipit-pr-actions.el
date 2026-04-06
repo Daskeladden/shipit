@@ -2010,6 +2010,37 @@ target lines in the file.  Requires the PR branch to be checked out."
 
 ;;; Merge
 
+(defun shipit--merge-readiness-from-pr-data (pr-data)
+  "Determine merge readiness from PR-DATA without API calls.
+Works across backends by checking common fields."
+  (let* ((state (shipit--get-pr-actual-state pr-data))
+         (draft (cdr (assq 'draft pr-data)))
+         (mergeable-state (cdr (assq 'mergeable_state pr-data)))
+         (merge-status (cdr (assq 'merge_status pr-data))))
+    (cond
+     ((string= state "merged") "\U0001f389 Merged")
+     ((string= state "closed") "\u274c Closed")
+     ((and draft (not (eq draft :json-false))) "\U0001f6a7 Draft")
+     ;; GitHub mergeable_state
+     ((and (stringp mergeable-state) (string= mergeable-state "clean"))
+      "\u2705 Ready to Merge")
+     ((and (stringp mergeable-state) (string= mergeable-state "blocked"))
+      "\U0001f6ab Blocked")
+     ((and (stringp mergeable-state) (string= mergeable-state "dirty"))
+      "\u26a0 Merge Conflict")
+     ((and (stringp mergeable-state) (string= mergeable-state "unstable"))
+      "\U0001f504 Checks Running")
+     ((and (stringp mergeable-state) (string= mergeable-state "behind"))
+      "\u23ea Behind Base")
+     ;; GitLab merge_status
+     ((equal merge-status "can_be_merged") "\u2705 Ready to Merge")
+     ((equal merge-status "cannot_be_merged") "\u26a0 Merge Conflict")
+     ((equal merge-status "unchecked") "\U0001f504 Checking...")
+     ((equal merge-status "checking") "\U0001f504 Checking...")
+     ((equal merge-status "cannot_be_merged_recheck") "\U0001f504 Rechecking...")
+     ;; Fallback
+     (t "\u2753 Unknown"))))
+
 (defun shipit--merge-guard (pr-data)
   "Signal user-error if PR-DATA is not in a mergeable state.
 Checks actual state via `shipit--get-pr-actual-state' and the
@@ -2038,11 +2069,13 @@ Signals user-error if backend does not support :fetch-merge-methods."
 
 (defun shipit--merge-ready-p (pr-data)
   "Return non-nil if PR-DATA indicates the PR can be merged.
-Checks mergeable_state for \"clean\" or falls back to the mergeable boolean."
+Checks GitHub mergeable_state or GitLab merge_status."
   (let ((mergeable-state (cdr (assq 'mergeable_state pr-data)))
-        (mergeable (cdr (assq 'mergeable pr-data))))
+        (mergeable (cdr (assq 'mergeable pr-data)))
+        (merge-status (cdr (assq 'merge_status pr-data))))
     (or (and (stringp mergeable-state) (string= mergeable-state "clean"))
-        (and (null mergeable-state) (eq mergeable t)))))
+        (and (null mergeable-state) (eq mergeable t))
+        (equal merge-status "can_be_merged"))))
 
 (defun shipit--merge-pr-execute (repo number method)
   "Merge PR NUMBER in REPO using METHOD.
@@ -2166,11 +2199,11 @@ Checks reviews, status checks, and mergeable state from PR-DATA."
   [:class transient-column
    :description
    (lambda ()
-     (let* ((repo (bound-and-true-p shipit-buffer-repo))
-            (number (bound-and-true-p shipit-buffer-pr-number))
-            (pr-data (bound-and-true-p shipit-buffer-pr-data))
-            (base-ref (cdr (assq 'ref (cdr (assq 'base pr-data)))))
-            (readiness (shipit--get-pr-merge-readiness repo number)))
+     (let* ((pr-data (bound-and-true-p shipit-buffer-pr-data))
+            (number (cdr (assq 'number pr-data)))
+            (base-ref (or (cdr (assq 'ref (cdr (assq 'base pr-data))))
+                          (cdr (assq 'target_branch pr-data))))
+            (readiness (shipit--merge-readiness-from-pr-data pr-data)))
        (format "Merge PR #%s into %s\n\n  Status: %s"
                (or number "?") (or base-ref "?") readiness)))
    :setup-children

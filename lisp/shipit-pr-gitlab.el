@@ -60,7 +60,20 @@
       (labels . ,labels)
       (assignees . ,assignees)
       (created_at . ,(cdr (assq 'created_at gitlab-mr)))
-      (updated_at . ,(cdr (assq 'updated_at gitlab-mr))))))
+      (updated_at . ,(cdr (assq 'updated_at gitlab-mr)))
+      (mergeable_state . ,(shipit-pr-gitlab--normalize-merge-status
+                           (cdr (assq 'merge_status gitlab-mr)))))))
+
+(defun shipit-pr-gitlab--normalize-merge-status (merge-status)
+  "Normalize GitLab MERGE-STATUS to GitHub-compatible mergeable_state.
+Maps: can_be_merged->clean, cannot_be_merged->dirty,
+unchecked/checking->unstable."
+  (cond
+   ((equal merge-status "can_be_merged") "clean")
+   ((equal merge-status "cannot_be_merged") "dirty")
+   ((equal merge-status "cannot_be_merged_recheck") "dirty")
+   ((member merge-status '("unchecked" "checking")) "unstable")
+   (t nil)))
 
 (defun shipit-pr-gitlab--truthy-p (val)
   "Return t if VAL is truthy, nil otherwise.
@@ -1640,8 +1653,7 @@ Returns alist with login and name fields."
 (defun shipit-pr-gitlab--generate-avatar-url (config username)
   "Generate avatar URL for GitLab USERNAME.
 Uses the GitLab users API to find the avatar."
-  (let* ((api-url (or (plist-get config :api-url) "https://gitlab.com"))
-         (path (format "/users?username=%s" (url-hexify-string username)))
+  (let* ((path (format "/users?username=%s" (url-hexify-string username)))
          (users (shipit-gitlab--api-request config path)))
     (when (and users (listp users) (car users))
       (cdr (assq 'avatar_url (car users))))))
@@ -1711,14 +1723,16 @@ STATE is \"watching\", \"participating\", or \"ignoring\"."
 
 (defun shipit-pr-gitlab--get-repo-starred (config)
   "Check if project in CONFIG is starred by the current user.
-Fetches the user's starred projects and checks if this one is in the list."
+Uses search parameter to narrow the query instead of fetching all starred."
   (let* ((project-path (or (plist-get config :project-path)
                             (plist-get config :repo)))
-         (path "/projects?starred=true&simple=true&per_page=100")
-         (starred (shipit-gitlab--api-request-paginated config path)))
+         (project-name (file-name-nondirectory project-path))
+         (path (format "/projects?starred=true&simple=true&search=%s&per_page=20"
+                        (url-hexify-string project-name)))
+         (results (shipit-gitlab--api-request config path)))
     (cl-some (lambda (proj)
                (equal (cdr (assq 'path_with_namespace proj)) project-path))
-             starred)))
+             (if (vectorp results) (append results nil) results))))
 
 (defun shipit-pr-gitlab--set-repo-starred (config starred)
   "Star or unstar project in CONFIG.

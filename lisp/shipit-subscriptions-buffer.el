@@ -366,7 +366,13 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
              (new-state (not currently-starred)))
         (funcall set-fn config new-state)
         (message "%s %s" (if new-state "Starred" "Unstarred") repo)
-        ;; Refresh subscriptions buffer to update star indicator
+        ;; Update cached data and re-render
+        (when shipit-subscriptions--cached-data
+          (dolist (entry shipit-subscriptions--cached-data)
+            (let ((repos (nth 2 entry)))
+              (dolist (r repos)
+                (when (equal (cdr (assq 'full_name r)) repo)
+                  (setcdr (assq 'starred r) new-state))))))
         (shipit-subscriptions--rerender)))))
 
 ;;; Entry point

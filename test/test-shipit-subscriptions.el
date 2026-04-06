@@ -223,5 +223,84 @@ THEN that backend is included."
       (should (= 1 (length backends)))
       (should (eq 'mock (car (car backends)))))))
 
+;;; Tests — GitLab subscription operations
+
+(ert-deftest test-subs-gitlab-get-subscription-watching ()
+  "GIVEN a GitLab project with notification level watch
+WHEN fetching subscription
+THEN returns subscribed=t, ignored=false."
+  (let ((shipit-pr-backends nil)
+        (shipit-pr-backend 'gitlab)
+        (shipit-pr-backend-config '(:api-url "https://gitlab.com" :project-path "group/proj")))
+    (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+               (lambda (_config _path) '((level . "watch")))))
+      (let ((result (shipit-pr-gitlab--get-repo-subscription
+                     '(:project-path "group/proj" :api-url "https://gitlab.com"))))
+        (should (eq t (cdr (assq 'subscribed result))))
+        (should (eq :json-false (cdr (assq 'ignored result))))))))
+
+(ert-deftest test-subs-gitlab-get-subscription-disabled ()
+  "GIVEN a GitLab project with notification level disabled
+WHEN fetching subscription
+THEN returns ignored=t."
+  (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+             (lambda (_config _path) '((level . "disabled")))))
+    (let ((result (shipit-pr-gitlab--get-repo-subscription
+                   '(:project-path "group/proj" :api-url "https://gitlab.com"))))
+      (should (eq t (cdr (assq 'ignored result)))))))
+
+(ert-deftest test-subs-gitlab-set-subscription-watching ()
+  "GIVEN a GitLab project
+WHEN setting subscription to watching
+THEN PUT is called with level=watch."
+  (let ((called-with nil))
+    (cl-letf (((symbol-function 'shipit-gitlab--api-request-method)
+               (lambda (_config _path data method)
+                 (setq called-with (list data method)))))
+      (shipit-pr-gitlab--set-repo-subscription
+       '(:project-path "group/proj" :api-url "https://gitlab.com") "watching")
+      (should (equal "watch" (cdr (assq 'level (nth 0 called-with)))))
+      (should (equal "PUT" (nth 1 called-with))))))
+
+(ert-deftest test-subs-gitlab-star-repo ()
+  "GIVEN a GitLab project
+WHEN starring it
+THEN POST is called on /star endpoint."
+  (let ((called-with nil))
+    (cl-letf (((symbol-function 'shipit-gitlab--api-request-method)
+               (lambda (_config path _data method)
+                 (setq called-with (list path method)))))
+      (shipit-pr-gitlab--set-repo-starred
+       '(:project-path "group/proj" :api-url "https://gitlab.com") t)
+      (should (string-match-p "/star$" (nth 0 called-with)))
+      (should (equal "POST" (nth 1 called-with))))))
+
+(ert-deftest test-subs-gitlab-fetch-merge-methods ()
+  "GIVEN a GitLab project with merge method and squash option
+WHEN fetching merge methods
+THEN returns correct method list."
+  (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+             (lambda (_config _path)
+               '((merge_method . "merge")
+                 (squash_option . "default_on")))))
+    (let ((methods (shipit-pr-gitlab--fetch-merge-methods
+                    '(:project-path "group/proj" :api-url "https://gitlab.com"))))
+      (should (member "merge" methods))
+      (should (member "squash" methods)))))
+
+(ert-deftest test-subs-gitlab-fetch-merge-methods-ff-only ()
+  "GIVEN a GitLab project with ff merge method and squash=never
+WHEN fetching merge methods
+THEN returns only rebase."
+  (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+             (lambda (_config _path)
+               '((merge_method . "ff")
+                 (squash_option . "never")))))
+    (let ((methods (shipit-pr-gitlab--fetch-merge-methods
+                    '(:project-path "group/proj" :api-url "https://gitlab.com"))))
+      (should (member "rebase" methods))
+      (should-not (member "merge" methods))
+      (should-not (member "squash" methods)))))
+
 (provide 'test-shipit-subscriptions)
 ;;; test-shipit-subscriptions.el ends here

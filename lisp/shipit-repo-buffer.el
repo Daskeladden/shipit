@@ -257,8 +257,13 @@ Prevents falling back to GitHub issue search for non-GitHub repos."
 
 (defun shipit-repo-buffer--discussions-available-p ()
   "Return non-nil if discussions are available for the current repo's forge.
-Discussions are currently GitHub-only."
-  (eq shipit-pr-backend 'github))
+Checks if the PR backend has discussion search support."
+  (and (boundp 'shipit-discussions-enabled)
+       shipit-discussions-enabled
+       (fboundp 'shipit-discussion--search)
+       (let* ((backend-plist (shipit-pr--get-backend)))
+         (and backend-plist
+              (plist-get backend-plist :browse-discussion-url)))))
 
 (defun shipit-repo-buffer--fetch-open-prs (repo)
   "Fetch open PRs for REPO via backend :search.

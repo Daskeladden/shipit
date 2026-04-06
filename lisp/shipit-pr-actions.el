@@ -2015,8 +2015,7 @@ target lines in the file.  Requires the PR branch to be checked out."
 Works across backends by checking common fields."
   (let* ((state (shipit--get-pr-actual-state pr-data))
          (draft (cdr (assq 'draft pr-data)))
-         (mergeable-state (cdr (assq 'mergeable_state pr-data)))
-         (merge-status (cdr (assq 'merge_status pr-data))))
+         (mergeable-state (cdr (assq 'mergeable_state pr-data))))
     (cond
      ((string= state "merged") "\U0001f389 Merged")
      ((string= state "closed") "\u274c Closed")
@@ -2032,12 +2031,6 @@ Works across backends by checking common fields."
       "\U0001f504 Checks Running")
      ((and (stringp mergeable-state) (string= mergeable-state "behind"))
       "\u23ea Behind Base")
-     ;; GitLab merge_status
-     ((equal merge-status "can_be_merged") "\u2705 Ready to Merge")
-     ((equal merge-status "cannot_be_merged") "\u26a0 Merge Conflict")
-     ((equal merge-status "unchecked") "\U0001f504 Checking...")
-     ((equal merge-status "checking") "\U0001f504 Checking...")
-     ((equal merge-status "cannot_be_merged_recheck") "\U0001f504 Rechecking...")
      ;; Fallback
      (t "\u2753 Unknown"))))
 
@@ -2069,13 +2062,11 @@ Signals user-error if backend does not support :fetch-merge-methods."
 
 (defun shipit--merge-ready-p (pr-data)
   "Return non-nil if PR-DATA indicates the PR can be merged.
-Checks GitHub mergeable_state or GitLab merge_status."
+Checks mergeable_state (normalized across backends at fetch time)."
   (let ((mergeable-state (cdr (assq 'mergeable_state pr-data)))
-        (mergeable (cdr (assq 'mergeable pr-data)))
-        (merge-status (cdr (assq 'merge_status pr-data))))
+        (mergeable (cdr (assq 'mergeable pr-data))))
     (or (and (stringp mergeable-state) (string= mergeable-state "clean"))
-        (and (null mergeable-state) (eq mergeable t))
-        (equal merge-status "can_be_merged"))))
+        (and (null mergeable-state) (eq mergeable t)))))
 
 (defun shipit--merge-pr-execute (repo number method)
   "Merge PR NUMBER in REPO using METHOD.

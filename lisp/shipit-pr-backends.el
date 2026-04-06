@@ -97,6 +97,9 @@
 ;;   :fetch-merge-methods     — (config) → list of allowed merge method strings
 ;;   :get-repo-subscription   — (config) → subscription alist or nil
 ;;   :set-repo-subscription   — (config state) → result
+;;   :get-repo-starred        — (config) → t or nil
+;;   :set-repo-starred        — (config starred) → result
+;;   :fetch-watched-repos     — (config) → list of repo alists
 
 ;;; Code:
 

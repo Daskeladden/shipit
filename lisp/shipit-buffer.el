@@ -960,12 +960,15 @@ REPO is the repository, PR-NUMBER is the PR number."
             (require 'shipit-repo-buffer)
             (let* ((sub-data (funcall fn (cdr resolved)))
                    (state (shipit--subscription-state-from-api sub-data))
-                   (label (shipit--subscription-state-label state)))
+                   (label (shipit--subscription-state-label state))
+                   (star-fn (plist-get backend :get-repo-starred))
+                   (starred (when star-fn (funcall star-fn (cdr resolved)))))
               (magit-insert-section (pr-subscription nil)
                 (magit-insert-heading
-                  (propertize (format "%s Watching:  %s"
+                  (propertize (format "%s Watching:  %s%s"
                                       (shipit--get-pr-field-icon "notification" "\U0001f514")
-                                      label)
+                                      label
+                                      (shipit--star-indicator starred))
                               'shipit-repo-subscription t)))))))
 
       (shipit--time-operation "insert URL section"

@@ -1580,6 +1580,17 @@ used to correctly expand tabs to spaces (default 0)."
                          (substring word 1)))
                (split-string name " ") " ")))
 
+;;; Star indicator
+
+(declare-function shipit--get-pr-field-icon "shipit-render" (field-type emoji-fallback))
+
+(defun shipit--star-indicator (starred)
+  "Return a display string for STARRED status.
+Returns icon + Starred when starred, empty string when not."
+  (if starred
+      (format "  %s Starred" (shipit--get-pr-field-icon "star" "⭐"))
+    ""))
+
 ;;; Targeted Section Refresh
 
 ;; shipit--find-section-by-type is defined in shipit-sections.el (recursive search)

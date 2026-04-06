@@ -86,6 +86,7 @@
     (define-key map (kbd "p") #'magit-section-backward)
     (define-key map (kbd "L") #'shipit-toggle-timestamp-format)
     (define-key map (kbd "M-w") #'shipit-notifications-buffer-copy-url)
+    (define-key map (kbd "w") #'shipit-notifications-buffer-watch)
     map)
   "Keymap for `shipit-notifications-buffer-mode'.")
 
@@ -575,6 +576,19 @@ If a region is active, copy the region text instead (standard M-w behavior)."
         (let ((fallback (global-key-binding (kbd "M-w"))))
           (when fallback
             (call-interactively fallback)))))))
+
+(defun shipit-notifications-buffer-watch ()
+  "Open subscription transient for the repo of the notification at point."
+  (interactive)
+  (let ((activity (shipit-notifications-buffer--activity-at-point)))
+    (if activity
+        (let ((repo (cdr (assq 'repo activity))))
+          (if repo
+              (progn
+                (setq-local shipit-repo-buffer-repo repo)
+                (shipit-repo-subscription))
+            (user-error "No repo context for this notification")))
+      (user-error "No notification at point"))))
 
 (defun shipit-notifications-buffer--activity-at-point ()
   "Return the notification activity alist at point, or nil.

@@ -1559,7 +1559,71 @@ Returns plist (:type TYPE :repo REPO :number N) or nil."
      url)
     (list :type 'issue
           :repo (match-string 1 url)
-          :number (string-to-number (match-string 2 url))))))
+          :number (string-to-number (match-string 2 url))))
+   ;; Repo: /group/project or /group/subgroup/project (no /-/ segment)
+   ((and (string-match-p "gitlab" url)
+         (not (string-match-p "/-/" url))
+         (string-match
+          "\\`https?://[^/]+/\\(.+?\\)/?\\'"
+          url))
+    (list :type 'repo
+          :repo (match-string 1 url)))))
+
+;;; Repo info, README, and languages
+
+(defun shipit-pr-gitlab--fetch-repo-info (config)
+  "Fetch repository metadata using CONFIG.
+Normalizes GitLab fields to match the expected format."
+  (let* ((project (shipit-gitlab--project-path config))
+         (path (format "/projects/%s" project))
+         (data (shipit-gitlab--api-request config path)))
+    (when data
+      (let* ((namespace (cdr (assq 'namespace data)))
+             (owner-name (or (cdr (assq 'name namespace)) ""))
+             (owner-avatar (cdr (assq 'avatar_url namespace))))
+        ;; Normalize to GitHub-compatible format
+        `((full_name . ,(or (cdr (assq 'path_with_namespace data)) ""))
+          (description . ,(cdr (assq 'description data)))
+          (owner . ((login . ,owner-name)
+                    (avatar_url . ,owner-avatar)))
+          (default_branch . ,(cdr (assq 'default_branch data)))
+          (html_url . ,(cdr (assq 'web_url data))))))))
+
+(defun shipit-pr-gitlab--fetch-readme (config)
+  "Fetch repository README using CONFIG.
+Uses the repository tree to find the README filename, then fetches raw content."
+  (let* ((project (shipit-gitlab--project-path config))
+         (tree-path (format "/projects/%s/repository/tree?per_page=100" project))
+         (tree (shipit-gitlab--api-request config tree-path))
+         (readme-entry (when tree
+                         (cl-find-if
+                          (lambda (entry)
+                            (let ((name (cdr (assq 'name entry))))
+                              (and name
+                                   (string-match-p "\\`[Rr][Ee][Aa][Dd][Mm][Ee]" name)
+                                   (equal (cdr (assq 'type entry)) "blob"))))
+                          tree))))
+    (when readme-entry
+      (let* ((filename (cdr (assq 'name readme-entry)))
+             (raw-path (format "/projects/%s/repository/files/%s/raw"
+                               project (url-hexify-string filename)))
+             (url (shipit-gitlab--build-url config raw-path))
+             (auth (shipit-gitlab--auth-header config))
+             (args (shipit-gitlab--curl-args url auth "GET" nil))
+             (buf (generate-new-buffer " *shipit-gitlab-readme*")))
+        (shipit--debug-log "GitLab API: GET %s (auth=%s, raw)" url (if auth "yes" "NO"))
+        (unwind-protect
+            (let ((exit-code (apply #'call-process "curl" nil buf nil args)))
+              (when (eq exit-code 0)
+                (with-current-buffer buf
+                  (buffer-substring-no-properties (point-min) (point-max)))))
+          (kill-buffer buf))))))
+(defun shipit-pr-gitlab--fetch-languages (config)
+  "Fetch repository languages using CONFIG.
+Returns alist of (LANGUAGE . PERCENTAGE)."
+  (let* ((project (shipit-gitlab--project-path config))
+         (path (format "/projects/%s/languages" project)))
+    (shipit-gitlab--api-request config path)))
 
 ;;; Registration
 
@@ -1631,9 +1695,9 @@ Returns plist (:type TYPE :repo REPO :number N) or nil."
        :extract-username-from-email #'shipit-pr-gitlab--extract-username-from-email
        :fetch-check-suites-async #'shipit-pr-gitlab--fetch-check-suites-async
        :fetch-suite-check-runs-async #'shipit-pr-gitlab--fetch-suite-check-runs-async
-       :fetch-repo-info nil
-       :fetch-readme nil
-       :fetch-languages nil
+       :fetch-repo-info #'shipit-pr-gitlab--fetch-repo-info
+       :fetch-readme #'shipit-pr-gitlab--fetch-readme
+       :fetch-languages #'shipit-pr-gitlab--fetch-languages
        :classify-url #'shipit-pr-gitlab--classify-url
        :create-reference-overlays #'shipit-pr-gitlab--create-reference-overlays
        :hash-insert-reference-fn #'shipit-editor-insert-issue-reference

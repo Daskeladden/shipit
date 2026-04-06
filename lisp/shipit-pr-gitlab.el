@@ -1625,6 +1625,85 @@ Returns alist of (LANGUAGE . PERCENTAGE)."
          (path (format "/projects/%s/languages" project)))
     (shipit-gitlab--api-request config path)))
 
+;;; Subscription and starring
+
+(defun shipit-pr-gitlab--get-repo-subscription (config)
+  "Get notification settings for project in CONFIG.
+Returns alist with subscription and ignored fields, matching GitHub format."
+  (let* ((project (shipit-gitlab--project-path config))
+         (path (format "/projects/%s/notification_settings" project))
+         (data (shipit-gitlab--api-request config path)))
+    (when data
+      (let ((level (cdr (assq 'level data))))
+        (cond
+         ((equal level "watch")
+          '((subscribed . t) (ignored . :json-false)))
+         ((equal level "disabled")
+          '((subscribed . :json-false) (ignored . t)))
+         (t nil))))))
+
+(defun shipit-pr-gitlab--set-repo-subscription (config state)
+  "Set notification STATE for project in CONFIG.
+STATE is \"watching\", \"participating\", or \"ignoring\"."
+  (let* ((project (shipit-gitlab--project-path config))
+         (path (format "/projects/%s/notification_settings" project))
+         (level (cond
+                 ((equal state "watching") "watch")
+                 ((equal state "ignoring") "disabled")
+                 ((equal state "participating") "global"))))
+    (shipit-gitlab--api-request-method config path
+                                       `((level . ,level)) "PUT")))
+
+(defun shipit-pr-gitlab--get-repo-starred (config)
+  "Check if project in CONFIG is starred by the current user.
+Fetches the user's starred projects and checks if this one is in the list."
+  (let* ((project-path (or (plist-get config :project-path)
+                            (plist-get config :repo)))
+         (path "/projects?starred=true&simple=true&per_page=100")
+         (starred (shipit-gitlab--api-request-paginated config path)))
+    (cl-some (lambda (proj)
+               (equal (cdr (assq 'path_with_namespace proj)) project-path))
+             starred)))
+
+(defun shipit-pr-gitlab--set-repo-starred (config starred)
+  "Star or unstar project in CONFIG.
+STARRED is t to star, nil to unstar."
+  (let* ((project (shipit-gitlab--project-path config))
+         (path (if starred
+                   (format "/projects/%s/star" project)
+                 (format "/projects/%s/unstar" project))))
+    (shipit-gitlab--api-request-method config path nil "POST")))
+
+(defun shipit-pr-gitlab--fetch-watched-repos (config)
+  "Fetch member and starred projects from GitLab.
+Combines /projects?membership=true and /projects?starred=true,
+deduplicating by path. Returns normalized repo alists."
+  (let* ((member-path "/projects?membership=true&per_page=100&simple=true")
+         (starred-path "/projects?starred=true&per_page=100&simple=true")
+         (members (shipit-gitlab--api-request-paginated config member-path))
+         (starred (shipit-gitlab--api-request-paginated config starred-path))
+         (starred-set (make-hash-table :test 'equal))
+         (seen (make-hash-table :test 'equal))
+         (result nil))
+    ;; Build starred lookup
+    (dolist (proj starred)
+      (let ((name (cdr (assq 'path_with_namespace proj))))
+        (when name (puthash name t starred-set))))
+    ;; Process all projects (members first, then starred-only)
+    (dolist (proj (append members starred))
+      (let* ((name (cdr (assq 'path_with_namespace proj)))
+             (namespace (cdr (assq 'namespace proj)))
+             (owner (or (cdr (assq 'name namespace)) "")))
+        (unless (gethash name seen)
+          (puthash name t seen)
+          (push `((full_name . ,name)
+                  (owner_name . ,owner)
+                  (description . ,(cdr (assq 'description proj)))
+                  (subscription . "SUBSCRIBED")
+                  (starred . ,(if (gethash name starred-set) t :json-false)))
+                result))))
+    (nreverse result)))
+
 ;;; Registration
 
 (shipit-pr-register-backend
@@ -1698,6 +1777,11 @@ Returns alist of (LANGUAGE . PERCENTAGE)."
        :fetch-repo-info #'shipit-pr-gitlab--fetch-repo-info
        :fetch-readme #'shipit-pr-gitlab--fetch-readme
        :fetch-languages #'shipit-pr-gitlab--fetch-languages
+       :get-repo-subscription #'shipit-pr-gitlab--get-repo-subscription
+       :set-repo-subscription #'shipit-pr-gitlab--set-repo-subscription
+       :get-repo-starred #'shipit-pr-gitlab--get-repo-starred
+       :set-repo-starred #'shipit-pr-gitlab--set-repo-starred
+       :fetch-watched-repos #'shipit-pr-gitlab--fetch-watched-repos
        :classify-url #'shipit-pr-gitlab--classify-url
        :create-reference-overlays #'shipit-pr-gitlab--create-reference-overlays
        :hash-insert-reference-fn #'shipit-editor-insert-issue-reference

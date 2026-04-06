@@ -1625,6 +1625,61 @@ Returns alist of (LANGUAGE . PERCENTAGE)."
          (path (format "/projects/%s/languages" project)))
     (shipit-gitlab--api-request config path)))
 
+;;; User, avatars, merge methods, notifications
+
+(defun shipit-pr-gitlab--fetch-current-user (config)
+  "Fetch the authenticated GitLab user.
+Returns alist with login and name fields."
+  (let ((data (shipit-gitlab--api-request config "/user")))
+    (when data
+      `((login . ,(cdr (assq 'username data)))
+        (name . ,(cdr (assq 'name data)))
+        (id . ,(cdr (assq 'id data)))
+        (avatar_url . ,(cdr (assq 'avatar_url data)))))))
+
+(defun shipit-pr-gitlab--generate-avatar-url (config username)
+  "Generate avatar URL for GitLab USERNAME.
+Uses the GitLab users API to find the avatar."
+  (let* ((api-url (or (plist-get config :api-url) "https://gitlab.com"))
+         (path (format "/users?username=%s" (url-hexify-string username)))
+         (users (shipit-gitlab--api-request config path)))
+    (when (and users (listp users) (car users))
+      (cdr (assq 'avatar_url (car users))))))
+
+(defun shipit-pr-gitlab--fetch-merge-methods (config)
+  "Fetch allowed merge methods for the project in CONFIG.
+GitLab projects have a merge_method field: merge, rebase_merge, or ff.
+Also checks squash_option for squash support."
+  (let* ((project (shipit-gitlab--project-path config))
+         (path (format "/projects/%s" project))
+         (data (shipit-gitlab--api-request config path))
+         (merge-method (cdr (assq 'merge_method data)))
+         (squash-option (cdr (assq 'squash_option data)))
+         (methods nil))
+    ;; Squash is available unless explicitly disabled
+    (unless (equal squash-option "never")
+      (push "squash" methods))
+    ;; Map GitLab merge_method to available methods
+    (cond
+     ((equal merge-method "ff")
+      ;; Fast-forward only — no merge commits
+      (push "rebase" methods))
+     ((equal merge-method "rebase_merge")
+      ;; Rebase + merge commit
+      (push "rebase" methods)
+      (push "merge" methods))
+     (t
+      ;; Default merge — merge commit allowed
+      (push "merge" methods)))
+    methods))
+
+(defun shipit-pr-gitlab--mark-notification-read (config notification-id)
+  "Mark a GitLab todo NOTIFICATION-ID as done.
+GitLab uses todos instead of notification threads."
+  (let* ((path (format "/todos/%s/mark_as_done" notification-id)))
+    (shipit--debug-log "GitLab PR backend: marking todo %s as done" notification-id)
+    (shipit-gitlab--api-request-method config path nil "POST")))
+
 ;;; Subscription and starring
 
 (defun shipit-pr-gitlab--get-repo-subscription (config)
@@ -1777,6 +1832,10 @@ deduplicating by path. Returns normalized repo alists."
        :fetch-repo-info #'shipit-pr-gitlab--fetch-repo-info
        :fetch-readme #'shipit-pr-gitlab--fetch-readme
        :fetch-languages #'shipit-pr-gitlab--fetch-languages
+       :fetch-current-user #'shipit-pr-gitlab--fetch-current-user
+       :generate-avatar-url #'shipit-pr-gitlab--generate-avatar-url
+       :fetch-merge-methods #'shipit-pr-gitlab--fetch-merge-methods
+       :mark-notification-read #'shipit-pr-gitlab--mark-notification-read
        :get-repo-subscription #'shipit-pr-gitlab--get-repo-subscription
        :set-repo-subscription #'shipit-pr-gitlab--set-repo-subscription
        :get-repo-starred #'shipit-pr-gitlab--get-repo-starred

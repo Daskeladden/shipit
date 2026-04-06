@@ -1712,10 +1712,14 @@ THEN returns github.com avatar URL."
 (ert-deftest test/generate-avatar-url-gitlab ()
   "GIVEN shipit-pr-backend is gitlab
 WHEN generating avatar URL from username
-THEN returns nil (GitLab avatars come from API data)."
+THEN dispatches through the backend :generate-avatar-url operation."
   (require 'shipit-pr-sections)
   (let ((shipit-pr-backend 'gitlab))
-    (should-not (shipit--generate-avatar-url "jdoe"))))
+    (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+               (lambda (_config _path)
+                 '(((avatar_url . "https://gitlab.com/uploads/-/avatar.png")
+                    (username . "jdoe"))))))
+      (should (stringp (shipit--generate-avatar-url "jdoe"))))))
 
 (ert-deftest test/generate-avatar-url-nil-username ()
   "GIVEN a nil username

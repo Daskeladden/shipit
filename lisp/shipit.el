@@ -169,6 +169,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
 ;; Functions that remain immediately available (moved to core modules or are lightweight)
 (declare-function shipit-cache-menu "shipit-cache")
 (declare-function shipit-config "shipit-commands")
+(declare-function shipit-subscriptions "shipit-subscriptions-buffer")
 (declare-function shipit-help "shipit-core")
 (declare-function shipit-notifications-menu "shipit-notifications")
 (declare-function shipit-issues--quick-search "shipit-issues")
@@ -189,7 +190,9 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
     ("a" "Advanced PR search" shipit-advanced-pr-search)]]
   ["Navigate"
    ("u" "Open URL" shipit-open-url)
-   ("W" "Workflows" shipit-open-actions-list)]
+   ("W" "Workflows" shipit-open-actions-list)
+   ("S" "Subscriptions" shipit-subscriptions)
+   ("n" "Notifications buffer" shipit--view-notifications)]
   ["Issues" :if (lambda () shipit-issues-enabled)
    ("i" "Search issues" shipit-issues--quick-search)
    ("I" "Advanced issue search" shipit-advanced-issue-search)

@@ -1065,81 +1065,82 @@ REPO is the repository, PR-NUMBER is the PR number."
                (backend (car resolved))
                (config (cdr resolved)))
 
-          ;; Review decision
-          (let ((async-fn (plist-get backend :fetch-review-decision-async)))
-            (if async-fn
-                (funcall async-fn config pr-number
-                         (lambda (review-info)
-                           (shipit--debug-log "INCREMENTAL: Review decision async callback")
+          ;; Phase 1: Fetch ALL sync data BEFORE any replacements
+          ;; This prevents re-entrant async callbacks during sync HTTP calls
+          (let* ((review-async-fn (plist-get backend :fetch-review-decision-async))
+                 (timeline-async-fn (plist-get backend :fetch-timeline-async))
+                 (commits-async-fn (plist-get backend :fetch-commits-async))
+                 (files-async-fn (plist-get backend :fetch-files-async))
+                 ;; Fetch sync data upfront (these HTTP calls may trigger event processing)
+                 (sync-review-info (unless review-async-fn
+                                     (let ((fn (plist-get backend :fetch-review-decision)))
+                                       (when fn (funcall fn config pr-number)))))
+                 (sync-events (unless timeline-async-fn
+                                (let ((fn (plist-get backend :fetch-timeline)))
+                                  (when fn (funcall fn config pr-number)))))
+                 (sync-commits (unless commits-async-fn
+                                 (let ((fn (plist-get backend :fetch-commits)))
+                                   (when fn (funcall fn config pr-number)))))
+                 (sync-files (unless files-async-fn
+                               (let ((fn (plist-get backend :fetch-files)))
+                                 (when fn (funcall fn config pr-number))))))
+
+            ;; Phase 2: Do all sync replacements (no HTTP calls, no re-entrancy)
+            (unless review-async-fn
+              (shipit--replace-approval-section-with-content repo pr-number sync-review-info))
+            (unless timeline-async-fn
+              (shipit--replace-activity-section-with-content repo pr-data-copy pr-number sync-events))
+            (unless commits-async-fn
+              (shipit--replace-commits-section-with-content repo pr-number sync-commits))
+            (unless files-async-fn
+              (when shipit-buffer-pr-data
+                (setf (alist-get 'files shipit-buffer-pr-data) sync-files))
+              (shipit--replace-files-section-with-content repo pr-data-copy pr-number sync-files nil))
+
+            ;; Phase 3: Fire async fetches (callbacks will replace when data arrives)
+            (when review-async-fn
+              (funcall review-async-fn config pr-number
+                       (lambda (review-info)
+                         (shipit--debug-log "INCREMENTAL: Review decision async callback")
+                         (when (buffer-live-p target-buffer)
+                           (with-current-buffer target-buffer
+                             (let ((magit-root-section (or magit-root-section root-section)))
+                               (shipit--replace-approval-section-with-content
+                                repo pr-number review-info)))))))
+            (when timeline-async-fn
+              (funcall timeline-async-fn config pr-number
+                       (lambda (events)
+                         (shipit--debug-log "INCREMENTAL: Timeline async callback, %d events" (length events))
+                         (when (buffer-live-p target-buffer)
+                           (with-current-buffer target-buffer
+                             (let ((magit-root-section (or magit-root-section root-section)))
+                               (shipit--replace-activity-section-with-content
+                                repo pr-data-copy pr-number events)))))))
+            (when commits-async-fn
+              (funcall commits-async-fn config pr-number
+                       (lambda (commits)
+                         (shipit--debug-log "INCREMENTAL: Commits async callback, %d commits" (length commits))
+                         (when (buffer-live-p target-buffer)
+                           (with-current-buffer target-buffer
+                             (let ((magit-root-section (or magit-root-section root-section)))
+                               (shipit--replace-commits-section-with-content
+                                repo pr-number commits)))))))
+            (when files-async-fn
+              (funcall files-async-fn config pr-number
+                       (lambda (result)
+                         (let ((files (car result))
+                               (truncated (cdr result)))
+                           (shipit--debug-log "INCREMENTAL: Files async callback, %d files (truncated=%s)"
+                                              (length files) truncated)
                            (when (buffer-live-p target-buffer)
                              (with-current-buffer target-buffer
+                               (when shipit-buffer-pr-data
+                                 (setf (alist-get 'files shipit-buffer-pr-data) files))
+                               (setq shipit-buffer-files-truncated truncated)
+                               (setq shipit-buffer-files-page 10)
                                (let ((magit-root-section (or magit-root-section root-section)))
-                                 (shipit--replace-approval-section-with-content
-                                  repo pr-number review-info))))))
-              (let* ((sync-fn (plist-get backend :fetch-review-decision))
-                     (review-info (when sync-fn (funcall sync-fn config pr-number))))
-                (shipit--debug-log "APPROVAL-SYNC: sync-fn=%s review-info=%s"
-                                   (if sync-fn "yes" "nil")
-                                   (if review-info (format "keys=%s" (mapcar #'car review-info)) "nil"))
-                (shipit--replace-approval-section-with-content repo pr-number review-info))))
-
-          ;; Activity timeline — optional capability
-          (let ((async-fn (plist-get backend :fetch-timeline-async)))
-            (if async-fn
-                (funcall async-fn config pr-number
-                         (lambda (events)
-                           (shipit--debug-log "INCREMENTAL: Timeline async callback, %d events"
-                                              (length events))
-                           (when (buffer-live-p target-buffer)
-                             (with-current-buffer target-buffer
-                               (let ((magit-root-section (or magit-root-section root-section)))
-                                 (shipit--replace-activity-section-with-content
-                                  repo pr-data-copy pr-number events))))))
-              (let* ((sync-fn (plist-get backend :fetch-timeline))
-                     (events (when sync-fn (funcall sync-fn config pr-number))))
-                (shipit--replace-activity-section-with-content
-                 repo pr-data-copy pr-number events))))
-
-          ;; Commits
-          (let ((async-fn (plist-get backend :fetch-commits-async)))
-            (if async-fn
-                (funcall async-fn config pr-number
-                         (lambda (commits)
-                           (shipit--debug-log "INCREMENTAL: Commits async callback, %d commits"
-                                              (length commits))
-                           (when (buffer-live-p target-buffer)
-                             (with-current-buffer target-buffer
-                               (let ((magit-root-section (or magit-root-section root-section)))
-                                 (shipit--replace-commits-section-with-content
-                                  repo pr-number commits))))))
-              (let* ((sync-fn (plist-get backend :fetch-commits))
-                     (commits (when sync-fn (funcall sync-fn config pr-number))))
-                (shipit--replace-commits-section-with-content repo pr-number commits))))
-
-          ;; Files
-          (let ((async-fn (plist-get backend :fetch-files-async)))
-            (if async-fn
-                (funcall async-fn config pr-number
-                         (lambda (result)
-                           (let ((files (car result))
-                                 (truncated (cdr result)))
-                             (shipit--debug-log "INCREMENTAL: Files async callback, %d files (truncated=%s)"
-                                                (length files) truncated)
-                             (when (buffer-live-p target-buffer)
-                               (with-current-buffer target-buffer
-                                 (when shipit-buffer-pr-data
-                                   (setf (alist-get 'files shipit-buffer-pr-data) files))
-                                 (setq shipit-buffer-files-truncated truncated)
-                                 (setq shipit-buffer-files-page 10)
-                                 (let ((magit-root-section (or magit-root-section root-section)))
-                                   (shipit--replace-files-section-with-content
-                                    repo pr-data-copy pr-number files truncated)))))))
-              (let* ((sync-fn (plist-get backend :fetch-files))
-                     (files (when sync-fn (funcall sync-fn config pr-number))))
-                (when shipit-buffer-pr-data
-                  (setf (alist-get 'files shipit-buffer-pr-data) files))
-                (shipit--replace-files-section-with-content
-                 repo pr-data-copy pr-number files nil)))))
+                                 (shipit--replace-files-section-with-content
+                                  repo pr-data-copy pr-number files truncated))))))))))
 
         ;; Fetch checks async - pass pr-data to avoid extra API call
         (shipit--fetch-checks-async

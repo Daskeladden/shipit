@@ -323,8 +323,8 @@ This is faster than a full buffer refresh since we just remove the section."
         (let ((section (magit-current-section)))
           (when section
             (setq found t)
-            (let* ((section-start (oref section start))
-                   (section-end (oref section end))
+            (let* ((section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
+                   (section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m)))
                    (start-pos (if (markerp section-start) (marker-position section-start) section-start))
                    (end-pos (if (markerp section-end) (marker-position section-end) section-end))
                    (parent-section (oref section parent))
@@ -1318,6 +1318,19 @@ REPO and PR-NUMBER are kept for API compatibility but unused."
         (insert "   Fetching activity...\n")
         (insert "\n")))))
 
+
+(defun shipit--deduplicate-children (parent-section new-section)
+  "Remove duplicate sections of the same type from PARENT-SECTION children.
+Keeps NEW-SECTION and removes any other children with the same type.
+This prevents stale sections from accumulating during async replacements."
+  (when (and parent-section new-section)
+    (let ((new-type (oref new-section type)))
+      (oset parent-section children
+            (seq-filter (lambda (s)
+                          (or (eq s new-section)
+                              (not (eq (oref s type) new-type))))
+                        (oref parent-section children))))))
+
 ;; shipit--find-section-by-type and shipit--find-section-in-tree
 ;; are now in shipit-sections.el
 
@@ -1356,8 +1369,8 @@ magit section structure for nested activity-event subsections."
     (let ((section (shipit--find-section-by-type 'pr-activity)))
       (if section
           (let* ((inhibit-read-only t)
-                 (section-start (oref section start))
-                 (section-end (oref section end))
+                 (section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
+                 (section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m)))
                  (parent-section (oref section parent))
                  ;; Find index of old section in parent's children for proper ordering
                  (children (and parent-section (oref parent-section children)))
@@ -1433,17 +1446,16 @@ magit section structure for nested activity-event subsections."
                             (insert "\n"))))
                   ;; Fix parent's children list to maintain correct order
                   ;; magit-insert-section appends to end, but we need to replace at old position
-                  (when (and parent-section old-index new-section)
+                  (when (and parent-section new-section)
                     (let* ((current-children (oref parent-section children))
-                           ;; Remove old section (now invalid) and new section (at end)
-                           (filtered (seq-remove (lambda (s) (or (eq s section) (eq s new-section)))
-                                                 current-children))
-                           ;; Insert new section at the old position
-                           (fixed-children (append (seq-take filtered old-index)
-                                                   (list new-section)
-                                                   (seq-drop filtered old-index))))
-                      (oset parent-section children fixed-children)
-                      (shipit--debug-log "ASYNC: Fixed children order, new-section at index %d" old-index)))))
+                           (cleaned current-children)
+                           (with-new (if (memq new-section cleaned) cleaned (cons new-section cleaned)))
+                           (sorted (sort (copy-sequence with-new)
+                                         (lambda (a b)
+                                           (< (oref a start) (oref b start))))))
+                      (oset parent-section children sorted)
+                      (shipit--deduplicate-children parent-section new-section)
+                      (shipit--debug-log "ASYNC: Fixed children order by position")))))
               ;; Calculate which sections have unread activities and merge with existing
               ;; (e.g., inline comments detection may have already added pr-files)
               (let ((activity-sections (shipit--get-sections-with-unread-activities repo pr-number events)))
@@ -1462,8 +1474,8 @@ REPO is the repository, PR-NUMBER is the PR number, COMMENTS is the list of comm
   (let ((section (shipit--find-section-by-type 'general-comments)))
     (if section
         (let* ((inhibit-read-only t)
-               (section-start (oref section start))
-               (section-end (oref section end))
+               (section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
+               (section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m)))
                (parent-section (oref section parent))
                ;; Find index of old section in parent's children for proper ordering
                (children (and parent-section (oref parent-section children)))
@@ -1523,16 +1535,17 @@ REPO is the repository, PR-NUMBER is the PR number, COMMENTS is the list of comm
                                                         (cdr (assq 'id comment))
                                                         (error-message-string err)))))
                                 (shipit--debug-log "ASYNC-COMMENTS: inserted %d comments" inserted-count)))))))
-                ;; Fix parent's children list to maintain correct order
-                (when (and parent-section old-index new-section)
+                ;; Fix parent's children by position-sorting (async-safe)
+                (when (and parent-section new-section)
                   (let* ((current-children (oref parent-section children))
-                         (filtered (seq-remove (lambda (s) (or (eq s section) (eq s new-section)))
-                                               current-children))
-                         (fixed-children (append (seq-take filtered old-index)
-                                                 (list new-section)
-                                                 (seq-drop filtered old-index))))
-                    (oset parent-section children fixed-children)
-                    (shipit--debug-log "ASYNC: Fixed children order for comments, new-section at index %d" old-index)))
+                         (cleaned current-children)
+                         (with-new (if (memq new-section cleaned) cleaned (cons new-section cleaned)))
+                         (sorted (sort (copy-sequence with-new)
+                                       (lambda (a b)
+                                         (< (oref a start) (oref b start))))))
+                    (oset parent-section children sorted)
+                    (shipit--deduplicate-children parent-section new-section)
+                    (shipit--debug-log "ASYNC: Fixed children order for comments by position")))
                 ;; Store imenu metadata for children so they appear even when collapsed
                 ;; Since section is collapsed, children aren't accessible via slot.
                 ;; Store username from API data - goto function will search for it.
@@ -1643,17 +1656,29 @@ that more files exist beyond the fetched limit."
   (let ((section (shipit--find-section-by-type 'pr-files)))
     (if section
         (let* ((inhibit-read-only t)
-               (section-start (oref section start))
-               (section-end (oref section end))
+               (section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
+               (section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m)))
                (parent-section (oref section parent))
                (children (and parent-section (oref parent-section children)))
                (old-index (and children (seq-position children section #'eq))))
           (when (and section-start section-end)
+            ;; Remove old section from children BEFORE deletion
+            ;; to prevent corrupted markers from interfering
+            (when parent-section
+              (oset parent-section children
+                    (seq-remove (lambda (s) (eq s section))
+                                (oref parent-section children))))
             (save-excursion
               (delete-region section-start section-end)
               (goto-char section-start)
               (let ((magit-insert-section--parent parent-section)
                     (files-section nil))
+                ;; Fetch viewed states BEFORE section creation to avoid
+                ;; re-entrant async callbacks during sync API call
+                (when (and repo pr-number)
+                  (let ((viewed-states (shipit--fetch-file-viewed-states-for-repo repo pr-number)))
+                    (when viewed-states
+                      (setq-local shipit--file-viewed-states viewed-states))))
                 (setq files-section
                       (magit-insert-section (pr-files nil t)
                         (let* ((total-count (length files))
@@ -1677,25 +1702,22 @@ that more files exist beyond the fetched limit."
                                                `(shipit-pr-files t
                                                                  shipit-pr-number ,pr-number
                                                                  shipit-repo ,repo)))
-                        ;; Fetch viewed states before rendering files
-                        (let ((viewed-states (shipit--fetch-file-viewed-states-for-repo repo pr-number)))
-                          (when viewed-states
-                            (setq-local shipit--file-viewed-states viewed-states)))
                         (magit-insert-section-body
                           (if (= (length files) 0)
                               (insert "   No files changed\n")
                             (dolist (file files)
                               (shipit--insert-pr-file-section file repo pr-number pr-data)))
                           (insert "\n"))))
-                ;; Fix parent's children list
-                (when (and parent-section old-index files-section)
+                ;; Fix parent's children by position-sorting (async-safe)
+                (when (and parent-section files-section)
                   (let* ((current-children (oref parent-section children))
-                         (filtered (seq-remove (lambda (s) (or (eq s section) (eq s files-section)))
-                                               current-children))
-                         (fixed-children (append (seq-take filtered old-index)
-                                                 (list files-section)
-                                                 (seq-drop filtered old-index))))
-                    (oset parent-section children fixed-children)))
+                         (cleaned current-children)
+                         (with-new (if (memq files-section cleaned) cleaned (cons files-section cleaned)))
+                         (sorted (sort (copy-sequence with-new)
+                                       (lambda (a b)
+                                         (< (oref a start) (oref b start))))))
+                    (oset parent-section children sorted)))
+                    (shipit--deduplicate-children parent-section files-section)
                 ;; Store imenu metadata for children so they appear even when collapsed
                 (when files-section
                   (let ((child-names
@@ -1716,12 +1738,18 @@ REPO is the repository, PR-NUMBER is the PR number, COMMITS is the list of commi
   (let ((section (shipit--find-section-by-type 'pr-commits)))
     (if section
         (let* ((inhibit-read-only t)
-               (section-start (oref section start))
-               (section-end (oref section end))
+               (section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
+               (section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m)))
                (parent-section (oref section parent))
                (children (and parent-section (oref parent-section children)))
                (old-index (and children (seq-position children section #'eq))))
           (when (and section-start section-end)
+            ;; Remove old section from children BEFORE deletion
+            ;; to prevent corrupted markers from interfering
+            (when parent-section
+              (oset parent-section children
+                    (seq-remove (lambda (s) (eq s section))
+                                (oref parent-section children))))
             (save-excursion
               (delete-region section-start section-end)
               (goto-char section-start)
@@ -1743,14 +1771,15 @@ REPO is the repository, PR-NUMBER is the PR number, COMMITS is the list of commi
                                   (shipit--insert-processed-commit-section commit-data repo pr-number)))
                             (insert "   No commits found\n")))))
                 ;; Fix parent's children list to maintain correct order
-                (when (and parent-section old-index commits-section)
+                (when (and parent-section commits-section)
                   (let* ((current-children (oref parent-section children))
-                         (filtered (seq-remove (lambda (s) (or (eq s section) (eq s commits-section)))
-                                               current-children))
-                         (fixed-children (append (seq-take filtered old-index)
-                                                 (list commits-section)
-                                                 (seq-drop filtered old-index))))
-                    (oset parent-section children fixed-children)))
+                         (cleaned current-children)
+                         (with-new (if (memq commits-section cleaned) cleaned (cons commits-section cleaned)))
+                         (sorted (sort (copy-sequence with-new)
+                                       (lambda (a b)
+                                         (< (oref a start) (oref b start))))))
+                    (oset parent-section children sorted)))
+                    (shipit--deduplicate-children parent-section commits-section)
                 ;; Store imenu metadata for children so they appear even when collapsed
                 (when commits-section
                   (let ((child-names
@@ -1780,8 +1809,8 @@ review decision data alist from shipit--fetch-review-decision-async."
       (let ((section (shipit--find-section-by-type 'approval)))
         (if section
             (let* ((inhibit-read-only t)
-                   (section-start (oref section start))
-                   (section-end (oref section end))
+                   (section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
+                   (section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m)))
                    (parent-section (oref section parent))
                    (children (and parent-section (oref parent-section children)))
                    (old-index (and children (seq-position children section #'eq))))
@@ -1891,14 +1920,15 @@ review decision data alist from shipit--fetch-review-decision-async."
                               (insert "\n"))))
 
                     ;; Fix parent's children list to maintain correct order
-                    (when (and parent-section old-index approval-section)
+                    (when (and parent-section approval-section)
                       (let* ((current-children (oref parent-section children))
-                             (filtered (seq-remove (lambda (s) (or (eq s section) (eq s approval-section)))
-                                                   current-children))
-                             (fixed-children (append (seq-take filtered old-index)
-                                                     (list approval-section)
-                                                     (seq-drop filtered old-index))))
-                        (oset parent-section children fixed-children)))
+                             (cleaned current-children)
+                             (with-new (if (memq approval-section cleaned) cleaned (cons approval-section cleaned)))
+                             (sorted (sort (copy-sequence with-new)
+                                           (lambda (a b)
+                                             (< (oref a start) (oref b start))))))
+                        (oset parent-section children sorted)))
+                    (shipit--deduplicate-children parent-section approval-section)
                     ;; Hide section by default (collapsed)
                     (when approval-section
                       (magit-section-hide approval-section))))
@@ -2002,8 +2032,8 @@ or a symbol like \\='closed for closed PRs or nil for disabled/error."
       (let ((section (shipit--find-section-by-type 'checks)))
         (if section
             (let* ((inhibit-read-only t)
-                   (section-start (oref section start))
-                   (section-end (oref section end))
+                   (section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
+                   (section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m)))
                    (parent-section (oref section parent))
                    (children (and parent-section (oref parent-section children)))
                    (old-index (and children (seq-position children section #'eq))))
@@ -2049,14 +2079,15 @@ or a symbol like \\='closed for closed PRs or nil for disabled/error."
                             (shipit--render-checks-section-content repo pr-number checks))))
 
                     ;; Fix parent's children list to maintain correct order
-                    (when (and parent-section old-index checks-section)
+                    (when (and parent-section checks-section)
                       (let* ((current-children (oref parent-section children))
-                             (filtered (seq-remove (lambda (s) (or (eq s section) (eq s checks-section)))
-                                                   current-children))
-                             (fixed-children (append (seq-take filtered old-index)
-                                                     (list checks-section)
-                                                     (seq-drop filtered old-index))))
-                        (oset parent-section children fixed-children)))
+                             (cleaned current-children)
+                             (with-new (if (memq checks-section cleaned) cleaned (cons checks-section cleaned)))
+                             (sorted (sort (copy-sequence with-new)
+                                           (lambda (a b)
+                                             (< (oref a start) (oref b start))))))
+                        (oset parent-section children sorted)))
+                        (shipit--deduplicate-children parent-section checks-section)
                     ;; Hide section by default (collapsed)
                     (when checks-section
                       (magit-section-hide checks-section))
@@ -2231,10 +2262,6 @@ Returns the section object."
                                    `(shipit-pr-files t
 
                                      help-echo "f to filter")))
-            ;; Fetch viewed states from backend
-            (let ((viewed-states (shipit--fetch-file-viewed-states-for-repo repo pr-number)))
-              (when viewed-states
-                (setq-local shipit--file-viewed-states viewed-states)))
             (magit-insert-section-body
               (if (> display-count 0)
                   (dolist (file filtered-files)
@@ -3336,7 +3363,7 @@ Per magit-section best practices, we must:
                   (error "TARGET-REFRESH: magit-current-section returned nil at point %d" (point)))
                 ;; Get content start (after heading) - this is where body begins
                 (let* ((content-start (oref section content))
-                       (section-end (oref section end)))
+                       (section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m))))
                   (let ((inhibit-read-only t)
                         (inhibit-point-motion-hooks t))
                     (condition-case err
@@ -4104,7 +4131,7 @@ Removes the red dot if all commits are now read."
             ;; Count commits that are not read
             (save-excursion
               (goto-char (oref section start))
-              (let ((section-end (oref section end)))
+              (let ((section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m))))
                 (while (< (point) section-end)
                   (let ((commit-sha (get-text-property (point) 'shipit-commit-sha)))
                     (when (and commit-sha
@@ -4129,7 +4156,7 @@ Removes the red dot if all activities are now read."
             ;; Count events with shipit-event-id that are not read
             (save-excursion
               (goto-char (oref section start))
-              (let ((section-end (oref section end)))
+              (let ((section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m))))
                 (while (< (point) section-end)
                   (let ((event-id (get-text-property (point) 'shipit-event-id)))
                     (when (and event-id
@@ -4140,7 +4167,7 @@ Removes the red dot if all activities are now read."
                                  section-end)))))
             ;; Update the header indicator
             (save-excursion
-              (let* ((section-start (oref section start))
+              (let* ((section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
                      (header-end (or (oref section content) (oref section end))))
                 ;; Guard against invalid bounds during buffer refresh
                 (when (and section-start header-end
@@ -4160,7 +4187,7 @@ Removes the red dot if all activities are now read."
   "Update the unread indicator on SECTION header.
 If HAS-UNREAD is non-nil, add red dot. Otherwise remove it if present."
   (save-excursion
-    (let* ((section-start (oref section start))
+    (let* ((section-start (let ((m (oref section start))) (if (markerp m) (marker-position m) m)))
            (header-end (or (oref section content) (oref section end))))
       ;; Guard against invalid bounds during buffer refresh
       (when (and section-start header-end
@@ -4682,7 +4709,7 @@ Removes the red dot if all comments in the section are read."
             ;; Count unread comments by scanning the section
             (save-excursion
               (goto-char (oref section start))
-              (let ((section-end (oref section end)))
+              (let ((section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m))))
                 (while (< (point) section-end)
                   (let ((comment-id (get-text-property (point) 'shipit-comment-id)))
                     (when (and comment-id
@@ -4705,7 +4732,7 @@ Removes the red dot if all inline comments are read."
             ;; Count unread comments by scanning the section
             (save-excursion
               (goto-char (oref section start))
-              (let ((section-end (oref section end)))
+              (let ((section-end (let ((m (oref section end))) (if (markerp m) (marker-position m) m))))
                 (while (< (point) section-end)
                   (let ((comment-id (get-text-property (point) 'shipit-comment-id)))
                     (when (and comment-id

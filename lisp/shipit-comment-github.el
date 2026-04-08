@@ -70,13 +70,22 @@ _OLD-LINE is unused (GitLab-specific)."
                        file (or line "file-level") number)
     (shipit--api-request-post endpoint data)))
 
-(defun shipit-comment-github--reply-to-comment (config number parent-id body &optional _is-inline)
-  "Reply to comment PARENT-ID on PR NUMBER with BODY using CONFIG."
-  (let* ((repo (plist-get config :repo))
-         (endpoint (format "/repos/%s/pulls/%s/comments" repo number))
-         (data `((body . ,body) (in_reply_to . ,parent-id))))
-    (shipit--debug-log "GitHub comment backend: replying to comment %s on PR #%s" parent-id number)
-    (shipit--api-request-post endpoint data)))
+(defun shipit-comment-github--reply-to-comment (config number parent-id body &optional is-inline)
+  "Reply to comment PARENT-ID on PR NUMBER with BODY using CONFIG.
+IS-INLINE non-nil means this is a review comment reply (uses in_reply_to).
+Otherwise it is a general comment reply (posts new issue comment)."
+  (let* ((repo (plist-get config :repo)))
+    (if is-inline
+        ;; Inline review comment: use PR comments endpoint with in_reply_to
+        (let ((endpoint (format "/repos/%s/pulls/%s/comments" repo number))
+              (data `((body . ,body) (in_reply_to . ,parent-id))))
+          (shipit--debug-log "GitHub comment backend: replying to inline comment %s on PR #%s" parent-id number)
+          (shipit--api-request-post endpoint data))
+      ;; General comment: post new issue comment (no threading support)
+      (let ((endpoint (format "/repos/%s/issues/%s/comments" repo number))
+            (data `((body . ,body))))
+        (shipit--debug-log "GitHub comment backend: replying to general comment %s on PR #%s" parent-id number)
+        (shipit--api-request-post endpoint data)))))
 
 (defun shipit-comment-github--edit-comment (config comment-id body &optional is-inline pr-number)
   "Edit comment COMMENT-ID to have BODY using CONFIG.

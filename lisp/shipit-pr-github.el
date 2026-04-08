@@ -775,6 +775,21 @@ Returns plist (:type TYPE :repo REPO :number N) or nil."
       (when (match-string 3 url)
         (setq result (plist-put result :job-id (match-string 3 url))))
       result))
+   ;; Blob: /owner/repo/blob/REF/PATH (with optional #fragment)
+   ((string-match
+     "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/blob/\\([^#]+\\)\\(?:#\\(.*\\)\\)?\\'"
+     url)
+    (let* ((repo (match-string 1 url))
+           (ref-and-path (match-string 2 url))
+           (fragment (match-string 3 url))
+           (parts (split-string ref-and-path "/"))
+           (ref (car parts))
+           (path (mapconcat #'identity (cdr parts) "/")))
+      (list :type 'blob
+            :repo repo
+            :ref ref
+            :path path
+            :fragment fragment)))
    ;; Repo: /owner/repo (exactly 2 segments)
    ((string-match
      "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/?\\'"

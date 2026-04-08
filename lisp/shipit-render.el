@@ -2536,6 +2536,47 @@ Tries PR backends first, then issue backends."
     (or (shipit-pr--classify-url clean)
         (shipit-issue--classify-url clean))))
 
+(defun shipit--open-blob-url (classified)
+  "Open a blob URL CLASSIFIED plist in a buffer with appropriate major mode."
+  (let* ((repo (plist-get classified :repo))
+         (ref (plist-get classified :ref))
+         (path (plist-get classified :path))
+         (fragment (plist-get classified :fragment))
+         (backend-id (or (plist-get classified :backend-id) 'github))
+         (filename (file-name-nondirectory path))
+         (buf-name (format "*shipit-blob: %s/%s@%s*" repo path ref)))
+    (message "Fetching %s..." path)
+    (let* ((resolved (let ((shipit-pr-backend backend-id)
+                           (shipit-pr-backend-config nil))
+                       (shipit-pr--resolve-for-repo repo)))
+           (backend (car resolved))
+           (config (cdr resolved))
+           (fetch-fn (plist-get backend :fetch-file-content))
+           (file-content (when fetch-fn
+                           (funcall fetch-fn config path ref))))
+      (if (not file-content)
+          (user-error "Could not fetch %s" path)
+        (let ((buf (get-buffer-create buf-name)))
+          (with-current-buffer buf
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert file-content)
+              (goto-char (point-min))
+              ;; Set major mode from filename
+              (let ((buffer-file-name filename))
+                (set-auto-mode))
+              (setq buffer-read-only t)
+              ;; Navigate to fragment anchor
+              (when (and fragment (not (string-empty-p fragment)))
+                (goto-char (point-min))
+                ;; Try heading/anchor patterns
+                (or (search-forward fragment nil t)
+                    (search-forward (replace-regexp-in-string "-" " " fragment) nil t)
+                    (goto-char (point-min))))
+              (set-buffer-modified-p nil)))
+          (switch-to-buffer buf)
+          (message "Fetched %s@%s" path ref))))))
+
 (defun shipit--open-classified-url (classified)
   "Open a CLASSIFIED URL plist in the appropriate shipit buffer.
 When :backend-id is present, passes it through so the correct forge is used."
@@ -2548,6 +2589,8 @@ When :backend-id is present, passes it through so the correct forge is used."
       ('pr (shipit-open-pr-buffer number repo backend-id))
       ('issue (shipit-issues-open-buffer number repo backend-id backend-config))
       ('repo (shipit-open-repo-buffer repo backend-id backend-config))
+      ('blob
+       (shipit--open-blob-url classified))
       ('actions-run
        (shipit-open-actions-run repo
                                 (plist-get classified :run-id)

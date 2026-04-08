@@ -267,7 +267,13 @@ WHEN classifying the URL
 THEN it returns nil."
   (require 'shipit-render)
   (should (null (shipit--classify-url "https://github.com/owner/repo/tree/main")))
-  (should (null (shipit--classify-url "https://github.com/owner/repo/blob/main/file.el"))))
+  ;; blob URLs are now classified
+  (let ((result (shipit--classify-url "https://github.com/owner/repo/blob/main/file.el")))
+    (should result)
+    (should (eq 'blob (plist-get result :type)))
+    (should (equal "owner/repo" (plist-get result :repo)))
+    (should (equal "main" (plist-get result :ref)))
+    (should (equal "file.el" (plist-get result :path)))))
 
 (ert-deftest test-classify-url-github-repo-trailing-slash ()
   "GIVEN a GitHub repo URL with trailing slash

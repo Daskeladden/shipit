@@ -1290,6 +1290,29 @@ in text buffers.  Other formatting tags (<b>, <em>, <del>, etc.) are
 preserved since they carry meaningful emphasis or semantic information."
   (replace-regexp-in-string "</?kbd>" "" text))
 
+(defun shipit--convert-inline-html (text)
+  "Convert inline HTML tags in TEXT to markdown equivalents.
+Handles <hr>, <em>, <a href>, <strong>, and <br> tags.
+Process <a> first so <em>/<strong> can wrap the converted links."
+  (let ((result text))
+    ;; <hr /> or <hr> -> markdown horizontal rule
+    (setq result (replace-regexp-in-string
+                  "<hr[[:space:]]*/?>\\s-*" (concat (propertize (make-string 40 ?\x2500) 'face 'shadow) "\n") result))
+    ;; <br /> or <br> -> newline
+    (setq result (replace-regexp-in-string
+                  "<br[[:space:]]*/?>\\s-*" "\n" result))
+    ;; <a href> FIRST so <em>/<strong> can wrap the converted links
+    (setq result (replace-regexp-in-string
+                  "<a[[:space:]]+href=['\"]\\([^'\"]*\\)['\"][^>]*>\\([^<]*\\)</a>"
+                  "[\\2](\\1)" result))
+    ;; <strong>text</strong> -> **text** (may contain converted links)
+    (setq result (replace-regexp-in-string
+                  "<strong>\\(\\(?:.\\|\n\\)*?\\)</strong>" "**\\1**" result))
+    ;; <em>text</em> -> *text* (may contain converted links)
+    (setq result (replace-regexp-in-string
+                  "<em>\\(\\(?:.\\|\n\\)*?\\)</em>" "*\\1*" result))
+    result))
+
 (defun shipit--escape-underscores-in-table-cells (text)
   "Escape underscores in markdown table cells to prevent emphasis rendering."
   (let ((lines (split-string text "\n"))
@@ -2589,6 +2612,8 @@ When :backend-id is present, passes it through so the correct forge is used."
       ('pr (shipit-open-pr-buffer number repo backend-id))
       ('issue (shipit-issues-open-buffer number repo backend-id backend-config))
       ('repo (shipit-open-repo-buffer repo backend-id backend-config))
+      ('discussion
+       (shipit-discussions-open-buffer number repo))
       ('blob
        (shipit--open-blob-url classified))
       ('actions-run
@@ -3357,7 +3382,8 @@ Processes inline images AFTER markdown rendering to preserve display properties.
                 ;; Note: Don't process images yet - they'll be done after markdown rendering
                 (let* ((normalized (replace-regexp-in-string "\r" "" text))
                        (html-stripped (shipit--strip-inline-html-tags normalized))
-                       (aligned (shipit--align-markdown-tables-with-pandoc html-stripped))
+                       (html-converted (shipit--convert-inline-html html-stripped))
+                       (aligned (shipit--align-markdown-tables-with-pandoc html-converted))
                        (escaped (shipit--escape-mid-word-underscores aligned))
                        (numbered (shipit--auto-increment-ordered-lists escaped)))
                   (insert numbered))

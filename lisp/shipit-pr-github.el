@@ -775,6 +775,13 @@ Returns plist (:type TYPE :repo REPO :number N) or nil."
       (when (match-string 3 url)
         (setq result (plist-put result :job-id (match-string 3 url))))
       result))
+   ;; Discussion: /owner/repo/discussions/N
+   ((string-match
+     "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/discussions/\\([0-9]+\\)\\(?:[/?#].*\\)?\\'"
+     url)
+    (list :type 'discussion
+          :repo (match-string 1 url)
+          :number (string-to-number (match-string 2 url))))
    ;; Blob: /owner/repo/blob/REF/PATH (with optional #fragment)
    ((string-match
      "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/blob/\\([^#]+\\)\\(?:#\\(.*\\)\\)?\\'"

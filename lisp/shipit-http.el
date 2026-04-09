@@ -6431,19 +6431,31 @@ Fetches up to 10 pages then calls CALLBACK with (files truncated pages-fetched).
 
 (defun shipit--fetch-commits-async (repo pr-number callback)
   "Fetch PR commits asynchronously for PR-NUMBER in REPO.
-Calls CALLBACK with the list of commits."
+Fetches all pages (up to 10) and calls CALLBACK with the list of commits."
   (shipit--debug-log "ASYNC: Starting async commits fetch for PR %s in %s" pr-number repo)
+  (shipit--fetch-commits-page-async repo pr-number 1 '() callback))
+
+(defun shipit--fetch-commits-page-async (repo pr-number page accumulated callback)
+  "Fetch a single page of PR commits asynchronously with ETag caching.
+Recursively fetches more pages if needed, then calls CALLBACK with all commits."
   (let ((endpoint (format "/repos/%s/pulls/%s/commits" repo pr-number))
-        (params '((per_page . 100))))
+        (params `((per_page . 100) (page . ,page))))
+    (shipit--debug-log "ASYNC: Fetching commits page %d" page)
     (shipit-gh-etag-get-json-async
      endpoint params shipit-github-token
      (lambda (result)
-       (let ((commits (plist-get result :json)))
-         (shipit--debug-log "ASYNC: Commits fetch returned %d commits (status: %s, from-cache: %s)"
-                            (length commits)
+       (let ((data (plist-get result :json)))
+         (shipit--debug-log "ASYNC: Commits page %d returned %d commits (status: %s, from-cache: %s)"
+                            page (length data)
                             (plist-get result :status)
                             (plist-get result :from-cache))
-         (funcall callback commits))))))
+         (let ((updated (append accumulated data)))
+           (if (and data (>= (length data) 100) (< page 10))
+               (shipit--fetch-commits-page-async
+                repo pr-number (1+ page) updated callback)
+             (shipit--debug-log "ASYNC: Commits fetch complete, total %d commits"
+                                (length updated))
+             (funcall callback updated))))))))
 
 (defun shipit--fetch-review-decision-async (repo pr-number callback)
   "Fetch PR review decision asynchronously for PR-NUMBER in REPO.

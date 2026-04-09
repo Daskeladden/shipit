@@ -1584,6 +1584,25 @@ REPO is the repository, PR-NUMBER is the PR number, COMMENTS is the list of comm
         (when fn (funcall fn config pr-number)))
     (error nil)))
 
+(defun shipit--fetch-file-viewed-states-async (repo pr-number buffer)
+  "Fetch file viewed states asynchronously for PR-NUMBER in REPO.
+Stores results in BUFFER's local `shipit--file-viewed-states'."
+  (let* ((resolved (condition-case nil (shipit-pr--resolve-for-repo repo) (error nil)))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :fetch-file-viewed-states)))
+    (when fn
+      (shipit--debug-log "ASYNC: Starting viewed-states fetch for PR %s" pr-number)
+      (run-at-time 0 nil
+                   (lambda ()
+                     (condition-case nil
+                         (let ((states (funcall fn config pr-number)))
+                           (when (and states (buffer-live-p buffer))
+                             (with-current-buffer buffer
+                               (setq-local shipit--file-viewed-states states))
+                             (shipit--debug-log "ASYNC: Viewed states fetched, %d files" (length states))))
+                       (error nil)))))))
+
 (defun shipit--file-viewed-p (filename)
   "Return non-nil if FILENAME is marked as viewed."
   (equal "VIEWED" (cdr (assoc filename shipit--file-viewed-states))))
@@ -1673,12 +1692,6 @@ that more files exist beyond the fetched limit."
               (goto-char section-start)
               (let ((magit-insert-section--parent parent-section)
                     (files-section nil))
-                ;; Fetch viewed states BEFORE section creation to avoid
-                ;; re-entrant async callbacks during sync API call
-                (when (and repo pr-number)
-                  (let ((viewed-states (shipit--fetch-file-viewed-states-for-repo repo pr-number)))
-                    (when viewed-states
-                      (setq-local shipit--file-viewed-states viewed-states))))
                 (setq files-section
                       (magit-insert-section (pr-files nil t)
                         (let* ((total-count (length files))

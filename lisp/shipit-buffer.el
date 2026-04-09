@@ -1142,6 +1142,13 @@ REPO is the repository, PR-NUMBER is the PR number."
                                  (shipit--replace-files-section-with-content
                                   repo pr-data-copy pr-number files truncated))))))))))
 
+        ;; Fetch file viewed states async — independent of the files
+        ;; section replacement to avoid re-entrant sync GraphQL calls.
+        ;; The states are stored buffer-locally and used on next render.
+        (when (and repo pr-number)
+          (shipit--fetch-file-viewed-states-async
+           repo pr-number target-buffer))
+
         ;; Fetch checks async - pass pr-data to avoid extra API call
         (shipit--fetch-checks-async
          repo pr-number pr-data-copy

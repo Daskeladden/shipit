@@ -185,5 +185,80 @@
                                 (nth 0 called-with)))
         (should (equal "DELETE" (nth 2 called-with)))))))
 
+;;; Tests -- GitHub Discussion thread subscription
+
+(ert-deftest test-thread-sub-github-get-discussion-subscribed ()
+  ;; GIVEN a discussion where the user is subscribed
+  ;; WHEN getting thread subscription
+  ;; THEN returns "subscribed" via GraphQL.
+  (test-thread-sub--with-mock-github
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (_query _vars)
+                 '((repository
+                    (discussion
+                     (viewerSubscription . "SUBSCRIBED")
+                     (id . "D_abc123")))))))
+      (let ((result (shipit-pr-github--get-thread-subscription
+                     '(:repo "owner/repo") "owner/repo" "discussion" 10)))
+        (should (equal result "subscribed"))))))
+
+(ert-deftest test-thread-sub-github-get-discussion-unsubscribed ()
+  ;; GIVEN a discussion where the user is not subscribed
+  ;; WHEN getting thread subscription
+  ;; THEN returns "unsubscribed".
+  (test-thread-sub--with-mock-github
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (_query _vars)
+                 '((repository
+                    (discussion
+                     (viewerSubscription . "UNSUBSCRIBED")
+                     (id . "D_abc123")))))))
+      (let ((result (shipit-pr-github--get-thread-subscription
+                     '(:repo "owner/repo") "owner/repo" "discussion" 10)))
+        (should (equal result "unsubscribed"))))))
+
+(ert-deftest test-thread-sub-github-subscribe-discussion ()
+  ;; GIVEN a discussion
+  ;; WHEN subscribing to it
+  ;; THEN GraphQL mutation is called with SUBSCRIBED state.
+  (test-thread-sub--with-mock-github
+    (let ((queries nil))
+      (cl-letf (((symbol-function 'shipit--graphql-query)
+                 (lambda (query _vars)
+                   (push query queries)
+                   (if (string-match-p "mutation" query)
+                       '((updateSubscription
+                          (subscribable
+                           (viewerSubscription . "SUBSCRIBED"))))
+                     '((repository
+                        (discussion
+                         (viewerSubscription . "UNSUBSCRIBED")
+                         (id . "D_abc123"))))))))
+        (shipit-pr-github--set-thread-subscription
+         '(:repo "owner/repo") "owner/repo" "discussion" 10 t)
+        (should (cl-some (lambda (q) (string-match-p "mutation" q)) queries))))))
+
+(ert-deftest test-thread-sub-github-unsubscribe-discussion ()
+  ;; GIVEN a discussion the user is subscribed to
+  ;; WHEN unsubscribing
+  ;; THEN GraphQL mutation is called with UNSUBSCRIBED state.
+  (test-thread-sub--with-mock-github
+    (let ((queries nil))
+      (cl-letf (((symbol-function 'shipit--graphql-query)
+                 (lambda (query _vars)
+                   (push query queries)
+                   (if (string-match-p "mutation" query)
+                       '((updateSubscription
+                          (subscribable
+                           (viewerSubscription . "UNSUBSCRIBED"))))
+                     '((repository
+                        (discussion
+                         (viewerSubscription . "SUBSCRIBED")
+                         (id . "D_abc123"))))))))
+        (shipit-pr-github--set-thread-subscription
+         '(:repo "owner/repo") "owner/repo" "discussion" 10 nil)
+        (should (cl-some (lambda (q) (string-match-p "UNSUBSCRIBED" q))
+                         queries))))))
+
 (provide 'test-thread-subscription)
 ;;; test-thread-subscription.el ends here

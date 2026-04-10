@@ -998,6 +998,46 @@ SUBSCRIBED is t to subscribe, nil to unsubscribe."
         (shipit--api-request-post endpoint nil "DELETE"))
       t)))
 
+(defun shipit-pr-github--get-discussion-subscription (config repo number)
+  "Get subscription state for discussion NUMBER in REPO via GraphQL.
+Returns \"subscribed\", \"unsubscribed\", or \"ignored\"."
+  (let* ((parts (split-string repo "/"))
+         (owner (car parts))
+         (name (cadr parts))
+         (query (format
+                 "{ repository(owner: \"%s\", name: \"%s\") { discussion(number: %d) { viewerSubscription id } } }"
+                 owner name number))
+         (result (shipit--graphql-query query nil))
+         (discussion (cdr (assq 'discussion (cdr (assq 'repository result)))))
+         (state (cdr (assq 'viewerSubscription discussion))))
+    (shipit--debug-log "GitHub: discussion %s#%d subscription: %s" repo number state)
+    (pcase state
+      ("SUBSCRIBED" "subscribed")
+      ("IGNORED" "ignored")
+      (_ "unsubscribed"))))
+
+(defun shipit-pr-github--set-discussion-subscription (config repo number subscribed)
+  "Set subscription for discussion NUMBER in REPO via GraphQL mutation.
+SUBSCRIBED is t to subscribe, nil to unsubscribe."
+  (let* ((parts (split-string repo "/"))
+         (owner (car parts))
+         (name (cadr parts))
+         (id-query (format
+                    "{ repository(owner: \"%s\", name: \"%s\") { discussion(number: %d) { id } } }"
+                    owner name number))
+         (id-result (shipit--graphql-query id-query nil))
+         (node-id (cdr (assq 'id (cdr (assq 'discussion
+                                            (cdr (assq 'repository id-result)))))))
+         (state (if subscribed "SUBSCRIBED" "UNSUBSCRIBED"))
+         (mutation (format
+                    "mutation { updateSubscription(input: {subscribableId: \"%s\", state: %s}) { subscribable { viewerSubscription } } }"
+                    node-id state)))
+    (shipit--debug-log "GitHub: %s discussion %s#%d"
+                       (if subscribed "subscribing to" "unsubscribing from")
+                       repo number)
+    (shipit--graphql-query mutation nil)
+    t))
+
 (defun shipit-pr-github--get-repo-starred (config)
   "Check if repo in CONFIG is starred by the current user.
 Returns t if starred (HTTP 204), nil if not (HTTP 404)."

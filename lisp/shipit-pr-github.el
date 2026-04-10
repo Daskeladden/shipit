@@ -998,45 +998,69 @@ SUBSCRIBED is t to subscribe, nil to unsubscribe."
         (shipit--api-request-post endpoint nil "DELETE"))
       t)))
 
-(defun shipit-pr-github--get-discussion-subscription (config repo number)
-  "Get subscription state for discussion NUMBER in REPO via GraphQL.
-Returns \"subscribed\", \"unsubscribed\", or \"ignored\"."
+(defun shipit-pr-github--discussion-variables (repo number)
+  "Return GraphQL variables alist for discussion NUMBER in REPO.
+Signals an error if REPO is not of the form \"owner/name\"."
   (let* ((parts (split-string repo "/"))
          (owner (car parts))
-         (name (cadr parts))
-         (query (format
-                 "{ repository(owner: \"%s\", name: \"%s\") { discussion(number: %d) { viewerSubscription id } } }"
-                 owner name number))
-         (result (shipit--graphql-query query nil))
-         (discussion (cdr (assq 'discussion (cdr (assq 'repository result)))))
+         (name (cadr parts)))
+    (unless (and owner name (> (length name) 0))
+      (error "Invalid repo %S: expected \"owner/name\"" repo))
+    `((owner . ,owner)
+      (name . ,name)
+      (number . ,number))))
+
+(defun shipit-pr-github--fetch-discussion-node-id (repo number)
+  "Fetch the GraphQL node ID for discussion NUMBER in REPO."
+  (let* ((variables (shipit-pr-github--discussion-variables repo number))
+         (query "query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    discussion(number: $number) { id }
+  }
+}")
+         (result (shipit--graphql-query query variables)))
+    (cdr (assq 'id (cdr (assq 'discussion
+                              (cdr (assq 'repository result))))))))
+
+(defun shipit-pr-github--get-discussion-subscription (_config repo number)
+  "Get subscription state for discussion NUMBER in REPO via GraphQL.
+Returns \"subscribed\", \"unsubscribed\", or \"ignored\"."
+  (let* ((variables (shipit-pr-github--discussion-variables repo number))
+         (query "query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    discussion(number: $number) { viewerSubscription id }
+  }
+}")
+         (result (shipit--graphql-query query variables))
+         (discussion (cdr (assq 'discussion
+                                (cdr (assq 'repository result)))))
          (state (cdr (assq 'viewerSubscription discussion))))
-    (shipit--debug-log "GitHub: discussion %s#%d subscription: %s" repo number state)
+    (shipit--debug-log "GitHub: discussion %s#%d subscription: %s"
+                       repo number state)
     (pcase state
       ("SUBSCRIBED" "subscribed")
       ("IGNORED" "ignored")
       (_ "unsubscribed"))))
 
-(defun shipit-pr-github--set-discussion-subscription (config repo number subscribed)
+(defun shipit-pr-github--set-discussion-subscription (_config repo number subscribed)
   "Set subscription for discussion NUMBER in REPO via GraphQL mutation.
 SUBSCRIBED is t to subscribe, nil to unsubscribe."
-  (let* ((parts (split-string repo "/"))
-         (owner (car parts))
-         (name (cadr parts))
-         (id-query (format
-                    "{ repository(owner: \"%s\", name: \"%s\") { discussion(number: %d) { id } } }"
-                    owner name number))
-         (id-result (shipit--graphql-query id-query nil))
-         (node-id (cdr (assq 'id (cdr (assq 'discussion
-                                            (cdr (assq 'repository id-result)))))))
-         (state (if subscribed "SUBSCRIBED" "UNSUBSCRIBED"))
-         (mutation (format
-                    "mutation { updateSubscription(input: {subscribableId: \"%s\", state: %s}) { subscribable { viewerSubscription } } }"
-                    node-id state)))
-    (shipit--debug-log "GitHub: %s discussion %s#%d"
-                       (if subscribed "subscribing to" "unsubscribing from")
-                       repo number)
-    (shipit--graphql-query mutation nil)
-    t))
+  (let ((node-id (shipit-pr-github--fetch-discussion-node-id repo number)))
+    (unless node-id
+      (error "Cannot find discussion %s#%d" repo number))
+    (let* ((state (if subscribed "SUBSCRIBED" "UNSUBSCRIBED"))
+           (mutation "mutation($id: ID!, $state: SubscriptionState!) {
+  updateSubscription(input: {subscribableId: $id, state: $state}) {
+    subscribable { ... on Discussion { viewerSubscription } }
+  }
+}")
+           (variables `((id . ,node-id)
+                        (state . ,state))))
+      (shipit--debug-log "GitHub: %s discussion %s#%d"
+                         (if subscribed "subscribing to" "unsubscribing from")
+                         repo number)
+      (shipit--graphql-query mutation variables)
+      t)))
 
 (defun shipit-pr-github--get-repo-starred (config)
   "Check if repo in CONFIG is starred by the current user.

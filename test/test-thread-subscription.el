@@ -218,47 +218,60 @@
         (should (equal result "unsubscribed"))))))
 
 (ert-deftest test-thread-sub-github-subscribe-discussion ()
-  ;; GIVEN a discussion
+  ;; GIVEN a discussion whose id-query resolves to "D_abc123"
   ;; WHEN subscribing to it
-  ;; THEN GraphQL mutation is called with SUBSCRIBED state.
+  ;; THEN the updateSubscription mutation is called with the node ID
+  ;;      propagated from the id-query and state variable exactly "SUBSCRIBED".
   (test-thread-sub--with-mock-github
-    (let ((queries nil))
+    (let ((mutation-vars nil)
+          (mutation-called nil))
       (cl-letf (((symbol-function 'shipit--graphql-query)
-                 (lambda (query _vars)
-                   (push query queries)
-                   (if (string-match-p "mutation" query)
-                       '((updateSubscription
-                          (subscribable
-                           (viewerSubscription . "SUBSCRIBED"))))
+                 (lambda (query vars)
+                   (cond
+                    ((string-match-p "updateSubscription" query)
+                     (setq mutation-called t)
+                     (setq mutation-vars vars)
+                     '((updateSubscription
+                        (subscribable
+                         (viewerSubscription . "SUBSCRIBED")))))
+                    (t
                      '((repository
                         (discussion
                          (viewerSubscription . "UNSUBSCRIBED")
-                         (id . "D_abc123"))))))))
+                         (id . "D_abc123")))))))))
         (shipit-pr-github--set-thread-subscription
          '(:repo "owner/repo") "owner/repo" "discussion" 10 t)
-        (should (cl-some (lambda (q) (string-match-p "mutation" q)) queries))))))
+        (should mutation-called)
+        (should (equal (cdr (assq 'id mutation-vars)) "D_abc123"))
+        (should (equal (cdr (assq 'state mutation-vars)) "SUBSCRIBED"))))))
 
 (ert-deftest test-thread-sub-github-unsubscribe-discussion ()
-  ;; GIVEN a discussion the user is subscribed to
+  ;; GIVEN a discussion the user is subscribed to (id-query returns "D_abc123")
   ;; WHEN unsubscribing
-  ;; THEN GraphQL mutation is called with UNSUBSCRIBED state.
+  ;; THEN the updateSubscription mutation is called with the node ID
+  ;;      propagated and state variable exactly "UNSUBSCRIBED".
   (test-thread-sub--with-mock-github
-    (let ((queries nil))
+    (let ((mutation-vars nil)
+          (mutation-called nil))
       (cl-letf (((symbol-function 'shipit--graphql-query)
-                 (lambda (query _vars)
-                   (push query queries)
-                   (if (string-match-p "mutation" query)
-                       '((updateSubscription
-                          (subscribable
-                           (viewerSubscription . "UNSUBSCRIBED"))))
+                 (lambda (query vars)
+                   (cond
+                    ((string-match-p "updateSubscription" query)
+                     (setq mutation-called t)
+                     (setq mutation-vars vars)
+                     '((updateSubscription
+                        (subscribable
+                         (viewerSubscription . "UNSUBSCRIBED")))))
+                    (t
                      '((repository
                         (discussion
                          (viewerSubscription . "SUBSCRIBED")
-                         (id . "D_abc123"))))))))
+                         (id . "D_abc123")))))))))
         (shipit-pr-github--set-thread-subscription
          '(:repo "owner/repo") "owner/repo" "discussion" 10 nil)
-        (should (cl-some (lambda (q) (string-match-p "UNSUBSCRIBED" q))
-                         queries))))))
+        (should mutation-called)
+        (should (equal (cdr (assq 'id mutation-vars)) "D_abc123"))
+        (should (equal (cdr (assq 'state mutation-vars)) "UNSUBSCRIBED"))))))
 
 (provide 'test-thread-subscription)
 ;;; test-thread-subscription.el ends here

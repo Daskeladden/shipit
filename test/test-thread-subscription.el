@@ -11,6 +11,7 @@
 (require 'shipit-pr-backends)
 (require 'shipit-http)
 (require 'shipit-pr-github)
+(require 'shipit-repo-buffer)
 
 ;;; Test helpers
 
@@ -304,6 +305,74 @@
                  '((subscribed . t)))))
       (shipit--set-thread-subscription "owner/repo" "pr" 42 t)
       (should called))))
+
+;;; Tests -- transient thread group
+
+(ert-deftest test-thread-sub-transient-pr-context-detected ()
+  ;; GIVEN a PR buffer with shipit-buffer-pr-number and shipit-buffer-repo
+  ;; WHEN shipit--current-buffer-thread-context is called
+  ;; THEN returns plist with repo, type, number, subject.
+  (with-temp-buffer
+    (setq-local shipit-buffer-pr-number 42)
+    (setq-local shipit-buffer-repo "owner/repo")
+    (setq-local shipit-buffer-pr-data '((title . "Add feature X")))
+    (let ((ctx (shipit--current-buffer-thread-context)))
+      (should ctx)
+      (should (equal (plist-get ctx :repo) "owner/repo"))
+      (should (equal (plist-get ctx :type) "pr"))
+      (should (equal (plist-get ctx :number) 42))
+      (should (equal (plist-get ctx :subject) "Add feature X")))))
+
+(ert-deftest test-thread-sub-transient-issue-context-detected ()
+  ;; GIVEN an issue buffer with shipit-issue-buffer-number and repo
+  ;; WHEN shipit--current-buffer-thread-context is called
+  ;; THEN returns issue context.
+  (with-temp-buffer
+    (setq-local shipit-issue-buffer-number 8)
+    (setq-local shipit-issue-buffer-repo "owner/repo")
+    (setq-local shipit-issue-buffer-data '((title . "Bug report")))
+    (let ((ctx (shipit--current-buffer-thread-context)))
+      (should ctx)
+      (should (equal (plist-get ctx :type) "issue"))
+      (should (equal (plist-get ctx :number) 8)))))
+
+(ert-deftest test-thread-sub-transient-discussion-context-detected ()
+  ;; GIVEN a discussion buffer with shipit-discussion-buffer-number
+  ;; WHEN shipit--current-buffer-thread-context is called
+  ;; THEN returns discussion context.
+  (with-temp-buffer
+    (setq-local shipit-discussion-buffer-number 10)
+    (setq-local shipit-discussion-buffer-repo "owner/repo")
+    (setq-local shipit-discussion-buffer-data '((title . "RFC: new API")))
+    (let ((ctx (shipit--current-buffer-thread-context)))
+      (should ctx)
+      (should (equal (plist-get ctx :type) "discussion"))
+      (should (equal (plist-get ctx :number) 10)))))
+
+(ert-deftest test-thread-sub-transient-no-context-in-repo-buffer ()
+  ;; GIVEN a repo buffer with no thread-specific locals
+  ;; WHEN shipit--current-buffer-thread-context is called
+  ;; THEN returns nil.
+  (with-temp-buffer
+    (setq-local shipit-repo-buffer-repo "owner/repo")
+    (should-not (shipit--current-buffer-thread-context))))
+
+(ert-deftest test-thread-sub-transient-unsupported-backend ()
+  ;; GIVEN a PR buffer with thread context
+  ;; BUT the backend doesn't support :get-thread-subscription
+  ;; WHEN shipit--thread-subscription-supported-p is called
+  ;; THEN returns nil.
+  (with-temp-buffer
+    (setq-local shipit-buffer-pr-number 42)
+    (setq-local shipit-buffer-repo "owner/repo")
+    (let ((shipit-pr-backends nil)
+          (shipit-pr-backend 'mock)
+          (shipit-pr-backend-config nil)
+          (shipit-current-repo "owner/repo"))
+      (shipit-pr-register-backend
+       'mock (test-thread-sub--make-minimal-plist))
+      (should-not
+       (shipit--thread-subscription-supported-p "owner/repo")))))
 
 (provide 'test-thread-subscription)
 ;;; test-thread-subscription.el ends here

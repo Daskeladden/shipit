@@ -1374,6 +1374,60 @@ Dynamically bound during transient display.")
 (defvar shipit--subscription-transient-starred nil
   "Star status fetched when the transient opens.")
 
+(defvar shipit--subscription-transient-thread-ctx nil
+  "Thread context plist for the current subscription transient.
+Plist with :repo :type :number :subject, or nil if no thread context.")
+
+(defvar shipit--subscription-transient-thread-state nil
+  "Thread subscription state for the current transient.")
+
+(defun shipit--current-buffer-thread-context ()
+  "Return thread context plist for the current buffer, or nil.
+Checks PR, Issue, and Discussion buffer-local variables."
+  (cond
+   ((bound-and-true-p shipit-buffer-pr-number)
+    (list :repo (bound-and-true-p shipit-buffer-repo)
+          :type "pr"
+          :number shipit-buffer-pr-number
+          :subject (cdr (assq 'title
+                              (bound-and-true-p shipit-buffer-pr-data)))))
+   ((bound-and-true-p shipit-issue-buffer-number)
+    (list :repo (bound-and-true-p shipit-issue-buffer-repo)
+          :type "issue"
+          :number shipit-issue-buffer-number
+          :subject (cdr (assq 'title
+                              (bound-and-true-p shipit-issue-buffer-data)))))
+   ((bound-and-true-p shipit-discussion-buffer-number)
+    (list :repo (bound-and-true-p shipit-discussion-buffer-repo)
+          :type "discussion"
+          :number shipit-discussion-buffer-number
+          :subject (cdr (assq 'title
+                              (bound-and-true-p
+                               shipit-discussion-buffer-data)))))))
+
+(defun shipit--thread-subscription-supported-p (repo)
+  "Return non-nil if the backend for REPO supports thread subscriptions."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved)))
+    (plist-get backend :get-thread-subscription)))
+
+(defun shipit-repo-buffer--sub-toggle-thread ()
+  "Toggle thread subscription for the current thread context."
+  (interactive)
+  (let* ((ctx shipit--subscription-transient-thread-ctx)
+         (repo (plist-get ctx :repo))
+         (type (plist-get ctx :type))
+         (number (plist-get ctx :number))
+         (currently-subscribed
+          (equal shipit--subscription-transient-thread-state "subscribed"))
+         (new-subscribed (not currently-subscribed)))
+    (shipit--set-thread-subscription repo type number new-subscribed)
+    (setq shipit--subscription-transient-thread-state
+          (if new-subscribed "subscribed" "unsubscribed"))
+    (message "%s %s #%d"
+             (if new-subscribed "Subscribed to" "Unsubscribed from")
+             type number)))
+
 (defun shipit-repo-buffer--sub-toggle-star ()
   "Toggle star status for the current repo."
   (interactive)
@@ -1433,8 +1487,32 @@ Dynamically bound during transient display.")
                               (if shipit--subscription-transient-starred
                                   "Unstar repo"
                                 "Star repo")
-                              'shipit-repo-buffer--sub-toggle-star)))))))
-       (append sub-entries star-entry)))]
+                              'shipit-repo-buffer--sub-toggle-star))))))
+            ;; Thread subscription suffixes (conditional on thread context)
+            (thread-entries
+             (when shipit--subscription-transient-thread-ctx
+               (let* ((ctx shipit--subscription-transient-thread-ctx)
+                      (type (plist-get ctx :type))
+                      (number (plist-get ctx :number))
+                      (subject (plist-get ctx :subject))
+                      (state shipit--subscription-transient-thread-state)
+                      (subscribed (equal state "subscribed"))
+                      (desc (format "This %s: #%d%s  [%s]"
+                                    type
+                                    number
+                                    (if subject
+                                        (format " %s" subject)
+                                      "")
+                                    (or state "unknown"))))
+                 (list (transient-parse-suffix
+                        transient--prefix
+                        (list :info desc))
+                       (transient-parse-suffix
+                        transient--prefix
+                        (list "s"
+                              (if subscribed "Unsubscribe" "Subscribe")
+                              'shipit-repo-buffer--sub-toggle-thread)))))))
+       (append sub-entries star-entry thread-entries)))]
   (interactive)
   (let ((repo (shipit--current-buffer-repo)))
     (unless repo
@@ -1451,6 +1529,17 @@ Dynamically bound during transient display.")
       (setq shipit--subscription-transient-starred
             (let ((star-fn (plist-get backend :get-repo-starred)))
               (when star-fn (funcall star-fn (cdr resolved))))))
+    ;; Fetch thread context if available
+    (let ((thread-ctx (shipit--current-buffer-thread-context)))
+      (setq shipit--subscription-transient-thread-ctx thread-ctx)
+      (setq shipit--subscription-transient-thread-state
+            (when (and thread-ctx
+                       (shipit--thread-subscription-supported-p
+                        (shipit--current-buffer-repo)))
+              (shipit--get-thread-subscription
+               (shipit--current-buffer-repo)
+               (plist-get thread-ctx :type)
+               (plist-get thread-ctx :number)))))
     (transient-setup 'shipit-repo-subscription)))
 
 (defun shipit-repo-buffer-dwim ()

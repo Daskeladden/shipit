@@ -1509,7 +1509,7 @@ Checks PR, Issue, and Discussion buffer-local variables."
                         (list :info desc))
                        (transient-parse-suffix
                         transient--prefix
-                        (list "s"
+                        (list "t"
                               (if subscribed "Unsubscribe" "Subscribe")
                               'shipit-repo-buffer--sub-toggle-thread)))))))
        (append sub-entries star-entry thread-entries)))]

@@ -966,6 +966,38 @@ STATE is \"watching\", \"participating\", or \"ignoring\"."
      ((equal state "participating")
       (shipit--api-request-post endpoint nil "DELETE")))))
 
+(defun shipit-pr-github--get-thread-subscription (config repo type number)
+  "Get thread subscription state for TYPE NUMBER in REPO.
+TYPE is \"pr\", \"issue\", or \"discussion\".
+Returns \"subscribed\", \"unsubscribed\", or \"ignored\"."
+  (if (equal type "discussion")
+      (shipit-pr-github--get-discussion-subscription config repo number)
+    (let* ((endpoint (format "/repos/%s/issues/%d/subscription" repo number))
+           (data (shipit--api-request endpoint)))
+      (shipit--debug-log "GitHub: thread subscription for %s %s#%d: %S"
+                         type repo number data)
+      (cond
+       ((null data) "unsubscribed")
+       ((eq (cdr (assq 'ignored data)) t) "ignored")
+       ((eq (cdr (assq 'subscribed data)) t) "subscribed")
+       (t "unsubscribed")))))
+
+(defun shipit-pr-github--set-thread-subscription (config repo type number subscribed)
+  "Set thread subscription for TYPE NUMBER in REPO.
+SUBSCRIBED is t to subscribe, nil to unsubscribe."
+  (if (equal type "discussion")
+      (shipit-pr-github--set-discussion-subscription config repo number subscribed)
+    (let ((endpoint (format "/repos/%s/issues/%d/subscription" repo number)))
+      (shipit--debug-log "GitHub: %s thread %s %s#%d"
+                         (if subscribed "subscribing to" "unsubscribing from")
+                         type repo number)
+      (if subscribed
+          (shipit--api-request-post endpoint
+                                    '((subscribed . t) (ignored . :json-false))
+                                    "PUT")
+        (shipit--api-request-post endpoint nil "DELETE"))
+      t)))
+
 (defun shipit-pr-github--get-repo-starred (config)
   "Check if repo in CONFIG is starred by the current user.
 Returns t if starred (HTTP 204), nil if not (HTTP 404)."

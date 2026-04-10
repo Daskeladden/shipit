@@ -10,6 +10,7 @@
 (require 'shipit-core)
 (require 'shipit-pr-backends)
 (require 'shipit-http)
+(require 'shipit-pr-github)
 
 ;;; Test helpers
 
@@ -88,6 +89,101 @@
   ;; THEN returns nil.
   (test-thread-sub--with-mock-backend nil
     (should-not (shipit--set-thread-subscription "owner/repo" "pr" 42 t))))
+
+;;; Tests -- GitHub PR/Issue thread subscription
+
+(defmacro test-thread-sub--with-mock-github (&rest body)
+  "Run BODY with GitHub backend and standard test bindings."
+  (declare (indent 0))
+  `(let ((shipit-pr-backends nil)
+         (shipit-pr-backend 'github)
+         (shipit-pr-backend-config nil)
+         (shipit-github-token "test-token")
+         (shipit-current-repo "owner/repo"))
+     ,@body))
+
+(ert-deftest test-thread-sub-github-get-pr-subscribed ()
+  ;; GIVEN a PR where the user is subscribed
+  ;; WHEN getting thread subscription
+  ;; THEN returns "subscribed".
+  (test-thread-sub--with-mock-github
+    (cl-letf (((symbol-function 'shipit--api-request)
+               (lambda (_endpoint &rest _)
+                 '((subscribed . t) (ignored . :json-false)))))
+      (let ((result (shipit-pr-github--get-thread-subscription
+                     '(:repo "owner/repo") "owner/repo" "pr" 42)))
+        (should (equal result "subscribed"))))))
+
+(ert-deftest test-thread-sub-github-get-issue-subscribed ()
+  ;; GIVEN an issue where the user is subscribed
+  ;; WHEN getting thread subscription
+  ;; THEN returns "subscribed" and uses the issues endpoint.
+  (test-thread-sub--with-mock-github
+    (let ((requested-endpoint nil))
+      (cl-letf (((symbol-function 'shipit--api-request)
+                 (lambda (endpoint &rest _)
+                   (setq requested-endpoint endpoint)
+                   '((subscribed . t) (ignored . :json-false)))))
+        (shipit-pr-github--get-thread-subscription
+         '(:repo "owner/repo") "owner/repo" "issue" 8)
+        (should (string-match-p "/repos/owner/repo/issues/8/subscription"
+                                requested-endpoint))))))
+
+(ert-deftest test-thread-sub-github-get-unsubscribed ()
+  ;; GIVEN a PR where the user is not subscribed
+  ;; WHEN getting thread subscription
+  ;; THEN returns "unsubscribed".
+  (test-thread-sub--with-mock-github
+    (cl-letf (((symbol-function 'shipit--api-request)
+               (lambda (_endpoint &rest _) nil)))
+      (let ((result (shipit-pr-github--get-thread-subscription
+                     '(:repo "owner/repo") "owner/repo" "pr" 42)))
+        (should (equal result "unsubscribed"))))))
+
+(ert-deftest test-thread-sub-github-get-ignored ()
+  ;; GIVEN a PR where the user has ignored the thread
+  ;; WHEN getting thread subscription
+  ;; THEN returns "ignored".
+  (test-thread-sub--with-mock-github
+    (cl-letf (((symbol-function 'shipit--api-request)
+               (lambda (_endpoint &rest _)
+                 '((subscribed . :json-false) (ignored . t)))))
+      (let ((result (shipit-pr-github--get-thread-subscription
+                     '(:repo "owner/repo") "owner/repo" "pr" 42)))
+        (should (equal result "ignored"))))))
+
+(ert-deftest test-thread-sub-github-subscribe-pr ()
+  ;; GIVEN a PR
+  ;; WHEN subscribing to the thread
+  ;; THEN PUT is sent with subscribed=true.
+  (test-thread-sub--with-mock-github
+    (let ((called-with nil))
+      (cl-letf (((symbol-function 'shipit--api-request-post)
+                 (lambda (endpoint data &optional method)
+                   (setq called-with (list endpoint data method))
+                   '((subscribed . t)))))
+        (shipit-pr-github--set-thread-subscription
+         '(:repo "owner/repo") "owner/repo" "pr" 42 t)
+        (should (string-match-p "/repos/owner/repo/issues/42/subscription"
+                                (nth 0 called-with)))
+        (should (eq t (cdr (assq 'subscribed (nth 1 called-with)))))
+        (should (equal "PUT" (nth 2 called-with)))))))
+
+(ert-deftest test-thread-sub-github-unsubscribe-pr ()
+  ;; GIVEN a PR the user is subscribed to
+  ;; WHEN unsubscribing from the thread
+  ;; THEN DELETE is sent to the subscription endpoint.
+  (test-thread-sub--with-mock-github
+    (let ((called-with nil))
+      (cl-letf (((symbol-function 'shipit--api-request-post)
+                 (lambda (endpoint data &optional method)
+                   (setq called-with (list endpoint data method))
+                   nil)))
+        (shipit-pr-github--set-thread-subscription
+         '(:repo "owner/repo") "owner/repo" "pr" 42 nil)
+        (should (string-match-p "/repos/owner/repo/issues/42/subscription"
+                                (nth 0 called-with)))
+        (should (equal "DELETE" (nth 2 called-with)))))))
 
 (provide 'test-thread-subscription)
 ;;; test-thread-subscription.el ends here

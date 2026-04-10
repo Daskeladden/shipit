@@ -1277,10 +1277,11 @@ Signals user-error if backend doesn't support subscriptions."
 
 (defun shipit--current-buffer-repo ()
   "Return the repository string for the current buffer.
-Works in repo, PR, and issue buffers."
+Works in repo, PR, issue, and discussion buffers."
   (or (bound-and-true-p shipit-repo-buffer-repo)
       (bound-and-true-p shipit-buffer-repo)
-      (bound-and-true-p shipit-issue-buffer-repo)))
+      (bound-and-true-p shipit-issue-buffer-repo)
+      (bound-and-true-p shipit-discussion-buffer-repo)))
 
 (defun shipit--refresh-subscription-in-buffer (repo)
   "Refresh the Watching: line in the current buffer for REPO.
@@ -1411,8 +1412,29 @@ Checks PR, Issue, and Discussion buffer-local variables."
          (backend (car resolved)))
     (plist-get backend :get-thread-subscription)))
 
+(defun shipit--populate-thread-transient-state (repo)
+  "Populate thread transient defvars for REPO based on current buffer context.
+When the current buffer has a thread context AND REPO's backend supports
+thread subscriptions, set `shipit--subscription-transient-thread-ctx' to
+the context and fetch the current subscription state.  Otherwise, set
+both defvars to nil so the thread group is omitted from the transient."
+  (let ((thread-ctx (shipit--current-buffer-thread-context)))
+    (if (and thread-ctx
+             (shipit--thread-subscription-supported-p repo))
+        (progn
+          (setq shipit--subscription-transient-thread-ctx thread-ctx)
+          (setq shipit--subscription-transient-thread-state
+                (shipit--get-thread-subscription
+                 repo
+                 (plist-get thread-ctx :type)
+                 (plist-get thread-ctx :number))))
+      (setq shipit--subscription-transient-thread-ctx nil)
+      (setq shipit--subscription-transient-thread-state nil))))
+
 (defun shipit-repo-buffer--sub-toggle-thread ()
-  "Toggle thread subscription for the current thread context."
+  "Toggle thread subscription for the current thread context.
+Signals a `user-error' if the backend call fails (returns nil), so we do
+not update local state or print a misleading success message."
   (interactive)
   (let* ((ctx shipit--subscription-transient-thread-ctx)
          (repo (plist-get ctx :repo))
@@ -1421,7 +1443,8 @@ Checks PR, Issue, and Discussion buffer-local variables."
          (currently-subscribed
           (equal shipit--subscription-transient-thread-state "subscribed"))
          (new-subscribed (not currently-subscribed)))
-    (shipit--set-thread-subscription repo type number new-subscribed)
+    (unless (shipit--set-thread-subscription repo type number new-subscribed)
+      (user-error "Thread subscription failed"))
     (setq shipit--subscription-transient-thread-state
           (if new-subscribed "subscribed" "unsubscribed"))
     (message "%s %s #%d"
@@ -1529,17 +1552,10 @@ Checks PR, Issue, and Discussion buffer-local variables."
       (setq shipit--subscription-transient-starred
             (let ((star-fn (plist-get backend :get-repo-starred)))
               (when star-fn (funcall star-fn (cdr resolved))))))
-    ;; Fetch thread context if available
-    (let ((thread-ctx (shipit--current-buffer-thread-context)))
-      (setq shipit--subscription-transient-thread-ctx thread-ctx)
-      (setq shipit--subscription-transient-thread-state
-            (when (and thread-ctx
-                       (shipit--thread-subscription-supported-p
-                        (shipit--current-buffer-repo)))
-              (shipit--get-thread-subscription
-               (shipit--current-buffer-repo)
-               (plist-get thread-ctx :type)
-               (plist-get thread-ctx :number)))))
+    ;; Populate thread transient state (ctx + state) for the thread group.
+    ;; If the backend does not support thread subscriptions, both defvars
+    ;; are cleared so the thread group is omitted from the transient.
+    (shipit--populate-thread-transient-state repo)
     (transient-setup 'shipit-repo-subscription)))
 
 (defun shipit-repo-buffer-dwim ()

@@ -374,5 +374,38 @@
       (should-not
        (shipit--thread-subscription-supported-p "owner/repo")))))
 
+(ert-deftest test-thread-sub-populate-state-supported ()
+  ;; GIVEN a PR buffer and a backend supporting thread subscriptions
+  ;; WHEN populating thread transient state
+  ;; THEN both ctx and state defvars are set.
+  (with-temp-buffer
+    (setq-local shipit-buffer-pr-number 42)
+    (setq-local shipit-buffer-repo "owner/repo")
+    (setq-local shipit-buffer-pr-data '((title . "Add feature X")))
+    (let ((shipit--subscription-transient-thread-ctx nil)
+          (shipit--subscription-transient-thread-state nil))
+      (test-thread-sub--with-mock-backend
+          (list :get-thread-subscription
+                (lambda (_config _repo _type _number) "subscribed"))
+        (shipit--populate-thread-transient-state "owner/repo")
+        (should shipit--subscription-transient-thread-ctx)
+        (should (equal shipit--subscription-transient-thread-state
+                       "subscribed"))))))
+
+(ert-deftest test-thread-sub-populate-state-unsupported ()
+  ;; GIVEN a PR buffer but backend without thread subscription support
+  ;; WHEN populating thread transient state
+  ;; THEN both defvars are nil (thread group will be omitted).
+  (with-temp-buffer
+    (setq-local shipit-buffer-pr-number 42)
+    (setq-local shipit-buffer-repo "owner/repo")
+    (setq-local shipit-buffer-pr-data '((title . "Add feature X")))
+    (let ((shipit--subscription-transient-thread-ctx 'old-value)
+          (shipit--subscription-transient-thread-state 'old-value))
+      (test-thread-sub--with-mock-backend nil
+        (shipit--populate-thread-transient-state "owner/repo"))
+      (should-not shipit--subscription-transient-thread-ctx)
+      (should-not shipit--subscription-transient-thread-state))))
+
 (provide 'test-thread-subscription)
 ;;; test-thread-subscription.el ends here

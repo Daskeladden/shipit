@@ -166,6 +166,9 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
 ;; Actions (shipit-actions-list) - GitHub Actions workflows listing
 ;;;###autoload (autoload 'shipit-open-actions-list "shipit-actions-list" nil t)
 
+;; Releases (shipit-releases-buffer) - GitHub Releases and tags
+;;;###autoload (autoload 'shipit-open-releases-buffer "shipit-releases-buffer" nil t)
+
 ;; Functions that remain immediately available (moved to core modules or are lightweight)
 (declare-function shipit-cache-menu "shipit-cache")
 (declare-function shipit-config "shipit-commands")

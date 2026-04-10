@@ -797,6 +797,19 @@ Returns plist (:type TYPE :repo REPO :number N) or nil."
             :ref ref
             :path path
             :fragment fragment)))
+   ;; Releases: /owner/repo/releases (optionally /tag/TAG)
+   ((string-match
+     "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/releases\\(?:/tag/\\([^/?#]+\\)\\)?/?\\(?:[?#].*\\)?\\'"
+     url)
+    (list :type 'releases
+          :repo (match-string 1 url)
+          :tag (match-string 2 url)))
+   ;; Tags: /owner/repo/tags
+   ((string-match
+     "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/tags/?\\(?:[?#].*\\)?\\'"
+     url)
+    (list :type 'tags
+          :repo (match-string 1 url)))
    ;; Repo: /owner/repo (exactly 2 segments)
    ((string-match
      "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/?\\'"
@@ -1227,6 +1240,22 @@ Returns list of team data alists."
       (shipit--debug-log "Selected: '%s', login from property: '%s', login from map: '%s'" selected login-from-property login-from-map)
       (or login-from-property login-from-map selected))))
 
+(defun shipit-pr-github--fetch-releases (config &optional page)
+  "Fetch releases for repo in CONFIG.
+PAGE defaults to 1.  Returns the parsed JSON list."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/releases" repo))
+         (params `((per_page 30) (page ,(or page 1)))))
+    (shipit--api-request endpoint params)))
+
+(defun shipit-pr-github--fetch-tags (config &optional page)
+  "Fetch tags for repo in CONFIG.
+PAGE defaults to 1.  Returns the parsed JSON list."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/tags" repo))
+         (params `((per_page 30) (page ,(or page 1)))))
+    (shipit--api-request endpoint params)))
+
 ;; Register the GitHub PR backend
 (shipit-pr-register-backend
  'github
@@ -1249,6 +1278,8 @@ Returns list of team data alists."
        :fetch-files #'shipit-pr-github--fetch-files
        :fetch-commits #'shipit-pr-github--fetch-commits
        :fetch-checks #'shipit-pr-github--fetch-checks
+       :fetch-releases #'shipit-pr-github--fetch-releases
+       :fetch-tags #'shipit-pr-github--fetch-tags
        :browse-url #'shipit-pr-github--browse-url
        :fetch-review-threads #'shipit-pr-github--fetch-review-threads
        :fetch-resolved-threads #'shipit-pr-github--fetch-resolved-threads

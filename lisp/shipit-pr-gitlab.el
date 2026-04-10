@@ -1773,6 +1773,14 @@ deduplicating by path. Returns normalized repo alists."
                 result))))
     (nreverse result)))
 
+(defun shipit-pr-gitlab--fetch-releases-stub (_config &optional _page)
+  "Stub — releases not yet implemented for GitLab."
+  (user-error "Releases not implemented for GitLab"))
+
+(defun shipit-pr-gitlab--fetch-tags-stub (_config &optional _page)
+  "Stub — tags not yet implemented for GitLab."
+  (user-error "Tags not implemented for GitLab"))
+
 ;;; Registration
 
 (shipit-pr-register-backend
@@ -1799,6 +1807,8 @@ deduplicating by path. Returns normalized repo alists."
        :fetch-files #'shipit-pr-gitlab--fetch-files
        :fetch-commits #'shipit-pr-gitlab--fetch-commits
        :fetch-checks #'shipit-pr-gitlab--fetch-checks
+       :fetch-releases #'shipit-pr-gitlab--fetch-releases-stub
+       :fetch-tags #'shipit-pr-gitlab--fetch-tags-stub
        :fetch-check-suites #'shipit-pr-gitlab--fetch-check-suites
        :fetch-suite-check-runs #'shipit-pr-gitlab--fetch-suite-check-runs
        :fetch-compare #'shipit-pr-gitlab--fetch-compare

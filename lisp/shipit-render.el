@@ -65,6 +65,7 @@
 (declare-function shipit-open-actions-run "shipit-actions")
 (declare-function shipit-issues--fetch-issue "shipit-issues")
 (declare-function shipit-issue--classify-url "shipit-issue-backends")
+(declare-function shipit-open-releases-buffer "shipit-releases-buffer")
 
 (defun shipit--filter-active-comments (comments)
   "Return only non-outdated comments from COMMENTS list.
@@ -2616,6 +2617,10 @@ When :backend-id is present, passes it through so the correct forge is used."
        (shipit-discussions-open-buffer number repo))
       ('blob
        (shipit--open-blob-url classified))
+      ('releases
+       (shipit-open-releases-buffer repo (plist-get classified :tag)))
+      ('tags
+       (shipit-open-releases-buffer repo nil 'tags))
       ('actions-run
        (shipit-open-actions-run repo
                                 (plist-get classified :run-id)

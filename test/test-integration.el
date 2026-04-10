@@ -271,9 +271,8 @@ THEN the reply should be posted to /issues/ endpoint (not /pulls/)."
       (shipit-comment-github--reply-to-comment
        '(:repo "owner/repo") 42 100 "my reply")
       ;; THEN the endpoint should be /issues/ for general comment replies
-      ;; Currently uses /pulls/ which is wrong for general comments
       (should captured-endpoint)
-      (should (string-match-p "/pulls/" captured-endpoint)))))
+      (should (string-match-p "/issues/" captured-endpoint)))))
 
 ;;; Bug #1 + #6: Jira notification mark-read via local tracking
 

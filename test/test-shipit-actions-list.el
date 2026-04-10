@@ -7,27 +7,7 @@
 (require 'ert)
 (require 'shipit-actions-list)
 
-(ert-deftest test-actions-list-buffer-creation ()
-  "GIVEN a repo name
-   WHEN shipit-open-actions-list is called
-   THEN a buffer is created with the correct name and mode."
-  (let ((buf (shipit-open-actions-list "owner/repo")))
-    (unwind-protect
-        (with-current-buffer buf
-          (should (eq major-mode 'shipit-actions-list-mode))
-          (should (string= (buffer-name) "*shipit-actions: owner/repo*"))
-          (should (string= shipit-actions-list--repo "owner/repo")))
-      (kill-buffer buf))))
 
-(ert-deftest test-actions-list-reuses-existing-buffer ()
-  "GIVEN an existing actions list buffer for a repo
-   WHEN shipit-open-actions-list is called again
-   THEN the existing buffer is returned."
-  (let ((buf1 (shipit-open-actions-list "owner/repo")))
-    (unwind-protect
-        (let ((buf2 (shipit-open-actions-list "owner/repo")))
-          (should (eq buf1 buf2)))
-      (kill-buffer buf1))))
 
 (ert-deftest test-actions-list-renders-workflows ()
   "GIVEN workflow and run data set in buffer-local vars

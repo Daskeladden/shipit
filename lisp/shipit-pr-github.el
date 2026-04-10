@@ -1440,6 +1440,8 @@ PAGE defaults to 1.  Returns the parsed JSON list."
        :fetch-languages #'shipit-pr-github--fetch-languages
        :get-repo-subscription #'shipit-pr-github--get-repo-subscription
        :set-repo-subscription #'shipit-pr-github--set-repo-subscription
+       :get-thread-subscription #'shipit-pr-github--get-thread-subscription
+       :set-thread-subscription #'shipit-pr-github--set-thread-subscription
        :get-repo-starred #'shipit-pr-github--get-repo-starred
        :set-repo-starred #'shipit-pr-github--set-repo-starred
        :fetch-watched-repos #'shipit-pr-github--fetch-watched-repos

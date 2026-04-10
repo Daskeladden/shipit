@@ -273,5 +273,37 @@
         (should (equal (cdr (assq 'id mutation-vars)) "D_abc123"))
         (should (equal (cdr (assq 'state mutation-vars)) "UNSUBSCRIBED"))))))
 
+;;; Tests -- end-to-end dispatch via GitHub backend
+
+(ert-deftest test-thread-sub-github-dispatch-get ()
+  ;; GIVEN the GitHub backend is active and globally registered
+  ;; WHEN calling the dispatch wrapper shipit--get-thread-subscription
+  ;; THEN it resolves to the GitHub implementation.
+  (let ((shipit-pr-backend 'github)
+        (shipit-pr-backend-config nil)
+        (shipit-github-token "test-token")
+        (shipit-current-repo "owner/repo"))
+    (cl-letf (((symbol-function 'shipit--api-request)
+               (lambda (_endpoint &rest _)
+                 '((subscribed . t) (ignored . :json-false)))))
+      (let ((result (shipit--get-thread-subscription "owner/repo" "pr" 42)))
+        (should (equal result "subscribed"))))))
+
+(ert-deftest test-thread-sub-github-dispatch-set ()
+  ;; GIVEN the GitHub backend is active and globally registered
+  ;; WHEN calling the dispatch wrapper shipit--set-thread-subscription
+  ;; THEN it resolves to the GitHub implementation.
+  (let ((shipit-pr-backend 'github)
+        (shipit-pr-backend-config nil)
+        (shipit-github-token "test-token")
+        (shipit-current-repo "owner/repo")
+        (called nil))
+    (cl-letf (((symbol-function 'shipit--api-request-post)
+               (lambda (_endpoint _data &optional _method)
+                 (setq called t)
+                 '((subscribed . t)))))
+      (shipit--set-thread-subscription "owner/repo" "pr" 42 t)
+      (should called))))
+
 (provide 'test-thread-subscription)
 ;;; test-thread-subscription.el ends here

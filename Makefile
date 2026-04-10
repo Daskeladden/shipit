@@ -75,6 +75,7 @@ test-unit: compile
 		-l test/test-shipit-merge.el \
 		-l test/test-shipit-repo-subscription.el \
 		-l test/test-shipit-subscriptions.el \
+		-l test/test-thread-subscription.el \
 		-l test/test-shipit-releases-buffer.el \
 		-f ert-run-tests-batch-and-exit
 

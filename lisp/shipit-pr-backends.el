@@ -100,6 +100,8 @@
 ;;   :get-repo-starred        — (config) → t or nil
 ;;   :set-repo-starred        — (config starred) → result
 ;;   :fetch-watched-repos     — (config) → list of repo alists
+;;   :get-thread-subscription — (config repo type number) → state string or nil
+;;   :set-thread-subscription — (config repo type number subscribed) → t on success
 
 ;;; Code:
 
@@ -256,6 +258,25 @@ Iterates ALL registered backends so cross-forge URLs in comments get overlays."
   (dolist (entry shipit-pr-backends)
     (let ((fn (plist-get (cdr entry) :create-reference-overlays)))
       (when fn (funcall fn repo search-start search-limit inc-found inc-overlay)))))
+
+(defun shipit--get-thread-subscription (repo type number)
+  "Get thread subscription state for TYPE NUMBER in REPO via backend.
+Returns \"subscribed\", \"unsubscribed\", \"ignored\", or nil if unsupported."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :get-thread-subscription)))
+    (when fn (funcall fn config repo type number))))
+
+(defun shipit--set-thread-subscription (repo type number subscribed)
+  "Set thread subscription for TYPE NUMBER in REPO via backend.
+SUBSCRIBED is t to subscribe, nil to unsubscribe.
+Returns t on success, nil if unsupported."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :set-thread-subscription)))
+    (when fn (funcall fn config repo type number subscribed))))
 
 (provide 'shipit-pr-backends)
 ;;; shipit-pr-backends.el ends here

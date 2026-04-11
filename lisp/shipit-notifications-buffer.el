@@ -410,7 +410,7 @@ Strips HTML tags and renders as plain text."
     (shipit-notifications-buffer--insert-content-into-section
      section
      (lambda () (shipit-notifications-buffer--insert-activity-details activity)))
-    ;; Fetch richer data for PRs
+    ;; PR-only: fetch rich PR metadata (labels, branch, author, draft state)
     (when (and (string= type "pr") repo (integerp number))
       (condition-case err
           (let* ((resolved (shipit-pr--resolve-for-repo repo))
@@ -422,25 +422,31 @@ Strips HTML tags and renders as plain text."
               (let ((pr-data (funcall fetch-fn config number)))
                 (when pr-data
                   (shipit-notifications-buffer--update-pr-details section pr-data)))
-              (message nil))
-            ;; Fetch activity timeline async
-            (when updated-at
-              (let ((buf (current-buffer))
-                    (sect section))
-                (shipit--fetch-timeline-events-async
-                 repo number
-                 (lambda (events)
-                   (when (buffer-live-p buf)
-                     (with-current-buffer buf
-                       (let ((inhibit-read-only t))
-                         (save-excursion
-                           (goto-char (marker-position (oref sect end)))
-                           (let ((magit-insert-section--parent sect))
-                             (shipit-notifications-buffer--insert-activity-section
-                              events updated-at repo number))
-                           (oset sect end (point-marker)))))))))))
+              (message nil)))
         (error
-         (shipit--debug-log "Failed to fetch PR details: %s" (error-message-string err)))))))
+         (shipit--debug-log "Failed to fetch PR details: %s" (error-message-string err)))))
+    ;; PR and Issue: fetch activity timeline async and insert events
+    ;; since the notification was triggered.
+    (when (and (or (string= type "pr") (string= type "issue"))
+               repo (integerp number) updated-at)
+      (condition-case err
+          (let ((buf (current-buffer))
+                (sect section))
+            (shipit--fetch-timeline-events-async
+             repo number
+             (lambda (events)
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (let ((inhibit-read-only t))
+                     (save-excursion
+                       (goto-char (marker-position (oref sect end)))
+                       (let ((magit-insert-section--parent sect))
+                         (shipit-notifications-buffer--insert-activity-section
+                          events updated-at repo number))
+                       (oset sect end (point-marker)))))))))
+        (error
+         (shipit--debug-log "Failed to fetch timeline events: %s"
+                            (error-message-string err)))))))
 
 (defun shipit-notifications-buffer--update-pr-details (section pr-data)
   "Update SECTION with richer PR-DATA."

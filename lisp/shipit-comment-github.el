@@ -206,12 +206,14 @@ Skips review comments (they use GraphQL)."
                   t t))
            pending-requests))))
 
-    ;; Wait for all requests to complete (10s timeout)
+    ;; Wait for all requests to complete (10s timeout).
+    ;; Use accept-process-output with a timeout instead of sleep-for so we
+    ;; wake up immediately when any response arrives, bounded only by actual
+    ;; HTTP latency rather than a fixed 50ms polling interval.
     (let ((wait-start (float-time)))
       (while (and (< (- (float-time) wait-start) 10.0)
                   (< (hash-table-count results) (length pending-requests)))
-        (sleep-for 0.05)
-        (accept-process-output nil 0.01)))
+        (accept-process-output nil 0.1)))
 
     (shipit--debug-log "[reactions-batch] Completed %d/%d in %.3fs"
                        (hash-table-count results) (length pending-requests)

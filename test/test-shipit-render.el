@@ -441,5 +441,62 @@ THEN the table pipe structure is preserved and tags are removed."
     (should (string= "| Feature | key |\n|---------|-----|\n| Chat: clear | C-c C-l |"
                       result))))
 
+;;; Markdown render cache tests
+
+(ert-deftest test-shipit--render-markdown-cache-hit ()
+  "GIVEN the markdown cache is empty
+WHEN rendering the same text twice
+THEN the second call returns the cached value and only one entry exists."
+  (let ((shipit--markdown-render-cache (make-hash-table :test 'equal)))
+    (let ((first (shipit--render-markdown "Hello **world**"))
+          (second (shipit--render-markdown "Hello **world**")))
+      (should (equal first second))
+      (should (= 1 (hash-table-count shipit--markdown-render-cache))))))
+
+(ert-deftest test-shipit--render-markdown-cache-different-text ()
+  "GIVEN two different markdown texts
+WHEN rendering each
+THEN the cache holds two distinct entries."
+  (let ((shipit--markdown-render-cache (make-hash-table :test 'equal)))
+    (shipit--render-markdown "Text one")
+    (shipit--render-markdown "Text two")
+    (should (= 2 (hash-table-count shipit--markdown-render-cache)))))
+
+(ert-deftest test-shipit--render-markdown-cache-skips-rerendering ()
+  "GIVEN the cache holds a rendered entry
+WHEN rendering the same text again
+THEN the underlying markdown processing is not re-executed."
+  (let ((shipit--markdown-render-cache (make-hash-table :test 'equal))
+        (call-count 0))
+    (shipit--render-markdown "Cached content")
+    (cl-letf (((symbol-function 'shipit--strip-inline-html-tags)
+               (lambda (text) (cl-incf call-count) text)))
+      (shipit--render-markdown "Cached content")
+      (should (= 0 call-count)))))
+
+(ert-deftest test-shipit--render-markdown-cache-clear ()
+  "GIVEN the cache has entries
+WHEN shipit--markdown-cache-clear is called
+THEN the cache is empty."
+  (let ((shipit--markdown-render-cache (make-hash-table :test 'equal)))
+    (shipit--render-markdown "Some text")
+    (should (> (hash-table-count shipit--markdown-render-cache) 0))
+    (shipit--markdown-cache-clear)
+    (should (= 0 (hash-table-count shipit--markdown-render-cache)))))
+
+(ert-deftest test-shipit--render-markdown-cache-evicts-when-full ()
+  "GIVEN the cache is at the size limit
+WHEN rendering a new text
+THEN the cache is cleared before storing the new entry."
+  (let ((shipit--markdown-render-cache (make-hash-table :test 'equal))
+        (shipit-markdown-render-cache-size 3))
+    (shipit--render-markdown "one")
+    (shipit--render-markdown "two")
+    (shipit--render-markdown "three")
+    (should (= 3 (hash-table-count shipit--markdown-render-cache)))
+    (shipit--render-markdown "four")
+    ;; Cache was cleared and the new entry stored, so count is 1
+    (should (= 1 (hash-table-count shipit--markdown-render-cache)))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

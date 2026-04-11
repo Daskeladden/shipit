@@ -3363,51 +3363,80 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
     (select-frame-set-input-focus frame)
     frame))
 
+(defcustom shipit-markdown-render-cache-size 500
+  "Maximum number of entries in the markdown render cache.
+When the cache exceeds this size, it is cleared entirely before
+storing the next entry.  Set to 0 to disable caching."
+  :type 'integer
+  :group 'shipit)
+
+(defvar shipit--markdown-render-cache (make-hash-table :test 'equal :size 256)
+  "Cache of rendered markdown keyed by md5 hash of the input text.
+Value is the propertized rendered string.  Size capped by
+`shipit-markdown-render-cache-size'.")
+
+(defun shipit--markdown-cache-clear ()
+  "Clear the markdown render cache."
+  (interactive)
+  (clrhash shipit--markdown-render-cache))
+
+(defun shipit--render-markdown-uncached (text)
+  "Render markdown TEXT without consulting the cache.
+This is the actual rendering implementation; callers should use
+`shipit--render-markdown' which adds caching."
+  (condition-case err
+      (with-temp-buffer
+        ;; Ensure markdown-mode is available
+        (unless (featurep 'markdown-mode)
+          (require 'markdown-mode nil t))
+
+        (if (featurep 'markdown-mode)
+            (progn
+              ;; Step 1: Normalize CRLF
+              ;; Step 2: Strip inline HTML tags (e.g., <kbd>) before alignment
+              ;; Step 3: Align tables with pandoc
+              ;; Step 4: Escape mid-word underscores (e.g., file_name.py)
+              ;; Note: Don't process images yet - they'll be done after markdown rendering
+              (let* ((normalized (replace-regexp-in-string "\r" "" text))
+                     (html-stripped (shipit--strip-inline-html-tags normalized))
+                     (html-converted (shipit--convert-inline-html html-stripped))
+                     (aligned (shipit--align-markdown-tables-with-pandoc html-converted))
+                     (escaped (shipit--escape-mid-word-underscores aligned))
+                     (numbered (shipit--auto-increment-ordered-lists escaped)))
+                (insert numbered))
+              (delay-mode-hooks (markdown-mode))
+              (font-lock-ensure)
+              ;; Note: Code block backgrounds are applied via overlays AFTER
+              ;; text is inserted into the final buffer (see shipit--apply-code-block-backgrounds-in-region)
+              ;; because overlays don't transfer with buffer-string
+              ;; Step 4: Process inline images AFTER markdown rendering
+              ;; This preserves the display properties that would otherwise be lost
+              (let ((fontified (buffer-string)))
+                (shipit--process-inline-images fontified)))
+          ;; Fallback if markdown-mode not available
+          text))
+    (error
+     ;; If anything goes wrong, return original text
+     (when (fboundp 'shipit--debug-log)
+       (shipit--debug-log "Markdown rendering failed: %s" err))
+     text)))
+
 (defun shipit--render-markdown (text)
   "Apply GitHub markdown rendering to TEXT using markdown-mode's font-lock system.
-This leverages Emacs' built-in markdown fontification for proper rendering.
-Normalizes line endings (strips \\r) to handle CRLF from GitHub API.
-Aligns markdown tables using pandoc if available.
-Escapes mid-word underscores to prevent unwanted italic rendering.
-Processes inline images AFTER markdown rendering to preserve display properties."
+Caches the result keyed by md5 hash of TEXT to avoid redoing the
+expensive font-lock pass for repeated comment bodies.
+Cache size is bounded by `shipit-markdown-render-cache-size'."
   (if (not text)
       ""
-    (condition-case err
-        (with-temp-buffer
-          ;; Ensure markdown-mode is available
-          (unless (featurep 'markdown-mode)
-            (require 'markdown-mode nil t))
-
-          (if (featurep 'markdown-mode)
-              (progn
-                ;; Step 1: Normalize CRLF
-                ;; Step 2: Strip inline HTML tags (e.g., <kbd>) before alignment
-                ;; Step 3: Align tables with pandoc
-                ;; Step 4: Escape mid-word underscores (e.g., file_name.py)
-                ;; Note: Don't process images yet - they'll be done after markdown rendering
-                (let* ((normalized (replace-regexp-in-string "\r" "" text))
-                       (html-stripped (shipit--strip-inline-html-tags normalized))
-                       (html-converted (shipit--convert-inline-html html-stripped))
-                       (aligned (shipit--align-markdown-tables-with-pandoc html-converted))
-                       (escaped (shipit--escape-mid-word-underscores aligned))
-                       (numbered (shipit--auto-increment-ordered-lists escaped)))
-                  (insert numbered))
-                (delay-mode-hooks (markdown-mode))
-                (font-lock-ensure)
-                ;; Note: Code block backgrounds are applied via overlays AFTER
-                ;; text is inserted into the final buffer (see shipit--apply-code-block-backgrounds-in-region)
-                ;; because overlays don't transfer with buffer-string
-                ;; Step 4: Process inline images AFTER markdown rendering
-                ;; This preserves the display properties that would otherwise be lost
-                (let ((fontified (buffer-string)))
-                  (shipit--process-inline-images fontified)))
-            ;; Fallback if markdown-mode not available
-            text))
-      (error
-       ;; If anything goes wrong, return original text
-       (when (fboundp 'shipit--debug-log)
-         (shipit--debug-log "Markdown rendering failed: %s" err))
-       text))))
+    (let* ((cache-key (md5 text))
+           (cached (gethash cache-key shipit--markdown-render-cache)))
+      (or cached
+          (let ((result (shipit--render-markdown-uncached text)))
+            (when (>= (hash-table-count shipit--markdown-render-cache)
+                      shipit-markdown-render-cache-size)
+              (clrhash shipit--markdown-render-cache))
+            (puthash cache-key result shipit--markdown-render-cache)
+            result)))))
 
 (defun shipit--find-matching-details-close (text start-pos)
   "Find the position of the closing </details> that matches the <details> at START-POS.

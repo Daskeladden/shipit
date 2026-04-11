@@ -223,6 +223,17 @@ CONFIG must contain :repo.  Returns a list of reaction alists."
     (shipit--debug-log "GitHub backend: fetching reactions for issue #%s from %s" issue-number repo)
     (shipit--api-request-paginated endpoint)))
 
+(defun shipit-issue-github--fetch-reactions-async (config issue-number callback)
+  "Fetch reactions for issue ISSUE-NUMBER asynchronously using CONFIG.
+CONFIG must contain :repo.  Calls CALLBACK with the list of reaction
+alists when complete.  Non-blocking — the HTTP requests run via
+`url-retrieve' so the main thread stays responsive."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/issues/%s/reactions" repo issue-number)))
+    (shipit--debug-log "GitHub backend: async fetching reactions for issue #%s from %s"
+                       issue-number repo)
+    (shipit--api-request-paginated-async endpoint callback)))
+
 (defun shipit-issue-github--add-reaction (config issue-number reaction)
   "Add REACTION to issue ISSUE-NUMBER using CONFIG.
 CONFIG must contain :repo.  REACTION is a GitHub reaction string.
@@ -324,6 +335,7 @@ via the PR backend's mark-notification-read function."
        :toggle-reaction #'shipit-issue-github--toggle-reaction
        :update-description #'shipit-issue-github--update-description
        :fetch-reactions #'shipit-issue-github--fetch-reactions
+       :fetch-reactions-async #'shipit-issue-github--fetch-reactions-async
        :add-reaction #'shipit-issue-github--add-reaction
        :remove-reaction #'shipit-issue-github--remove-reaction
        :creation-fields #'shipit-issue-github--creation-fields

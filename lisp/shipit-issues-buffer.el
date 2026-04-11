@@ -74,6 +74,7 @@
 (declare-function shipit-issue--backend-has-transitions-p "shipit-issue-backends")
 (declare-function shipit-issue--backend-has-reactions-p "shipit-issue-backends")
 (declare-function shipit-issues--fetch-reactions "shipit-issues")
+(declare-function shipit-issues--fetch-reactions-async "shipit-issues")
 (declare-function shipit-issues--add-reaction "shipit-issues")
 (declare-function shipit-issues--remove-reaction "shipit-issues")
 (declare-function shipit-gh-etag--user-state-key-p "shipit-gh-etag")
@@ -262,9 +263,9 @@ buffer-local overrides so the issue fetches use the correct backend
     (let ((issue-data (shipit-issues--fetch-issue repo issue-number)))
       (when issue-data
         (setq shipit-issue-buffer-data issue-data)
-        ;; Fetch description reactions via issue backend
-        (when (shipit-issue--backend-has-reactions-p (shipit-issue--get-backend))
-          (shipit-issues--fetch-reactions repo issue-number))
+        ;; Description reactions are fetched asynchronously below, after
+        ;; the initial render, so a large reactions list does not block
+        ;; the buffer from becoming visible.
         (let ((inhibit-read-only t)
               (pos (point)))
           (erase-buffer)
@@ -272,9 +273,9 @@ buffer-local overrides so the issue fetches use the correct backend
             (shipit-issue--insert-header-section repo issue-data issue-number)
             (shipit-issue--insert-metadata-section repo issue-data)
             (shipit-issue--insert-description-section repo issue-data issue-number)
-            ;; Child work items (epics) — placeholder, loaded async
+            ;; Child work items -- placeholder, loaded async
             (shipit-issue--insert-child-items-section repo issue-data)
-            ;; Linked work items — collapsible section
+            ;; Linked work items -- collapsible section
             (let ((issuelinks (cdr (assq 'issuelinks issue-data))))
               (when issuelinks
                 (let ((columns (shipit-issue--get-work-item-columns)))
@@ -282,7 +283,19 @@ buffer-local overrides so the issue fetches use the correct backend
             (shipit-issue--insert-activity-section repo issue-data)
             (shipit-issue--insert-comments-placeholder repo issue-number))
           (goto-char (min pos (point-max))))
-        ;; Fetch comments async — pattern from shipit--replace-general-comments-section-with-content
+        ;; Fetch description reactions asynchronously so the initial
+        ;; render is not blocked. The description line is updated in
+        ;; place when the fetch completes.
+        (when (shipit-issue--backend-has-reactions-p (shipit-issue--get-backend))
+          (let ((target-buffer (current-buffer)))
+            (shipit-issues--fetch-reactions-async
+             repo issue-number
+             (lambda (_reactions)
+               (when (buffer-live-p target-buffer)
+                 (with-current-buffer target-buffer
+                   (shipit-issue--update-description-reactions-display
+                    issue-number)))))))
+        ;; Fetch comments async
         (let ((target-buffer (current-buffer))
               (root-section magit-root-section))
           (shipit-issues--fetch-comments-async

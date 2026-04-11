@@ -116,6 +116,30 @@ Caches the result in `shipit--reaction-cache' with key \"pr-ISSUE-NUMBER\"."
         (puthash cache-key (or reactions '()) shipit--reaction-cache)
         (or reactions '())))))
 
+(defun shipit-issues--fetch-reactions-async (repo issue-number callback)
+  "Fetch reactions for ISSUE-NUMBER in REPO asynchronously.
+Populates `shipit--reaction-cache' with key \"pr-ISSUE-NUMBER\" when
+the fetch completes, then calls CALLBACK with the list of reactions.
+Falls back to the synchronous fetch when the backend does not provide
+an async implementation.  Returns nil; the result flows via CALLBACK."
+  (let* ((resolved (shipit-issue--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (async-fn (plist-get backend :fetch-reactions-async))
+         (cache-key (format "pr-%s" issue-number))
+         (wrapped-callback (lambda (reactions)
+                             (puthash cache-key (or reactions '())
+                                      shipit--reaction-cache)
+                             (when callback
+                               (funcall callback (or reactions '()))))))
+    (cond
+     (async-fn
+      (funcall async-fn config issue-number wrapped-callback))
+     ((plist-get backend :fetch-reactions)
+      ;; Fall back to sync fetch wrapped in a callback.
+      (funcall wrapped-callback
+               (shipit-issues--fetch-reactions repo issue-number))))))
+
 (defun shipit-issues--add-reaction (repo issue-number reaction)
   "Add REACTION to issue ISSUE-NUMBER in REPO via the active backend.
 Returns the reaction alist."

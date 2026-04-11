@@ -588,5 +588,54 @@ THEN 'Change status' does NOT appear."
       (shipit-issue--work-item-actions "PROJ-42")
       (should-not (member "Change status" offered-actions)))))
 
+;;; Chunked comment rendering tests
+
+(ert-deftest test-shipit-issue--insert-comments-chunked-yields-after-chunk ()
+  "GIVEN 25 comments and chunk size 10
+WHEN inserting comments via the chunked helper
+THEN the yield function is called twice (after comments 10 and 20)."
+  (let ((shipit-comments-render-chunk-size 10)
+        (insert-calls 0)
+        (yield-calls 0))
+    (cl-letf (((symbol-function 'shipit-issue--insert-single-comment)
+               (lambda (&rest _) (cl-incf insert-calls)))
+              ((symbol-function 'shipit--render-yield)
+               (lambda (&rest _) (cl-incf yield-calls))))
+      (shipit-issue--insert-comments-chunked
+       "owner/repo" 1
+       (cl-loop for i below 25 collect `((id . ,i))))
+      (should (= 25 insert-calls))
+      (should (= 2 yield-calls)))))
+
+(ert-deftest test-shipit-issue--insert-comments-chunked-no-yield-under-chunk ()
+  "GIVEN fewer comments than the chunk size
+WHEN inserting comments
+THEN the yield function is not called."
+  (let ((shipit-comments-render-chunk-size 10)
+        (yield-calls 0))
+    (cl-letf (((symbol-function 'shipit-issue--insert-single-comment)
+               (lambda (&rest _) nil))
+              ((symbol-function 'shipit--render-yield)
+               (lambda (&rest _) (cl-incf yield-calls))))
+      (shipit-issue--insert-comments-chunked
+       "owner/repo" 1
+       (cl-loop for i below 5 collect `((id . ,i))))
+      (should (= 0 yield-calls)))))
+
+(ert-deftest test-shipit-issue--insert-comments-chunked-disabled-with-zero-size ()
+  "GIVEN chunk size 0
+WHEN inserting comments
+THEN yield is never called."
+  (let ((shipit-comments-render-chunk-size 0)
+        (yield-calls 0))
+    (cl-letf (((symbol-function 'shipit-issue--insert-single-comment)
+               (lambda (&rest _) nil))
+              ((symbol-function 'shipit--render-yield)
+               (lambda (&rest _) (cl-incf yield-calls))))
+      (shipit-issue--insert-comments-chunked
+       "owner/repo" 1
+       (cl-loop for i below 50 collect `((id . ,i))))
+      (should (= 0 yield-calls)))))
+
 (provide 'test-shipit-issues-buffer)
 ;;; test-shipit-issues-buffer.el ends here

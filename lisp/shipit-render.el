@@ -3368,6 +3368,14 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
     (select-frame-set-input-focus frame)
     frame))
 
+(defun shipit--render-yield ()
+  "Refresh the display during a long-running render operation.
+Calls `redisplay' so partially-rendered content becomes visible to
+the user.  Intended to be called periodically from chunked insertion
+loops so the user sees content appearing progressively instead of
+waiting for the whole render to finish."
+  (redisplay t))
+
 (defcustom shipit-markdown-render-cache-size 500
   "Maximum number of entries in the markdown render cache.
 When the cache exceeds this size, it is cleared entirely before

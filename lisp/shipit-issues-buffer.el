@@ -582,6 +582,28 @@ Uses the same pattern as `shipit--replace-general-comments-section-with-content'
                                   (seq-drop filtered old-index))))
               (oset parent-section children fixed))))))))
 
+(defcustom shipit-comments-render-chunk-size 10
+  "Number of comments to render between progressive display refreshes.
+After every N comments are inserted into the issue buffer, the display
+is refreshed via `shipit--render-yield' so the user sees comments
+appearing progressively instead of waiting for the whole batch to
+finish.  Set to 0 to disable progressive rendering."
+  :type 'integer
+  :group 'shipit)
+
+(defun shipit-issue--insert-comments-chunked (repo issue-number comments)
+  "Insert COMMENTS for ISSUE-NUMBER in REPO with progressive display refresh.
+Calls `shipit--render-yield' after every `shipit-comments-render-chunk-size'
+comments so the user sees content appearing progressively."
+  (let ((chunk-size shipit-comments-render-chunk-size)
+        (counter 0))
+    (dolist (comment comments)
+      (shipit-issue--insert-single-comment repo issue-number comment)
+      (cl-incf counter)
+      (when (and (> chunk-size 0)
+                 (zerop (mod counter chunk-size)))
+        (shipit--render-yield)))))
+
 (defun shipit-issue--insert-comments-section (repo issue-number comments)
   "Insert comments section with COMMENTS for issue ISSUE-NUMBER in REPO."
   (magit-insert-section (issue-comments nil nil)
@@ -593,8 +615,7 @@ Uses the same pattern as `shipit--replace-general-comments-section-with-content'
     (magit-insert-section-body
       (if (or (null comments) (= (length comments) 0))
           (insert (propertize "   No comments\n" 'face 'font-lock-comment-face))
-        (dolist (comment comments)
-          (shipit-issue--insert-single-comment repo issue-number comment)))
+        (shipit-issue--insert-comments-chunked repo issue-number comments))
       (insert "\n"))))
 
 (defun shipit-issue--insert-single-comment (repo issue-number comment)

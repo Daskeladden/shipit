@@ -232,6 +232,66 @@ Returns plist with :json, :status, :headers for GitHub protocol compliance."
                                 (funcall error-callback (format "HTTP %d" status-code)))))
                           (kill-buffer (current-buffer)))))))
 
+(defun shipit--url-retrieve-async-with-headers (url method headers data success-callback error-callback)
+  "Like `shipit--url-retrieve-async' but also expose response headers.
+SUCCESS-CALLBACK is called with two arguments: the parsed JSON body and
+an alist of response headers (name and value both strings).  Used by
+callers that need HTTP response metadata such as the Link header for
+pagination."
+  (setq system-time-locale "C")
+  (let ((url-request-method method)
+        (url-request-extra-headers headers)
+        (url-request-data (when data (encode-coding-string data 'utf-8))))
+    (url-retrieve
+     url
+     (lambda (status)
+       (let ((error-status (plist-get status :error)))
+         (if error-status
+             (funcall error-callback error-status)
+           (goto-char (point-min))
+           (let* ((status-line (buffer-substring (point-min) (line-end-position)))
+                  (status-code (when (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
+                                 (string-to-number (match-string 1 status-line))))
+                  (response-headers nil))
+             ;; Parse response headers into an alist until the blank line
+             (forward-line 1)
+             (while (and (< (point) (point-max))
+                         (not (looking-at "\r?\n")))
+               (let ((line (buffer-substring (point) (line-end-position))))
+                 (when (string-match "^\\([^:]+\\):\\s-*\\(.*\\)$" line)
+                   (push (cons (match-string 1 line)
+                               (string-trim-right (match-string 2 line) "\r"))
+                         response-headers))
+                 (forward-line 1)))
+             (let* ((headers-end (search-forward "\n\n" nil t))
+                    (json-data (when (and headers-end (< (point) (point-max)))
+                                 (set-buffer-multibyte t)
+                                 (decode-coding-region (point) (point-max) 'utf-8)
+                                 (when shipit-strip-emoji-variation-selectors
+                                   (shipit--strip-emoji-variation-selectors (point) (point-max)))
+                                 (let ((json-array-type 'list)
+                                       (json-object-type 'alist)
+                                       (json-key-type 'symbol))
+                                   (condition-case err
+                                       (json-read)
+                                     (error
+                                      (signal (car err) (cdr err))))))))
+               (if (and status-code (>= status-code 200) (< status-code 300))
+                   (funcall success-callback json-data (nreverse response-headers))
+                 (funcall error-callback (format "HTTP %d" status-code)))))
+           (kill-buffer (current-buffer))))))))
+
+(defun shipit--parse-link-header-last-page (headers)
+  "Return the last-page number from HEADERS, an alist of HTTP headers.
+HEADERS is the response-headers alist produced by
+`shipit--url-retrieve-async-with-headers'.  Looks for a Link header
+entry containing a `rel=\"last\"' segment and extracts the page query
+parameter.  Returns an integer or nil if not found."
+  (let ((link (cdr (assoc "Link" headers))))
+    (when (and link
+               (string-match "<[^>]*[?&]page=\\([0-9]+\\)[^>]*>;\\s-*rel=\"last\"" link))
+      (string-to-number (match-string 1 link)))))
+
 ;; Helper functions for cache keys
 (defun shipit--reaction-cache-key (repo comment-id is-inline)
   "Generate a repository-specific cache key for reactions.
@@ -6193,6 +6253,47 @@ Fetches multiple pages to ensure recent events are included for large PRs."
           (setq continue nil))))
     (shipit--debug-log "Fetched %d total timeline events across %d pages" (length all-events) (1- page))
     all-events))
+
+(defun shipit--fetch-recent-timeline-events-async (repo pr-number callback)
+  "Fetch the most recent timeline events for PR-NUMBER in REPO.
+Calls CALLBACK with a list of events.  Unlike
+`shipit--fetch-timeline-events-async' which walks pages from the
+beginning, this variant uses the Link header from the first response
+to jump directly to the last page, which is where recent events live
+since GitHub returns timeline events in chronological order oldest
+first.  For the common case of a busy issue with many timeline pages
+this turns 8-10 sequential HTTP calls into 2."
+  (shipit--debug-log "ASYNC: Starting recent-timeline fetch for %s#%s" repo pr-number)
+  (let* ((endpoint (format "/repos/%s/issues/%s/timeline" repo pr-number))
+         (per-page 100)
+         (base-url (concat (or shipit-api-url "https://api.github.com") endpoint))
+         (url1 (format "%s?per_page=%d&page=1" base-url per-page))
+         (headers `(("Accept" . "application/vnd.github+json")
+                    ("Authorization" . ,(format "Bearer %s" (shipit--github-token)))
+                    ("X-GitHub-Api-Version" . "2022-11-28"))))
+    (shipit--url-retrieve-async-with-headers
+     url1 "GET" headers nil
+     (lambda (page1-events response-headers)
+       (let ((last-page (shipit--parse-link-header-last-page response-headers)))
+         (shipit--debug-log "ASYNC: Recent-timeline page 1 got %d events, last-page=%s"
+                            (length (or page1-events '())) last-page)
+         (if (or (null last-page) (<= last-page 1))
+             (funcall callback (or page1-events '()))
+           (let ((url-last (format "%s?per_page=%d&page=%d"
+                                   base-url per-page last-page)))
+             (shipit--debug-log "ASYNC: Recent-timeline jumping to last page %d" last-page)
+             (shipit--url-retrieve-async
+              url-last "GET" headers nil
+              (lambda (last-events)
+                (shipit--debug-log "ASYNC: Recent-timeline last page got %d events"
+                                   (length (or last-events '())))
+                (funcall callback (or last-events '())))
+              (lambda (err)
+                (shipit--debug-log "ASYNC: Recent-timeline last-page error: %s" err)
+                (funcall callback (or page1-events '()))))))))
+     (lambda (err)
+       (shipit--debug-log "ASYNC: Recent-timeline page 1 error: %s" err)
+       (funcall callback nil)))))
 
 (defun shipit--fetch-timeline-events-async (repo pr-number callback)
   "Fetch timeline events asynchronously for PR-NUMBER in REPO.

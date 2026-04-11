@@ -40,6 +40,7 @@
 (declare-function shipit-pr--resolve-for-repo "shipit-pr-backends")
 (declare-function shipit--insert-activity-event "shipit-pr-sections")
 (declare-function shipit--fetch-timeline-events-async "shipit-http")
+(declare-function shipit--fetch-recent-timeline-events-async "shipit-http")
 (declare-function shipit--get-pr-field-icon "shipit-render")
 (declare-function shipit-toggle-timestamp-format "shipit-commands")
 (declare-function shipit--format-timestamp "shipit-core")
@@ -432,7 +433,7 @@ Strips HTML tags and renders as plain text."
       (condition-case err
           (let ((buf (current-buffer))
                 (sect section))
-            (shipit--fetch-timeline-events-async
+            (shipit--fetch-recent-timeline-events-async
              repo number
              (lambda (events)
                (when (buffer-live-p buf)

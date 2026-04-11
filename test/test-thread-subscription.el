@@ -105,86 +105,120 @@
 
 (ert-deftest test-thread-sub-github-get-pr-subscribed ()
   ;; GIVEN a PR where the user is subscribed
-  ;; WHEN getting thread subscription
+  ;; WHEN getting thread subscription via GraphQL
   ;; THEN returns "subscribed".
   (test-thread-sub--with-mock-github
-    (cl-letf (((symbol-function 'shipit--api-request)
-               (lambda (_endpoint &rest _)
-                 '((subscribed . t) (ignored . :json-false)))))
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (_query _vars)
+                 '((repository
+                    (pullRequest
+                     (viewerSubscription . "SUBSCRIBED")
+                     (id . "PR_abc123")))))))
       (let ((result (shipit-pr-github--get-thread-subscription
                      '(:repo "owner/repo") "owner/repo" "pr" 42)))
         (should (equal result "subscribed"))))))
 
 (ert-deftest test-thread-sub-github-get-issue-subscribed ()
   ;; GIVEN an issue where the user is subscribed
-  ;; WHEN getting thread subscription
-  ;; THEN returns "subscribed" and uses the issues endpoint.
+  ;; WHEN getting thread subscription via GraphQL
+  ;; THEN returns "subscribed" and the query uses the issue field.
   (test-thread-sub--with-mock-github
-    (let ((requested-endpoint nil))
-      (cl-letf (((symbol-function 'shipit--api-request)
-                 (lambda (endpoint &rest _)
-                   (setq requested-endpoint endpoint)
-                   '((subscribed . t) (ignored . :json-false)))))
-        (shipit-pr-github--get-thread-subscription
-         '(:repo "owner/repo") "owner/repo" "issue" 8)
-        (should (string-match-p "/repos/owner/repo/issues/8/subscription"
-                                requested-endpoint))))))
+    (let ((query-string nil))
+      (cl-letf (((symbol-function 'shipit--graphql-query)
+                 (lambda (query _vars)
+                   (setq query-string query)
+                   '((repository
+                      (issue
+                       (viewerSubscription . "SUBSCRIBED")
+                       (id . "I_abc123")))))))
+        (let ((result (shipit-pr-github--get-thread-subscription
+                       '(:repo "owner/repo") "owner/repo" "issue" 8)))
+          (should (equal result "subscribed"))
+          (should (string-match-p "issue(number" query-string)))))))
 
 (ert-deftest test-thread-sub-github-get-unsubscribed ()
   ;; GIVEN a PR where the user is not subscribed
-  ;; WHEN getting thread subscription
+  ;; WHEN getting thread subscription via GraphQL
   ;; THEN returns "unsubscribed".
   (test-thread-sub--with-mock-github
-    (cl-letf (((symbol-function 'shipit--api-request)
-               (lambda (_endpoint &rest _) nil)))
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (_query _vars)
+                 '((repository
+                    (pullRequest
+                     (viewerSubscription . "UNSUBSCRIBED")
+                     (id . "PR_abc123")))))))
       (let ((result (shipit-pr-github--get-thread-subscription
                      '(:repo "owner/repo") "owner/repo" "pr" 42)))
         (should (equal result "unsubscribed"))))))
 
 (ert-deftest test-thread-sub-github-get-ignored ()
   ;; GIVEN a PR where the user has ignored the thread
-  ;; WHEN getting thread subscription
+  ;; WHEN getting thread subscription via GraphQL
   ;; THEN returns "ignored".
   (test-thread-sub--with-mock-github
-    (cl-letf (((symbol-function 'shipit--api-request)
-               (lambda (_endpoint &rest _)
-                 '((subscribed . :json-false) (ignored . t)))))
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (_query _vars)
+                 '((repository
+                    (pullRequest
+                     (viewerSubscription . "IGNORED")
+                     (id . "PR_abc123")))))))
       (let ((result (shipit-pr-github--get-thread-subscription
                      '(:repo "owner/repo") "owner/repo" "pr" 42)))
         (should (equal result "ignored"))))))
 
 (ert-deftest test-thread-sub-github-subscribe-pr ()
-  ;; GIVEN a PR
-  ;; WHEN subscribing to the thread
-  ;; THEN PUT is sent with subscribed=true.
+  ;; GIVEN a PR whose id-query resolves to "PR_abc123"
+  ;; WHEN subscribing to it
+  ;; THEN the updateSubscription mutation is called with state "SUBSCRIBED"
+  ;;      and the node ID propagated from the id-query.
   (test-thread-sub--with-mock-github
-    (let ((called-with nil))
-      (cl-letf (((symbol-function 'shipit--api-request-post)
-                 (lambda (endpoint data &optional method)
-                   (setq called-with (list endpoint data method))
-                   '((subscribed . t)))))
+    (let ((mutation-vars nil)
+          (mutation-called nil))
+      (cl-letf (((symbol-function 'shipit--graphql-query)
+                 (lambda (query vars)
+                   (cond
+                    ((string-match-p "updateSubscription" query)
+                     (setq mutation-called t)
+                     (setq mutation-vars vars)
+                     '((updateSubscription
+                        (subscribable
+                         (viewerSubscription . "SUBSCRIBED")))))
+                    (t
+                     '((repository
+                        (pullRequest
+                         (id . "PR_abc123")))))))))
         (shipit-pr-github--set-thread-subscription
          '(:repo "owner/repo") "owner/repo" "pr" 42 t)
-        (should (string-match-p "/repos/owner/repo/issues/42/subscription"
-                                (nth 0 called-with)))
-        (should (eq t (cdr (assq 'subscribed (nth 1 called-with)))))
-        (should (equal "PUT" (nth 2 called-with)))))))
+        (should mutation-called)
+        (should (equal (cdr (assq 'id mutation-vars)) "PR_abc123"))
+        (should (equal (cdr (assq 'state mutation-vars)) "SUBSCRIBED"))))))
 
 (ert-deftest test-thread-sub-github-unsubscribe-pr ()
-  ;; GIVEN a PR the user is subscribed to
-  ;; WHEN unsubscribing from the thread
-  ;; THEN DELETE is sent to the subscription endpoint.
+  ;; GIVEN a PR the user is subscribed to (id-query returns "PR_abc123")
+  ;; WHEN unsubscribing
+  ;; THEN the updateSubscription mutation is called with state "UNSUBSCRIBED"
+  ;;      and the node ID propagated.
   (test-thread-sub--with-mock-github
-    (let ((called-with nil))
-      (cl-letf (((symbol-function 'shipit--api-request-post)
-                 (lambda (endpoint data &optional method)
-                   (setq called-with (list endpoint data method))
-                   nil)))
+    (let ((mutation-vars nil)
+          (mutation-called nil))
+      (cl-letf (((symbol-function 'shipit--graphql-query)
+                 (lambda (query vars)
+                   (cond
+                    ((string-match-p "updateSubscription" query)
+                     (setq mutation-called t)
+                     (setq mutation-vars vars)
+                     '((updateSubscription
+                        (subscribable
+                         (viewerSubscription . "UNSUBSCRIBED")))))
+                    (t
+                     '((repository
+                        (pullRequest
+                         (id . "PR_abc123")))))))))
         (shipit-pr-github--set-thread-subscription
          '(:repo "owner/repo") "owner/repo" "pr" 42 nil)
-        (should (string-match-p "/repos/owner/repo/issues/42/subscription"
-                                (nth 0 called-with)))
-        (should (equal "DELETE" (nth 2 called-with)))))))
+        (should mutation-called)
+        (should (equal (cdr (assq 'id mutation-vars)) "PR_abc123"))
+        (should (equal (cdr (assq 'state mutation-vars)) "UNSUBSCRIBED"))))))
 
 ;;; Tests -- GitHub Discussion thread subscription
 
@@ -279,32 +313,43 @@
 (ert-deftest test-thread-sub-github-dispatch-get ()
   ;; GIVEN the GitHub backend is active and globally registered
   ;; WHEN calling the dispatch wrapper shipit--get-thread-subscription
-  ;; THEN it resolves to the GitHub implementation.
+  ;; THEN it resolves to the GitHub GraphQL implementation.
   (let ((shipit-pr-backend 'github)
         (shipit-pr-backend-config nil)
         (shipit-github-token "test-token")
         (shipit-current-repo "owner/repo"))
-    (cl-letf (((symbol-function 'shipit--api-request)
-               (lambda (_endpoint &rest _)
-                 '((subscribed . t) (ignored . :json-false)))))
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (_query _vars)
+                 '((repository
+                    (pullRequest
+                     (viewerSubscription . "SUBSCRIBED")
+                     (id . "PR_abc123")))))))
       (let ((result (shipit--get-thread-subscription "owner/repo" "pr" 42)))
         (should (equal result "subscribed"))))))
 
 (ert-deftest test-thread-sub-github-dispatch-set ()
   ;; GIVEN the GitHub backend is active and globally registered
   ;; WHEN calling the dispatch wrapper shipit--set-thread-subscription
-  ;; THEN it resolves to the GitHub implementation.
+  ;; THEN it resolves to the GitHub GraphQL implementation.
   (let ((shipit-pr-backend 'github)
         (shipit-pr-backend-config nil)
         (shipit-github-token "test-token")
         (shipit-current-repo "owner/repo")
-        (called nil))
-    (cl-letf (((symbol-function 'shipit--api-request-post)
-               (lambda (_endpoint _data &optional _method)
-                 (setq called t)
-                 '((subscribed . t)))))
+        (mutation-called nil))
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (query _vars)
+                 (cond
+                  ((string-match-p "updateSubscription" query)
+                   (setq mutation-called t)
+                   '((updateSubscription
+                      (subscribable
+                       (viewerSubscription . "SUBSCRIBED")))))
+                  (t
+                   '((repository
+                      (pullRequest
+                       (id . "PR_abc123")))))))))
       (shipit--set-thread-subscription "owner/repo" "pr" 42 t)
-      (should called))))
+      (should mutation-called))))
 
 ;;; Tests -- transient thread group
 

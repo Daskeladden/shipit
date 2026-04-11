@@ -966,40 +966,8 @@ STATE is \"watching\", \"participating\", or \"ignoring\"."
      ((equal state "participating")
       (shipit--api-request-post endpoint nil "DELETE")))))
 
-(defun shipit-pr-github--get-thread-subscription (config repo type number)
-  "Get thread subscription state for TYPE NUMBER in REPO.
-TYPE is \"pr\", \"issue\", or \"discussion\".
-Returns \"subscribed\", \"unsubscribed\", or \"ignored\"."
-  (if (equal type "discussion")
-      (shipit-pr-github--get-discussion-subscription config repo number)
-    (let* ((endpoint (format "/repos/%s/issues/%d/subscription" repo number))
-           (data (shipit--api-request endpoint)))
-      (shipit--debug-log "GitHub: thread subscription for %s %s#%d: %S"
-                         type repo number data)
-      (cond
-       ((null data) "unsubscribed")
-       ((eq (cdr (assq 'ignored data)) t) "ignored")
-       ((eq (cdr (assq 'subscribed data)) t) "subscribed")
-       (t "unsubscribed")))))
-
-(defun shipit-pr-github--set-thread-subscription (config repo type number subscribed)
-  "Set thread subscription for TYPE NUMBER in REPO.
-SUBSCRIBED is t to subscribe, nil to unsubscribe."
-  (if (equal type "discussion")
-      (shipit-pr-github--set-discussion-subscription config repo number subscribed)
-    (let ((endpoint (format "/repos/%s/issues/%d/subscription" repo number)))
-      (shipit--debug-log "GitHub: %s thread %s %s#%d"
-                         (if subscribed "subscribing to" "unsubscribing from")
-                         type repo number)
-      (if subscribed
-          (shipit--api-request-post endpoint
-                                    '((subscribed . t) (ignored . :json-false))
-                                    "PUT")
-        (shipit--api-request-post endpoint nil "DELETE"))
-      t)))
-
-(defun shipit-pr-github--discussion-variables (repo number)
-  "Return GraphQL variables alist for discussion NUMBER in REPO.
+(defun shipit-pr-github--thread-variables (repo number)
+  "Return GraphQL variables alist for thread NUMBER in REPO.
 Signals an error if REPO is not of the form \"owner/name\"."
   (let* ((parts (split-string repo "/"))
          (owner (car parts))
@@ -1010,55 +978,69 @@ Signals an error if REPO is not of the form \"owner/name\"."
       (name . ,name)
       (number . ,number))))
 
-(defun shipit-pr-github--fetch-discussion-node-id (repo number)
-  "Fetch the GraphQL node ID for discussion NUMBER in REPO."
-  (let* ((variables (shipit-pr-github--discussion-variables repo number))
-         (query "query($owner: String!, $name: String!, $number: Int!) {
+(defun shipit-pr-github--thread-graphql-field (type)
+  "Return the GraphQL repository field name for thread TYPE.
+TYPE is \"pr\", \"issue\", or \"discussion\"."
+  (pcase type
+    ("pr" "pullRequest")
+    ("issue" "issue")
+    ("discussion" "discussion")
+    (_ (error "Unknown thread type: %S" type))))
+
+(defun shipit-pr-github--fetch-thread-node-id (repo type number)
+  "Fetch the GraphQL node ID for thread NUMBER in REPO of TYPE.
+TYPE is \"pr\", \"issue\", or \"discussion\"."
+  (let* ((field (shipit-pr-github--thread-graphql-field type))
+         (variables (shipit-pr-github--thread-variables repo number))
+         (query (format "query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    discussion(number: $number) { id }
+    %s(number: $number) { id }
   }
-}")
+}" field))
          (result (shipit--graphql-query query variables)))
-    (cdr (assq 'id (cdr (assq 'discussion
+    (cdr (assq 'id (cdr (assq (intern field)
                               (cdr (assq 'repository result))))))))
 
-(defun shipit-pr-github--get-discussion-subscription (_config repo number)
-  "Get subscription state for discussion NUMBER in REPO via GraphQL.
+(defun shipit-pr-github--get-thread-subscription (_config repo type number)
+  "Get thread subscription state for TYPE NUMBER in REPO via GraphQL.
+TYPE is \"pr\", \"issue\", or \"discussion\".
 Returns \"subscribed\", \"unsubscribed\", or \"ignored\"."
-  (let* ((variables (shipit-pr-github--discussion-variables repo number))
-         (query "query($owner: String!, $name: String!, $number: Int!) {
+  (let* ((field (shipit-pr-github--thread-graphql-field type))
+         (variables (shipit-pr-github--thread-variables repo number))
+         (query (format "query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
-    discussion(number: $number) { viewerSubscription id }
+    %s(number: $number) { viewerSubscription id }
   }
-}")
+}" field))
          (result (shipit--graphql-query query variables))
-         (discussion (cdr (assq 'discussion
-                                (cdr (assq 'repository result)))))
-         (state (cdr (assq 'viewerSubscription discussion))))
-    (shipit--debug-log "GitHub: discussion %s#%d subscription: %s"
-                       repo number state)
+         (thread (cdr (assq (intern field)
+                            (cdr (assq 'repository result)))))
+         (state (cdr (assq 'viewerSubscription thread))))
+    (shipit--debug-log "GitHub: %s %s#%d subscription: %s"
+                       type repo number state)
     (pcase state
       ("SUBSCRIBED" "subscribed")
       ("IGNORED" "ignored")
       (_ "unsubscribed"))))
 
-(defun shipit-pr-github--set-discussion-subscription (_config repo number subscribed)
-  "Set subscription for discussion NUMBER in REPO via GraphQL mutation.
+(defun shipit-pr-github--set-thread-subscription (_config repo type number subscribed)
+  "Set subscription for TYPE NUMBER in REPO via GraphQL mutation.
+TYPE is \"pr\", \"issue\", or \"discussion\".
 SUBSCRIBED is t to subscribe, nil to unsubscribe."
-  (let ((node-id (shipit-pr-github--fetch-discussion-node-id repo number)))
+  (let ((node-id (shipit-pr-github--fetch-thread-node-id repo type number)))
     (unless node-id
-      (error "Cannot find discussion %s#%d" repo number))
+      (error "Cannot find %s %s#%d" type repo number))
     (let* ((state (if subscribed "SUBSCRIBED" "UNSUBSCRIBED"))
            (mutation "mutation($id: ID!, $state: SubscriptionState!) {
   updateSubscription(input: {subscribableId: $id, state: $state}) {
-    subscribable { ... on Discussion { viewerSubscription } }
+    subscribable { viewerSubscription }
   }
 }")
            (variables `((id . ,node-id)
                         (state . ,state))))
-      (shipit--debug-log "GitHub: %s discussion %s#%d"
+      (shipit--debug-log "GitHub: %s %s %s#%d"
                          (if subscribed "subscribing to" "unsubscribing from")
-                         repo number)
+                         type repo number)
       (shipit--graphql-query mutation variables)
       t)))
 

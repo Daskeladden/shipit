@@ -1331,9 +1331,14 @@ Process <a> first so <em>/<strong> can wrap the converted links."
     (mapconcat 'identity (nreverse result) "\n")))
 
 (defun shipit--align-markdown-tables-with-pandoc (text)
-  "Align markdown tables in TEXT using pandoc if available and text contains tables."
+  "Align markdown tables in TEXT using pandoc if available.
+Only invokes pandoc when TEXT contains an actual markdown table
+separator line (a line starting with `|' that contains only spaces,
+pipes, colons, and at least one dash — e.g. `|---|---|',
+`| --- | --- |', `|:---:|---:|').  Plain comments with stray pipes
+no longer trigger a pandoc subprocess."
   (if (and (stringp text)
-           (string-match-p "|.*|" text)
+           (string-match-p "^\\s-*|[ \t|:-]*-[ \t|:-]*$" text)
            (executable-find "pandoc"))
       (condition-case err
           (with-temp-buffer

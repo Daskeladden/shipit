@@ -441,6 +441,72 @@ THEN the table pipe structure is preserved and tags are removed."
     (should (string= "| Feature | key |\n|---------|-----|\n| Chat: clear | C-c C-l |"
                       result))))
 
+;;; Pandoc table alignment guard tests
+
+(ert-deftest test-shipit--align-markdown-tables-skips-when-no-table ()
+  "GIVEN markdown text with no table separator line
+WHEN calling shipit--align-markdown-tables-with-pandoc
+THEN pandoc is not invoked and the text is returned unchanged."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (&rest _) "/usr/bin/pandoc"))
+              ((symbol-function 'shell-command-on-region)
+               (lambda (&rest _) (setq called t) 0)))
+      (shipit--align-markdown-tables-with-pandoc "Just regular text")
+      (should-not called))))
+
+(ert-deftest test-shipit--align-markdown-tables-skips-text-with-stray-pipes ()
+  "GIVEN markdown text containing pipes but no table separator
+WHEN calling shipit--align-markdown-tables-with-pandoc
+THEN pandoc is not invoked."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (&rest _) "/usr/bin/pandoc"))
+              ((symbol-function 'shell-command-on-region)
+               (lambda (&rest _) (setq called t) 0)))
+      (shipit--align-markdown-tables-with-pandoc
+       "This is `text | with | pipes` in inline code")
+      (should-not called))))
+
+(ert-deftest test-shipit--align-markdown-tables-skips-cells-without-separator ()
+  "GIVEN text resembling a table row but lacking a separator line
+WHEN calling shipit--align-markdown-tables-with-pandoc
+THEN pandoc is not invoked."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (&rest _) "/usr/bin/pandoc"))
+              ((symbol-function 'shell-command-on-region)
+               (lambda (&rest _) (setq called t) 0)))
+      (shipit--align-markdown-tables-with-pandoc
+       "| col1 | col2 |\n| a | b |")
+      (should-not called))))
+
+(ert-deftest test-shipit--align-markdown-tables-runs-with-real-table ()
+  "GIVEN markdown text containing a real table separator
+WHEN calling shipit--align-markdown-tables-with-pandoc
+THEN pandoc IS invoked."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (&rest _) "/usr/bin/pandoc"))
+              ((symbol-function 'shell-command-on-region)
+               (lambda (&rest _) (setq called t) 0)))
+      (shipit--align-markdown-tables-with-pandoc
+       "| col1 | col2 |\n|------|------|\n| a    | b    |")
+      (should called))))
+
+(ert-deftest test-shipit--align-markdown-tables-runs-with-aligned-separator ()
+  "GIVEN markdown text containing an alignment separator like |:---:|
+WHEN calling shipit--align-markdown-tables-with-pandoc
+THEN pandoc IS invoked."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (&rest _) "/usr/bin/pandoc"))
+              ((symbol-function 'shell-command-on-region)
+               (lambda (&rest _) (setq called t) 0)))
+      (shipit--align-markdown-tables-with-pandoc
+       "| col1 | col2 |\n|:----:|----:|\n| a    | b    |")
+      (should called))))
+
 ;;; Markdown render cache tests
 
 (ert-deftest test-shipit--render-markdown-cache-hit ()

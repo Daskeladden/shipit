@@ -3595,16 +3595,24 @@ Recursively handles nested details blocks with proper indentation."
              (let* ((rendered (if shipit-render-markdown
                                 (shipit--render-markdown trimmed)
                               trimmed))
+                    ;; Wrap long prose lines to fit the configured wrap
+                    ;; column minus the current indent so paragraphs do
+                    ;; not run off the right edge.
+                    (wrap-col (or (and (boundp 'shipit-render-wrap-column)
+                                       shipit-render-wrap-column)
+                                  120))
+                    (wrap-width (max 40 (- wrap-col indent-level)))
+                    (wrapped (shipit--wrap-text rendered wrap-width indent-level))
                     ;; Remove blank lines before list items to keep them compact
-                    ;; Match blank lines followed by a list item (- )
-                    ;; Preserves blank lines in other contexts (paragraphs, sections)
-                    (compact-lists (replace-regexp-in-string "\n\n+\\(- \\)" "\n\\1" rendered)))
+                    ;; Match blank lines followed by a list item (dash space)
+                    ;; Preserves blank lines in other contexts
+                    (compact-lists (replace-regexp-in-string "\n\n+\\(- \\)" "\n\\1" wrapped)))
                ;; Add indentation to each line (preserve markdown list nesting)
                (dolist (line (split-string compact-lists "\n"))
                  (let* ((trimmed-line (string-trim-left line))
-                        ;; Count leading spaces to preserve markdown nesting (list indentation)
+                        ;; Count leading spaces to preserve markdown nesting for list indentation
                         (leading-spaces (- (length line) (length trimmed-line)))
-                        ;; Preserve indentation for nested list items (- or * at start, or checkboxes anywhere [X]/[ ])
+                        ;; Preserve indentation for nested list items: dash or star, or checkboxes
                         (is-list-item (string-match-p "^[*-][ \t]" trimmed-line))
                         (has-checkbox (string-match-p "\\[[Xx ]\\]" trimmed-line))
                         ;; Keep original leading spaces for nested lists, trim for other content
@@ -3612,7 +3620,7 @@ Recursively handles nested details blocks with proper indentation."
                                            line  ; Keep original with indentation for nested lists
                                          trimmed-line)))
                    (if (string-empty-p trimmed-line)
-                       ;; Check if original line has display property (e.g., image)
+                       ;; Check if original line has display property such as an image
                        (if (text-property-not-all 0 (length line) 'display nil line)
                            (insert indent-str line "\n")
                          ;; Preserve single blank lines for markdown structure

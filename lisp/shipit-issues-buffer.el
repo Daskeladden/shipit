@@ -183,6 +183,7 @@ Each entry is (TYPE . VALUE).  Supported types:
     ;; Subscription
     (define-key map (kbd "w") #'shipit-repo-subscription)
     (define-key map (kbd "f") #'shipit-issue-filter-comments)
+    (define-key map (kbd "l") #'shipit-issue-jump-to-load-more)
     (define-key map (kbd "R") #'shipit-issue--toggle-load-direction)
     map)
   "Keymap for `shipit-issue-mode'.")
@@ -2220,6 +2221,21 @@ Only works when point is on a Load more section."
   (dolist (ov (overlays-in (point-min) (point-max)))
     (when (overlay-get ov 'shipit-filter-overlay)
       (delete-overlay ov))))
+
+(defun shipit-issue-jump-to-load-more ()
+  "Jump to the Load more section and open the transient menu.
+If no Load more section exists, shows a message."
+  (interactive)
+  (let ((comments-section (shipit--find-section-by-type 'issue-comments)))
+    (if (not comments-section)
+        (message "No comments section found")
+      (let ((load-more (cl-find-if
+                        (lambda (c) (eq (oref c type) 'issue-comments-load-more))
+                        (oref comments-section children))))
+        (if (not load-more)
+            (message "All comments are loaded")
+          (goto-char (oref load-more start))
+          (shipit-issue-load-more-menu))))))
 
 (defun shipit-issue--load-more-default ()
   "Load the default batch of comments."

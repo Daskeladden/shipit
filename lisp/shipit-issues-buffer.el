@@ -305,10 +305,22 @@ buffer-local overrides so the issue fetches use the correct backend
                                 (length comments) issue-number)
              (when (buffer-live-p target-buffer)
                (with-current-buffer target-buffer
-                 ;; Fetch reactions via backend dispatch
+                 ;; Fetch reactions only for VISIBLE comments when pagination
+                 ;; is active, not the entire list.
                  (when comments
-                   (let ((shipit-current-repo repo))
-                     (shipit-comment--fetch-reactions-batch comments repo nil)))
+                   (let* ((total (length comments))
+                          (head-n shipit-comments-initial-count)
+                          (tail-n shipit-comments-tail-count)
+                          (threshold shipit-comments-pagination-threshold)
+                          (paginating (and (> threshold 0)
+                                          (> total threshold)
+                                          (> total (+ head-n tail-n))))
+                          (visible (if paginating
+                                      (append (seq-take comments head-n)
+                                              (seq-subseq comments (- total tail-n)))
+                                    comments))
+                          (shipit-current-repo repo))
+                     (shipit-comment--fetch-reactions-batch visible repo nil)))
                  (let ((magit-root-section (or magit-root-section root-section)))
                    (shipit-issue--replace-comments-with-content
                     repo issue-number comments))))))
@@ -1110,6 +1122,12 @@ With C-u alone, loads all remaining hidden comments."
          (section-start (oref section start))
          (section-end (oref section end))
          (parent (oref section parent)))
+    ;; Fetch reactions for the batch before rendering
+    (when (and to-load
+               (shipit-issue--backend-has-reactions-p
+                (shipit-issue--get-backend)))
+      (let ((shipit-current-repo repo))
+        (shipit-comment--fetch-reactions-batch to-load repo nil)))
     ;; Delete the load-more section
     (delete-region section-start section-end)
     ;; Insert the loaded comments at the same position

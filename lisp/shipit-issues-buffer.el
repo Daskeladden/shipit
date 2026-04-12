@@ -1903,7 +1903,7 @@ Called via `post-command-hook'."
                 (when (eq (oref child type) 'issue-comment)
                   (cl-incf total)
                   (when (eq child s)
-                    (setq found (1+ total))))
+                    (setq found total)))
                 (when (eq (oref child type) 'issue-comments-load-more)
                   (let ((data (oref child value)))
                     (cl-incf total
@@ -2163,10 +2163,11 @@ Shows active filter details, match count, and unloaded count."
          (issue-number shipit-issue-buffer-number)
          (all shipit-issue--all-comments))
     (when all
-      (shipit-issue--replace-comments-section-with
-       (lambda ()
-         (shipit-issue--insert-comments-section
-          repo issue-number all))))
+      (let ((total (length all)))
+        (shipit-issue--replace-comments-section-with
+         (lambda ()
+           (shipit-issue--insert-filtered-comments-section
+            repo issue-number all total)))))
     (shipit-issue--update-filter-status))
   (message "Comment filters cleared"))
 
@@ -2243,10 +2244,29 @@ If no Load more section exists, shows a message."
   (shipit-issue--load-more-comments))
 
 (defun shipit-issue--load-more-all ()
-  "Load all remaining comments."
+  "Load all remaining comments by fetching everything from the API."
   (interactive)
-  (let ((current-prefix-arg '(4)))
-    (shipit-issue--load-more-comments)))
+  (let ((repo shipit-issue-buffer-repo)
+        (issue-number shipit-issue-buffer-number))
+    ;; Fetch all comments if not already cached
+    (unless shipit-issue--all-comments
+      (setq shipit-issue--all-comments
+            (shipit-issue--fetch-all-comments-sync repo issue-number))
+      (when (and shipit-issue--all-comments
+                 (shipit-issue--backend-has-reactions-p
+                  (shipit-issue--get-backend)))
+        (message "Fetching reactions...")
+        (let ((shipit-current-repo repo))
+          (shipit-comment--fetch-reactions-batch
+           shipit-issue--all-comments repo nil))))
+    ;; Re-render with all comments (no pagination)
+    (when shipit-issue--all-comments
+      (let ((total (length shipit-issue--all-comments)))
+        (shipit-issue--replace-comments-section-with
+         (lambda ()
+           (shipit-issue--insert-filtered-comments-section
+            repo issue-number shipit-issue--all-comments total)))
+        (message "All %d comments loaded" total)))))
 
 (defun shipit-issue--load-more-n ()
   "Load N comments (prompt for count)."

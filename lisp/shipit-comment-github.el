@@ -177,9 +177,9 @@ Skips review comments (they use GraphQL)."
       (let* ((comment-id (cdr (assq 'id comment)))
              (is-review (equal (cdr (assq 'shipit-comment-type comment)) "review"))
              (endpoint (if is-inline
-                          (format "%s/repos/%s/pulls/comments/%s/reactions"
+                          (format "%s/repos/%s/pulls/comments/%s/reactions?per_page=100"
                                   shipit-api-url repo comment-id)
-                        (format "%s/repos/%s/issues/comments/%s/reactions"
+                        (format "%s/repos/%s/issues/comments/%s/reactions?per_page=100"
                                 shipit-api-url repo comment-id)))
              (cache-key (shipit--reaction-cache-key repo comment-id is-inline)))
         (when (and comment-id (not is-review))
@@ -187,7 +187,7 @@ Skips review comments (they use GraphQL)."
            (cons comment-id
                  (url-retrieve
                   endpoint
-                  (lambda (_status comment-id cache-key)
+                  (lambda (_status comment-id cache-key base-endpoint page results-ht)
                     (condition-case err
                         (progn
                           (goto-char (point-min))
@@ -195,14 +195,59 @@ Skips review comments (they use GraphQL)."
                           (let ((json-object-type 'alist)
                                 (json-array-type 'list))
                             (let ((reactions (json-read)))
-                              (puthash cache-key (or reactions '()) shipit--reaction-cache)
-                              (puthash comment-id t results))))
+                              ;; Append to cache
+                              (let ((existing (gethash cache-key shipit--reaction-cache)))
+                                (puthash cache-key
+                                         (append (or existing '()) (or reactions '()))
+                                         shipit--reaction-cache))
+                              ;; If full page, fetch next page
+                              (if (and reactions (= (length reactions) 100))
+                                  (let ((next-url (format "%s&page=%d"
+                                                          base-endpoint (1+ page))))
+                                    (url-retrieve
+                                     next-url
+                                     (lambda (_st cid ck be pg rh)
+                                       (condition-case err2
+                                           (progn
+                                             (goto-char (point-min))
+                                             (re-search-forward "\n\n")
+                                             (let ((json-object-type 'alist)
+                                                   (json-array-type 'list))
+                                               (let ((more (json-read)))
+                                                 (let ((prev (gethash ck shipit--reaction-cache)))
+                                                   (puthash ck (append (or prev '()) (or more '()))
+                                                            shipit--reaction-cache))
+                                                 (if (and more (= (length more) 100))
+                                                     (let ((nurl (format "%s&page=%d" be (1+ pg))))
+                                                       (url-retrieve nurl
+                                                                     (lambda (_s c k b p r)
+                                                                       (let ((p2 (gethash k shipit--reaction-cache)))
+                                                                         (condition-case nil
+                                                                             (progn
+                                                                               (goto-char (point-min))
+                                                                               (re-search-forward "\n\n")
+                                                                               (let ((json-object-type 'alist)
+                                                                                     (json-array-type 'list))
+                                                                                 (let ((m2 (json-read)))
+                                                                                   (puthash k (append (or p2 '()) (or m2 '()))
+                                                                                            shipit--reaction-cache))))
+                                                                           (error nil))
+                                                                         (puthash c t r)))
+                                                                     (list c k b (1+ p) r)
+                                                                     t t))
+                                                   (puthash cid t rh)))))
+                                         (error
+                                          (puthash cid t rh))))
+                                     (list comment-id cache-key base-endpoint (1+ page) results-ht)
+                                     t t))
+                                (puthash comment-id t results-ht)))))
                       (error
                        (shipit--debug-log "[reactions-batch] Failed for comment %s: %s"
                                           comment-id (error-message-string err))
-                       (puthash cache-key '() shipit--reaction-cache)
-                       (puthash comment-id t results))))
-                  (list comment-id cache-key)
+                       (unless (gethash cache-key shipit--reaction-cache)
+                         (puthash cache-key '() shipit--reaction-cache))
+                       (puthash comment-id t results-ht))))
+                  (list comment-id cache-key endpoint 1 results)
                   t t))
            pending-requests))))
 

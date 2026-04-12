@@ -103,6 +103,17 @@ BODY is the new description text."
       (error "Backend does not support :update-description"))
     (funcall fn config issue-number body)))
 
+(defun shipit-issues--fetch-pinned-comment-async (repo issue-number callback)
+  "Fetch the pinned comment for ISSUE-NUMBER in REPO asynchronously.
+CALLBACK receives a plist with :comment :pinned-by :pinned-at, or nil."
+  (let* ((resolved (shipit-issue--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :fetch-pinned-comment-async)))
+    (if fn
+        (funcall fn config issue-number callback)
+      (funcall callback nil))))
+
 (defun shipit-issues--fetch-comments-head-tail-async (repo issue-number per-page head-n tail-n callback)
   "Fetch head and tail comments for ISSUE-NUMBER in REPO.
 PER-PAGE, HEAD-N, TAIL-N control pagination.  Calls CALLBACK with a

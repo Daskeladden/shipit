@@ -76,6 +76,7 @@
 (declare-function shipit-issues--fetch-reactions "shipit-issues")
 (declare-function shipit-issues--fetch-reactions-async "shipit-issues")
 (declare-function shipit-issues--fetch-comments-head-tail-async "shipit-issues")
+(declare-function shipit-issues--fetch-pinned-comment-async "shipit-issues")
 (declare-function shipit-issues--add-reaction "shipit-issues")
 (declare-function shipit-issues--remove-reaction "shipit-issues")
 (declare-function shipit-gh-etag--user-state-key-p "shipit-gh-etag")
@@ -296,6 +297,23 @@ buffer-local overrides so the issue fetches use the correct backend
                  (with-current-buffer target-buffer
                    (shipit-issue--update-description-reactions-display
                     issue-number)))))))
+        ;; Fetch pinned comment async and insert before comments section
+        (let ((target-buffer (current-buffer)))
+          (shipit-issues--fetch-pinned-comment-async
+           repo issue-number
+           (lambda (pinned-data)
+             (when (and pinned-data (buffer-live-p target-buffer))
+               (with-current-buffer target-buffer
+                 ;; Fetch reactions for pinned comment before rendering
+                 (let ((pinned-comment (plist-get pinned-data :comment)))
+                   (when (and pinned-comment
+                              (shipit-issue--backend-has-reactions-p
+                               (shipit-issue--get-backend)))
+                     (let ((shipit-current-repo repo))
+                       (shipit-comment--fetch-reactions-batch
+                        (list pinned-comment) repo nil))))
+                 (shipit-issue--insert-pinned-comment-before-comments
+                  repo issue-number pinned-data))))))
         ;; Fetch comments async
         (let ((target-buffer (current-buffer))
               (root-section magit-root-section))
@@ -558,6 +576,130 @@ buffer-local overrides so the issue fetches use the correct backend
                shipit-repo ,repo)))
           (insert "\n"))))))
 
+(defcustom shipit-pinned-comment-bg-color "#1a2744"
+  "Background color for pinned comment sections.
+Set to nil to disable the rounded background."
+  :type '(choice color (const nil))
+  :group 'shipit)
+
+(defcustom shipit-pinned-comment-preview-lines 4
+  "Number of lines to show in the pinned comment preview.
+The full comment is available via a collapsed View full comment section."
+  :type 'integer
+  :group 'shipit)
+
+(defun shipit-issue--insert-pinned-comment-section (repo issue-number pinned-data)
+  "Insert a pinned comment section from PINNED-DATA for ISSUE-NUMBER in REPO.
+PINNED-DATA is a plist with :comment :pinned-by :pinned-at.
+Shows a truncated preview with a collapsible full comment body and
+applies a rounded background when `shipit-pinned-comment-bg-color'
+is set and the display is graphical."
+  (let* ((comment (plist-get pinned-data :comment))
+         (pinned-by (plist-get pinned-data :pinned-by))
+         (pin-icon (shipit--get-pr-field-icon "pin" "📌"))
+         (body (or (cdr (assq 'body comment)) ""))
+         (user-obj (cdr (assq 'user comment)))
+         (user (or (cdr (assq 'login user-obj)) "Unknown"))
+         (avatar-url (cdr (assq 'avatar_url user-obj)))
+         (created (or (cdr (assq 'created_at comment)) ""))
+         (timestamp (if (and (fboundp 'shipit--format-timestamp)
+                             (not (string-empty-p created)))
+                        (shipit--format-timestamp created)
+                      created))
+         (indent-level 3)
+         (wrap-col (or (and (boundp 'shipit-render-wrap-column)
+                             shipit-render-wrap-column)
+                        120))
+         (wrap-width (max 40 (- wrap-col indent-level))))
+    (magit-insert-section (issue-pinned-comment comment)
+      (magit-insert-heading
+        (propertize (format "%s %s"
+                            pin-icon
+                            (propertize (format "Pinned by %s" pinned-by)
+                                        'face 'font-lock-keyword-face))
+                    'shipit-icon-color (or shipit-pinned-comment-bg-color "#1a2744")))
+      (magit-insert-section-body
+        ;; Comment header with avatar and username
+        (insert (format "   %s%s  %s\n"
+                        (if (and (boundp 'shipit-show-avatars) shipit-show-avatars
+                                 (fboundp 'shipit--create-avatar-display))
+                            (concat (shipit--create-avatar-display user avatar-url 16) " ")
+                          "")
+                        (propertize user 'face 'shipit-username-face)
+                        (propertize timestamp 'face 'shipit-timestamp-face)))
+        ;; Truncated preview with wrapping
+        (let* ((rendered (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
+                                  (fboundp 'shipit--render-markdown))
+                             (shipit--render-markdown body)
+                           body))
+               (wrapped (shipit--wrap-text rendered wrap-width indent-level))
+               (lines (split-string wrapped "\n"))
+               (preview-n shipit-pinned-comment-preview-lines)
+               (preview-lines (seq-take lines preview-n))
+               (has-more (> (length lines) preview-n)))
+          (dolist (line preview-lines)
+            (insert "   " line "\n"))
+          ;; Collapsible full comment body -- collapsed by default
+          (when has-more
+            (magit-insert-section (comment-details 'pinned-full)
+              (oset magit-insert-section--current hidden t)
+              (magit-insert-heading
+                (propertize (format "   %s %s"
+                        (shipit--get-pr-field-icon "description" "\u25b6")
+                        (propertize "View full comment"
+                                    'face 'magit-section-heading))
+                    'shipit-icon-color (or shipit-pinned-comment-bg-color "#1a2744")))
+              (magit-insert-section-body
+                (dolist (line (seq-drop lines preview-n))
+                  (insert "   " line "\n"))))))
+        ;; Reactions
+        (when (shipit-issue--backend-has-reactions-p
+               (shipit-issue--get-backend))
+          (let ((reactions (shipit--format-comment-reactions comment nil)))
+            (when (and reactions (not (string-empty-p reactions)))
+              (insert "   " reactions "\n"))))
+        (insert "\n"))
+      ;; Apply rounded background to parent and child sections
+      (when (and shipit-pinned-comment-bg-color
+                 (display-graphic-p)
+                 (fboundp 'shipit-rounded--apply-to-section))
+        (shipit-rounded--apply-to-section
+         magit-insert-section--current shipit-pinned-comment-bg-color)
+        ;; Also apply to child sections so bg is visible when collapsed
+        (dolist (child (oref magit-insert-section--current children))
+          (shipit-rounded--apply-to-section
+           child shipit-pinned-comment-bg-color))))))
+
+(defun shipit-issue--insert-pinned-comment-before-comments (repo issue-number pinned-data)
+  "Insert a pinned comment section before the comments section.
+Finds the issue-comments section and inserts before it, then updates
+the parent's children list so magit section navigation works."
+  (let ((comments-section (shipit--find-section-by-type 'issue-comments)))
+    (when comments-section
+      (let* ((inhibit-read-only t)
+             (insert-pos (oref comments-section start))
+             (parent (oref comments-section parent))
+             new-section)
+        (save-excursion
+          (goto-char insert-pos)
+          (let ((magit-insert-section--parent parent))
+            (setq new-section
+                  (shipit-issue--insert-pinned-comment-section
+                   repo issue-number pinned-data))))
+        ;; Fix children list: magit-insert-section auto-appends to parent,
+        ;; so remove the auto-added entry first, then insert at the
+        ;; correct position (before comments) for proper n/p navigation.
+        (when (and parent new-section)
+          (let* ((children (seq-remove (lambda (s) (eq s new-section))
+                                       (oref parent children)))
+                 (idx (seq-position children comments-section #'eq))
+                 (fixed (if idx
+                            (append (seq-take children idx)
+                                    (list new-section)
+                                    (seq-drop children idx))
+                          (append children (list new-section)))))
+            (oset parent children fixed)))))))
+
 (defun shipit-issue--insert-comments-placeholder (_repo _issue-number)
   "Insert comments placeholder while loading."
   (magit-insert-section (issue-comments nil nil)
@@ -643,6 +785,11 @@ With C-u N, load exactly N.  With C-u alone, load all remaining."
   "Magit section identifier for the load-more placeholder."
   nil)
 (put 'issue-comments-load-more 'magit-section t)
+
+(defun issue-pinned-comment (&rest _args)
+  "Magit section identifier for a pinned comment."
+  nil)
+(put 'issue-pinned-comment 'magit-section t)
 
 (defcustom shipit-comments-render-chunk-size 10
   "Number of comments to render between progressive display refreshes.

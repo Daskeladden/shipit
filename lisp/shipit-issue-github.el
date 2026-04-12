@@ -135,6 +135,46 @@ all intermediate pages."
        (funcall callback (list :head nil :tail nil :hidden nil
                                :total 0 :unfetched nil :per-page per-page))))))
 
+(defun shipit-issue-github--fetch-pinned-comment-async (config issue-number callback)
+  "Fetch the pinned comment for ISSUE-NUMBER via GraphQL.
+CALLBACK receives a plist with :comment :pinned-by :pinned-at, or
+nil if no comment is pinned.  Uses `shipit--url-retrieve-async' for
+non-blocking HTTP."
+  (let* ((repo (plist-get config :repo))
+         (parts (split-string repo "/"))
+         (owner (car parts))
+         (name (cadr parts))
+         (query "query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { issue(number: $number) { pinnedIssueComment { pinnedBy { login avatarUrl } pinnedAt issueComment { databaseId body createdAt author { login avatarUrl } } } } } }")
+         (payload (json-encode `((query . ,query)
+                                 (variables . ((owner . ,owner)
+                                               (name . ,name)
+                                               (number . ,issue-number))))))
+         (url (concat (or shipit-api-url "https://api.github.com") "/graphql"))
+         (headers `(("Authorization" . ,(format "Bearer %s" (shipit--github-token)))
+                    ("Accept" . "application/vnd.github.v3+json")
+                    ("Content-Type" . "application/json"))))
+    (shipit--url-retrieve-async
+     url "POST" headers payload
+     (lambda (response)
+       (let* ((data (cdr (assq 'data response)))
+              (issue (cdr (assq 'issue (cdr (assq 'repository data)))))
+              (pinned (cdr (assq 'pinnedIssueComment issue))))
+         (if pinned
+             (let* ((comment-raw (cdr (assq 'issueComment pinned)))
+                    (author (cdr (assq 'author comment-raw)))
+                    (pinned-by-obj (cdr (assq 'pinnedBy pinned)))
+                    (comment `((id . ,(cdr (assq 'databaseId comment-raw)))
+                               (body . ,(cdr (assq 'body comment-raw)))
+                               (created_at . ,(cdr (assq 'createdAt comment-raw)))
+                               (user . ((login . ,(cdr (assq 'login author)))
+                                        (avatar_url . ,(cdr (assq 'avatarUrl author))))))))
+               (funcall callback (list :comment comment
+                                       :pinned-by (cdr (assq 'login pinned-by-obj))
+                                       :pinned-at (cdr (assq 'pinnedAt pinned)))))
+           (funcall callback nil))))
+     (lambda (_err)
+       (funcall callback nil)))))
+
 (defun shipit-issue-github--search (config args)
   "Search issues using CONFIG with transient ARGS.
 Builds GitHub search query from ARGS and delegates to the GitHub search API."
@@ -398,6 +438,7 @@ via the PR backend's mark-notification-read function."
        :fetch-comments #'shipit-issue-github--fetch-comments
        :fetch-comments-async #'shipit-issue-github--fetch-comments-async
        :fetch-comments-head-tail-async #'shipit-issue-github--fetch-comments-head-tail-async
+       :fetch-pinned-comment-async #'shipit-issue-github--fetch-pinned-comment-async
        :search #'shipit-issue-github--search
        :create-issue #'shipit-issue-github--create-issue
        :reference-patterns #'shipit-issue-github--reference-patterns

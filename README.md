@@ -14,9 +14,10 @@ This project was built as a learning exercise in agentic AI-assisted programming
 - **Comments** — inline diff comments with threading, general comments, reactions, live markdown preview
 - **Reviews** — submit approvals, request changes, resolve conversations
 - **CI/Checks** — expand check suites to see step logs with timestamp gap coloring
-- **Notifications** — poll for updates, see activity that triggered each notification, mark as read
-- **Issues** — search, create, and view issues with status transitions and assignee management
+- **Notifications** — poll for updates, see activity that triggered each notification, mark as read, subscribe to individual threads
+- **Issues** — search, create, and view issues with pinned comments, comment pagination, filtering, and status transitions
 - **Discussions** — view and participate in GitHub Discussions
+- **Subscriptions** — manage repo-level and per-thread subscriptions via transient menu
 - **Worktrees** — checkout PR branches into isolated worktrees
 
 Supports SVG icons, inline images, avatars, and syntax-highlighted code blocks.
@@ -82,6 +83,28 @@ Run `M-x shipit` from any git repo with a remote.
 
 Navigate with `TAB` to expand/collapse, `RET` to open, and `M-;` for context actions.
 
+### Issue buffers
+
+| Key | Action |
+|-----|--------|
+| `f` | Filter comments (author, date, text, reactions, bots) |
+| `l` | Jump to Load more and open transient menu |
+| `w` | Manage repo/thread subscriptions |
+| `n`/`p` | Navigate between sections |
+
+Issues with many comments show the first and last few with a "Load more" section in between. Press `l` to open the load-more transient:
+
+| Key | Action |
+|-----|--------|
+| `RET` | Load next batch |
+| `a` | Load all comments |
+| `n` | Load N comments |
+| `r` | Toggle direction (recent-first / oldest-first) |
+
+Pinned comments appear prominently between the description and comment sections with a rounded background and truncated preview.
+
+The mode line shows your position when navigating comments: `[42/315 ####------]`
+
 ## Configuration
 
 ```elisp
@@ -91,6 +114,16 @@ Navigate with `TAB` to expand/collapse, `RET` to open, and `M-;` for context act
 (setq shipit-notifications-enabled t)          ; poll for notifications
 (setq shipit-notifications-poll-frequency 300) ; poll interval (seconds)
 (setq shipit-render-markdown t)                ; render markdown in descriptions
+
+;; Issue comment pagination
+(setq shipit-comments-pagination-threshold 30)  ; paginate above N comments
+(setq shipit-comments-initial-count 10)         ; head comments shown
+(setq shipit-comments-tail-count 10)            ; tail comments shown
+(setq shipit-comments-load-more-default 50)     ; default batch size
+
+;; Pinned comment appearance
+(setq shipit-pinned-comment-bg-color "#1a2744") ; rounded bg color (nil to disable)
+(setq shipit-pinned-comment-preview-lines 4)    ; lines shown before "View full"
 ```
 
 ## Troubleshooting

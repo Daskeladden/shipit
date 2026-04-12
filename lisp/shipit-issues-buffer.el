@@ -138,6 +138,17 @@
 (defvar-local shipit-issue--linked-items-cache nil
   "Cache of linked items for the current issue buffer.")
 
+(defvar-local shipit-issue--all-comments nil
+  "Complete list of all comments for this issue.
+Populated on first filter application via synchronous API fetch.
+Used to re-render the comments section with filtered results.")
+
+(defvar-local shipit-issue--active-filters nil
+  "Alist of active comment filters.
+Each entry is (TYPE . VALUE).  Supported types:
+  author, since-days, search, hide-bots,
+  min-reactions, min-positive, min-negative.")
+
 (defun shipit-issue--combined-widths ()
   "Compute column widths from all cached child and linked items."
   (shipit-issue--compute-work-item-widths
@@ -168,6 +179,7 @@
     (define-key map (kbd "L") #'shipit-toggle-timestamp-format)
     ;; Subscription
     (define-key map (kbd "w") #'shipit-repo-subscription)
+    (define-key map (kbd "f") #'shipit-issue-filter-comments)
     map)
   "Keymap for `shipit-issue-mode'.")
 
@@ -773,6 +785,14 @@ Load N more section.  Set to 0 to disable pagination."
 (defcustom shipit-comments-tail-count 10
   "Number of newest comments to show when pagination is active."
   :type 'integer
+  :group 'shipit)
+
+(defcustom shipit-comment-filter-auto-fetch t
+  "Whether to auto-fetch all comments when a filter is applied.
+When non-nil, applying a filter fetches all unfetched comments from
+the API first to ensure complete results.  When nil, only loaded
+comments are filtered and a message shows how many remain unfetched."
+  :type 'boolean
   :group 'shipit)
 
 (defcustom shipit-comments-load-more-default 50
@@ -1677,6 +1697,401 @@ Called both at load time (if shipit-magit loaded) and via `with-eval-after-load'
 Uses html_url and strips the issue-specific suffix."
   (when-let* ((issue-url (cdr (assq 'html_url issue-data))))
     (replace-regexp-in-string "/\\(?:issues\\|-/issues\\)/[0-9]+/?$" "" issue-url)))
+
+;;; Comment filters
+
+(defun shipit-issue--extract-author-from-section (section)
+  "Extract the comment author from SECTION heading via shipit-username-face."
+  (let ((start (oref section start))
+        (content (oref section content))
+        (result nil))
+    (when (and start content)
+      (save-excursion
+        (goto-char start)
+        (while (and (< (point) content) (not result))
+          (let ((face (get-text-property (point) 'face)))
+            (when (eq face 'shipit-username-face)
+              (setq result (buffer-substring-no-properties
+                            (point)
+                            (or (next-single-property-change (point) 'face nil content)
+                                content)))))
+          (goto-char (or (next-single-property-change (point) 'face nil content) content)))))
+    result))
+
+(defun shipit-issue--extract-timestamp-from-section (section)
+  "Extract the raw ISO timestamp from SECTION heading."
+  (let ((start (oref section start))
+        (content (oref section content)))
+    (when (and start content)
+      (let ((pos start)
+            (result nil))
+        (while (and pos (< pos content) (not result))
+          (setq result (get-text-property pos 'shipit-raw-timestamp))
+          (unless result
+            (setq pos (next-single-property-change pos 'shipit-raw-timestamp nil content))))
+        result))))
+
+(defun shipit-issue--comment-matches-filters-p (section)
+  "Return non-nil if comment SECTION matches all active filters.
+Extracts author and timestamp from section text properties.
+Searches buffer text for content matching.  Looks up reaction
+cache by comment ID for reaction filters."
+  (let ((comment-id (oref section value))
+        (match t))
+    (when shipit-issue--active-filters
+      (dolist (filter shipit-issue--active-filters)
+        (let ((type (car filter))
+              (value (cdr filter)))
+          (when (and value match)
+            (pcase type
+              ('author
+               (let ((author (shipit-issue--extract-author-from-section section)))
+                 (unless (and author (string-equal-ignore-case value author))
+                   (setq match nil))))
+              ('since-days
+               (let ((ts (shipit-issue--extract-timestamp-from-section section)))
+                 (when ts
+                   (condition-case nil
+                       (let ((cutoff (time-subtract (current-time) (days-to-time value))))
+                         (when (time-less-p (date-to-time ts) cutoff)
+                           (setq match nil)))
+                     (error nil)))))
+              ('search
+               (let* ((sect-start (oref section start))
+                      (sect-end (oref section end))
+                      (text (buffer-substring-no-properties sect-start sect-end)))
+                 (unless (string-match-p (regexp-quote value) text)
+                   (setq match nil))))
+              ('hide-bots
+               (let ((author (shipit-issue--extract-author-from-section section)))
+                 (when (and author (string-match-p "\\[bot\\]$" author))
+                   (setq match nil))))
+              ('min-reactions
+               (when (and comment-id (numberp comment-id))
+                 (let* ((cached (gethash (shipit--reaction-cache-key
+                                          shipit-issue-buffer-repo comment-id nil)
+                                         shipit--reaction-cache))
+                        (count (length (or cached '()))))
+                   (when (< count value)
+                     (setq match nil)))))
+              ('min-positive
+               (when (and comment-id (numberp comment-id))
+                 (let* ((cached (gethash (shipit--reaction-cache-key
+                                          shipit-issue-buffer-repo comment-id nil)
+                                         shipit--reaction-cache))
+                        (positive (seq-count
+                                   (lambda (r)
+                                     (member (cdr (assq 'content r))
+                                             '("+1" "heart" "hooray" "rocket")))
+                                   (or cached '()))))
+                   (when (< positive value)
+                     (setq match nil)))))
+              ('min-negative
+               (when (and comment-id (numberp comment-id))
+                 (let* ((cached (gethash (shipit--reaction-cache-key
+                                          shipit-issue-buffer-repo comment-id nil)
+                                         shipit--reaction-cache))
+                        (negative (seq-count
+                                   (lambda (r)
+                                     (member (cdr (assq 'content r))
+                                             '("-1" "confused")))
+                                   (or cached '()))))
+                   (when (< negative value)
+                     (setq match nil))))))))))
+    match))
+
+
+(defun shipit-issue--fetch-all-comments-sync (repo issue-number)
+  "Fetch ALL comments for ISSUE-NUMBER in REPO synchronously.
+Returns the complete list. Shows progress messages during fetch."
+  (message "Loading all comments for issue #%s..." issue-number)
+  (let* ((resolved (shipit-issue--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fetch-fn (plist-get backend :fetch-comments)))
+    (if fetch-fn
+        (let ((comments (funcall fetch-fn config issue-number)))
+          (message "Loaded %d comments" (length comments))
+          comments)
+      (message "Backend does not support comment fetching")
+      nil)))
+
+(defun shipit-issue--comment-matches-filters-p-data (comment)
+  "Return non-nil if COMMENT alist matches all active filters.
+Works on raw comment data, not magit sections."
+  (let ((match t))
+    (dolist (filter shipit-issue--active-filters)
+      (let ((type (car filter))
+            (value (cdr filter)))
+        (when (and value match)
+          (pcase type
+            ('author
+             (let ((author (cdr (assq 'login (cdr (assq 'user comment))))))
+               (unless (and author (string-equal-ignore-case value author))
+                 (setq match nil))))
+            ('since-days
+             (let ((created (cdr (assq 'created_at comment))))
+               (when created
+                 (condition-case nil
+                     (let ((cutoff (time-subtract (current-time) (days-to-time value))))
+                       (when (time-less-p (date-to-time created) cutoff)
+                         (setq match nil)))
+                   (error nil)))))
+            ('search
+             (let ((body (or (cdr (assq 'body comment)) "")))
+               (unless (string-match-p (regexp-quote value) body)
+                 (setq match nil))))
+            ('hide-bots
+             (let ((author (cdr (assq 'login (cdr (assq 'user comment)))))
+                   (user-type (cdr (assq 'type (cdr (assq 'user comment))))))
+               (when (or (and author (string-match-p "\\[bot\\]$" author))
+                         (equal user-type "Bot"))
+                 (setq match nil))))
+            ('min-reactions
+             (let* ((comment-id (cdr (assq 'id comment)))
+                    (cached (gethash (shipit--reaction-cache-key
+                                      shipit-issue-buffer-repo comment-id nil)
+                                     shipit--reaction-cache))
+                    (count (length (or cached '()))))
+               (when (< count value)
+                 (setq match nil))))
+            ('min-positive
+             (let* ((comment-id (cdr (assq 'id comment)))
+                    (cached (gethash (shipit--reaction-cache-key
+                                      shipit-issue-buffer-repo comment-id nil)
+                                     shipit--reaction-cache))
+                    (positive (seq-count
+                               (lambda (r)
+                                 (member (cdr (assq 'content r))
+                                         '("+1" "heart" "hooray" "rocket")))
+                               (or cached '()))))
+               (when (< positive value)
+                 (setq match nil))))
+            ('min-negative
+             (let* ((comment-id (cdr (assq 'id comment)))
+                    (cached (gethash (shipit--reaction-cache-key
+                                      shipit-issue-buffer-repo comment-id nil)
+                                     shipit--reaction-cache))
+                    (negative (seq-count
+                               (lambda (r)
+                                 (member (cdr (assq 'content r))
+                                         '("-1" "confused")))
+                               (or cached '()))))
+               (when (< negative value)
+                 (setq match nil))))))))
+    match))
+
+(defun shipit-issue--apply-comment-filters ()
+  "Apply active filters by re-rendering the comments section.
+Fetches all comments on first filter if not already loaded."
+  (let ((repo shipit-issue-buffer-repo)
+        (issue-number shipit-issue-buffer-number))
+    ;; Fetch all comments if not yet loaded
+    (unless shipit-issue--all-comments
+      (setq shipit-issue--all-comments
+            (shipit-issue--fetch-all-comments-sync repo issue-number))
+      ;; Fetch reactions for all comments
+      (when (and shipit-issue--all-comments
+                 (shipit-issue--backend-has-reactions-p
+                  (shipit-issue--get-backend)))
+        (message "Fetching reactions...")
+        (let ((shipit-current-repo repo))
+          (shipit-comment--fetch-reactions-batch
+           shipit-issue--all-comments repo nil))))
+    ;; Filter and re-render
+    (when shipit-issue--all-comments
+      (let* ((filtered (seq-filter
+                        #'shipit-issue--comment-matches-filters-p-data
+                        shipit-issue--all-comments))
+             (total (length shipit-issue--all-comments))
+             (shown (length filtered)))
+        (shipit-issue--replace-comments-section-with
+         (lambda ()
+           (shipit-issue--insert-filtered-comments-section
+            repo issue-number filtered total)))
+        (shipit-issue--update-filter-status)
+        (message "Showing %d of %d comments" shown total)))))
+
+(defun shipit-issue--insert-filtered-comments-section (repo issue-number comments total)
+  "Insert comments section with filtered COMMENTS. TOTAL is unfiltered count."
+  (magit-insert-section (issue-comments nil nil)
+    (magit-insert-heading
+      (format "%s %s"
+              (shipit--get-pr-field-icon "comment" "\U0001f4ac")
+              (propertize (format "Comments (%d of %d)" (length comments) total)
+                          'face 'magit-section-heading)))
+    (magit-insert-section-body
+      (if (null comments)
+          (insert (propertize "   No matching comments\n" 'face 'font-lock-comment-face))
+        (shipit-issue--insert-comments-chunked repo issue-number comments))
+      (insert "\n"))))
+
+(defun shipit-issue--update-filter-status ()
+  "Insert or update a filter status line in the comments section.
+Shows active filter details, match count, and unloaded count."
+  (let ((comments-section (shipit--find-section-by-type 'issue-comments)))
+    (when comments-section
+      (let ((inhibit-read-only t)
+            (content-pos (oref comments-section content)))
+        (save-excursion
+          ;; Remove existing filter status line if present
+          (goto-char content-pos)
+          (when (and (< (point) (point-max))
+                     (get-text-property (point) 'shipit-filter-status))
+            (let ((end (or (next-single-property-change (point) 'shipit-filter-status)
+                          (1+ (point)))))
+              (delete-region (point) end)))
+          ;; Insert new status line if filters are active
+          (when shipit-issue--active-filters
+            (goto-char content-pos)
+            (let* ((filters-desc
+                    (mapconcat
+                     (lambda (f)
+                       (let ((type (car f))
+                             (val (cdr f)))
+                         (when val
+                           (pcase type
+                             ('author (format "author=%s" val))
+                             ('since-days (format "last %d days" val))
+                             ('search (format "search=%s" val))
+                             ('hide-bots "hide-bots")
+                             ('min-reactions (format "reactions>=%d" val))
+                             ('min-positive (format "positive>=%d" val))
+                             ('min-negative (format "negative>=%d" val))))))
+                     shipit-issue--active-filters " + "))
+                   (status-text (format "   Filter: %s\n" (string-trim filters-desc))))
+              (insert (propertize status-text
+                                 'face 'font-lock-warning-face
+                                 'shipit-filter-status t)))))))))
+
+
+(defun shipit-issue--filter-by-author ()
+  "Filter comments to a specific author."
+  (interactive)
+  (let* ((comments-section (shipit--find-section-by-type 'issue-comments))
+         (authors '()))
+    ;; Collect authors from visible comments AND in-memory hidden comments
+    (when comments-section
+      ;; From rendered comment sections
+      (dolist (child (oref comments-section children))
+        (when (eq (oref child type) 'issue-comment)
+          (let ((author (shipit-issue--extract-author-from-section child)))
+            (when (and author (not (member author authors)))
+              (push author authors))))
+        ;; From load-more section's in-memory hidden comments
+        (when (eq (oref child type) 'issue-comments-load-more)
+          (let ((hidden (plist-get (oref child value) :comments)))
+            (dolist (comment hidden)
+              (let ((author (cdr (assq 'login (cdr (assq 'user comment))))))
+                (when (and author (not (member author authors)))
+                  (push author authors))))))))
+    (let ((chosen (completing-read "Filter by author: " (sort authors #'string<) nil t)))
+      (setf (alist-get 'author shipit-issue--active-filters) chosen)
+      (shipit-issue--apply-comment-filters)
+      (message "Filtered to author: %s" chosen))))
+
+(defun shipit-issue--filter-by-date ()
+  "Filter comments to the last N days."
+  (interactive)
+  (let ((days (read-number "Show comments from last N days: " 7)))
+    (setf (alist-get 'since-days shipit-issue--active-filters) days)
+    (shipit-issue--apply-comment-filters)
+    (message "Filtered to last %d days" days)))
+
+(defun shipit-issue--filter-by-search ()
+  "Filter comments containing a search string."
+  (interactive)
+  (let ((query (read-string "Search comments for: ")))
+    (setf (alist-get 'search shipit-issue--active-filters) query)
+    (shipit-issue--apply-comment-filters)
+    (message "Filtered to comments containing: %s" query)))
+
+(defun shipit-issue--filter-hide-bots ()
+  "Toggle hiding bot comments."
+  (interactive)
+  (let ((current (alist-get 'hide-bots shipit-issue--active-filters)))
+    (if current
+        (setf (alist-get 'hide-bots shipit-issue--active-filters) nil)
+      (setf (alist-get 'hide-bots shipit-issue--active-filters) t))
+    (shipit-issue--apply-comment-filters)
+    (message "Bot comments: %s" (if (alist-get 'hide-bots shipit-issue--active-filters)
+                                    "hidden" "shown"))))
+
+(defun shipit-issue--filter-by-min-reactions ()
+  "Filter to comments with at least N reactions."
+  (interactive)
+  (let ((n (read-number "Minimum total reactions: " 5)))
+    (setf (alist-get 'min-reactions shipit-issue--active-filters) n)
+    (shipit-issue--apply-comment-filters)
+    (message "Filtered to comments with >= %d reactions" n)))
+
+(defun shipit-issue--filter-by-positive-reactions ()
+  "Filter to comments with at least N positive reactions."
+  (interactive)
+  (let ((n (read-number "Minimum positive reactions: " 3)))
+    (setf (alist-get 'min-positive shipit-issue--active-filters) n)
+    (shipit-issue--apply-comment-filters)
+    (message "Filtered to comments with >= %d positive reactions" n)))
+
+(defun shipit-issue--filter-by-negative-reactions ()
+  "Filter to comments with at least N negative reactions."
+  (interactive)
+  (let ((n (read-number "Minimum negative reactions: " 1)))
+    (setf (alist-get 'min-negative shipit-issue--active-filters) n)
+    (shipit-issue--apply-comment-filters)
+    (message "Filtered to comments with >= %d negative reactions" n)))
+
+(defun shipit-issue--clear-comment-filters ()
+  "Clear all comment filters and show all comments."
+  (interactive)
+  (setq shipit-issue--active-filters nil)
+  (shipit-issue--remove-all-filter-overlays)
+  ;; Re-render with all comments or original pagination
+  (let* ((repo shipit-issue-buffer-repo)
+         (issue-number shipit-issue-buffer-number)
+         (all shipit-issue--all-comments))
+    (when all
+      (shipit-issue--replace-comments-section-with
+       (lambda ()
+         (shipit-issue--insert-comments-section
+          repo issue-number all))))
+    (shipit-issue--update-filter-status))
+  (message "Comment filters cleared"))
+
+(defun shipit-issue--add-filter-overlay (section)
+  "Add an invisible overlay over SECTION to hide it."
+  (let ((ov (make-overlay (oref section start) (oref section end))))
+    (overlay-put ov 'invisible t)
+    (overlay-put ov 'shipit-filter-overlay t)))
+
+(defun shipit-issue--remove-filter-overlay (section)
+  "Remove any filter overlay from SECTION."
+  (dolist (ov (overlays-in (oref section start) (oref section end)))
+    (when (overlay-get ov 'shipit-filter-overlay)
+      (delete-overlay ov))))
+
+(defun shipit-issue--remove-all-filter-overlays ()
+  "Remove all filter overlays from the current buffer."
+  (dolist (ov (overlays-in (point-min) (point-max)))
+    (when (overlay-get ov 'shipit-filter-overlay)
+      (delete-overlay ov))))
+
+(transient-define-prefix shipit-issue-filter-comments ()
+  "Filter issue comments."
+  [:description
+   (lambda ()
+     (if shipit-issue--active-filters
+         (format "Comment Filters [%d active]"
+                 (seq-count (lambda (f) (cdr f)) shipit-issue--active-filters))
+       "Comment Filters"))
+   ("a" "By author" shipit-issue--filter-by-author)
+   ("d" "Since date" shipit-issue--filter-by-date)
+   ("s" "Search text" shipit-issue--filter-by-search)
+   ("b" "Hide/show bots" shipit-issue--filter-hide-bots)
+   ("r" "Min reactions" shipit-issue--filter-by-min-reactions)
+   ("+" "Min positive reactions" shipit-issue--filter-by-positive-reactions)
+   ("-" "Min negative reactions" shipit-issue--filter-by-negative-reactions)
+   ("c" "Clear all filters" shipit-issue--clear-comment-filters)])
 
 (provide 'shipit-issues-buffer)
 ;;; shipit-issues-buffer.el ends here

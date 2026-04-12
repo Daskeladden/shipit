@@ -180,6 +180,7 @@ Each entry is (TYPE . VALUE).  Supported types:
     ;; Subscription
     (define-key map (kbd "w") #'shipit-repo-subscription)
     (define-key map (kbd "f") #'shipit-issue-filter-comments)
+    (define-key map (kbd "R") #'shipit-issue--toggle-load-direction)
     map)
   "Keymap for `shipit-issue-mode'.")
 
@@ -865,21 +866,25 @@ Renders head comments, a Load more section, then tail comments."
         (insert "\n")))))
 
 (defun shipit-issue--insert-load-more-section (hidden-comments repo issue-number
-                                                               &optional unfetched-pages per-page)
+                                                               &optional unfetched-pages per-page direction)
   "Insert a Load more section for HIDDEN-COMMENTS in REPO ISSUE-NUMBER.
-The section stores the hidden comments and optional UNFETCHED-PAGES
-and PER-PAGE for lazy API fetching."
-  (let ((count (+ (length hidden-comments)
-                  (* (length unfetched-pages) (or per-page 0)))))
+The section stores the hidden comments and optional UNFETCHED-PAGES,
+PER-PAGE, and DIRECTION for lazy API fetching.
+DIRECTION is oldest or recent (default oldest)."
+  (let* ((count (+ (length hidden-comments)
+                   (* (length unfetched-pages) (or per-page 0))))
+         (dir (or direction 'oldest))
+         (dir-indicator (if (eq dir 'recent) " [recent first]" "")))
     (magit-insert-section (issue-comments-load-more
                            (list :comments hidden-comments
                                  :repo repo
                                  :issue-number issue-number
                                  :unfetched unfetched-pages
-                                 :per-page per-page))
+                                 :per-page per-page
+                                 :direction dir))
       (magit-insert-heading
-        (propertize (format "   ── Load %d more comment%s ──"
-                            count (if (= count 1) "" "s"))
+        (propertize (format "   ── Load %d more comment%s%s ──"
+                            count (if (= count 1) "" "s") dir-indicator)
                     'face 'font-lock-comment-face)))))
 
 (defun shipit-issue--insert-comments-section (repo issue-number comments)
@@ -1356,10 +1361,10 @@ the API and adds it to the pool."
                (with-current-buffer target-buffer
                  ;; Add fetched comments to hidden pool and render
                  (let ((new-hidden (append hidden (or page-data '()))))
-                   (oset section value
-                         (plist-put (plist-put (copy-sequence data)
-                                              :comments new-hidden)
-                                    :unfetched remaining-pages))
+                   (let ((updated-data (copy-sequence data)))
+                     (setq updated-data (plist-put updated-data :comments new-hidden))
+                     (setq updated-data (plist-put updated-data :unfetched remaining-pages))
+                     (oset section value updated-data))
                    (shipit-issue--load-more-from-memory
                     section (oref section value) batch-size)))))
            (lambda (err)
@@ -1372,8 +1377,13 @@ the API and adds it to the pool."
          (issue-number (plist-get data :issue-number))
          (unfetched (plist-get data :unfetched))
          (per-page (plist-get data :per-page))
-         (to-load (seq-take hidden batch-size))
-         (remaining (seq-drop hidden batch-size))
+         (direction (or (plist-get data :direction) 'oldest))
+         (to-load (if (eq direction 'recent)
+                      (seq-subseq hidden (max 0 (- (length hidden) batch-size)))
+                    (seq-take hidden batch-size)))
+         (remaining (if (eq direction 'recent)
+                        (seq-subseq hidden 0 (max 0 (- (length hidden) batch-size)))
+                      (seq-drop hidden batch-size)))
          (inhibit-read-only t)
          (section-start (oref section start))
          (section-end (oref section end))
@@ -1386,15 +1396,22 @@ the API and adds it to the pool."
         (shipit-comment--fetch-reactions-batch to-load repo nil)))
     ;; Delete the load-more section
     (delete-region section-start section-end)
-    ;; Insert the loaded comments at the same position
+    ;; Insert comments and new load-more in the correct order based on direction.
+    ;; Oldest-first: [comments] [load-more]  (gap is below new comments)
+    ;; Recent-first: [load-more] [comments]  (gap is above new comments)
     (save-excursion
       (goto-char section-start)
       (let ((magit-insert-section--parent parent))
-        (shipit-issue--insert-comments-chunked repo issue-number to-load)
-        ;; If more remain or pages unfetched, insert new load-more
-        (when (or remaining unfetched)
-          (shipit-issue--insert-load-more-section
-           remaining repo issue-number unfetched per-page))))
+        (if (eq direction 'recent)
+            (progn
+              (when (or remaining unfetched)
+                (shipit-issue--insert-load-more-section
+                 remaining repo issue-number unfetched per-page direction))
+              (shipit-issue--insert-comments-chunked repo issue-number to-load))
+          (shipit-issue--insert-comments-chunked repo issue-number to-load)
+          (when (or remaining unfetched)
+            (shipit-issue--insert-load-more-section
+             remaining repo issue-number unfetched per-page direction)))))
     ;; Fix parent's children list
     (when parent
       (oset parent children
@@ -1425,7 +1442,7 @@ how many comments to load."
        (work-item-key
         (shipit-issues-open-buffer work-item-key shipit-issue-buffer-repo))
        ((and section (eq (oref section type) 'issue-comments-load-more))
-        (shipit-issue--load-more-comments))
+        (shipit-issue-load-more-menu))
        ((shipit-issue--comment-id-at-point)
         (shipit-dwim))
        (t
@@ -2058,6 +2075,39 @@ Shows active filter details, match count, and unloaded count."
     (shipit-issue--update-filter-status))
   (message "Comment filters cleared"))
 
+(defun shipit-issue--toggle-load-direction ()
+  "Toggle load direction between oldest-first and recent-first.
+Only works when point is on a Load more section."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (when (and section (eq (oref section type) 'issue-comments-load-more))
+      (let* ((data (oref section value))
+             (current-dir (or (plist-get data :direction) 'oldest))
+             (new-dir (if (eq current-dir 'oldest) 'recent 'oldest))
+             (new-data (plist-put (copy-sequence data) :direction new-dir))
+             (inhibit-read-only t)
+             (parent (oref section parent))
+             (start (oref section start))
+             (end (oref section end)))
+        ;; Replace the section with updated direction
+        (save-excursion
+          (delete-region start end)
+          (goto-char start)
+          (let ((magit-insert-section--parent parent))
+            (shipit-issue--insert-load-more-section
+             (plist-get new-data :comments)
+             (plist-get new-data :repo)
+             (plist-get new-data :issue-number)
+             (plist-get new-data :unfetched)
+             (plist-get new-data :per-page)
+             new-dir)))
+        ;; Fix parent children list
+        (when parent
+          (oset parent children
+                (seq-remove (lambda (s) (eq s section))
+                            (oref parent children))))
+        (message "Load direction: %s first" new-dir)))))
+
 (defun shipit-issue--add-filter-overlay (section)
   "Add an invisible overlay over SECTION to hide it."
   (let ((ov (make-overlay (oref section start) (oref section end))))
@@ -2075,6 +2125,44 @@ Shows active filter details, match count, and unloaded count."
   (dolist (ov (overlays-in (point-min) (point-max)))
     (when (overlay-get ov 'shipit-filter-overlay)
       (delete-overlay ov))))
+
+(defun shipit-issue--load-more-default ()
+  "Load the default batch of comments."
+  (interactive)
+  (shipit-issue--load-more-comments))
+
+(defun shipit-issue--load-more-all ()
+  "Load all remaining comments."
+  (interactive)
+  (let ((current-prefix-arg '(4)))
+    (shipit-issue--load-more-comments)))
+
+(defun shipit-issue--load-more-n ()
+  "Load N comments (prompt for count)."
+  (interactive)
+  (let ((n (read-number "Load how many comments: " shipit-comments-load-more-default)))
+    (let ((current-prefix-arg n))
+      (shipit-issue--load-more-comments))))
+
+(transient-define-prefix shipit-issue-load-more-menu ()
+  "Actions for loading more comments."
+  [:description
+   (lambda ()
+     (let* ((section (magit-current-section))
+            (data (when (and section (eq (oref section type) 'issue-comments-load-more))
+                    (oref section value)))
+            (dir (if data (or (plist-get data :direction) 'oldest) 'oldest))
+            (count (if data
+                       (+ (length (plist-get data :comments))
+                          (* (length (plist-get data :unfetched))
+                             (or (plist-get data :per-page) 0)))
+                     0)))
+       (format "Load More Comments (%d remaining, %s first)"
+               count dir)))
+   ("RET" "Load next batch" shipit-issue--load-more-default)
+   ("a" "Load all" shipit-issue--load-more-all)
+   ("n" "Load N" shipit-issue--load-more-n)
+   ("r" "Toggle direction" shipit-issue--toggle-load-direction)])
 
 (transient-define-prefix shipit-issue-filter-comments ()
   "Filter issue comments."

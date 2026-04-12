@@ -263,8 +263,9 @@ pagination."
                                (string-trim-right (match-string 2 line) "\r"))
                          response-headers))
                  (forward-line 1)))
-             (let* ((headers-end (search-forward "\n\n" nil t))
-                    (json-data (when (and headers-end (< (point) (point-max)))
+             ;; Skip the blank separator line so point is at the body
+             (forward-line 1)
+             (let* ((json-data (when (< (point) (point-max))
                                  (set-buffer-multibyte t)
                                  (decode-coding-region (point) (point-max) 'utf-8)
                                  (when shipit-strip-emoji-variation-selectors

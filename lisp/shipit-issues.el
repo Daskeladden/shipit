@@ -103,6 +103,30 @@ BODY is the new description text."
       (error "Backend does not support :update-description"))
     (funcall fn config issue-number body)))
 
+(defun shipit-issues--fetch-comments-head-tail-async (repo issue-number per-page head-n tail-n callback)
+  "Fetch head and tail comments for ISSUE-NUMBER in REPO.
+PER-PAGE, HEAD-N, TAIL-N control pagination.  Calls CALLBACK with a
+plist of :head :tail :hidden :total :unfetched :per-page.
+Falls back to fetching all comments when the backend does not provide
+:fetch-comments-head-tail-async."
+  (let* ((resolved (shipit-issue--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (ht-fn (plist-get backend :fetch-comments-head-tail-async)))
+    (if ht-fn
+        (funcall ht-fn config issue-number per-page head-n tail-n callback)
+      ;; Fallback: fetch all, split locally
+      (funcall (plist-get backend :fetch-comments-async) config issue-number
+               (lambda (all-comments)
+                 (let* ((total (length all-comments))
+                        (head (seq-take all-comments head-n))
+                        (tail (seq-subseq all-comments (max 0 (- total tail-n))))
+                        (hidden (when (> total (+ head-n tail-n))
+                                  (seq-subseq all-comments head-n (- total tail-n)))))
+                   (funcall callback
+                            (list :head head :tail tail :hidden hidden
+                                  :total total :unfetched nil :per-page per-page))))))))
+
 (defun shipit-issues--fetch-reactions (repo issue-number)
   "Fetch reactions for issue ISSUE-NUMBER in REPO via the active backend.
 Caches the result in `shipit--reaction-cache' with key \"pr-ISSUE-NUMBER\"."

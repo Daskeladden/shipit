@@ -75,6 +75,7 @@
 (declare-function shipit-issue--backend-has-reactions-p "shipit-issue-backends")
 (declare-function shipit-issues--fetch-reactions "shipit-issues")
 (declare-function shipit-issues--fetch-reactions-async "shipit-issues")
+(declare-function shipit-issues--fetch-comments-head-tail-async "shipit-issues")
 (declare-function shipit-issues--add-reaction "shipit-issues")
 (declare-function shipit-issues--remove-reaction "shipit-issues")
 (declare-function shipit-gh-etag--user-state-key-p "shipit-gh-etag")
@@ -298,32 +299,26 @@ buffer-local overrides so the issue fetches use the correct backend
         ;; Fetch comments async
         (let ((target-buffer (current-buffer))
               (root-section magit-root-section))
-          (shipit-issues--fetch-comments-async
+          (shipit-issues--fetch-comments-head-tail-async
            repo issue-number
-           (lambda (comments)
-             (shipit--debug-log "Got %d comments for issue #%s"
-                                (length comments) issue-number)
-             (when (buffer-live-p target-buffer)
-               (with-current-buffer target-buffer
-                 ;; Fetch reactions only for VISIBLE comments when pagination
-                 ;; is active, not the entire list.
-                 (when comments
-                   (let* ((total (length comments))
-                          (head-n shipit-comments-initial-count)
-                          (tail-n shipit-comments-tail-count)
-                          (threshold shipit-comments-pagination-threshold)
-                          (paginating (and (> threshold 0)
-                                          (> total threshold)
-                                          (> total (+ head-n tail-n))))
-                          (visible (if paginating
-                                      (append (seq-take comments head-n)
-                                              (seq-subseq comments (- total tail-n)))
-                                    comments))
+           shipit-comments-load-more-default
+           shipit-comments-initial-count
+           shipit-comments-tail-count
+           (lambda (result)
+             (let ((total (plist-get result :total)))
+               (shipit--debug-log "Got head+tail for issue #%s, total=%d"
+                                  issue-number total)
+               (when (buffer-live-p target-buffer)
+                 (with-current-buffer target-buffer
+                   ;; Fetch reactions only for visible head + tail comments
+                   (let* ((visible (append (plist-get result :head)
+                                           (plist-get result :tail)))
                           (shipit-current-repo repo))
-                     (shipit-comment--fetch-reactions-batch visible repo nil)))
-                 (let ((magit-root-section (or magit-root-section root-section)))
-                   (shipit-issue--replace-comments-with-content
-                    repo issue-number comments))))))
+                     (when visible
+                       (shipit-comment--fetch-reactions-batch visible repo nil)))
+                   (let ((magit-root-section (or magit-root-section root-section)))
+                     (shipit-issue--replace-comments-with-paginated-content
+                      repo issue-number result)))))))
           ;; Fetch child items async for epics
           (let ((issue-type (cdr (assq 'issue-type issue-data))))
             (when (and issue-type (string-equal-ignore-case issue-type "Epic"))
@@ -579,6 +574,20 @@ buffer-local overrides so the issue fetches use the correct backend
 Uses the same pattern as `shipit--replace-general-comments-section-with-content'."
   (shipit--debug-log "ASYNC: Replacing issue comments placeholder with %d comments"
                      (length comments))
+  (shipit-issue--replace-comments-section-with
+   (lambda () (shipit-issue--insert-comments-section repo issue-number comments))))
+
+(defun shipit-issue--replace-comments-with-paginated-content (repo issue-number result)
+  "Replace comments placeholder with paginated RESULT for ISSUE-NUMBER.
+RESULT is a plist from the head+tail fetcher."
+  (shipit--debug-log "ASYNC: Replacing issue comments with paginated content, total=%d"
+                     (plist-get result :total))
+  (shipit-issue--replace-comments-section-with
+   (lambda () (shipit-issue--insert-paginated-comments-section repo issue-number result))))
+
+(defun shipit-issue--replace-comments-section-with (insert-fn)
+  "Replace the issue-comments placeholder by calling INSERT-FN.
+INSERT-FN should insert a new issue-comments magit section at point."
   (let ((section (shipit--find-section-by-type 'issue-comments)))
     (when section
       (let* ((inhibit-read-only t)
@@ -593,9 +602,7 @@ Uses the same pattern as `shipit--replace-general-comments-section-with-content'
             (delete-region section-start section-end)
             (goto-char section-start)
             (let ((magit-insert-section--parent parent-section))
-              (setq new-section
-                    (shipit-issue--insert-comments-section
-                     repo issue-number comments))))
+              (setq new-section (funcall insert-fn))))
           ;; Fix parent's children list to maintain correct order
           (when (and parent-section old-index new-section)
             (let* ((current-children (oref parent-section children))
@@ -659,14 +666,50 @@ comments so the user sees content appearing progressively."
                  (zerop (mod counter chunk-size)))
         (shipit--render-yield)))))
 
-(defun shipit-issue--insert-load-more-section (hidden-comments repo issue-number)
+(defun shipit-issue--insert-paginated-comments-section (repo issue-number result)
+  "Insert comments section from a head+tail RESULT plist.
+RESULT has :head :tail :hidden :total :unfetched :per-page.
+Renders head comments, a Load more section, then tail comments."
+  (let* ((head (plist-get result :head))
+         (tail (plist-get result :tail))
+         (hidden (plist-get result :hidden))
+         (total (plist-get result :total))
+         (unfetched (plist-get result :unfetched))
+         (per-page (plist-get result :per-page))
+         (hidden-count (+ (length hidden)
+                          (* (length unfetched) per-page))))
+    (magit-insert-section (issue-comments nil nil)
+      (magit-insert-heading
+        (format "%s %s"
+                (shipit--get-pr-field-icon "comment" "💬")
+                (propertize (format "Comments (%d)" total)
+                            'face 'magit-section-heading)))
+      (magit-insert-section-body
+        (cond
+         ((= total 0)
+          (insert (propertize "   No comments\n" 'face 'font-lock-comment-face)))
+         ((= hidden-count 0)
+          (shipit-issue--insert-comments-chunked repo issue-number (append head tail)))
+         (t
+          (shipit-issue--insert-comments-chunked repo issue-number head)
+          (shipit-issue--insert-load-more-section
+           hidden repo issue-number unfetched per-page)
+          (shipit-issue--insert-comments-chunked repo issue-number tail)))
+        (insert "\n")))))
+
+(defun shipit-issue--insert-load-more-section (hidden-comments repo issue-number
+                                                               &optional unfetched-pages per-page)
   "Insert a Load more section for HIDDEN-COMMENTS in REPO ISSUE-NUMBER.
-The section stores the hidden comments as its value for later retrieval."
-  (let ((count (length hidden-comments)))
+The section stores the hidden comments and optional UNFETCHED-PAGES
+and PER-PAGE for lazy API fetching."
+  (let ((count (+ (length hidden-comments)
+                  (* (length unfetched-pages) (or per-page 0)))))
     (magit-insert-section (issue-comments-load-more
                            (list :comments hidden-comments
                                  :repo repo
-                                 :issue-number issue-number))
+                                 :issue-number issue-number
+                                 :unfetched unfetched-pages
+                                 :per-page per-page))
       (magit-insert-heading
         (propertize (format "   ── Load %d more comment%s ──"
                             count (if (= count 1) "" "s"))
@@ -1104,18 +1147,64 @@ Fetches available transitions, prompts the user, and executes."
   "Load more hidden comments from the Load more section at point.
 With no prefix arg, loads `shipit-comments-load-more-default' comments.
 With C-u N, loads exactly N comments.
-With C-u alone, loads all remaining hidden comments."
+With C-u alone, loads all remaining hidden comments.
+Renders from in-memory hidden comments first.  When those are
+exhausted and unfetched pages remain, fetches the next page from
+the API and adds it to the pool."
   (interactive)
   (let* ((section (magit-current-section))
          (data (oref section value))
          (hidden (plist-get data :comments))
          (repo (plist-get data :repo))
          (issue-number (plist-get data :issue-number))
+         (unfetched (plist-get data :unfetched))
+         (per-page (plist-get data :per-page))
          (batch-size (cond
                       ((and current-prefix-arg (numberp current-prefix-arg))
                        current-prefix-arg)
-                      (current-prefix-arg (length hidden))
-                      (t shipit-comments-load-more-default)))
+                      (current-prefix-arg (+ (length hidden)
+                                             (* (length unfetched) (or per-page 0))))
+                      (t shipit-comments-load-more-default))))
+    ;; If we have enough in memory, render directly
+    (if (or (>= (length hidden) batch-size) (null unfetched))
+        (shipit-issue--load-more-from-memory section data batch-size)
+      ;; Need to fetch more from API first
+      (let ((next-page (car unfetched))
+            (remaining-pages (cdr unfetched))
+            (target-buffer (current-buffer)))
+        (message "Fetching more comments...")
+        (let* ((resolved (shipit-issue--resolve-for-repo repo))
+               (config (cdr resolved))
+               (base-url (format "%s/repos/%s/issues/%s/comments"
+                                 (or shipit-api-url "https://api.github.com")
+                                 repo issue-number))
+               (url (format "%s?per_page=%d&page=%d" base-url per-page next-page))
+               (headers `(("Accept" . "application/vnd.github+json")
+                          ("Authorization" . ,(format "Bearer %s" (shipit--github-token)))
+                          ("X-GitHub-Api-Version" . "2022-11-28"))))
+          (shipit--url-retrieve-async
+           url "GET" headers nil
+           (lambda (page-data)
+             (when (buffer-live-p target-buffer)
+               (with-current-buffer target-buffer
+                 ;; Add fetched comments to hidden pool and render
+                 (let ((new-hidden (append hidden (or page-data '()))))
+                   (oset section value
+                         (plist-put (plist-put (copy-sequence data)
+                                              :comments new-hidden)
+                                    :unfetched remaining-pages))
+                   (shipit-issue--load-more-from-memory
+                    section (oref section value) batch-size)))))
+           (lambda (err)
+             (message "Failed to fetch comments: %s" err))))))))
+
+(defun shipit-issue--load-more-from-memory (section data batch-size)
+  "Render BATCH-SIZE comments from in-memory DATA in SECTION."
+  (let* ((hidden (plist-get data :comments))
+         (repo (plist-get data :repo))
+         (issue-number (plist-get data :issue-number))
+         (unfetched (plist-get data :unfetched))
+         (per-page (plist-get data :per-page))
          (to-load (seq-take hidden batch-size))
          (remaining (seq-drop hidden batch-size))
          (inhibit-read-only t)
@@ -1135,9 +1224,10 @@ With C-u alone, loads all remaining hidden comments."
       (goto-char section-start)
       (let ((magit-insert-section--parent parent))
         (shipit-issue--insert-comments-chunked repo issue-number to-load)
-        ;; If more remain, insert a new load-more section
-        (when remaining
-          (shipit-issue--insert-load-more-section remaining repo issue-number))))
+        ;; If more remain or pages unfetched, insert new load-more
+        (when (or remaining unfetched)
+          (shipit-issue--insert-load-more-section
+           remaining repo issue-number unfetched per-page))))
     ;; Fix parent's children list
     (when parent
       (oset parent children
@@ -1146,9 +1236,11 @@ With C-u alone, loads all remaining hidden comments."
     (message "Loaded %d comment%s%s"
              (length to-load)
              (if (= 1 (length to-load)) "" "s")
-             (if remaining
-                 (format " (%d remaining)" (length remaining))
-               ""))))
+             (let ((total-remaining (+ (length remaining)
+                                       (* (length unfetched) (or per-page 0)))))
+               (if (> total-remaining 0)
+                   (format " (%d remaining)" total-remaining)
+                 "")))))
 
 (defun shipit-issue--ret-dwim ()
   "Handle RET in issue buffers.

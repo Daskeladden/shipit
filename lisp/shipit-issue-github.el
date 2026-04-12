@@ -62,6 +62,79 @@ Calls CALLBACK with the list of comments."
     (shipit--debug-log "GitHub backend: fetching comments async for issue #%s from %s" id repo)
     (shipit--api-request-paginated-async endpoint callback)))
 
+(defun shipit-issue-github--fetch-comments-head-tail-async (config id per-page head-n tail-n callback)
+  "Fetch only head and tail comments for issue ID using CONFIG.
+PER-PAGE controls the page size. HEAD-N and TAIL-N are how many
+to show from each end.  Calls CALLBACK with a plist:
+  :head       - first HEAD-N comments
+  :tail       - last TAIL-N comments
+  :hidden     - fetched but not displayed comments
+  :total      - estimated total comment count
+  :unfetched  - list of unfetched page numbers
+  :per-page   - page size used
+Uses the Link header to jump to the last page instead of fetching
+all intermediate pages."
+  (let* ((repo (plist-get config :repo))
+         (base-url (format "%s/repos/%s/issues/%s/comments"
+                           (or shipit-api-url "https://api.github.com") repo id))
+         (url1 (format "%s?per_page=%d&page=1" base-url per-page))
+         (headers `(("Accept" . "application/vnd.github+json")
+                    ("Authorization" . ,(format "Bearer %s" (shipit--github-token)))
+                    ("X-GitHub-Api-Version" . "2022-11-28"))))
+    (shipit--debug-log "GitHub: fetching head+tail comments for issue #%s" id)
+    (shipit--url-retrieve-async-with-headers
+     url1 "GET" headers nil
+     (lambda (page1-data response-headers)
+       (let ((last-page (shipit--parse-link-header-last-page response-headers))
+             (page1 (or page1-data '())))
+         (if (or (null last-page) (<= last-page 1))
+             ;; Single page: we have everything
+             (funcall callback
+                      (list :head (seq-take page1 head-n)
+                            :tail (seq-subseq page1 (max 0 (- (length page1) tail-n)))
+                            :hidden (let ((total (length page1)))
+                                      (when (> total (+ head-n tail-n))
+                                        (seq-subseq page1 head-n (- total tail-n))))
+                            :total (length page1)
+                            :unfetched nil
+                            :per-page per-page))
+           ;; Multi-page: also fetch last page
+           (let ((url-last (format "%s?per_page=%d&page=%d" base-url per-page last-page)))
+             (shipit--url-retrieve-async
+              url-last "GET" headers nil
+              (lambda (last-data)
+                (let* ((last-page-data (or last-data '()))
+                       (total (+ (* (1- last-page) per-page) (length last-page-data)))
+                       (head (seq-take page1 head-n))
+                       (tail (seq-subseq last-page-data
+                                         (max 0 (- (length last-page-data) tail-n))))
+                       (hidden-from-page1 (seq-drop page1 head-n))
+                       (hidden-from-last (seq-take last-page-data
+                                                   (max 0 (- (length last-page-data) tail-n))))
+                       (hidden (append hidden-from-page1 hidden-from-last))
+                       (unfetched (cl-loop for p from 2 below last-page collect p)))
+                  (funcall callback
+                           (list :head head
+                                 :tail tail
+                                 :hidden hidden
+                                 :total total
+                                 :unfetched unfetched
+                                 :per-page per-page))))
+              (lambda (err)
+                (shipit--debug-log "GitHub: failed to fetch last page: %s" err)
+                ;; Fall back to page 1 only
+                (funcall callback
+                         (list :head (seq-take page1 head-n)
+                               :tail nil
+                               :hidden (seq-drop page1 head-n)
+                               :total (length page1)
+                               :unfetched nil
+                               :per-page per-page))))))))
+     (lambda (err)
+       (shipit--debug-log "GitHub: head+tail comment fetch failed: %s" err)
+       (funcall callback (list :head nil :tail nil :hidden nil
+                               :total 0 :unfetched nil :per-page per-page))))))
+
 (defun shipit-issue-github--search (config args)
   "Search issues using CONFIG with transient ARGS.
 Builds GitHub search query from ARGS and delegates to the GitHub search API."
@@ -324,6 +397,7 @@ via the PR backend's mark-notification-read function."
        :fetch-issue #'shipit-issue-github--fetch-issue
        :fetch-comments #'shipit-issue-github--fetch-comments
        :fetch-comments-async #'shipit-issue-github--fetch-comments-async
+       :fetch-comments-head-tail-async #'shipit-issue-github--fetch-comments-head-tail-async
        :search #'shipit-issue-github--search
        :create-issue #'shipit-issue-github--create-issue
        :reference-patterns #'shipit-issue-github--reference-patterns

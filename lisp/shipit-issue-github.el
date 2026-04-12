@@ -111,12 +111,14 @@ all intermediate pages."
                        (hidden-from-page1 (seq-drop page1 head-n))
                        (hidden-from-last (seq-take last-page-data
                                                    (max 0 (- (length last-page-data) tail-n))))
-                       (hidden (append hidden-from-page1 hidden-from-last))
+                       (hidden-head hidden-from-page1)
+                       (hidden-tail hidden-from-last)
                        (unfetched (cl-loop for p from 2 below last-page collect p)))
                   (funcall callback
                            (list :head head
                                  :tail tail
-                                 :hidden hidden
+                                 :hidden-head hidden-head
+                                 :hidden-tail hidden-tail
                                  :total total
                                  :unfetched unfetched
                                  :per-page per-page))))
@@ -126,13 +128,14 @@ all intermediate pages."
                 (funcall callback
                          (list :head (seq-take page1 head-n)
                                :tail nil
-                               :hidden (seq-drop page1 head-n)
+                               :hidden-head (seq-drop page1 head-n)
+                               :hidden-tail nil
                                :total (length page1)
                                :unfetched nil
                                :per-page per-page))))))))
      (lambda (err)
        (shipit--debug-log "GitHub: head+tail comment fetch failed: %s" err)
-       (funcall callback (list :head nil :tail nil :hidden nil
+       (funcall callback (list :head nil :tail nil :hidden-head nil :hidden-tail nil
                                :total 0 :unfetched nil :per-page per-page))))))
 
 (defun shipit-issue-github--fetch-pinned-comment-async (config issue-number callback)

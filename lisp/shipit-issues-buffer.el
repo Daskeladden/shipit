@@ -672,16 +672,9 @@ is set and the display is graphical."
             (when (and reactions (not (string-empty-p reactions)))
               (insert "   " reactions "\n"))))
         (insert "\n"))
-      ;; Apply rounded background to parent and child sections
-      (when (and shipit-pinned-comment-bg-color
-                 (display-graphic-p)
-                 (fboundp 'shipit-rounded--apply-to-section))
-        (shipit-rounded--apply-to-section
-         magit-insert-section--current shipit-pinned-comment-bg-color)
-        ;; Also apply to child sections so bg is visible when collapsed
-        (dolist (child (oref magit-insert-section--current children))
-          (shipit-rounded--apply-to-section
-           child shipit-pinned-comment-bg-color))))))
+      ;; Rounded background is applied by the caller after the
+      ;; section is fully finalized with a valid end marker.
+      )))
 
 (defun shipit-issue--insert-pinned-comment-before-comments (repo issue-number pinned-data)
   "Insert a pinned comment section before the comments section.
@@ -699,6 +692,16 @@ the parent's children list so magit section navigation works."
             (setq new-section
                   (shipit-issue--insert-pinned-comment-section
                    repo issue-number pinned-data))))
+        ;; Apply rounded background now that section has valid end marker
+        (when (and new-section shipit-pinned-comment-bg-color
+                   (display-graphic-p)
+                   (fboundp 'shipit-rounded--apply-to-section)
+                   (oref new-section end))
+          (shipit-rounded--apply-to-section
+           new-section shipit-pinned-comment-bg-color)
+          (dolist (child (oref new-section children))
+            (shipit-rounded--apply-to-section
+             child shipit-pinned-comment-bg-color)))
         ;; Fix children list: magit-insert-section auto-appends to parent,
         ;; so remove the auto-added entry first, then insert at the
         ;; correct position (before comments) for proper n/p navigation.
@@ -840,11 +843,12 @@ RESULT has :head :tail :hidden :total :unfetched :per-page.
 Renders head comments, a Load more section, then tail comments."
   (let* ((head (plist-get result :head))
          (tail (plist-get result :tail))
-         (hidden (plist-get result :hidden))
+         (hidden-head (or (plist-get result :hidden-head) '()))
+         (hidden-tail (or (plist-get result :hidden-tail) '()))
          (total (plist-get result :total))
          (unfetched (plist-get result :unfetched))
          (per-page (plist-get result :per-page))
-         (hidden-count (+ (length hidden)
+         (hidden-count (+ (length hidden-head) (length hidden-tail)
                           (* (length unfetched) per-page))))
     (magit-insert-section (issue-comments nil nil)
       (magit-insert-heading
@@ -861,22 +865,24 @@ Renders head comments, a Load more section, then tail comments."
          (t
           (shipit-issue--insert-comments-chunked repo issue-number head)
           (shipit-issue--insert-load-more-section
-           hidden repo issue-number unfetched per-page)
+           hidden-head repo issue-number unfetched per-page nil hidden-tail)
           (shipit-issue--insert-comments-chunked repo issue-number tail)))
         (insert "\n")))))
 
 (defun shipit-issue--insert-load-more-section (hidden-comments repo issue-number
-                                                               &optional unfetched-pages per-page direction)
+                                                               &optional unfetched-pages per-page direction
+                                                               hidden-tail)
   "Insert a Load more section for HIDDEN-COMMENTS in REPO ISSUE-NUMBER.
 The section stores the hidden comments and optional UNFETCHED-PAGES,
 PER-PAGE, and DIRECTION for lazy API fetching.
 DIRECTION is oldest or recent (default oldest)."
-  (let* ((count (+ (length hidden-comments)
+  (let* ((count (+ (length hidden-comments) (length (or hidden-tail '()))
                    (* (length unfetched-pages) (or per-page 0))))
          (dir (or direction 'oldest))
          (dir-indicator (if (eq dir 'recent) " [recent first]" "")))
     (magit-insert-section (issue-comments-load-more
                            (list :comments hidden-comments
+                                 :hidden-tail (or hidden-tail '())
                                  :repo repo
                                  :issue-number issue-number
                                  :unfetched unfetched-pages
@@ -1335,40 +1341,55 @@ the API and adds it to the pool."
                       ((and current-prefix-arg (numberp current-prefix-arg))
                        current-prefix-arg)
                       (current-prefix-arg (+ (length hidden)
+                                             (length (or (plist-get data :hidden-tail) '()))
                                              (* (length unfetched) (or per-page 0))))
                       (t shipit-comments-load-more-default))))
-    ;; If we have enough in memory, render directly
-    (if (or (>= (length hidden) batch-size) (null unfetched))
-        (shipit-issue--load-more-from-memory section data batch-size)
-      ;; Need to fetch more from API first
-      (let ((next-page (car unfetched))
-            (remaining-pages (cdr unfetched))
-            (target-buffer (current-buffer)))
-        (message "Fetching more comments...")
-        (let* ((resolved (shipit-issue--resolve-for-repo repo))
-               (config (cdr resolved))
-               (base-url (format "%s/repos/%s/issues/%s/comments"
-                                 (or shipit-api-url "https://api.github.com")
-                                 repo issue-number))
-               (url (format "%s?per_page=%d&page=%d" base-url per-page next-page))
-               (headers `(("Accept" . "application/vnd.github+json")
-                          ("Authorization" . ,(format "Bearer %s" (shipit--github-token)))
-                          ("X-GitHub-Api-Version" . "2022-11-28"))))
-          (shipit--url-retrieve-async
-           url "GET" headers nil
-           (lambda (page-data)
-             (when (buffer-live-p target-buffer)
-               (with-current-buffer target-buffer
-                 ;; Add fetched comments to hidden pool and render
-                 (let ((new-hidden (append hidden (or page-data '()))))
+    ;; Check primary pool based on direction
+    (let* ((dir (or (plist-get data :direction) 'oldest))
+           (hidden-tail (or (plist-get data :hidden-tail) '()))
+           (primary-len (length (if (eq dir 'recent) hidden-tail hidden))))
+      (if (or (>= primary-len batch-size) (null unfetched))
+          (shipit-issue--load-more-from-memory section data batch-size)
+        ;; Need to fetch more from API first
+        ;; Recent: fetch last unfetched page; oldest: fetch first
+        (let* ((next-page (if (eq dir 'recent)
+                              (car (last unfetched))
+                            (car unfetched)))
+               (remaining-pages (if (eq dir 'recent)
+                                    (butlast unfetched)
+                                  (cdr unfetched)))
+               (target-buffer (current-buffer)))
+          (message "Fetching more comments...")
+          (let* ((resolved (shipit-issue--resolve-for-repo repo))
+                 (config (cdr resolved))
+                 (base-url (format "%s/repos/%s/issues/%s/comments"
+                                   (or shipit-api-url "https://api.github.com")
+                                   repo issue-number))
+                 (url (format "%s?per_page=%d&page=%d" base-url per-page next-page))
+                 (headers `(("Accept" . "application/vnd.github+json")
+                            ("Authorization" . ,(format "Bearer %s" (shipit--github-token)))
+                            ("X-GitHub-Api-Version" . "2022-11-28"))))
+            (shipit--url-retrieve-async
+             url "GET" headers nil
+             (lambda (page-data)
+               (when (buffer-live-p target-buffer)
+                 (with-current-buffer target-buffer
+                   ;; Add fetched data to the correct pool based on direction
                    (let ((updated-data (copy-sequence data)))
-                     (setq updated-data (plist-put updated-data :comments new-hidden))
-                     (setq updated-data (plist-put updated-data :unfetched remaining-pages))
+                     (if (eq dir 'recent)
+                         (setq updated-data
+                               (plist-put updated-data :hidden-tail
+                                          (append (or page-data '()) hidden-tail)))
+                       (setq updated-data
+                             (plist-put updated-data :comments
+                                        (append hidden (or page-data '())))))
+                     (setq updated-data
+                           (plist-put updated-data :unfetched remaining-pages))
                      (oset section value updated-data))
                    (shipit-issue--load-more-from-memory
-                    section (oref section value) batch-size)))))
-           (lambda (err)
-             (message "Failed to fetch comments: %s" err))))))))
+                    section (oref section value) batch-size))))
+             (lambda (err)
+               (message "Failed to fetch comments: %s" err)))))))))
 
 (defun shipit-issue--load-more-from-memory (section data batch-size)
   "Render BATCH-SIZE comments from in-memory DATA in SECTION."
@@ -1377,13 +1398,29 @@ the API and adds it to the pool."
          (issue-number (plist-get data :issue-number))
          (unfetched (plist-get data :unfetched))
          (per-page (plist-get data :per-page))
+         (hidden-tail (or (plist-get data :hidden-tail) '()))
          (direction (or (plist-get data :direction) 'oldest))
+         ;; Select pool based on direction:
+         ;; oldest-first: consume hidden (old/page1) first
+         ;; recent-first: consume hidden-tail (new/last-page) first
+         (primary (if (eq direction 'recent) hidden-tail hidden))
+         (secondary (if (eq direction 'recent) hidden hidden-tail))
          (to-load (if (eq direction 'recent)
-                      (seq-subseq hidden (max 0 (- (length hidden) batch-size)))
-                    (seq-take hidden batch-size)))
-         (remaining (if (eq direction 'recent)
-                        (seq-subseq hidden 0 (max 0 (- (length hidden) batch-size)))
-                      (seq-drop hidden batch-size)))
+                      (nreverse (seq-take (reverse primary) batch-size))
+                    (seq-take primary batch-size)))
+         (primary-remaining (if (eq direction 'recent)
+                            (seq-subseq primary 0 (max 0 (- (length primary) batch-size)))
+                          (seq-drop primary batch-size)))
+         ;; If primary insufficient and no unfetched, take from secondary
+         (extra-needed (max 0 (- batch-size (length to-load))))
+         (to-load (if (and (> extra-needed 0) (null unfetched))
+                      (append to-load (seq-take secondary extra-needed))
+                    to-load))
+         (secondary-remaining (if (and (> extra-needed 0) (null unfetched))
+                                  (seq-drop secondary extra-needed)
+                                secondary))
+         (remaining (if (eq direction 'recent) secondary-remaining primary-remaining))
+         (remaining-tail (if (eq direction 'recent) primary-remaining secondary-remaining))
          (inhibit-read-only t)
          (section-start (oref section start))
          (section-end (oref section end))
@@ -1412,11 +1449,16 @@ the API and adds it to the pool."
           (when (or remaining unfetched)
             (shipit-issue--insert-load-more-section
              remaining repo issue-number unfetched per-page direction)))))
-    ;; Fix parent's children list
+    ;; Fix parent's children list: remove old load-more and sort by
+    ;; buffer position so n/p navigation works correctly with the
+    ;; newly inserted sections.
     (when parent
       (oset parent children
-            (seq-remove (lambda (s) (eq s section))
-                        (oref parent children))))
+            (sort (seq-remove (lambda (s) (eq s section))
+                              (oref parent children))
+                  (lambda (a b)
+                    (< (or (oref a start) 0)
+                       (or (oref b start) 0))))))
     (message "Loaded %d comment%s%s"
              (length to-load)
              (if (= 1 (length to-load)) "" "s")
@@ -2100,7 +2142,8 @@ Only works when point is on a Load more section."
              (plist-get new-data :issue-number)
              (plist-get new-data :unfetched)
              (plist-get new-data :per-page)
-             new-dir)))
+             new-dir
+             (plist-get new-data :hidden-tail))))
         ;; Fix parent children list
         (when parent
           (oset parent children

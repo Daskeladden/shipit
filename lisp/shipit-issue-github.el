@@ -89,15 +89,20 @@ all intermediate pages."
              (page1 (or page1-data '())))
          (if (or (null last-page) (<= last-page 1))
              ;; Single page: we have everything
-             (funcall callback
-                      (list :head (seq-take page1 head-n)
-                            :tail (seq-subseq page1 (max 0 (- (length page1) tail-n)))
-                            :hidden (let ((total (length page1)))
-                                      (when (> total (+ head-n tail-n))
-                                        (seq-subseq page1 head-n (- total tail-n))))
-                            :total (length page1)
-                            :unfetched nil
-                            :per-page per-page))
+             (let ((total (length page1)))
+               (if (<= total (+ head-n tail-n))
+                   ;; Few enough to show all -- no split needed
+                   (funcall callback
+                            (list :head page1 :tail nil
+                                  :hidden-head nil :hidden-tail nil
+                                  :total total :unfetched nil :per-page per-page))
+                 ;; Split into head + hidden + tail
+                 (funcall callback
+                          (list :head (seq-take page1 head-n)
+                                :tail (seq-subseq page1 (- total tail-n))
+                                :hidden-head (seq-subseq page1 head-n (- total tail-n))
+                                :hidden-tail nil
+                                :total total :unfetched nil :per-page per-page))))
            ;; Multi-page: also fetch last page
            (let ((url-last (format "%s?per_page=%d&page=%d" base-url per-page last-page)))
              (shipit--url-retrieve-async

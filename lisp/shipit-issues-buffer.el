@@ -138,6 +138,9 @@
 (defvar-local shipit-issue--linked-items-cache nil
   "Cache of linked items for the current issue buffer.")
 
+(defvar-local shipit-issue--comment-position nil
+  "Current comment position as (INDEX . TOTAL) or nil when not on a comment.")
+
 (defvar-local shipit-issue--all-comments nil
   "Complete list of all comments for this issue.
 Populated on first filter application via synchronous API fetch.
@@ -200,7 +203,10 @@ Provides a read-only interface for viewing GitHub issues.
   (setq-local truncate-lines t)
   (setq-local tab-width 8)
   (setq-local magit-root-section nil)
-  (font-lock-mode 1))
+  (font-lock-mode 1)
+  (add-hook 'post-command-hook #'shipit-issue--update-comment-position nil t)
+  (setq-local mode-line-process
+              '(:eval (shipit-issue--mode-line-comment-position))))
 
 ;;; Buffer lifecycle
 
@@ -1874,6 +1880,52 @@ Returns the complete list. Shows progress messages during fetch."
           comments)
       (message "Backend does not support comment fetching")
       nil)))
+
+(defun shipit-issue--update-comment-position ()
+  "Update the current comment position for mode-line display.
+Called via `post-command-hook'."
+  (let ((section (magit-current-section))
+        (pos nil))
+    ;; Walk up to find the issue-comment section
+    (let ((s section))
+      (while (and s (not (eq (oref s type) 'issue-comment)))
+        (setq s (oref s parent)))
+      (when (and s (eq (oref s type) 'issue-comment))
+        ;; Find the parent comments section
+        (let ((comments-parent (oref s parent)))
+          (when comments-parent
+            (let ((children (oref comments-parent children))
+                  (idx 0)
+                  (total 0)
+                  (found nil))
+              (dolist (child children)
+                (when (eq (oref child type) 'issue-comment)
+                  (cl-incf total)
+                  (when (eq child s)
+                    (setq found (1+ total))))
+                (when (eq (oref child type) 'issue-comments-load-more)
+                  (let ((data (oref child value)))
+                    (cl-incf total
+                             (+ (length (plist-get data :comments))
+                                (length (or (plist-get data :hidden-tail) '()))
+                                (* (length (plist-get data :unfetched))
+                                   (or (plist-get data :per-page) 0)))))))
+              (when found
+                (setq pos (cons found total))))))))
+    (setq shipit-issue--comment-position pos)))
+
+(defun shipit-issue--mode-line-comment-position ()
+  "Return mode-line string showing comment position."
+  (when shipit-issue--comment-position
+    (let* ((idx (car shipit-issue--comment-position))
+           (total (cdr shipit-issue--comment-position))
+           (pct (if (> total 0) (/ (* 100 idx) total) 0))
+           (bar-width 10)
+           (filled (/ (* bar-width idx) (max total 1)))
+           (empty (- bar-width filled))
+           (bar (concat (make-string filled ?#)
+                        (make-string empty ?-))))
+      (format " [%d/%d %s]" idx total bar))))
 
 (defun shipit-issue--comment-matches-filters-p-data (comment)
   "Return non-nil if COMMENT alist matches all active filters.

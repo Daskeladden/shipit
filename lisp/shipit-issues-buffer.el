@@ -595,6 +595,36 @@ Uses the same pattern as `shipit--replace-general-comments-section-with-content'
                                   (seq-drop filtered old-index))))
               (oset parent-section children fixed))))))))
 
+(defcustom shipit-comments-pagination-threshold 30
+  "Paginate issue comments when total count exceeds this threshold.
+When the number of comments exceeds this value, only the first
+`shipit-comments-initial-count' and last `shipit-comments-tail-count'
+are rendered initially.  Hidden comments can be loaded via a
+Load N more section.  Set to 0 to disable pagination."
+  :type 'integer
+  :group 'shipit)
+
+(defcustom shipit-comments-initial-count 10
+  "Number of oldest comments to show when pagination is active."
+  :type 'integer
+  :group 'shipit)
+
+(defcustom shipit-comments-tail-count 10
+  "Number of newest comments to show when pagination is active."
+  :type 'integer
+  :group 'shipit)
+
+(defcustom shipit-comments-load-more-default 50
+  "Default number of comments to load when pressing RET on Load more.
+With C-u N, load exactly N.  With C-u alone, load all remaining."
+  :type 'integer
+  :group 'shipit)
+
+(defun issue-comments-load-more (&rest _args)
+  "Magit section identifier for the load-more placeholder."
+  nil)
+(put 'issue-comments-load-more 'magit-section t)
+
 (defcustom shipit-comments-render-chunk-size 10
   "Number of comments to render between progressive display refreshes.
 After every N comments are inserted into the issue buffer, the display
@@ -617,8 +647,25 @@ comments so the user sees content appearing progressively."
                  (zerop (mod counter chunk-size)))
         (shipit--render-yield)))))
 
+(defun shipit-issue--insert-load-more-section (hidden-comments repo issue-number)
+  "Insert a Load more section for HIDDEN-COMMENTS in REPO ISSUE-NUMBER.
+The section stores the hidden comments as its value for later retrieval."
+  (let ((count (length hidden-comments)))
+    (magit-insert-section (issue-comments-load-more
+                           (list :comments hidden-comments
+                                 :repo repo
+                                 :issue-number issue-number))
+      (magit-insert-heading
+        (propertize (format "   ── Load %d more comment%s ──"
+                            count (if (= count 1) "" "s"))
+                    'face 'font-lock-comment-face)))))
+
 (defun shipit-issue--insert-comments-section (repo issue-number comments)
-  "Insert comments section with COMMENTS for issue ISSUE-NUMBER in REPO."
+  "Insert comments section with COMMENTS for issue ISSUE-NUMBER in REPO.
+When the number of comments exceeds `shipit-comments-pagination-threshold',
+only the first `shipit-comments-initial-count' and last
+`shipit-comments-tail-count' are rendered.  A Load more section in the
+middle lets the user reveal hidden comments on demand."
   (magit-insert-section (issue-comments nil nil)
     (magit-insert-heading
       (format "%s %s"
@@ -626,9 +673,25 @@ comments so the user sees content appearing progressively."
               (propertize (format "Comments (%d)" (length comments))
                           'face 'magit-section-heading)))
     (magit-insert-section-body
-      (if (or (null comments) (= (length comments) 0))
-          (insert (propertize "   No comments\n" 'face 'font-lock-comment-face))
-        (shipit-issue--insert-comments-chunked repo issue-number comments))
+      (let* ((total (length comments))
+             (threshold shipit-comments-pagination-threshold)
+             (head-n shipit-comments-initial-count)
+             (tail-n shipit-comments-tail-count)
+             (paginate (and (> threshold 0)
+                            (> total threshold)
+                            (> total (+ head-n tail-n)))))
+        (cond
+         ((or (null comments) (= total 0))
+          (insert (propertize "   No comments\n" 'face 'font-lock-comment-face)))
+         (paginate
+          (let ((head (seq-take comments head-n))
+                (hidden (seq-subseq comments head-n (- total tail-n)))
+                (tail (seq-subseq comments (- total tail-n))))
+            (shipit-issue--insert-comments-chunked repo issue-number head)
+            (shipit-issue--insert-load-more-section hidden repo issue-number)
+            (shipit-issue--insert-comments-chunked repo issue-number tail)))
+         (t
+          (shipit-issue--insert-comments-chunked repo issue-number comments))))
       (insert "\n"))))
 
 (defun shipit-issue--insert-single-comment (repo issue-number comment)
@@ -1025,19 +1088,67 @@ Fetches available transitions, prompts the user, and executes."
     (funcall exec-fn config key transition-id)
     (message "%s transitioned to %s" key choice)))
 
+(defun shipit-issue--load-more-comments ()
+  "Load more hidden comments from the Load more section at point.
+With no prefix arg, loads `shipit-comments-load-more-default' comments.
+With C-u N, loads exactly N comments.
+With C-u alone, loads all remaining hidden comments."
+  (interactive)
+  (let* ((section (magit-current-section))
+         (data (oref section value))
+         (hidden (plist-get data :comments))
+         (repo (plist-get data :repo))
+         (issue-number (plist-get data :issue-number))
+         (batch-size (cond
+                      ((and current-prefix-arg (numberp current-prefix-arg))
+                       current-prefix-arg)
+                      (current-prefix-arg (length hidden))
+                      (t shipit-comments-load-more-default)))
+         (to-load (seq-take hidden batch-size))
+         (remaining (seq-drop hidden batch-size))
+         (inhibit-read-only t)
+         (section-start (oref section start))
+         (section-end (oref section end))
+         (parent (oref section parent)))
+    ;; Delete the load-more section
+    (delete-region section-start section-end)
+    ;; Insert the loaded comments at the same position
+    (save-excursion
+      (goto-char section-start)
+      (let ((magit-insert-section--parent parent))
+        (shipit-issue--insert-comments-chunked repo issue-number to-load)
+        ;; If more remain, insert a new load-more section
+        (when remaining
+          (shipit-issue--insert-load-more-section remaining repo issue-number))))
+    ;; Fix parent's children list
+    (when parent
+      (oset parent children
+            (seq-remove (lambda (s) (eq s section))
+                        (oref parent children))))
+    (message "Loaded %d comment%s%s"
+             (length to-load)
+             (if (= 1 (length to-load)) "" "s")
+             (if remaining
+                 (format " (%d remaining)" (length remaining))
+               ""))))
+
 (defun shipit-issue--ret-dwim ()
   "Handle RET in issue buffers.
 Overlay actions (URLs, references) take priority, then work item
-lines, then comment DWIM, then section toggle.
-With prefix arg (C-u), show action menu for work items."
+lines, then Load more, then comment DWIM, then section toggle.
+With prefix arg (C-u), show action menu for work items or control
+how many comments to load."
   (interactive)
   (unless (shipit--try-overlay-action-at-point)
-    (let ((work-item-key (shipit-issue--work-item-key-at-point)))
+    (let ((work-item-key (shipit-issue--work-item-key-at-point))
+          (section (magit-current-section)))
       (cond
        ((and work-item-key current-prefix-arg)
         (shipit-issue--work-item-actions work-item-key))
        (work-item-key
         (shipit-issues-open-buffer work-item-key shipit-issue-buffer-repo))
+       ((and section (eq (oref section type) 'issue-comments-load-more))
+        (shipit-issue--load-more-comments))
        ((shipit-issue--comment-id-at-point)
         (shipit-dwim))
        (t

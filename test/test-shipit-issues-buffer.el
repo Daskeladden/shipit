@@ -637,5 +637,74 @@ THEN yield is never called."
        (cl-loop for i below 50 collect `((id . ,i))))
       (should (= 0 yield-calls)))))
 
+;;; Comment pagination tests
+
+(ert-deftest test-shipit-issue-pagination-below-threshold-renders-all ()
+  "GIVEN 10 comments and a threshold of 30
+WHEN rendering the comments section
+THEN all 10 comments are rendered without a load-more section."
+  (let ((shipit-comments-pagination-threshold 30)
+        (shipit-comments-initial-count 5)
+        (shipit-comments-tail-count 5)
+        (insert-calls 0))
+    (cl-letf (((symbol-function 'shipit-issue--insert-single-comment)
+               (lambda (&rest _) (cl-incf insert-calls)))
+              ((symbol-function 'shipit--render-yield)
+               (lambda (&rest _) nil))
+              ((symbol-function 'shipit--get-pr-field-icon)
+               (lambda (&rest _) "")))
+      (with-temp-buffer
+        (let ((magit-insert-section--parent nil))
+          (shipit-issue--insert-comments-section
+           "owner/repo" 1
+           (cl-loop for i from 1 to 10 collect `((id . ,i)))))
+        (should (= 10 insert-calls))
+        (goto-char (point-min))
+        (should-not (search-forward "Load" nil t))))))
+
+(ert-deftest test-shipit-issue-pagination-above-threshold-splits ()
+  "GIVEN 50 comments, threshold 30, head 5, tail 5
+WHEN rendering the comments section
+THEN only 10 comments are rendered and a load-more section appears."
+  (let ((shipit-comments-pagination-threshold 30)
+        (shipit-comments-initial-count 5)
+        (shipit-comments-tail-count 5)
+        (insert-calls 0))
+    (cl-letf (((symbol-function 'shipit-issue--insert-single-comment)
+               (lambda (&rest _) (cl-incf insert-calls)))
+              ((symbol-function 'shipit--render-yield)
+               (lambda (&rest _) nil))
+              ((symbol-function 'shipit--get-pr-field-icon)
+               (lambda (&rest _) "")))
+      (with-temp-buffer
+        (let ((magit-insert-section--parent nil))
+          (shipit-issue--insert-comments-section
+           "owner/repo" 1
+           (cl-loop for i from 1 to 50 collect `((id . ,i)))))
+        (should (= 10 insert-calls))
+        (goto-char (point-min))
+        (should (search-forward "Load 40 more" nil t))))))
+
+(ert-deftest test-shipit-issue-pagination-correct-hidden-count ()
+  "GIVEN 50 comments, head 5, tail 5
+WHEN rendering with pagination
+THEN the Load more text shows exactly 40 hidden comments."
+  (let ((shipit-comments-pagination-threshold 30)
+        (shipit-comments-initial-count 5)
+        (shipit-comments-tail-count 5))
+    (cl-letf (((symbol-function 'shipit-issue--insert-single-comment)
+               (lambda (&rest _) nil))
+              ((symbol-function 'shipit--render-yield)
+               (lambda (&rest _) nil))
+              ((symbol-function 'shipit--get-pr-field-icon)
+               (lambda (&rest _) "")))
+      (with-temp-buffer
+        (let ((magit-insert-section--parent nil))
+          (shipit-issue--insert-comments-section
+           "owner/repo" 1
+           (cl-loop for i from 1 to 50 collect `((id . ,i)))))
+        (goto-char (point-min))
+        (should (search-forward "Load 40 more comments" nil t))))))
+
 (provide 'test-shipit-issues-buffer)
 ;;; test-shipit-issues-buffer.el ends here

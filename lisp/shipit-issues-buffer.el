@@ -885,8 +885,8 @@ PER-PAGE, and DIRECTION for lazy API fetching.
 DIRECTION is oldest or recent (default oldest)."
   (let* ((count (+ (length hidden-comments) (length (or hidden-tail '()))
                    (* (length unfetched-pages) (or per-page 0))))
-         (dir (or direction 'oldest))
-         (dir-indicator (if (eq dir 'recent) " [recent first]" "")))
+         (dir (or direction 'recent))
+         (dir-indicator (if (eq dir 'oldest) " [oldest first]" "")))
     (magit-insert-section (issue-comments-load-more
                            (list :comments hidden-comments
                                  :hidden-tail (or hidden-tail '())
@@ -1352,7 +1352,7 @@ the API and adds it to the pool."
                                              (* (length unfetched) (or per-page 0))))
                       (t shipit-comments-load-more-default))))
     ;; Check primary pool based on direction
-    (let* ((dir (or (plist-get data :direction) 'oldest))
+    (let* ((dir (or (plist-get data :direction) 'recent))
            (hidden-tail (or (plist-get data :hidden-tail) '()))
            (primary-len (length (if (eq dir 'recent) hidden-tail hidden))))
       (if (or (>= primary-len batch-size) (null unfetched))
@@ -1406,7 +1406,7 @@ the API and adds it to the pool."
          (unfetched (plist-get data :unfetched))
          (per-page (plist-get data :per-page))
          (hidden-tail (or (plist-get data :hidden-tail) '()))
-         (direction (or (plist-get data :direction) 'oldest))
+         (direction (or (plist-get data :direction) 'recent))
          ;; Select pool based on direction:
          ;; oldest-first: consume hidden (old/page1) first
          ;; recent-first: consume hidden-tail (new/last-page) first
@@ -2293,7 +2293,7 @@ If no Load more section exists, shows a message."
    ("RET" "Load next batch" shipit-issue--load-more-default)
    ("a" "Load all" shipit-issue--load-more-all)
    ("n" "Load N" shipit-issue--load-more-n)
-   ("r" "Toggle direction" shipit-issue--toggle-load-direction)])
+   ("r" "Toggle direction" shipit-issue--toggle-load-direction :transient t)])
 
 (transient-define-prefix shipit-issue-filter-comments ()
   "Filter issue comments."

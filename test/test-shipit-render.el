@@ -564,5 +564,78 @@ THEN the cache is cleared before storing the new entry."
     ;; Cache was cleared and the new entry stored, so count is 1
     (should (= 1 (hash-table-count shipit--markdown-render-cache)))))
 
+;;; Shebang Language Detection Tests
+
+(ert-deftest test-shipit-detect-language-from-shebang-python ()
+  "GIVEN a code block starting with #!/usr/bin/env python3
+WHEN detecting language from shebang
+THEN returns python."
+  (with-temp-buffer
+    (insert "#!/usr/bin/env python3\nimport os\nprint('hello')\n")
+    (should (string= "python"
+                      (shipit--detect-language-from-shebang 1 (point-max))))))
+
+(ert-deftest test-shipit-detect-language-from-shebang-bash ()
+  "GIVEN a code block starting with #!/bin/bash
+WHEN detecting language from shebang
+THEN returns bash."
+  (with-temp-buffer
+    (insert "#!/bin/bash\necho hello\n")
+    (should (string= "bash"
+                      (shipit--detect-language-from-shebang 1 (point-max))))))
+
+(ert-deftest test-shipit-detect-language-from-shebang-node ()
+  "GIVEN a code block starting with #!/usr/bin/env node
+WHEN detecting language from shebang
+THEN returns javascript."
+  (with-temp-buffer
+    (insert "#!/usr/bin/env node\nconsole.log('hi')\n")
+    (should (string= "javascript"
+                      (shipit--detect-language-from-shebang 1 (point-max))))))
+
+(ert-deftest test-shipit-detect-language-from-shebang-none ()
+  "GIVEN a code block with no shebang
+WHEN detecting language from shebang
+THEN returns nil."
+  (with-temp-buffer
+    (insert "import os\nprint('hello')\n")
+    (should-not (shipit--detect-language-from-shebang 1 (point-max)))))
+
+(ert-deftest test-shipit-detect-language-from-shebang-indented ()
+  "GIVEN a code block with indented shebang line
+WHEN detecting language from shebang
+THEN still detects the language."
+  (with-temp-buffer
+    (insert "   #!/usr/bin/env ruby\nputs 'hi'\n")
+    (should (string= "ruby"
+                      (shipit--detect-language-from-shebang 1 (point-max))))))
+
+(ert-deftest test-shipit-detect-language-from-shebang-empty-region ()
+  "GIVEN an empty region
+WHEN detecting language from shebang
+THEN returns nil."
+  (with-temp-buffer
+    (should-not (shipit--detect-language-from-shebang 1 1))))
+
+(ert-deftest test-shipit-detect-language-from-shebang-unknown-interpreter ()
+  "GIVEN a code block with shebang for an unknown interpreter
+WHEN detecting language from shebang
+THEN returns nil."
+  (with-temp-buffer
+    (insert "#!/usr/bin/env tclsh\nset x 1\n")
+    (should-not (shipit--detect-language-from-shebang 1 (point-max)))))
+
+(ert-deftest test-shipit-detect-language-from-shebang-disabled ()
+  "GIVEN shipit-code-block-detect-shebang is nil
+WHEN applying code block backgrounds to a block with a shebang
+THEN no syntax highlighting is applied."
+  (with-temp-buffer
+    (let ((shipit-code-block-detect-shebang nil)
+          (shipit-code-block-background nil))
+      (insert "```\n#!/usr/bin/env python3\nimport os\n```\n")
+      (shipit--apply-code-block-backgrounds-in-region 1 (point-max))
+      ;; Code text should have no face properties since highlighting was skipped
+      (should-not (get-text-property 5 'face)))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

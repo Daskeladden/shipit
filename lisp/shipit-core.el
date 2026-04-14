@@ -928,6 +928,14 @@ Set to a color string to override with a custom color."
                  (string :tag "Custom color"))
   :group 'shipit)
 
+(defcustom shipit-code-block-detect-shebang t
+  "When non-nil, detect language from shebang lines in unfenced code blocks.
+If a code block has no language identifier after the triple backticks,
+check the first line for a shebang and use the interpreter to apply
+syntax highlighting."
+  :type 'boolean
+  :group 'shipit)
+
 (defcustom shipit-inline-comment-icon-style 'emoji
   "Style of icons to use for inline comments.
 emoji: Use emoji icons (💬 for comments, 📋 for reviews)

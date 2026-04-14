@@ -40,6 +40,7 @@
 (defvar shipit--current-displayed-pr)
 (defvar shipit-render-wrap-column)
 (defvar shipit-code-block-background)
+(defvar shipit-code-block-detect-shebang)
 
 ;; Forward declarations for functions from other modules
 (declare-function shipit--get-repo-from-remote "shipit-core")
@@ -1666,6 +1667,23 @@ language modes (especially diff-mode) work correctly."
       (and (symbolp mode)
            (autoloadp (indirect-function mode t)))))
 
+(defun shipit--detect-language-from-shebang (content-start content-end)
+  "Detect programming language from shebang line between CONTENT-START and CONTENT-END.
+Returns a language string compatible with `shipit--language-mode-alist', or nil."
+  (when (< content-start content-end)
+    (save-excursion
+      (goto-char content-start)
+      (when (looking-at "[ \t]*#!.*/\\(?:env[ \t]+\\)?\\([a-zA-Z0-9_+-]+\\)")
+        (let ((interpreter (downcase (match-string 1))))
+          (cond
+           ((member interpreter (list "python" "python3" "python2")) "python")
+           ((member interpreter (list "bash" "sh" "zsh" "fish" "dash")) "bash")
+           ((member interpreter (list "ruby" "jruby")) "ruby")
+           ((string= interpreter "perl") "perl")
+           ((string= interpreter "node") "javascript")
+           ((string= interpreter "lua") "lua")
+           ((assoc interpreter shipit--language-mode-alist) interpreter)))))))
+
 (defun shipit--apply-code-block-syntax-highlighting (content-start content-end language)
   "Apply syntax highlighting to code block content between CONTENT-START and CONTENT-END.
 LANGUAGE is the language identifier from the code fence."
@@ -1784,10 +1802,15 @@ Must be called AFTER text is inserted into the final buffer."
                         (shipit--debug-log "CODE-BLOCK-BG: Multi-line block content-start=%d content-end=%d language='%s'"
                                            content-start content-end language)
                         ;; Apply syntax highlighting to code content
-                        (when (and language (not (string-empty-p language))
-                                   (< content-start content-end))
-                          (shipit--apply-code-block-syntax-highlighting
-                           content-start content-end language))
+                        ;; If no language on fence, try detecting from shebang
+                        (let ((lang (if (and language (not (string-empty-p language)))
+                                        language
+                                      (and shipit-code-block-detect-shebang
+                                           (shipit--detect-language-from-shebang
+                                            content-start content-end)))))
+                          (when (and lang (< content-start content-end))
+                            (shipit--apply-code-block-syntax-highlighting
+                             content-start content-end lang)))
                         ;; Apply background overlay
                         (when code-block-bg
                           (let ((ov (make-overlay block-start block-end)))

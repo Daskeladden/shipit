@@ -163,6 +163,18 @@ Kanban Board, and Frequently Visited sections.
   "Generate buffer name for Atlassian dashboard of REPO."
   (format "*shipit-atlassian: %s*" repo))
 
+;;;###autoload
+(defun shipit-atlassian-dashboard-available-p ()
+  "Return non-nil if a Jira-capable backend is configured.
+Used as a menu `:if' predicate to hide the Atlassian dashboard entry
+when no Jira mapping exists.  Keeps the backend-name reference local
+to this module — generic entry points such as `shipit.el' don't need
+to know which backend symbol represents Jira."
+  (or (eq shipit-issue-backend 'jira)
+      (cl-some (lambda (entry)
+                 (eq (plist-get (cdr entry) :backend) 'jira))
+               shipit-issue-repo-backends)))
+
 (defun shipit-atlassian-dashboard--open (repo)
   "Open Atlassian dashboard buffer for REPO.
 Resolves Jira config via `shipit-issue--resolve-for-repo' and

@@ -18,6 +18,12 @@
 (require 'shipit-pr-sections)
 (require 'shipit-http)
 
+(defun test-commit--expand-all-sections ()
+  "Expand all magit sections in the current buffer."
+  (goto-char (point-min))
+  (when (bound-and-true-p magit-root-section)
+    (magit-section-show-children magit-root-section 99)))
+
 (ert-deftest test-commit-files-section-type-registered ()
   "Verify that commit-files section type is properly registered with Magit."
   (should (eq (get 'commit-files 'magit-section) t)))
@@ -61,6 +67,7 @@
                ((symbol-function 'shipit--get-comment-indicator)
                 (lambda (count outdated) "")))
         (shipit--insert-processed-commit-section commit-data "test-repo" 1)
+        (test-commit--expand-all-sections)
 
         ;; Verify the buffer contains the commit section
         (should (string-match "abc123" (buffer-string)))
@@ -119,6 +126,7 @@
                ((symbol-function 'shipit--get-comment-indicator)
                 (lambda (count outdated) "")))
         (shipit--insert-processed-commit-section commit-data "test-repo" 1)
+        (test-commit--expand-all-sections)
 
         ;; Verify the Files section was rendered (async loading shows placeholder)
         (let ((buffer-text (buffer-string)))
@@ -162,6 +170,7 @@
                ((symbol-function 'shipit--get-comment-indicator)
                 (lambda (count outdated) "")))
         (shipit--insert-processed-commit-section commit-data "test-repo" 1)
+        (test-commit--expand-all-sections)
 
         ;; Verify collapsible structure by checking heading is rendered
         ;; (async loading means files are not immediately present)
@@ -208,6 +217,7 @@
                ((symbol-function 'shipit--get-comment-indicator)
                 (lambda (count outdated) "")))
         (shipit--insert-processed-commit-section commit-data "test-repo" 1)
+        (test-commit--expand-all-sections)
 
         ;; Verify Files section is rendered (async loading uses placeholder)
         (let ((buffer-text (buffer-string)))
@@ -251,6 +261,7 @@
                ((symbol-value 'shipit-commit-keymap)
                 (make-keymap)))
         (shipit--insert-processed-commit-section commit-data "test-repo" 1)
+        (test-commit--expand-all-sections)
 
         ;; Verify Files subsection heading is always shown (even with no files)
         ;; The placeholder shows "will load on expand" for async loading

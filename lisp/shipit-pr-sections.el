@@ -2446,7 +2446,7 @@ The :raw-date contains the ISO timestamp for property storage."
              (deletions (plist-get commit-data :deletions))
              (files-changed (plist-get commit-data :files-changed)))
 
-        (magit-insert-section (shipit-commit sha nil)  ; nil = expanded by default so body content is visible
+        (magit-insert-section (shipit-commit sha t)
           ;; Debug logging for avatar data
           (shipit--debug-log "Commit avatar debug - SHA: %s" (or sha "nil"))
           (shipit--debug-log "  author-github-username: %S" author-github-username)

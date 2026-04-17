@@ -47,6 +47,7 @@
 (declare-function shipit--browse-pr-url "shipit-notifications")
 (declare-function shipit--browse-issue-url "shipit-notifications")
 (declare-function shipit--open-notification-pr "shipit-notifications")
+(declare-function shipit-pr--dispatch-activity-navigation "shipit-pr-actions")
 (declare-function shipit--open-notification-issue "shipit-notifications")
 (declare-function shipit--open-notification-discussion "shipit-notifications")
 
@@ -629,14 +630,48 @@ Walks up from child sections, then searches backward if needed."
             :type (or (cdr (assq 'type activity)) "pr")
             :notification (cdr (assq 'notification activity))))))
 
+(defun shipit-notifications-buffer--activity-props-at-point ()
+  "Return a navigation props plist if point is on an activity line, else nil.
+An activity line carries a `shipit-event-type' text property; the returned
+plist has the keys consumed by `shipit-pr--dispatch-activity-navigation'."
+  (when-let* ((event-type (get-text-property (point) 'shipit-event-type)))
+    (list :event-type event-type
+          :comment-id (get-text-property (point) 'shipit-activity-comment-id)
+          :commit-sha (get-text-property (point) 'shipit-activity-commit-sha)
+          :review-state (get-text-property (point) 'shipit-review-state)
+          :crossref-repo (get-text-property (point) 'shipit-crossref-repo)
+          :crossref-number (get-text-property (point) 'shipit-crossref-number)
+          :crossref-url (get-text-property (point) 'shipit-crossref-url)
+          :crossref-title (get-text-property (point) 'shipit-crossref-title)
+          :inline-comment-path (get-text-property (point) 'shipit-inline-comment-path))))
+
+(defun shipit-notifications-buffer--schedule-activity-nav (buffer props)
+  "In BUFFER, dispatch activity navigation using PROPS once the buffer is ready.
+When BUFFER still has pending async sections, register a one-shot
+`shipit-buffer-ready-hook' handler.  Otherwise dispatch immediately."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (if (and (boundp 'shipit-buffer--pending-async-sections)
+               shipit-buffer--pending-async-sections)
+          (let ((fn-sym (make-symbol "shipit-nav-on-ready")))
+            (fset fn-sym
+                  (lambda ()
+                    (remove-hook 'shipit-buffer-ready-hook fn-sym t)
+                    (shipit-pr--dispatch-activity-navigation props)))
+            (add-hook 'shipit-buffer-ready-hook fn-sym nil t))
+        (shipit-pr--dispatch-activity-navigation props)))))
+
 (defun shipit-notifications-buffer-open ()
   "Open the notification at point directly.
 Opens PR/Issue/Discussion buffer, or browser for RSS.
+If point is on an activity line within an expanded PR notification,
+also navigates to that activity inside the opened PR buffer.
 With prefix arg (C-u), show action menu instead."
   (interactive)
   (if current-prefix-arg
       (shipit-notifications-buffer-action)
-    (let ((activity (shipit-notifications-buffer--activity-at-point)))
+    (let ((activity (shipit-notifications-buffer--activity-at-point))
+          (activity-props (shipit-notifications-buffer--activity-props-at-point)))
       (if (not activity)
           (user-error "No notification at point")
         (let* ((type (or (cdr (assq 'type activity)) "pr"))
@@ -644,7 +679,11 @@ With prefix arg (C-u), show action menu instead."
                (number (or (cdr (assq 'number activity))
                            (cdr (assq 'pr-number activity)))))
           (pcase type
-            ("pr" (shipit--open-notification-pr number repo activity))
+            ("pr"
+             (let ((buffer (shipit--open-notification-pr number repo activity)))
+               (when (and activity-props (bufferp buffer))
+                 (shipit-notifications-buffer--schedule-activity-nav
+                  buffer activity-props))))
             ("issue" (shipit--open-notification-issue number repo activity))
             ("discussion" (shipit--open-notification-discussion number repo))
             ("rss" (when-let* ((url (cdr (assq 'browse-url activity))))

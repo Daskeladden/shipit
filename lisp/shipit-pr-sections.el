@@ -2979,6 +2979,7 @@ FILENAME, REPO, and PR-NUMBER provide context."
         (add-text-properties body-start (point)
                              `(shipit-comment t
                                shipit-comment-id ,comment-id
+                               shipit-review-id ,(cdr (assq 'pull_request_review_id comment))
                                shipit-comment-body ,comment-body
                                shipit-file-path ,filename
                                shipit-repo ,repo
@@ -2998,10 +2999,18 @@ FILENAME, REPO, and PR-NUMBER provide context."
       (add-text-properties (oref magit-insert-section--current start) (point)
                            `(shipit-comment t
                              shipit-comment-id ,comment-id
+                             shipit-review-id ,(cdr (assq 'pull_request_review_id comment))
                              shipit-comment-body ,comment-body
                              shipit-file-path ,filename
                              shipit-repo ,repo
-                             shipit-pr-number ,pr-number)))))
+                             shipit-pr-number ,pr-number))
+      ;; Apply rounded background — same visual treatment as line-level inline comments
+      (when (and (display-graphic-p)
+                 (fboundp 'shipit-rounded--apply-to-section))
+        (let ((orange-color (if (eq (frame-parameter nil 'background-mode) 'light)
+                                "#d2691e" "#ff8c00")))
+          (shipit-rounded--apply-to-section
+           magit-insert-section--current orange-color))))))
 
 (defun shipit--insert-outdated-comment-context (diff-hunk)
   "Insert the DIFF-HUNK context with proper diff highlighting."
@@ -4030,6 +4039,17 @@ This function adds 3 to create child indent (default 0 → margin 3)."
                                                    shipit-repo ,repo
                                                    shipit-pr-number ,pr-number)))))
 
+(defun shipit--pulse-current-line ()
+  "Pulse the current line for visual feedback after navigation.
+Uses `pulsar-pulse-line' when the pulsar package is available,
+otherwise falls back to the built-in `pulse-momentary-highlight-region'."
+  (cond
+   ((fboundp 'pulsar-pulse-line)
+    (with-no-warnings (pulsar-pulse-line)))
+   ((fboundp 'pulse-momentary-highlight-region)
+    (pulse-momentary-highlight-region
+     (line-beginning-position) (line-beginning-position 2)))))
+
 (defun shipit--find-comment-pos (comment-id)
   "Search buffer for comment with COMMENT-ID, return position or nil."
   (let ((found-pos nil)
@@ -4286,7 +4306,9 @@ Recalculates which sections should have indicators based on remaining unread act
 
 (defun shipit--expand-pr-files-section ()
   "Find and expand the pr-files (Files Changed) section.
-Returns the section if found and expanded, nil otherwise."
+Returns the section if found and expanded, nil otherwise.
+Also expands each file's Outdated Comments subsection so that
+review-id text properties on outdated comments become searchable."
   (save-excursion
     (goto-char (point-min))
     (let ((found-section nil))
@@ -4298,16 +4320,57 @@ Returns the section if found and expanded, nil otherwise."
       (when found-section
         (shipit--debug-log "NAV-REVIEW: Expanding pr-files section")
         (magit-section-show found-section)
-        ;; Also expand all child file sections to load their comments
+        ;; Expand each file section to run its washer and populate the body
+        ;; (inline comments + outdated-comments placeholder).  Then expand the
+        ;; outdated-comments grandchild so outdated review comments' text
+        ;; properties (shipit-review-id) exist in the buffer and can be found.
         (dolist (child (oref found-section children))
           (when (eq (oref child type) 'pr-file)
-            (magit-section-show child)))
+            (magit-section-show child)
+            (dolist (grandchild (oref child children))
+              (when (eq (oref grandchild type) 'shipit-outdated-comments)
+                (magit-section-show grandchild)))))
         found-section))))
+
+(defun shipit--find-activity-event-pos (comment-id)
+  "Search buffer for activity event with shipit-activity-comment-id = COMMENT-ID.
+Returns buffer position or nil."
+  (let ((found-pos nil)
+        (search-pos (point-min)))
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (not found-pos) (< search-pos (point-max)))
+        (when (equal (get-text-property search-pos 'shipit-activity-comment-id) comment-id)
+          (setq found-pos search-pos))
+        (setq search-pos
+              (next-single-property-change
+               search-pos 'shipit-activity-comment-id nil (point-max)))))
+    found-pos))
+
+(defun shipit--navigate-to-activity-event (comment-id)
+  "Navigate to activity event with COMMENT-ID in the Activity section.
+Expands `pr-activity' so events render, searches the buffer, and
+positions point on the matching event line.  Returns t on success."
+  (shipit--debug-log "NAV-ACTIVITY-EVENT: Searching for comment-id: %s" comment-id)
+  (when (shipit--expand-section-by-type 'pr-activity)
+    (redisplay)
+    (let ((found-pos (shipit--find-activity-event-pos comment-id)))
+      (when found-pos
+        (goto-char found-pos)
+        (when (fboundp 'magit-section-show)
+          (let ((section (magit-current-section)))
+            (while section
+              (magit-section-show section)
+              (setq section (oref section parent)))))
+        (recenter)
+        t))))
 
 (defun shipit--navigate-to-review-comment (review-id)
   "Navigate to any comment belonging to REVIEW-ID in the buffer.
 Review comments have shipit-review-id property linking them to their review.
-Automatically expands Files Changed section if needed."
+Automatically expands Files Changed section if needed.  When the review has
+no inline comments, falls back to the matching review event in the Activity
+section."
   (shipit--debug-log "NAV-REVIEW: Searching for review-id: %s (type: %s)" review-id (type-of review-id))
   (let ((found-pos (shipit--find-review-comment-pos review-id)))
     ;; If not found, try expanding the Files Changed section
@@ -4317,21 +4380,26 @@ Automatically expands Files Changed section if needed."
         ;; Give buffer a moment to update, then search again
         (redisplay)
         (setq found-pos (shipit--find-review-comment-pos review-id))))
-    (if found-pos
-        (progn
-          (goto-char found-pos)
-          ;; Expand parent sections to make the comment visible
-          (when (fboundp 'magit-section-show)
-            (let ((section (magit-current-section)))
-              (while section
-                (magit-section-show section)
-                (setq section (oref section parent)))))
-          (recenter)
-          (message "Navigated to review comment")
-          t)
-      ;; No comment found - could be on outdated code or review has no inline comments
-      (message "Review comments not visible (may be on outdated code)")
-      nil)))
+    (cond
+     (found-pos
+      (goto-char found-pos)
+      ;; Expand parent sections to make the comment visible
+      (when (fboundp 'magit-section-show)
+        (let ((section (magit-current-section)))
+          (while section
+            (magit-section-show section)
+            (setq section (oref section parent)))))
+      (recenter)
+      (message "Navigated to review comment")
+      t)
+     ;; Fallback: navigate to the review event in the Activity section
+     ;; (e.g., a review body without inline comments).
+     ((shipit--navigate-to-activity-event review-id)
+      (message "Navigated to review entry in Activity section")
+      t)
+     (t
+      (message "Review not found in buffer")
+      nil))))
 
 (defun shipit--navigate-to-approval-section ()
   "Navigate to the Approval section in the buffer."

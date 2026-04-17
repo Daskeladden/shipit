@@ -230,6 +230,70 @@ When non-nil, overrides `shipit-pr-backend-config' for all operations.")
 (defvar-local shipit-buffer-files-page 10
   "Current page number for files pagination (starts at 10 after initial load).")
 
+;;; Buffer-ready hook — fires once when async section renders have settled
+
+(defcustom shipit-buffer-ready-timeout 10.0
+  "Safety timeout in seconds for `shipit-buffer-ready-hook'.
+If some expected sections never report back, the hook still fires
+after this many seconds so callers waiting on it can proceed."
+  :type 'number
+  :group 'shipit)
+
+(defvar shipit-buffer-ready-hook nil
+  "Hook run (in the PR buffer) when all pending async sections finish rendering.
+Add buffer-local one-shot handlers with `add-hook' and a third argument of t.
+Fires exactly once per refresh cycle; `shipit-buffer--reset-pending-sections'
+clears the fired flag so subsequent refreshes can fire again.")
+
+(defvar-local shipit-buffer--pending-async-sections nil
+  "Set of section names the current refresh is still waiting on.
+Stored as a list used as a set (membership tested with `memq').")
+
+(defvar-local shipit-buffer--ready-hook-fired nil
+  "Non-nil once `shipit-buffer-ready-hook' has fired for the current refresh.
+Cleared by `shipit-buffer--reset-pending-sections'.")
+
+(defvar-local shipit-buffer--ready-timeout-timer nil
+  "Safety timer that fires `shipit-buffer-ready-hook' after a timeout.")
+
+(defun shipit-buffer--cancel-ready-timeout ()
+  "Cancel the buffer-ready safety timer, if any."
+  (when (timerp shipit-buffer--ready-timeout-timer)
+    (cancel-timer shipit-buffer--ready-timeout-timer))
+  (setq shipit-buffer--ready-timeout-timer nil))
+
+(defun shipit-buffer--fire-ready-hook ()
+  "Run `shipit-buffer-ready-hook' once.  No-op if already fired."
+  (unless shipit-buffer--ready-hook-fired
+    (setq shipit-buffer--ready-hook-fired t)
+    (setq shipit-buffer--pending-async-sections nil)
+    (shipit-buffer--cancel-ready-timeout)
+    (run-hooks 'shipit-buffer-ready-hook)))
+
+(defun shipit-buffer--reset-pending-sections (sections)
+  "Start a new refresh cycle waiting on SECTIONS (a list of symbols).
+Cancels any prior safety timer and schedules a new one."
+  (shipit-buffer--cancel-ready-timeout)
+  (setq shipit-buffer--pending-async-sections (copy-sequence sections))
+  (setq shipit-buffer--ready-hook-fired nil)
+  (let ((buf (current-buffer)))
+    (setq shipit-buffer--ready-timeout-timer
+          (run-with-timer
+           shipit-buffer-ready-timeout nil
+           (lambda ()
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (shipit-buffer--fire-ready-hook))))))))
+
+(defun shipit-buffer--mark-section-ready (section)
+  "Mark SECTION as rendered.  Fires ready hook when set empties.
+Ignores unknown or already-completed sections."
+  (when (memq section shipit-buffer--pending-async-sections)
+    (setq shipit-buffer--pending-async-sections
+          (delq section shipit-buffer--pending-async-sections))
+    (unless shipit-buffer--pending-async-sections
+      (shipit-buffer--fire-ready-hook))))
+
 ;;; Imenu support
 
 (defconst shipit--imenu-section-types
@@ -1022,6 +1086,10 @@ REPO is the repository, PR-NUMBER is the PR number."
       ;; Phase 4: Start async data fetches to replace placeholders
       (shipit--debug-log "INCREMENTAL: Starting async data fetches")
 
+      ;; Track which sections are still loading; hook fires when set empties.
+      (shipit-buffer--reset-pending-sections
+       '(general-comments approval activity commits files checks))
+
       ;; Capture shared state for async callbacks
       (let ((target-buffer (current-buffer))
             (pr-data-copy pr-data)
@@ -1051,13 +1119,15 @@ REPO is the repository, PR-NUMBER is the PR number."
                      ;; Render comments immediately — reactions available on next refresh
                      (shipit--replace-general-comments-section-with-content
                       repo pr-number comments)
+                     (shipit-buffer--mark-section-ready 'general-comments)
                      ;; Fetch reactions in parallel after rendering (non-blocking)
                      (when comments
                        (let ((active-comments (cl-remove-if (lambda (c) (cdr (assq 'outdated c))) comments)))
                          (when active-comments
                            (shipit-comment--fetch-reactions-batch active-comments repo nil)))))))))
           ;; Non-GitHub: clear placeholder with empty comments
-          (shipit--replace-general-comments-section-with-content repo pr-number nil))
+          (shipit--replace-general-comments-section-with-content repo pr-number nil)
+          (shipit-buffer--mark-section-ready 'general-comments))
 
         ;; Backend dispatch for review decision, timeline, commits, files
         ;; Prefer async when backend provides it, fall back to sync.
@@ -1087,15 +1157,19 @@ REPO is the repository, PR-NUMBER is the PR number."
 
             ;; Phase 2: Do all sync replacements (no HTTP calls, no re-entrancy)
             (unless review-async-fn
-              (shipit--replace-approval-section-with-content repo pr-number sync-review-info))
+              (shipit--replace-approval-section-with-content repo pr-number sync-review-info)
+              (shipit-buffer--mark-section-ready 'approval))
             (unless timeline-async-fn
-              (shipit--replace-activity-section-with-content repo pr-data-copy pr-number sync-events))
+              (shipit--replace-activity-section-with-content repo pr-data-copy pr-number sync-events)
+              (shipit-buffer--mark-section-ready 'activity))
             (unless commits-async-fn
-              (shipit--replace-commits-section-with-content repo pr-number sync-commits))
+              (shipit--replace-commits-section-with-content repo pr-number sync-commits)
+              (shipit-buffer--mark-section-ready 'commits))
             (unless files-async-fn
               (when shipit-buffer-pr-data
                 (setf (alist-get 'files shipit-buffer-pr-data) sync-files))
-              (shipit--replace-files-section-with-content repo pr-data-copy pr-number sync-files nil))
+              (shipit--replace-files-section-with-content repo pr-data-copy pr-number sync-files nil)
+              (shipit-buffer--mark-section-ready 'files))
 
             ;; Phase 3: Fire async fetches (callbacks will replace when data arrives)
             (when review-async-fn
@@ -1106,7 +1180,8 @@ REPO is the repository, PR-NUMBER is the PR number."
                            (with-current-buffer target-buffer
                              (let ((magit-root-section (or magit-root-section root-section)))
                                (shipit--replace-approval-section-with-content
-                                repo pr-number review-info)))))))
+                                repo pr-number review-info))
+                             (shipit-buffer--mark-section-ready 'approval))))))
             (when timeline-async-fn
               (funcall timeline-async-fn config pr-number
                        (lambda (events)
@@ -1115,7 +1190,8 @@ REPO is the repository, PR-NUMBER is the PR number."
                            (with-current-buffer target-buffer
                              (let ((magit-root-section (or magit-root-section root-section)))
                                (shipit--replace-activity-section-with-content
-                                repo pr-data-copy pr-number events)))))))
+                                repo pr-data-copy pr-number events))
+                             (shipit-buffer--mark-section-ready 'activity))))))
             (when commits-async-fn
               (funcall commits-async-fn config pr-number
                        (lambda (commits)
@@ -1124,7 +1200,8 @@ REPO is the repository, PR-NUMBER is the PR number."
                            (with-current-buffer target-buffer
                              (let ((magit-root-section (or magit-root-section root-section)))
                                (shipit--replace-commits-section-with-content
-                                repo pr-number commits)))))))
+                                repo pr-number commits))
+                             (shipit-buffer--mark-section-ready 'commits))))))
             (when files-async-fn
               (funcall files-async-fn config pr-number
                        (lambda (result)
@@ -1140,7 +1217,8 @@ REPO is the repository, PR-NUMBER is the PR number."
                                (setq shipit-buffer-files-page 10)
                                (let ((magit-root-section (or magit-root-section root-section)))
                                  (shipit--replace-files-section-with-content
-                                  repo pr-data-copy pr-number files truncated))))))))))
+                                  repo pr-data-copy pr-number files truncated)
+                                 (shipit-buffer--mark-section-ready 'files))))))))))
 
         ;; Fetch file viewed states async — independent of the files
         ;; section replacement to avoid re-entrant sync GraphQL calls.
@@ -1161,7 +1239,8 @@ REPO is the repository, PR-NUMBER is the PR number."
              (with-current-buffer target-buffer
                (let ((magit-root-section (or magit-root-section root-section)))
                  (shipit--replace-checks-section-with-content
-                  repo pr-number checks))))))))))
+                  repo pr-number checks)
+                 (shipit-buffer--mark-section-ready 'checks))))))))))
 
 (defun shipit-load-more-files ()
   "Load more files if the file list was truncated.

@@ -77,6 +77,11 @@ test-unit: compile
 		-l test/test-shipit-subscriptions.el \
 		-l test/test-thread-subscription.el \
 		-l test/test-shipit-releases-buffer.el \
+		-l test/test-shipit-buffer-ready-hook.el \
+		-l test/test-shipit-activity-dispatch.el \
+		-l test/test-shipit-notifications-activity-nav.el \
+		-l test/test-shipit-pulse-nav.el \
+		-l test/test-shipit-expand-pr-files.el \
 		-f ert-run-tests-batch-and-exit
 
 # Run integration tests

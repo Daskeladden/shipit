@@ -38,6 +38,7 @@
 
 ;; Forward declarations
 (declare-function shipit--debug-log "shipit-core")
+(declare-function shipit--pulse-current-line "shipit-pr-sections")
 (declare-function shipit-open-pr-buffer "shipit-buffer")
 (declare-function shipit-buffer-refresh "shipit-buffer")
 (declare-function shipit-editor-open "shipit-editor")
@@ -1885,44 +1886,55 @@ Handles both PR files (shipit-pr-file property) and commit files
       (shipit--update-activity-header-indicator)
       ;; Update section indicators (General Comments, Files Changed, etc.)
       (shipit--update-all-section-indicators)))
-  (let* ((comment-id (get-text-property (point) 'shipit-activity-comment-id))
-         (commit-sha (get-text-property (point) 'shipit-activity-commit-sha))
-         (event-type (get-text-property (point) 'shipit-event-type))
-         (review-state (get-text-property (point) 'shipit-review-state))
-         (crossref-repo (get-text-property (point) 'shipit-crossref-repo))
-         (crossref-number (get-text-property (point) 'shipit-crossref-number))
-         (crossref-url (get-text-property (point) 'shipit-crossref-url))
-         (crossref-title (get-text-property (point) 'shipit-crossref-title)))
+  (shipit-pr--dispatch-activity-navigation
+   (list :comment-id (get-text-property (point) 'shipit-activity-comment-id)
+         :commit-sha (get-text-property (point) 'shipit-activity-commit-sha)
+         :event-type (get-text-property (point) 'shipit-event-type)
+         :review-state (get-text-property (point) 'shipit-review-state)
+         :crossref-repo (get-text-property (point) 'shipit-crossref-repo)
+         :crossref-number (get-text-property (point) 'shipit-crossref-number)
+         :crossref-url (get-text-property (point) 'shipit-crossref-url)
+         :crossref-title (get-text-property (point) 'shipit-crossref-title)
+         :inline-comment-path (get-text-property (point) 'shipit-inline-comment-path))))
+
+(defun shipit-pr--dispatch-activity-navigation (props)
+  "Navigate to the activity referenced by PROPS in the current PR buffer.
+PROPS is a plist with keys :comment-id, :commit-sha, :event-type,
+:review-state, :crossref-repo, :crossref-number, :crossref-url,
+:crossref-title, :inline-comment-path.  Routes to the appropriate
+navigation helper based on :event-type.  Pulses the landing line when
+the navigation actually moves point."
+  (let ((comment-id (plist-get props :comment-id))
+        (commit-sha (plist-get props :commit-sha))
+        (event-type (plist-get props :event-type))
+        (review-state (plist-get props :review-state))
+        (crossref-repo (plist-get props :crossref-repo))
+        (crossref-number (plist-get props :crossref-number))
+        (crossref-url (plist-get props :crossref-url))
+        (crossref-title (plist-get props :crossref-title))
+        (inline-path (plist-get props :inline-comment-path))
+        (start-pos (point)))
     (shipit--debug-log "ACTIVITY-ACTION: comment-id=%s commit-sha=%s event-type=%s review-state=%s crossref=%s#%s"
                        comment-id commit-sha event-type review-state crossref-repo crossref-number)
     (cond
-     ;; For "commented" events (general comments), navigate to the specific comment
      ((and comment-id (string= event-type "commented"))
       (shipit--navigate-to-comment-by-id comment-id))
-     ;; For "reviewed" events with approved state, navigate to Approval section
      ((and (string= event-type "reviewed") (string= review-state "approved"))
       (shipit--navigate-to-approval-section))
-     ;; For "reviewed" events with other states, navigate to inline comments
-     ;; (review ID != review comment IDs, so we can't match directly)
      ((string= event-type "reviewed")
-      ;; For reviews, the comment-id is actually the review ID
-      ;; Search for any comment belonging to this review
       (shipit--navigate-to-review-comment comment-id))
-     ;; For "committed" events, navigate to the commit in Commits section
      ((and commit-sha (string= event-type "committed"))
       (shipit--navigate-to-commit commit-sha))
-     ;; For "line-commented" events (synthetic inline comments), navigate to the file
      ((string= event-type "line-commented")
-      (let ((path (get-text-property (point) 'shipit-inline-comment-path)))
-        (if path
-            (shipit--navigate-to-inline-comment-file path comment-id)
-          (message "No file path available for this inline comment"))))
-     ;; For cross-referenced events, show action menu for the referencing PR
+      (if inline-path
+          (shipit--navigate-to-inline-comment-file inline-path comment-id)
+        (message "No file path available for this inline comment")))
      ((and (string= event-type "cross-referenced") crossref-number)
       (shipit--crossref-actions crossref-repo crossref-number crossref-url crossref-title))
-     ;; For other events, just show info
      (t
-      (message "No navigation available for this activity event type: %s" event-type)))))
+      (message "No navigation available for this activity event type: %s" event-type)))
+    (unless (= (point) start-pos)
+      (shipit--pulse-current-line))))
 
 ;;; Region K: Crossref actions
 

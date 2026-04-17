@@ -1392,7 +1392,11 @@ Checks PR, Issue, and Discussion buffer-local variables."
           :number shipit-buffer-pr-number
           :subject (cdr (assq 'title
                               (bound-and-true-p shipit-buffer-pr-data)))))
-   ((bound-and-true-p shipit-issue-buffer-number)
+   ((and (bound-and-true-p shipit-issue-buffer-number)
+         ;; Thread subscriptions only make sense for GitHub-tracked issues
+         ;; (the API expects a numeric $number).  Non-GitHub backends like
+         ;; Jira store their key as a string (e.g. "ZIVID-12624").
+         (integerp shipit-issue-buffer-number))
     (list :repo (bound-and-true-p shipit-issue-buffer-repo)
           :type "issue"
           :number shipit-issue-buffer-number

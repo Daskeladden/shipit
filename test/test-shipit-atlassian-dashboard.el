@@ -84,6 +84,27 @@ THEN the buffer contains key, title, state with text property."
       (should (equal "PROJ-42"
                      (get-text-property (point) 'shipit-issuelink-key))))))
 
+(ert-deftest test-atlassian-dashboard-issue-is-magit-section ()
+  "GIVEN an inserted issue line inside a dashboard root
+WHEN searching for a magit-section of type `atlassian-issue'
+THEN a section is found with the issue key as its value."
+  (with-temp-buffer
+    (let* ((magit-insert-section--parent nil)
+           (issue '((id . "PROJ-42") (title . "Fix login") (state . "Open")))
+           (columns '(work status))
+           (widths '((key . 12) (summary . 40) (status . 10))))
+      (magit-insert-section (atlassian-dashboard)
+        (shipit-atlassian-dashboard--insert-issue-line issue columns widths))
+      (let ((found nil)
+            (pos (point-min)))
+        (while (and (< pos (point-max)) (not found))
+          (let ((s (get-text-property pos 'magit-section)))
+            (when (and s (eq (oref s type) 'atlassian-issue))
+              (setq found s)))
+          (setq pos (1+ pos)))
+        (should found)
+        (should (equal "PROJ-42" (oref found value)))))))
+
 (ert-deftest test-atlassian-dashboard-render-my-issues-section ()
   "GIVEN cached my-issues data
 WHEN rendering the dashboard
@@ -702,6 +723,204 @@ THEN the status text has the success face applied."
       (let ((pos (string-match "Closed" (buffer-string))))
         (should pos)
         (should (eq 'success (get-text-property (+ (point-min) pos) 'face)))))))
+
+;;; Issues section — JQL builder
+
+(ert-deftest test-atlassian-issues-jql-project-only ()
+  "GIVEN an empty filter plist and a config with project-keys
+WHEN building Issues JQL
+THEN only the project scope + default ORDER BY are present."
+  (let* ((config '(:project-keys ("PROJ1" "PROJ2")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql config nil)))
+    (should (string-match-p "project in (PROJ1,PROJ2)" jql))
+    (should (string-match-p "ORDER BY key DESC" jql))
+    (should-not (string-match-p "assignee" jql))
+    (should-not (string-match-p "resolution" jql))))
+
+(ert-deftest test-atlassian-issues-jql-custom-sort ()
+  "GIVEN a filter with :sort
+WHEN building JQL
+THEN ORDER BY uses the custom sort expression and the default is suppressed."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config '(:sort "created ASC"))))
+    (should (string-match-p "ORDER BY created ASC" jql))
+    (should-not (string-match-p "key DESC" jql))))
+
+(ert-deftest test-atlassian-issues-jql-assignee-me ()
+  "GIVEN a filter with :assignee 'me
+WHEN building JQL
+THEN the clause \"assignee=currentUser()\" is included."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql config '(:assignee me))))
+    (should (string-match-p "assignee=currentUser()" jql))))
+
+(ert-deftest test-atlassian-issues-jql-assignee-unassigned ()
+  "GIVEN a filter with :assignee 'unassigned
+WHEN building JQL
+THEN the clause \"assignee is EMPTY\" is included."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config '(:assignee unassigned))))
+    (should (string-match-p "assignee is EMPTY" jql))))
+
+(ert-deftest test-atlassian-issues-jql-assignee-literal ()
+  "GIVEN a filter with :assignee set to a free-text username
+WHEN building JQL
+THEN assignee is compared by literal quoted value."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config '(:assignee "alice"))))
+    (should (string-match-p "assignee=\"alice\"" jql))))
+
+(ert-deftest test-atlassian-issues-jql-reporter-type-priority ()
+  "GIVEN :reporter, :type, :priority filters
+WHEN building JQL
+THEN each appears as its own clause."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config '(:reporter me :type "Bug" :priority "High"))))
+    (should (string-match-p "reporter=currentUser()" jql))
+    (should (string-match-p "issuetype=\"Bug\"" jql))
+    (should (string-match-p "priority=\"High\"" jql))))
+
+(ert-deftest test-atlassian-issues-jql-text-search ()
+  "GIVEN :text filter
+WHEN building JQL
+THEN a text clause with quoted value is included."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config '(:text "flaky tests"))))
+    (should (string-match-p "text ~ \"flaky tests\"" jql))))
+
+(ert-deftest test-atlassian-issues-jql-comment-text ()
+  "GIVEN :comment-text filter
+WHEN building JQL
+THEN the comment ~ \"value\" clause is included."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config '(:comment-text "regression"))))
+    (should (string-match-p "comment ~ \"regression\"" jql))))
+
+(ert-deftest test-atlassian-issues-jql-has-comments ()
+  "GIVEN :has-comments t filter
+WHEN building JQL
+THEN the OR-pair workaround for any comment is included."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config '(:has-comments t))))
+    (should (string-match-p "comment ~ \"anything\\*\"" jql))
+    (should (string-match-p "comment !~ \"anything\\*\"" jql))))
+
+(ert-deftest test-atlassian-issues-jql-status-and-resolution ()
+  "GIVEN status and resolution filters
+WHEN building JQL
+THEN both appear as quoted clauses."
+  (let* ((config '(:project-keys ("P")))
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config '(:status "In Progress" :resolution "Unresolved"))))
+    (should (string-match-p "status=\"In Progress\"" jql))
+    (should (string-match-p "resolution=\"Unresolved\"" jql))))
+
+;;; Issues section — dispatcher
+
+(ert-deftest test-atlassian-dispatch-section-type-finds-issues ()
+  "GIVEN point is inside a child of atlassian-issues
+WHEN shipit-atlassian-dashboard--top-section-type is called
+THEN it returns 'atlassian-issues."
+  (cl-letf* ((fake-issues-child
+              (list :type 'atlassian-issues-project-group
+                    :parent (list :type 'atlassian-issues
+                                  :parent (list :type 'atlassian-dashboard
+                                                :parent nil))))
+             ((symbol-function 'magit-current-section)
+              (lambda () fake-issues-child))
+             ((symbol-function 'eieio-oref)
+              (lambda (obj slot)
+                (pcase slot
+                  ('type (plist-get obj :type))
+                  ('parent (plist-get obj :parent))))))
+    (should (eq 'atlassian-issues
+                (shipit-atlassian-dashboard--top-section-type)))))
+
+(ert-deftest test-atlassian-dispatch-section-type-root-is-nil ()
+  "GIVEN point is on the root atlassian-dashboard section itself
+WHEN shipit-atlassian-dashboard--top-section-type is called
+THEN it returns nil (no top-level section applies)."
+  (cl-letf* ((root (list :type 'atlassian-dashboard :parent nil))
+             ((symbol-function 'magit-current-section)
+              (lambda () root))
+             ((symbol-function 'eieio-oref)
+              (lambda (obj slot)
+                (pcase slot
+                  ('type (plist-get obj :type))
+                  ('parent (plist-get obj :parent))))))
+    (should (null (shipit-atlassian-dashboard--top-section-type)))))
+
+(ert-deftest test-atlassian-dispatch-filter-routes-to-issues-menu ()
+  "GIVEN point is inside atlassian-issues
+WHEN shipit-atlassian-dashboard-filter-dispatch runs
+THEN shipit-atlassian-dashboard-issues-filter-menu is invoked."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'shipit-atlassian-dashboard--top-section-type)
+               (lambda () 'atlassian-issues))
+              ((symbol-function 'shipit-atlassian-dashboard-issues-filter-menu)
+               (lambda () (interactive) (setq called t))))
+      (call-interactively #'shipit-atlassian-dashboard-filter-dispatch)
+      (should called))))
+
+(ert-deftest test-atlassian-dispatch-filter-reports-unsupported-section ()
+  "GIVEN point is inside a section with no filter handler
+WHEN shipit-atlassian-dashboard-filter-dispatch runs
+THEN a message is emitted and no transient is launched."
+  (let ((msg nil))
+    (cl-letf (((symbol-function 'shipit-atlassian-dashboard--top-section-type)
+               (lambda () 'atlassian-my-issues))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (call-interactively #'shipit-atlassian-dashboard-filter-dispatch)
+      (should msg)
+      (should (string-match-p "No filter" msg)))))
+
+;;; Issues section — filter summary and transient round-trip
+
+(ert-deftest test-atlassian-filter-summary-empty ()
+  "GIVEN no filter
+WHEN rendering the summary
+THEN the result is an empty string."
+  (should (equal "" (shipit-atlassian-dashboard--filter-summary nil))))
+
+(ert-deftest test-atlassian-filter-summary-multi ()
+  "GIVEN a filter with assignee=me and type=Bug
+WHEN rendering the summary
+THEN the result lists both conditions inside brackets."
+  (let ((s (shipit-atlassian-dashboard--filter-summary
+            '(:assignee me :type "Bug"))))
+    (should (string-match-p "\\[" s))
+    (should (string-match-p "assignee=me" s))
+    (should (string-match-p "type=Bug" s))))
+
+(ert-deftest test-atlassian-filter-to-transient-args-roundtrip ()
+  "GIVEN a filter plist
+WHEN converting to transient args and back
+THEN the filter round-trips (except key order)."
+  (let* ((original '(:assignee me :type "Bug" :text "flaky"
+                     :comment-text "regression" :sort "created DESC"))
+         (args (shipit-atlassian-dashboard--filter-to-transient-args original))
+         (back (shipit-atlassian-dashboard--filter-from-args args)))
+    (should (equal 'me (plist-get back :assignee)))
+    (should (equal "Bug" (plist-get back :type)))
+    (should (equal "flaky" (plist-get back :text)))
+    (should (equal "regression" (plist-get back :comment-text)))
+    (should (equal "created DESC" (plist-get back :sort)))))
+
+(ert-deftest test-atlassian-filter-to-transient-args-unassigned ()
+  "GIVEN a filter with assignee 'unassigned
+WHEN converting to transient args
+THEN the arg uses the literal \"unassigned\"."
+  (let ((args (shipit-atlassian-dashboard--filter-to-transient-args
+               '(:assignee unassigned))))
+    (should (member "--assignee=unassigned" args))))
 
 (provide 'test-shipit-atlassian-dashboard)
 ;;; test-shipit-atlassian-dashboard.el ends here

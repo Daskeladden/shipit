@@ -73,6 +73,7 @@
 (declare-function shipit-issues--transition-status "shipit-issues")
 (declare-function shipit-issue--backend-has-transitions-p "shipit-issue-backends")
 (declare-function shipit-issue--backend-has-reactions-p "shipit-issue-backends")
+(declare-function shipit-issue--backend-has-comment-reactions-p "shipit-issue-backends")
 (declare-function shipit-issues--fetch-reactions "shipit-issues")
 (declare-function shipit-issues--fetch-reactions-async "shipit-issues")
 (declare-function shipit-issues--fetch-comments-head-tail-async "shipit-issues")
@@ -351,9 +352,18 @@ buffer-local overrides so the issue fetches use the correct backend
                    ;; Fetch reactions only for visible head + tail comments
                    (let* ((visible (append (plist-get result :head)
                                            (plist-get result :tail)))
-                          (shipit-current-repo repo))
-                     (when visible
-                       (shipit-comment--fetch-reactions-batch visible repo nil)))
+                          (shipit-current-repo repo)
+                          (issue-backend (shipit-issue--get-backend))
+                          (issue-reactions-fn
+                           (plist-get issue-backend
+                                      :fetch-comment-reactions-batch)))
+                     (cond
+                      ((and visible issue-reactions-fn)
+                       (let ((config (cdr (shipit-issue--resolve-for-repo repo))))
+                         (funcall issue-reactions-fn config repo visible nil)))
+                      ((and visible
+                            (shipit-issue--backend-has-reactions-p issue-backend))
+                       (shipit-comment--fetch-reactions-batch visible repo nil))))
                    (let ((magit-root-section (or magit-root-section root-section)))
                      (shipit-issue--replace-comments-with-paginated-content
                       repo issue-number result)))))))
@@ -959,7 +969,7 @@ middle lets the user reveal hidden comments on demand."
         ;; Indent 6 to align with username (3 spaces + emoji/avatar + space)
         ;; Skip reactions for backends without reaction support
         (shipit--insert-comment-body-only comment 6 nil nil repo issue-number nil
-                                           (not (shipit-issue--backend-has-reactions-p
+                                           (not (shipit-issue--backend-has-comment-reactions-p
                                                  (shipit-issue--get-backend))))
         (insert "\n")
         ;; Blank line separator between comments

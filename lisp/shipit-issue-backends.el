@@ -164,6 +164,14 @@ SINCE is an ISO8601 timestamp; only return items updated after it."
   "Return non-nil if BACKEND-PLIST supports description reactions."
   (not (null (plist-get backend-plist :fetch-reactions))))
 
+(defun shipit-issue--backend-has-comment-reactions-p (backend-plist)
+  "Return non-nil if BACKEND-PLIST supports reactions on comments.
+Either via description-style `:fetch-reactions' (GitHub, routed through
+the comment backend) or a dedicated `:fetch-comment-reactions-batch'
+(Jira)."
+  (or (not (null (plist-get backend-plist :fetch-reactions)))
+      (not (null (plist-get backend-plist :fetch-comment-reactions-batch)))))
+
 ;;; Output contracts — define required fields per operation
 
 (defconst shipit-issue--output-contracts

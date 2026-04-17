@@ -1464,9 +1464,14 @@ Returns a list of section type symbols."
     sections-with-unread))
 
 (defun shipit--reaction-to-emoji (reaction-type)
-  "Convert GitHub REACTION-TYPE to emoji with smart fallback based on environment support."
+  "Convert GitHub REACTION-TYPE to emoji with smart fallback based on environment support.
+Pre-rendered emoji characters (e.g. from Jira's internal reactions API)
+are returned as-is."
   (let ((support-level (shipit--detect-emoji-support)))
     (cond
+     ((and (stringp reaction-type)
+           (string-match-p "[^\x00-\x7F]" reaction-type))
+      reaction-type)
      ((string= reaction-type "+1")
       (cond ((eq support-level 'full) "👍")
             (t "+1")))

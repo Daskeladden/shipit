@@ -657,6 +657,89 @@ Returns the API response."
     (shipit--debug-log "Jira backend: updating description for %s" issue-key)
     (shipit-issue-jira--api-request-put config path data)))
 
+(defcustom shipit-issue-jira-reactions-endpoint
+  "/rest/internal/2/reactions/view"
+  "Internal Jira endpoint for batch-fetching comment reactions.
+Works on Jira Data Center/Server.  Atlassian Cloud uses
+`/gateway/api/reactions/reactions' behind session-cookie auth, which
+is not reachable with API tokens — so on Cloud this will 404 and
+comments render with the placeholder icon only.  See JRACLOUD-78153.
+Override this if your instance exposes a different path."
+  :type 'string
+  :group 'shipit)
+
+(defvar shipit-issue-jira--reactions-unavailable nil
+  "When non-nil, skip further attempts to fetch Jira comment reactions.
+Set automatically after a 404 on the configured endpoint to avoid
+logging on every issue open.")
+
+(defun shipit-issue-jira--emoji-id-to-char (emoji-id)
+  "Convert Jira EMOJI-ID (hex Unicode codepoint) to a character string.
+Falls back to EMOJI-ID itself when the hex does not parse to a
+positive codepoint."
+  (let* ((code (string-to-number emoji-id 16))
+         (ch (and (> code 0) (decode-char 'unicode code))))
+    (if ch (string ch) emoji-id)))
+
+(defun shipit-issue-jira--fetch-comment-reactions-batch (config repo comments is-inline)
+  "Populate `shipit--reaction-cache' with Jira reactions for COMMENTS.
+CONFIG is the Jira backend config.  REPO is the repository string used
+for cache keys.  IS-INLINE is ignored — Jira only has general comment
+reactions.
+
+On Atlassian Cloud the endpoint 404s (no token-auth equivalent exists).
+After the first 404, this function short-circuits for the rest of the
+session via `shipit-issue-jira--reactions-unavailable'."
+  (unless (or is-inline shipit-issue-jira--reactions-unavailable)
+    (let ((numeric-ids
+           (delq nil
+                 (mapcar (lambda (c)
+                           (let ((id (cdr (assq 'id c))))
+                             (when id
+                               (string-to-number (format "%s" id)))))
+                         comments))))
+      (when numeric-ids
+        (let* ((raw (condition-case err
+                        (shipit-issue-jira--api-request-post
+                         config
+                         shipit-issue-jira-reactions-endpoint
+                         `((commentIds . ,(vconcat numeric-ids))))
+                      (error
+                       ;; Only silence 404 (expected on Cloud, where the
+                       ;; internal endpoint does not exist).  Everything
+                       ;; else — auth, 5xx, network — re-signals so the
+                       ;; failure surfaces with a backtrace instead of
+                       ;; rendering as "no reactions".
+                       (let ((msg (error-message-string err)))
+                         (if (string-match-p "404" msg)
+                             (progn
+                               (setq shipit-issue-jira--reactions-unavailable t)
+                               (shipit--debug-log
+                                "Jira reactions: endpoint 404 (likely Cloud); giving up for session")
+                               nil)
+                           (signal (car err) (cdr err)))))))
+               (entries (append raw nil))
+               (by-id (make-hash-table :test 'equal)))
+          (dolist (comment comments)
+            (puthash (format "%s" (cdr (assq 'id comment))) '() by-id))
+          (dolist (entry entries)
+            (let* ((cid (format "%s" (cdr (assq 'commentId entry))))
+                   (emoji-id (cdr (assq 'emojiId entry)))
+                   (content (shipit-issue-jira--emoji-id-to-char emoji-id))
+                   (users (append (cdr (assq 'users entry)) nil))
+                   (existing (gethash cid by-id '())))
+              (dolist (user users)
+                (push `((content . ,content)
+                        (user . ((login . ,user))))
+                      existing))
+              (puthash cid existing by-id)))
+          (maphash (lambda (cid reactions)
+                     (let ((cache-key (format "%s:%s-general" repo cid)))
+                       (puthash cache-key reactions shipit--reaction-cache)))
+                   by-id)
+          (shipit--debug-log "Jira reactions: cached %d comments (%d entries)"
+                             (hash-table-count by-id) (length entries)))))))
+
 (defun shipit-issue-jira--toggle-reaction (_config _comment-id _reaction)
   "Toggle reaction on Jira comment (no-op).
 Jira REST API v2 does not support emoji reactions."
@@ -1298,6 +1381,7 @@ Returns empty string when svglib is unavailable or ICON-DATA is nil."
        :add-comment #'shipit-issue-jira--add-comment
        :edit-comment #'shipit-issue-jira--edit-comment
        :toggle-reaction #'shipit-issue-jira--toggle-reaction
+       :fetch-comment-reactions-batch #'shipit-issue-jira--fetch-comment-reactions-batch
        :update-description #'shipit-issue-jira--update-description
        :get-transitions #'shipit-issue-jira--get-transitions
        :transition-status #'shipit-issue-jira--transition-status
@@ -1309,6 +1393,10 @@ Returns empty string when svglib is unavailable or ICON-DATA is nil."
        :dashboard-columns 'shipit-jira-dashboard-columns
        :issue-type-icon-render #'shipit-issue-jira--render-issue-type-icon
        :priority-icon-render #'shipit-issue-jira--render-priority-icon
+       :issue-type-color
+       (lambda (name) (cdr (shipit-issue-jira--issue-type-icon name)))
+       :priority-color
+       (lambda (name) (cdr (shipit-issue-jira--priority-icon name)))
        :status-category-face #'shipit-issue-jira--status-category-face
        :classify-url #'shipit-issue-jira--classify-url
        :fetch-assignable-users #'shipit-issue-jira--fetch-assignable-users

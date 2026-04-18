@@ -11,11 +11,13 @@ This project was built as a learning exercise in agentic AI-assisted programming
 ## What it does
 
 - **Pull requests** — view description, commits, file changes, labels, assignees, reviewers
+- **Linked tracker issues** — PRs show an expandable Issue section auto-detected from the branch name (e.g. `ZIVID-12624-foo` → `ZIVID-12624`); transient actions for search/link, open, browse, transition status, and create-and-link
 - **Comments** — inline diff comments with threading, general comments, reactions, live markdown preview
 - **Reviews** — submit approvals, request changes, resolve conversations
 - **CI/Checks** — expand check suites to see step logs with timestamp gap coloring
-- **Notifications** — poll for updates, see activity that triggered each notification, mark as read, subscribe to individual threads
+- **Notifications** — poll for updates, see activity that triggered each notification, `RET` jumps into the PR at the exact comment/commit/review, mark as read, subscribe to individual threads
 - **Issues** — search, create, and view issues with pinned comments, comment pagination, filtering, and status transitions
+- **Atlassian dashboard** — dedicated Jira project buffer (`M-x shipit-atlassian-dashboard`) with My Open Issues, Kanban Board, filterable/loadable all-issues section, and a create-issue action
 - **Discussions** — view and participate in GitHub Discussions
 - **Subscriptions** — manage repo-level and per-thread subscriptions via transient menu
 - **Worktrees** — checkout PR branches into isolated worktrees
@@ -137,6 +139,12 @@ Issues with many comments show the first and last few with a "Load more" section
 Pinned comments appear prominently between the description and comment sections with a rounded background and truncated preview.
 
 The mode line shows your position when navigating comments: `[42/315 ####------]`
+
+### Atlassian dashboard
+
+`M-x shipit-atlassian-dashboard` opens a Jira-focused buffer with My Open Issues, What's Next, an optional Kanban Board, Frequently Visited, and a full filterable Issues section. `f` opens the filter transient (status, assignee, reporter, type, priority, text/comment search, sort), `l` loads more, `M-;` opens context actions including Create new issue with full Jira fields (issue type, components, labels, assignee).
+
+The dashboard requires the current repo to resolve to a Jira backend. Set up the mapping via `shipit-issue-repo-backends` as shown in the Authentication section, or see the [Backend Configuration wiki page](https://github.com/Daskeladden/shipit/wiki/Backend-Configuration).
 
 ## Configuration
 

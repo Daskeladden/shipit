@@ -275,23 +275,36 @@ to know which backend symbol represents Jira."
 (defun shipit-atlassian-dashboard--open (repo)
   "Open Atlassian dashboard buffer for REPO.
 Resolves Jira config via `shipit-issue--resolve-for-repo' and
-creates or switches to the dashboard buffer.
-Returns the buffer."
+creates or switches to the dashboard buffer.  Errors loudly when
+REPO is not mapped to a Jira-capable issue backend — the dashboard
+renders Jira-specific sections (My Open Issues, Kanban board,
+workflow statuses) and silently degrades to broken output when
+driven by another backend.  Returns the buffer."
   (let* ((resolved (shipit-issue--resolve-for-repo repo))
-         (config (cdr resolved))
-         (buf-name (shipit-atlassian-dashboard--buffer-name repo))
-         (buf (get-buffer-create buf-name)))
-    (with-current-buffer buf
-      (unless (eq major-mode 'shipit-atlassian-dashboard-mode)
-        (shipit-atlassian-dashboard-mode))
-      (setq shipit-atlassian-dashboard--repo repo)
-      (setq shipit-atlassian-dashboard--config config)
-      (setq shipit-atlassian-dashboard--backend-plist (car resolved))
-      (setq shipit-issue-buffer-repo repo)
-      (shipit--debug-log "Atlassian dashboard opened for repo: %s" repo)
-      (shipit-atlassian-dashboard--refresh-data))
-    (pop-to-buffer buf)
-    buf))
+         (backend-plist (car resolved))
+         (config (cdr resolved)))
+    ;; The dashboard renders Jira-specific sections.  Use the presence
+    ;; of :fetch-project-statuses — a Jira-only backend capability — as
+    ;; the guard, and :base-url in config as a secondary check that
+    ;; a real Jira instance is configured.
+    (unless (and (plist-get backend-plist :fetch-project-statuses)
+                 (plist-get config :base-url))
+      (user-error
+       "Atlassian dashboard requires a Jira-configured repo; %s resolves to the %s backend.  Add a mapping in `shipit-issue-repo-backends'"
+       repo (or (plist-get backend-plist :name) "active")))
+    (let* ((buf-name (shipit-atlassian-dashboard--buffer-name repo))
+           (buf (get-buffer-create buf-name)))
+      (with-current-buffer buf
+        (unless (eq major-mode 'shipit-atlassian-dashboard-mode)
+          (shipit-atlassian-dashboard-mode))
+        (setq shipit-atlassian-dashboard--repo repo)
+        (setq shipit-atlassian-dashboard--config config)
+        (setq shipit-atlassian-dashboard--backend-plist backend-plist)
+        (setq shipit-issue-buffer-repo repo)
+        (shipit--debug-log "Atlassian dashboard opened for repo: %s" repo)
+        (shipit-atlassian-dashboard--refresh-data))
+      (pop-to-buffer buf)
+      buf)))
 
 ;;; Interactive entry point
 
@@ -741,15 +754,70 @@ Deduplicates, pushes to front, trims to max, and persists."
 
 ;;; Issues section — filter & load transients
 
+(defun shipit-atlassian-dashboard--active-dashboard-buffer ()
+  "Return the dashboard buffer that invoked the current transient, or nil.
+Looks at the window that owns the minibuffer (transient reader runs
+from there) before falling back to any live buffer whose local
+`shipit-atlassian-dashboard--config' is set."
+  (or (and (minibufferp)
+           (let ((win (minibuffer-selected-window)))
+             (when (window-live-p win)
+               (let ((buf (window-buffer win)))
+                 (and (buffer-local-value
+                       'shipit-atlassian-dashboard--config buf)
+                      buf)))))
+      (and (bound-and-true-p shipit-atlassian-dashboard--config)
+           (current-buffer))
+      (cl-find-if (lambda (b)
+                    (buffer-local-value
+                     'shipit-atlassian-dashboard--config b))
+                  (buffer-list))))
+
+(defun shipit-atlassian-dashboard--backend-fetch (fn-key)
+  "Invoke the active dashboard backend's FN-KEY with its config.
+Returns whatever the backend function returns, or nil when the backend
+does not implement the key.  Errors from the fetch propagate."
+  (let* ((buf (shipit-atlassian-dashboard--active-dashboard-buffer))
+         (config (and buf (buffer-local-value
+                           'shipit-atlassian-dashboard--config buf)))
+         (backend (and buf (buffer-local-value
+                            'shipit-atlassian-dashboard--backend-plist buf)))
+         (fetch-fn (and backend (plist-get backend fn-key))))
+    (and fetch-fn config (funcall fetch-fn config))))
+
+(defun shipit-atlassian-dashboard--fetch-user-candidates ()
+  "Return completion candidates for assignee/reporter filter fields.
+Prepends @me / @unassigned sentinels to the users returned by the
+backend's `:fetch-assignable-users'."
+  (append '("@me" "@unassigned")
+          (shipit-atlassian-dashboard--backend-fetch :fetch-assignable-users)))
+
 (defun shipit-atlassian-dashboard--read-user (prompt _initial _history)
   "Reader for assignee/reporter filter fields.
-Accepts @me, @unassigned, or any username."
-  (let ((val (read-string prompt)))
+Presents a completing-read over @me, @unassigned, and the assignable
+users fetched from the active dashboard's backend.  Users may still
+type an unlisted name freely."
+  (let ((val (completing-read
+              prompt
+              (shipit-atlassian-dashboard--fetch-user-candidates)
+              nil nil)))
     (cond
-     ((string-empty-p val) nil)
+     ((or (null val) (string-empty-p val)) nil)
      ((string= val "@me") "me")
      ((member val '("@unassigned" "none")) "unassigned")
      (t val))))
+
+(defun shipit-atlassian-dashboard--read-status (prompt _initial _history)
+  "Reader for the status filter field.
+Completes over the project's actual status names (fetched via the
+backend's `:fetch-project-statuses') while still allowing arbitrary
+input so statuses that aren't returned by the API remain typable."
+  (let ((val (completing-read
+              prompt
+              (shipit-atlassian-dashboard--backend-fetch
+               :fetch-project-statuses)
+              nil nil)))
+    (unless (string-empty-p val) val)))
 
 (defun shipit-atlassian-dashboard--user-value-to-string (val)
   "Render the user-filter VALUE (symbol or string) as a transient arg string."
@@ -944,7 +1012,8 @@ Returns the deepest section that was expanded."
     :reader shipit-atlassian-dashboard--read-user)
    ("y" "Type" "--type="
     :choices ("Bug" "Task" "Story" "Epic" "Sub-task"))
-   ("s" "Status" "--status=" :reader read-string)
+   ("s" "Status" "--status="
+    :reader shipit-atlassian-dashboard--read-status)
    ("p" "Priority" "--priority="
     :choices ("Highest" "High" "Medium" "Low" "Lowest"))
    ("R" "Resolution" "--resolution="

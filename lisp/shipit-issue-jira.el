@@ -1211,6 +1211,24 @@ Caches the name-to-accountId mapping for use during issue creation."
                   users))
     (mapcar (lambda (u) (cdr (assq 'displayName u))) users)))
 
+(defun shipit-issue-jira--fetch-project-statuses (config)
+  "Return unique status names across all issue types in the project.
+Uses /rest/api/3/project/KEY/statuses which groups statuses per issue
+type; this helper flattens and de-duplicates the names."
+  (let* ((project-key (car (plist-get config :project-keys)))
+         (path (format "/rest/api/3/project/%s/statuses" project-key))
+         (raw (shipit-issue-jira--api-request config path))
+         (type-entries (append raw nil))
+         (names nil))
+    (dolist (entry type-entries)
+      (dolist (status (append (cdr (assq 'statuses entry)) nil))
+        (let ((name (cdr (assq 'name status))))
+          (when (and name (not (member name names)))
+            (push name names)))))
+    (shipit--debug-log "Jira backend: fetched %d unique statuses for %s"
+                       (length names) project-key)
+    (nreverse names)))
+
 (defun shipit-issue-jira--update-assignee (config issue-key assignee-name)
   "Update the assignee of ISSUE-KEY to ASSIGNEE-NAME via CONFIG.
 ASSIGNEE-NAME is a display name or nil to unassign."
@@ -1400,6 +1418,7 @@ Returns empty string when svglib is unavailable or ICON-DATA is nil."
        :status-category-face #'shipit-issue-jira--status-category-face
        :classify-url #'shipit-issue-jira--classify-url
        :fetch-assignable-users #'shipit-issue-jira--fetch-assignable-users
+       :fetch-project-statuses #'shipit-issue-jira--fetch-project-statuses
        :update-assignee #'shipit-issue-jira--update-assignee
        :icon-spec '("jira" "simple" . "#0052CC")
        :icon-fallback-text "JR"))

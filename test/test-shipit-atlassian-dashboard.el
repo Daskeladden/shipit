@@ -14,7 +14,10 @@
 WHEN opening the dashboard
 THEN a buffer in shipit-atlassian-dashboard-mode is created."
   (cl-letf (((symbol-function 'shipit-issue--resolve-for-repo)
-             (lambda (_repo) (cons nil '(:base-url "https://test.atlassian.net"))))
+             (lambda (_repo)
+               (cons '(:name "Jira"
+                       :fetch-project-statuses ignore)
+                     '(:base-url "https://test.atlassian.net"))))
             ((symbol-function 'shipit-atlassian-dashboard--refresh-data)
              (lambda () nil)))
     (let ((buf (shipit-atlassian-dashboard--open "test/repo")))
@@ -23,6 +26,18 @@ THEN a buffer in shipit-atlassian-dashboard-mode is created."
             (should (eq major-mode 'shipit-atlassian-dashboard-mode))
             (should (equal shipit-atlassian-dashboard--repo "test/repo")))
         (kill-buffer buf)))))
+
+(ert-deftest test-atlassian-dashboard-refuses-non-jira-repo ()
+  "GIVEN a repo whose backend is not Jira-capable
+WHEN opening the dashboard
+THEN a user-error signals with a helpful message."
+  (cl-letf (((symbol-function 'shipit-issue--resolve-for-repo)
+             (lambda (_repo)
+               ;; Simulates the GitHub issue backend falling through:
+               ;; no :fetch-project-statuses, no :base-url in config.
+               (cons '(:name "GitHub") '(:repo "owner/name")))))
+    (should-error (shipit-atlassian-dashboard--open "owner/name")
+                  :type 'user-error)))
 
 (ert-deftest test-atlassian-dashboard-my-issues-jql ()
   "GIVEN a Jira config with project-keys

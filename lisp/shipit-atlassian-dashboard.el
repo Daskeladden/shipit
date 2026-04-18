@@ -36,6 +36,7 @@
 (declare-function shipit-issue-jira--browse-url "shipit-issue-jira")
 (declare-function shipit-issue-jira--search-page "shipit-issue-jira")
 (declare-function shipit-issue-jira--normalize-issue "shipit-issue-jira")
+(declare-function shipit-issue-create-buffer "shipit-issue-create")
 (declare-function shipit--get-pr-field-icon "shipit-render")
 (declare-function shipit-dwim "shipit-pr-actions")
 (declare-function shipit-register-dwim-handler "shipit-pr-actions")
@@ -1074,11 +1075,25 @@ Walks up section parents. Returns a symbol like
       (setq section (oref section parent)))
     (when section (oref section type))))
 
+(defun shipit-atlassian-dashboard--create-issue ()
+  "Open the rich issue creation buffer scoped to this dashboard's repo.
+Uses `shipit-atlassian-dashboard--repo' so the issue backend resolves
+against the dashboard's known repo context instead of falling back to
+remote detection."
+  (interactive)
+  (require 'shipit-issue-create)
+  (let ((repo shipit-atlassian-dashboard--repo))
+    (unless repo
+      (user-error "No repo context in this dashboard"))
+    (shipit-issue-create-buffer repo)))
+
 (transient-define-prefix shipit-atlassian-dashboard-actions ()
   "Actions for Atlassian dashboard."
   ["Board"
    ("b" "Set board ID" shipit-atlassian-dashboard--configure-board-id)
    ("o" "Open board in browser" shipit-atlassian-dashboard--open-board-in-browser)]
+  ["Issue"
+   ("n" "Create new issue" shipit-atlassian-dashboard--create-issue)]
   ["Dashboard"
    ("g" "Refresh" shipit-atlassian-dashboard-refresh)
    ("q" "Quit" transient-quit-one)])

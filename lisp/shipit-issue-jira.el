@@ -841,8 +841,15 @@ Calls CALLBACK with parsed JSON when complete."
      url
      (lambda (status)
        (if (plist-get status :error)
-           (progn
-             (shipit--debug-log "Jira API async error: %s" (plist-get status :error))
+           (let ((err-info (plist-get status :error))
+                 (body nil))
+             (goto-char (point-min))
+             (when (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+               (goto-char (1+ url-http-end-of-headers))
+               (setq body (buffer-substring
+                           (point) (min (point-max) (+ (point) 400)))))
+             (shipit--debug-log "Jira API async error (%s): %s body=%s"
+                                url err-info body)
              (funcall callback nil))
          (let ((result
                 (condition-case err
@@ -1374,14 +1381,43 @@ Returns empty string when svglib is unavailable or ICON-DATA is nil."
           (error ""))
       "")))
 
+(defvar shipit-issue-jira--icon-memo (make-hash-table :test 'equal)
+  "Session-wide cache from (KIND . NAME) to the propertized icon string.
+Rendering the Jira dashboard re-renders every issue row, and each row
+asks for an issue-type icon and a priority icon.  Without memoisation
+we hit `svg-lib-icon' hundreds of times per refresh (expensive even on
+its internal cache due to arg hashing + image allocation); with this
+cache we pay the SVG cost once per unique (kind, name) pair.
+
+Cache keys survive across renders — the icon bits never change at
+runtime, and clearing is only needed if the theme background changes.
+Call `shipit-issue-jira--clear-icon-memo' after a theme switch.")
+
+(defun shipit-issue-jira--clear-icon-memo ()
+  "Drop the memoised icon cache (e.g. after a theme change)."
+  (interactive)
+  (clrhash shipit-issue-jira--icon-memo))
+
 (defun shipit-issue-jira--render-issue-type-icon (type-name)
-  "Render SVG icon for Jira issue TYPE-NAME."
-  (shipit-issue-jira--render-icon (shipit-issue-jira--issue-type-icon type-name)))
+  "Render SVG icon for Jira issue TYPE-NAME, memoised."
+  (let ((key (cons 'type type-name)))
+    (or (gethash key shipit-issue-jira--icon-memo)
+        (puthash key
+                 (shipit-issue-jira--render-icon
+                  (shipit-issue-jira--issue-type-icon type-name))
+                 shipit-issue-jira--icon-memo))))
 
 (defun shipit-issue-jira--render-priority-icon (priority-name)
-  "Render SVG icon for Jira PRIORITY-NAME, or nil if unknown."
-  (when-let* ((mapping (shipit-issue-jira--priority-icon priority-name)))
-    (shipit-issue-jira--render-icon mapping)))
+  "Render SVG icon for Jira PRIORITY-NAME, memoised.  Nil when unknown."
+  (let* ((key (cons 'priority priority-name))
+         (cached (gethash key shipit-issue-jira--icon-memo 'missing)))
+    (if (eq cached 'missing)
+        (let ((val (when-let* ((mapping (shipit-issue-jira--priority-icon
+                                         priority-name)))
+                     (shipit-issue-jira--render-icon mapping))))
+          (puthash key val shipit-issue-jira--icon-memo)
+          val)
+      cached)))
 
 ;; Register the Jira backend
 (shipit-issue-register-backend
@@ -1419,6 +1455,7 @@ Returns empty string when svglib is unavailable or ICON-DATA is nil."
        :classify-url #'shipit-issue-jira--classify-url
        :fetch-assignable-users #'shipit-issue-jira--fetch-assignable-users
        :fetch-project-statuses #'shipit-issue-jira--fetch-project-statuses
+       :fetch-project-components #'shipit-issue-jira--fetch-components
        :update-assignee #'shipit-issue-jira--update-assignee
        :icon-spec '("jira" "simple" . "#0052CC")
        :icon-fallback-text "JR"))

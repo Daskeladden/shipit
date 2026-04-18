@@ -30,8 +30,9 @@
   (format "/rest/agile/1.0/board/%d/configuration" board-id))
 
 (defun shipit-atlassian-board--issues-path (board-id start-at)
-  "Build path for board issues of BOARD-ID starting at START-AT."
-  (format "/rest/agile/1.0/board/%d/issue?maxResults=50&startAt=%d&fields=key,summary,status,priority,issuetype,assignee"
+  "Build path for board issues of BOARD-ID starting at START-AT.
+Uses the Jira-agile max page size (100) to cut round trips in half."
+  (format "/rest/agile/1.0/board/%d/issue?maxResults=100&startAt=%d&fields=key,summary,status,priority,issuetype,assignee"
           board-id start-at))
 
 (defun shipit-atlassian-board--fetch-all-issues (config board-id)
@@ -50,6 +51,43 @@
           (setq done t))))
     (shipit--debug-log "Board: fetched %d total issues" (length all-issues))
     all-issues))
+
+(defun shipit-atlassian-board--fetch-all-issues-async (config board-id callback &optional acc start-at)
+  "Paginated async fetch of all board issues.
+Accumulates issues in ACC starting at START-AT and chains to the next
+page until Jira reports no more results; then calls CALLBACK with the
+complete list of raw issues."
+  (let ((acc (or acc nil))
+        (start-at (or start-at 0)))
+    (shipit-issue-jira--api-request-async
+     config (shipit-atlassian-board--issues-path board-id start-at)
+     (lambda (raw)
+       (let* ((page-issues (append (cdr (assq 'issues raw)) nil))
+              (total (cdr (assq 'total raw)))
+              (all-issues (append acc page-issues))
+              (new-start (+ start-at (length page-issues))))
+         (if (or (null page-issues) (>= new-start (or total 0)))
+             (funcall callback all-issues)
+           (shipit-atlassian-board--fetch-all-issues-async
+            config board-id callback all-issues new-start)))))))
+
+(defun shipit-atlassian-board--fetch-async (config board-id callback)
+  "Async version of `shipit-atlassian-board--fetch'.
+Fires the board-config request, then paginated issues, and finally
+calls CALLBACK with the grouped columns list."
+  (shipit-issue-jira--api-request-async
+   config (shipit-atlassian-board--config-path board-id)
+   (lambda (board-config)
+     (let ((columns (append (cdr (assq 'columns
+                                       (cdr (assq 'columnConfig board-config)))) nil)))
+       (shipit-atlassian-board--fetch-all-issues-async
+        config board-id
+        (lambda (raw-issues)
+          (let ((issues (mapcar #'shipit-issue-jira--normalize-issue raw-issues)))
+            (shipit--debug-log "Board async: %d columns, %d issues"
+                               (length columns) (length issues))
+            (funcall callback
+                     (shipit-atlassian-board--group-by-column columns issues)))))))))
 
 (defun shipit-atlassian-board--fetch (config board-id)
   "Fetch board configuration and issues for BOARD-ID using CONFIG.

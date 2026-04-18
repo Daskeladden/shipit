@@ -9,6 +9,32 @@
 (require 'shipit-issues-buffer)
 (require 'shipit-issue-jira)
 
+(ert-deftest test-normalize-date-offset-passes-valid-through ()
+  "GIVEN JQL-valid relative offsets or non-offset expressions
+WHEN normalising
+THEN the input is returned unchanged."
+  (dolist (input '("-7d" "-2w" "-1h" "-30m"
+                   "2026-01-15" "startOfWeek()" "endOfMonth()" "now()"
+                   nil ""))
+    (should (equal input
+                   (shipit-atlassian-dashboard--normalize-date-offset
+                    input)))))
+
+(ert-deftest test-normalize-date-offset-converts-months-and-years ()
+  "GIVEN month/year offsets not supported by JQL
+WHEN normalising
+THEN the value is rewritten into an equivalent number of days."
+  (should (equal "-30d"
+                 (shipit-atlassian-dashboard--normalize-date-offset "-1M")))
+  (should (equal "-90d"
+                 (shipit-atlassian-dashboard--normalize-date-offset "-3M")))
+  (should (equal "-180d"
+                 (shipit-atlassian-dashboard--normalize-date-offset "-6M")))
+  (should (equal "-365d"
+                 (shipit-atlassian-dashboard--normalize-date-offset "-1y")))
+  (should (equal "30d"
+                 (shipit-atlassian-dashboard--normalize-date-offset "1M"))))
+
 (ert-deftest test-atlassian-dashboard-creates-buffer ()
   "GIVEN a Jira config
 WHEN opening the dashboard
@@ -48,7 +74,7 @@ THEN JQL filters by assignee, unresolved, and project."
     (let ((jql (shipit-atlassian-dashboard--my-issues-jql config)))
       (should (string-match-p "assignee=currentUser()" jql))
       (should (string-match-p "resolution=Unresolved" jql))
-      (should (string-match-p "project in (PROJ1,PROJ2)" jql)))))
+      (should (string-match-p "project in (\"PROJ1\",\"PROJ2\")" jql)))))
 
 (ert-deftest test-atlassian-dashboard-my-issues-jql-no-projects ()
   "GIVEN a Jira config without project-keys
@@ -308,7 +334,7 @@ WHEN building the board issues path
 THEN the path includes the board ID and fields."
   (let ((path (shipit-atlassian-board--issues-path 42 0)))
     (should (string-match-p "/rest/agile/1.0/board/42/issue" path))
-    (should (string-match-p "maxResults=50" path))
+    (should (string-match-p "maxResults=100" path))
     (should (string-match-p "startAt=0" path))
     (should (string-match-p "fields=" path))))
 
@@ -578,7 +604,8 @@ THEN all data is fetched and render is called."
     (setq shipit-atlassian-dashboard--repo "test/repo")
     (setq shipit-atlassian-dashboard--config '(:base-url "https://test.atlassian.net"))
     (setq shipit-atlassian-board-id 42)
-    (let ((render-called nil))
+    (let ((render-called nil)
+          (shipit-atlassian-dashboard-defer-fetches nil))
       (cl-letf (((symbol-function 'shipit-atlassian-dashboard--fetch-my-issues)
                  (lambda () '(((id . "P-1") (title . "Bug") (state . "Open")))))
                 ((symbol-function 'shipit-atlassian-dashboard--fetch-whats-next)
@@ -605,7 +632,8 @@ THEN partial data is kept and render is still called."
     (setq shipit-atlassian-dashboard--repo "test/repo")
     (setq shipit-atlassian-dashboard--config '(:base-url "https://test.atlassian.net"))
     (setq shipit-atlassian-board-id nil)
-    (let ((render-called nil))
+    (let ((render-called nil)
+          (shipit-atlassian-dashboard-defer-fetches nil))
       (cl-letf (((symbol-function 'shipit-atlassian-dashboard--fetch-my-issues)
                  (lambda () (error "API timeout")))
                 ((symbol-function 'shipit-atlassian-dashboard--fetch-whats-next)
@@ -747,7 +775,7 @@ WHEN building Issues JQL
 THEN only the project scope + default ORDER BY are present."
   (let* ((config '(:project-keys ("PROJ1" "PROJ2")))
          (jql (shipit-atlassian-dashboard--build-issues-jql config nil)))
-    (should (string-match-p "project in (PROJ1,PROJ2)" jql))
+    (should (string-match-p "project in (\"PROJ1\",\"PROJ2\")" jql))
     (should (string-match-p "ORDER BY key DESC" jql))
     (should-not (string-match-p "assignee" jql))
     (should-not (string-match-p "resolution" jql))))

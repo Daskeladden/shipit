@@ -36,6 +36,8 @@
 (declare-function shipit-issue-jira--browse-url "shipit-issue-jira")
 (declare-function shipit-issue-jira--search-page "shipit-issue-jira")
 (declare-function shipit-issue-jira--normalize-issue "shipit-issue-jira")
+(declare-function shipit-issue-jira--api-request-async "shipit-issue-jira")
+(declare-function shipit-atlassian-board--fetch-async "shipit-atlassian-board")
 (declare-function shipit-issue-create-buffer "shipit-issue-create")
 (declare-function shipit--get-pr-field-icon "shipit-render")
 (declare-function shipit-dwim "shipit-pr-actions")
@@ -133,6 +135,11 @@ When nil, the board section is omitted."
 
 (defvar-local shipit-atlassian-dashboard--issues-data nil
   "Cached list of issues loaded for the Issues section.")
+
+(defvar-local shipit-atlassian-dashboard--loading-p nil
+  "Non-nil while a refresh is in flight.
+The renderer prefixes the buffer with a visible `Loading...' banner
+while this is set; it clears once all fetches complete.")
 
 (defvar-local shipit-atlassian-dashboard--issues-filter nil
   "Plist of filter criteria currently applied to the Issues section.
@@ -325,7 +332,8 @@ driven by another backend.  Returns the buffer."
     (format "assignee=currentUser() AND resolution=Unresolved%s ORDER BY priority DESC, updated DESC"
             (if project-keys
                 (format " AND project in (%s)"
-                        (mapconcat #'identity project-keys ","))
+                        (mapconcat (lambda (k) (format "\"%s\"" k))
+                                   project-keys ","))
               ""))))
 
 (defun shipit-atlassian-dashboard--user-clause (field value)
@@ -336,6 +344,22 @@ VALUE may be the symbol `me', `unassigned', or a free-text string."
     ('unassigned (format "%s is EMPTY" field))
     ((pred stringp) (format "%s=\"%s\"" field value))))
 
+(defun shipit-atlassian-dashboard--normalize-date-offset (value)
+  "Return VALUE with month/year JQL offsets rewritten to days.
+JQL only recognises `h m d w' as relative date units — lowercase `m'
+is minutes, not months.  This converter lets users type natural `-1M'
+(capital M = months) / `-1y' forms — the stored filter string is
+preserved for UI display; only the JQL clause uses the day-equivalent.
+Absolute dates and JQL functions pass through."
+  (let ((case-fold-search nil))
+    (cond
+     ((null value) value)
+     ((string-match "\\`\\(-?[0-9]+\\)M\\'" value)
+      (format "%dd" (* 30 (string-to-number (match-string 1 value)))))
+     ((string-match "\\`\\(-?[0-9]+\\)y\\'" value)
+      (format "%dd" (* 365 (string-to-number (match-string 1 value)))))
+     (t value))))
+
 (defun shipit-atlassian-dashboard--build-issues-jql (config filter)
   "Build the JQL query for the Issues section.
 CONFIG supplies :project-keys; FILTER is a plist of user filters.
@@ -343,7 +367,9 @@ Returns a JQL string."
   (let ((clauses nil)
         (project-keys (plist-get config :project-keys)))
     (when project-keys
-      (push (format "project in (%s)" (mapconcat #'identity project-keys ","))
+      (push (format "project in (%s)"
+                    (mapconcat (lambda (k) (format "\"%s\"" k))
+                               project-keys ","))
             clauses))
     (when-let* ((val (plist-get filter :assignee)))
       (push (shipit-atlassian-dashboard--user-clause "assignee" val) clauses))
@@ -357,6 +383,24 @@ Returns a JQL string."
       (push (format "priority=\"%s\"" val) clauses))
     (when-let* ((val (plist-get filter :resolution)))
       (push (format "resolution=\"%s\"" val) clauses))
+    (when-let* ((val (plist-get filter :component)))
+      (push (format "component=\"%s\"" val) clauses))
+    (when-let* ((val (plist-get filter :updated-since)))
+      (push (format "updated >= %s"
+                    (shipit-atlassian-dashboard--normalize-date-offset val))
+            clauses))
+    (when-let* ((val (plist-get filter :updated-before)))
+      (push (format "updated <= %s"
+                    (shipit-atlassian-dashboard--normalize-date-offset val))
+            clauses))
+    (when-let* ((val (plist-get filter :created-since)))
+      (push (format "created >= %s"
+                    (shipit-atlassian-dashboard--normalize-date-offset val))
+            clauses))
+    (when-let* ((val (plist-get filter :created-before)))
+      (push (format "created <= %s"
+                    (shipit-atlassian-dashboard--normalize-date-offset val))
+            clauses))
     (when-let* ((val (plist-get filter :text)))
       (push (format "text ~ \"%s\"" val) clauses))
     (when-let* ((val (plist-get filter :comment-text)))
@@ -738,9 +782,13 @@ Deduplicates, pushes to front, trims to max, and persists."
     (erase-buffer)
     (magit-insert-section (atlassian-dashboard)
       ;; Header
-      (insert (propertize (format "Atlassian Dashboard — %s\n\n"
+      (insert (propertize (format "Atlassian Dashboard — %s\n"
                                   shipit-atlassian-dashboard--repo)
                           'face 'magit-header-line))
+      (when shipit-atlassian-dashboard--loading-p
+        (insert (propertize "Loading data from Jira...\n"
+                            'face 'magit-dimmed)))
+      (insert "\n")
       ;; Sections
       (shipit-atlassian-dashboard--insert-whats-next-section)
       (shipit-atlassian-dashboard--insert-my-issues-section)
@@ -807,6 +855,45 @@ type an unlisted name freely."
      ((member val '("@unassigned" "none")) "unassigned")
      (t val))))
 
+(defcustom shipit-atlassian-dashboard-date-presets
+  '("-1d" "-7d" "-14d" "-30d" "-1w" "-2w" "-4w"
+    "-1M" "-3M" "-6M" "-1y"
+    "startOfDay()" "startOfWeek()" "startOfMonth()"
+    "endOfDay()" "endOfWeek()" "endOfMonth()"
+    "startOfMonth(-1)" "startOfMonth(-3)"
+    "now()")
+  "Presets offered by the date reader for timeline filters.
+Users may type any JQL-compatible date expression: relative like
+\"-7d\", absolute ISO like \"2026-01-01\", or a JQL function.
+JQL itself only accepts `h m d w' as relative offset units — `M'
+for months and `y' for years are normalised to days at JQL-build
+time by `shipit-atlassian-dashboard--normalize-date-offset'."
+  :type '(repeat string)
+  :group 'shipit-atlassian)
+
+(defun shipit-atlassian-dashboard--read-date (prompt _initial _history)
+  "Reader for the timeline filter fields.
+Offers JQL-friendly date presets (relative offsets, JQL start-of-period
+functions) via completing-read; any free text is accepted so absolute
+dates and custom JQL expressions remain typable."
+  (let ((val (completing-read
+              prompt
+              shipit-atlassian-dashboard-date-presets
+              nil nil)))
+    (unless (string-empty-p val) val)))
+
+(defun shipit-atlassian-dashboard--read-component (prompt _initial _history)
+  "Reader for the component filter field.
+Completes over the project's components (fetched via the backend's
+`:fetch-project-components') while still allowing free text so names
+the API does not return remain typable."
+  (let ((val (completing-read
+              prompt
+              (shipit-atlassian-dashboard--backend-fetch
+               :fetch-project-components)
+              nil nil)))
+    (unless (string-empty-p val) val)))
+
 (defun shipit-atlassian-dashboard--read-status (prompt _initial _history)
   "Reader for the status filter field.
 Completes over the project's actual status names (fetched via the
@@ -833,7 +920,12 @@ input so statuses that aren't returned by the API remain typable."
     (:status       "status"       "status=%s"      plain)
     (:priority     "priority"     "priority=%s"    plain)
     (:resolution   "resolution"   "resolution=%s"  plain)
-    (:sort         "sort"         "sort=%s"        plain)
+    (:component       "component"       "component=%s"       plain)
+    (:updated-since   "updated-since"   "updated>=%s"        plain)
+    (:updated-before  "updated-before"  "updated<=%s"        plain)
+    (:created-since   "created-since"   "created>=%s"        plain)
+    (:created-before  "created-before"  "created<=%s"        plain)
+    (:sort            "sort"            "sort=%s"            plain)
     (:comment-text "comment"      "comment~\"%s\"" plain)
     (:has-comments "has-comments" "has-comments"   flag))
   "Spec for the Issues-section filter plist fields.
@@ -907,6 +999,16 @@ value — presence of a truthy plist entry toggles the flag).")
         (setq filter (plist-put filter :priority (match-string 1 arg))))
        ((string-match "\\`--resolution=\\(.+\\)\\'" arg)
         (setq filter (plist-put filter :resolution (match-string 1 arg))))
+       ((string-match "\\`--component=\\(.+\\)\\'" arg)
+        (setq filter (plist-put filter :component (match-string 1 arg))))
+       ((string-match "\\`--updated-since=\\(.+\\)\\'" arg)
+        (setq filter (plist-put filter :updated-since (match-string 1 arg))))
+       ((string-match "\\`--updated-before=\\(.+\\)\\'" arg)
+        (setq filter (plist-put filter :updated-before (match-string 1 arg))))
+       ((string-match "\\`--created-since=\\(.+\\)\\'" arg)
+        (setq filter (plist-put filter :created-since (match-string 1 arg))))
+       ((string-match "\\`--created-before=\\(.+\\)\\'" arg)
+        (setq filter (plist-put filter :created-before (match-string 1 arg))))
        ((string-match "\\`--sort=\\(.+\\)\\'" arg)
         (setq filter (plist-put filter :sort (match-string 1 arg))))
        ((string-match "\\`--comment=\\(.+\\)\\'" arg)
@@ -1018,9 +1120,20 @@ Returns the deepest section that was expanded."
     :choices ("Highest" "High" "Medium" "Low" "Lowest"))
    ("R" "Resolution" "--resolution="
     :choices ("Unresolved" "Done" "Won't Do" "Duplicate"))
+   ("m" "Component" "--component="
+    :reader shipit-atlassian-dashboard--read-component)
    ("t" "Text search" "--text=" :reader read-string)
    ("c" "Comment contains" "--comment=" :reader read-string)
    ("h" "Has any comment" "--has-comments")]
+  ["Timeline"
+   ("u" "Updated since"  "--updated-since="
+    :reader shipit-atlassian-dashboard--read-date)
+   ("U" "Updated before" "--updated-before="
+    :reader shipit-atlassian-dashboard--read-date)
+   ("n" "Created since"  "--created-since="
+    :reader shipit-atlassian-dashboard--read-date)
+   ("N" "Created before" "--created-before="
+    :reader shipit-atlassian-dashboard--read-date)]
   ["Sort"
    ("S" "Sort order" "--sort="
     :choices ("key DESC" "key ASC" "created DESC" "created ASC"
@@ -1073,9 +1186,138 @@ Returns the deepest section that was expanded."
 
 ;;; Refresh
 
-(defun shipit-atlassian-dashboard--refresh-data ()
-  "Fetch all dashboard data and re-render."
-  (message "Loading Atlassian dashboard...")
+(defun shipit-atlassian-dashboard--fetch-my-issues-async (callback)
+  "Fetch my open issues asynchronously; call CALLBACK with the list."
+  (let* ((config shipit-atlassian-dashboard--config)
+         (jql (shipit-atlassian-dashboard--my-issues-jql config))
+         (fields "key,summary,status,priority,issuetype,assignee,updated")
+         (path (format "/rest/api/3/search/jql?jql=%s&maxResults=50&fields=%s"
+                       (url-hexify-string jql) fields)))
+    (shipit-issue-jira--api-request-async
+     config path
+     (lambda (raw)
+       (let ((issues (append (cdr (assq 'issues raw)) nil)))
+         (funcall callback
+                  (mapcar #'shipit-issue-jira--normalize-issue issues)))))))
+
+(defun shipit-atlassian-dashboard--fetch-whats-next-async (callback)
+  "Fetch what's-next items asynchronously; call CALLBACK with the list.
+Chains two async requests: active sprint, then the sprint's issues."
+  (if (null shipit-atlassian-board-id)
+      (funcall callback nil)
+    (let ((config shipit-atlassian-dashboard--config))
+      (shipit-issue-jira--api-request-async
+       config (shipit-atlassian-dashboard--active-sprint-path
+               shipit-atlassian-board-id)
+       (lambda (sprint-raw)
+         (let* ((sprints (append (cdr (assq 'values sprint-raw)) nil))
+                (active-sprint (car sprints)))
+           (if (null active-sprint)
+               (funcall callback nil)
+             (let ((sprint-id (cdr (assq 'id active-sprint))))
+               (shipit-issue-jira--api-request-async
+                config (shipit-atlassian-dashboard--sprint-issues-path sprint-id)
+                (lambda (issues-raw)
+                  (funcall callback
+                           (shipit-atlassian-dashboard--normalize-agile-issues
+                            issues-raw))))))))))))
+
+(defun shipit-atlassian-dashboard--fetch-board-async (callback)
+  "Fetch the Kanban board data asynchronously; call CALLBACK with columns.
+Delegates to `shipit-atlassian-board--fetch-async' — a nil callback is
+invoked when no board is configured."
+  (if (null shipit-atlassian-board-id)
+      (funcall callback nil)
+    (shipit-atlassian-board--fetch-async
+     shipit-atlassian-dashboard--config
+     shipit-atlassian-board-id
+     callback)))
+
+(defun shipit-atlassian-dashboard--fetch-issues-page-async (token page-size callback)
+  "Async version of ``--fetch-issues-page'.
+Calls CALLBACK with (ISSUES NEXT-TOKEN IS-LAST-P)."
+  (let* ((config shipit-atlassian-dashboard--config)
+         (jql (shipit-atlassian-dashboard--build-issues-jql
+               config shipit-atlassian-dashboard--issues-filter))
+         (fields shipit-atlassian-dashboard--issues-fields)
+         (path (format "/rest/api/3/search/jql?jql=%s&maxResults=%d&fields=%s%s"
+                       (url-hexify-string jql) page-size fields
+                       (if token
+                           (format "&nextPageToken=%s" (url-hexify-string token))
+                         ""))))
+    (shipit-issue-jira--api-request-async
+     config path
+     (lambda (raw)
+       (let ((issues (append (cdr (assq 'issues raw)) nil))
+             (next-token (cdr (assq 'nextPageToken raw)))
+             (is-last (shipit-issue-jira--is-last-page-p raw)))
+         (funcall callback
+                  (list (mapcar #'shipit-issue-jira--normalize-issue issues)
+                        next-token
+                        is-last)))))))
+
+(defun shipit-atlassian-dashboard--fetch-issues-reset-async (callback)
+  "Reset Issues state and fetch the first page asynchronously.
+Stores the result into the dashboard buffer's locals and then calls
+CALLBACK with no arguments.  The HTTP callback fires inside the
+url-retrieve response buffer, so the state writes must be tunneled
+back via `with-current-buffer'."
+  (setq shipit-atlassian-dashboard--issues-data nil
+        shipit-atlassian-dashboard--issues-next-token nil
+        shipit-atlassian-dashboard--issues-last-page-p nil)
+  (let ((buf (current-buffer)))
+    (shipit-atlassian-dashboard--fetch-issues-page-async
+     nil shipit-atlassian-issues-page-size
+     (lambda (result)
+       (when (buffer-live-p buf)
+         (with-current-buffer buf
+           (pcase-let ((`(,issues ,next ,last-p) result))
+             (setq shipit-atlassian-dashboard--issues-data issues
+                   shipit-atlassian-dashboard--issues-next-token next
+                   shipit-atlassian-dashboard--issues-last-page-p last-p))))
+       (funcall callback)))))
+
+(defun shipit-atlassian-dashboard--run-fetches-async ()
+  "Fire all four section fetches concurrently via the Jira async API.
+Each callback just updates its slot; the single re-render happens
+once all four have reported back — full-buffer renders with SVG icons
+are expensive, so rendering after every fetch (4x) was dominating
+the load time."
+  (let ((pending 4)
+        (buf (current-buffer)))
+    (cl-labels ((finish ()
+                  (when (buffer-live-p buf)
+                    (with-current-buffer buf
+                      (setq pending (1- pending))
+                      (when (zerop pending)
+                        (setq shipit-atlassian-dashboard--loading-p nil)
+                        (shipit-atlassian-dashboard--render)
+                        (message "Atlassian dashboard loaded"))))))
+      (shipit-atlassian-dashboard--fetch-my-issues-async
+       (lambda (data)
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq shipit-atlassian-dashboard--my-issues data)))
+         (finish)))
+      (shipit-atlassian-dashboard--fetch-whats-next-async
+       (lambda (data)
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq shipit-atlassian-dashboard--whats-next data)))
+         (finish)))
+      (shipit-atlassian-dashboard--fetch-board-async
+       (lambda (data)
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq shipit-atlassian-dashboard--board-data data)))
+         (finish)))
+      (shipit-atlassian-dashboard--fetch-issues-reset-async
+       (lambda () (finish))))))
+
+(defun shipit-atlassian-dashboard--run-fetches ()
+  "Synchronously run the four dashboard fetches and re-render.
+Tests and sync callers invoke this directly; `--refresh-data' defers
+to it via `run-at-time' so the initial placeholder render paints first."
   (condition-case err
       (progn
         (setq shipit-atlassian-dashboard--my-issues
@@ -1087,8 +1329,35 @@ Returns the deepest section that was expanded."
         (shipit-atlassian-dashboard--fetch-issues-reset))
     (error
      (shipit--debug-log "Dashboard fetch error: %s" err)))
+  (setq shipit-atlassian-dashboard--loading-p nil)
   (shipit-atlassian-dashboard--render)
   (message "Atlassian dashboard loaded"))
+
+(defcustom shipit-atlassian-dashboard-defer-fetches t
+  "When non-nil, dashboard fetches run asynchronously via `run-at-time'.
+Set to nil in tests so `shipit-atlassian-dashboard--refresh-data' behaves
+synchronously."
+  :type 'boolean
+  :group 'shipit-atlassian)
+
+(defun shipit-atlassian-dashboard--refresh-data ()
+  "Render the dashboard skeleton immediately, then fetch data in background.
+The buffer becomes visible right away with a `Loading...' banner; the
+four Jira fetches run deferred so the placeholder render paints first.
+When all fetches complete the buffer re-renders with real content and
+the banner disappears."
+  (message "Loading Atlassian dashboard...")
+  (setq shipit-atlassian-dashboard--my-issues nil
+        shipit-atlassian-dashboard--whats-next nil
+        shipit-atlassian-dashboard--board-data nil
+        shipit-atlassian-dashboard--issues-data nil
+        shipit-atlassian-dashboard--issues-next-token nil
+        shipit-atlassian-dashboard--issues-last-page-p nil
+        shipit-atlassian-dashboard--loading-p t)
+  (shipit-atlassian-dashboard--render)
+  (if shipit-atlassian-dashboard-defer-fetches
+      (shipit-atlassian-dashboard--run-fetches-async)
+    (shipit-atlassian-dashboard--run-fetches)))
 
 (defun shipit-atlassian-dashboard-refresh ()
   "Refresh the Atlassian dashboard buffer."

@@ -51,6 +51,7 @@ when magit sections expand/collapse.")
 
 ;; Require shipit-pr-sections for section type definitions
 (require 'shipit-pr-sections)
+(require 'shipit-pr-linked-issue)
 
 ;; Forward declarations
 (declare-function shipit-open-repo-buffer "shipit-repo-buffer")
@@ -991,6 +992,10 @@ REPO is the repository, PR-NUMBER is the PR number."
                               (shipit--get-pr-field-icon "refs" "🔀")
                               refs-line))
               (put-text-property line-start (point) 'shipit-refs-line t)))))
+
+      ;; Linked issue section (auto-detect from branch, manual override via RET)
+      (shipit--time-operation "insert linked issue"
+        (shipit-pr-linked-issue--insert-section repo pr-number pr-data))
 
       ;; Insert simple state line from pr-data (no API call)
       ;; Use shipit--get-pr-actual-state to show "merged" instead of "closed" for merged PRs

@@ -4268,6 +4268,7 @@ Returns (octicon . color) or nil."
     ("notification" '("bell" . "#0366d6"))                           ; Blue - Notification/subscription
     ("star" '("star-fill" . "#e3b341"))                              ; Yellow - Starred
     ("pin" '("pin" . "#0366d6"))                                     ; Blue - Pinned comment
+    ("linked-issue" '("link" . "#8250df"))                           ; Purple - PR to tracker issue link
     (_ nil)))
 
 (defun shipit--get-pr-field-icon (field-type emoji-fallback)

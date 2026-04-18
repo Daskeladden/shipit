@@ -35,6 +35,12 @@
 (declare-function shipit-editor-open "shipit-editor")
 (declare-function shipit--get-notification-source-icon "shipit-render")
 
+(defvar shipit-issue-created-hook nil
+  "Hook run after `shipit-issue-create--submit' successfully creates an issue.
+Each function is called with two arguments: the new issue NUMBER (or
+backend key) and the REPO string.  Handlers should be idempotent; a
+failing handler does not abort the normal post-create flow.")
+
 ;;; Buffer-local state
 
 (defvar-local shipit-issue-create--repo nil "Repository owner/name.")
@@ -423,6 +429,7 @@ Includes only fields that have values set."
             ;; Remove save-draft hook before killing to avoid re-saving
             (remove-hook 'kill-buffer-hook #'shipit-issue-create--save-draft t)
             (message "Created issue %s" number)
+            (run-hook-with-args 'shipit-issue-created-hook number repo)
             (kill-buffer (current-buffer))
             (shipit-issues-open-buffer number repo))
         (error
@@ -456,10 +463,14 @@ Includes only fields that have values set."
 ;;; Entry point
 
 ;;;###autoload
-(defun shipit-issue-create-buffer ()
-  "Open a rich issue creation buffer for the current repository."
+(defun shipit-issue-create-buffer (&optional repo-override)
+  "Open a rich issue creation buffer.
+REPO-OVERRIDE lets callers pass the repository explicitly, bypassing
+`shipit--get-repo-from-remote'.  Useful when the calling buffer already
+knows the repo (e.g. a shipit PR buffer) and the remote detection would
+return the wrong context."
   (interactive)
-  (let* ((repo (shipit--get-repo-from-remote))
+  (let* ((repo (or repo-override (shipit--get-repo-from-remote)))
          (_ (unless repo (user-error "Could not determine repository from remote")))
          (resolved (shipit-issue--resolve-for-repo repo))
          (backend-plist (car resolved))

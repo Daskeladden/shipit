@@ -722,6 +722,9 @@ This is a DWIM function that handles multiple contexts."
      ;; On approval section - invoke approval actions
      (is-approval-section
       (shipit--approval-dwim-actions))
+     ;; On the linked-issue section - dispatch through DWIM
+     ((get-text-property (point) 'shipit-pr-linked-issue)
+      (shipit-dwim))
      ;; On a CI section - expand to show steps/logs, or open actions buffer
      ((and (fboundp 'magit-current-section)
            (run-hook-with-args-until-success

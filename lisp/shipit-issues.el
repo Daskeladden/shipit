@@ -130,10 +130,18 @@ Falls back to fetching all comments when the backend does not provide
       (funcall (plist-get backend :fetch-comments-async) config issue-number
                (lambda (all-comments)
                  (let* ((total (length all-comments))
-                        (head (seq-take all-comments head-n))
-                        (tail (seq-subseq all-comments (max 0 (- total tail-n))))
-                        (hidden (when (> total (+ head-n tail-n))
-                                  (seq-subseq all-comments head-n (- total tail-n)))))
+                        ;; When total fits in head+tail, put everything in
+                        ;; head and leave tail empty — otherwise head and
+                        ;; tail ranges overlap and the UI renders duplicates.
+                        (split (> total (+ head-n tail-n)))
+                        (head (if split
+                                  (seq-take all-comments head-n)
+                                all-comments))
+                        (tail (when split
+                                (seq-subseq all-comments (- total tail-n))))
+                        (hidden (when split
+                                  (seq-subseq all-comments head-n
+                                              (- total tail-n)))))
                    (funcall callback
                             (list :head head :tail tail :hidden hidden
                                   :total total :unfetched nil :per-page per-page))))))))

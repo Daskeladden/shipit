@@ -66,16 +66,49 @@ machine your-instance.atlassian.net login your@email.com password your-api-token
 
 GitHub tokens need `repo` scope. You can also set `shipit-github-token` directly.
 
-For GitLab and Jira, configure backends in your init file:
+For GitLab and Jira, configure backends in your init file.
+
+**Global Jira backend** (applies to every repo that lacks a more specific
+mapping):
 
 ```elisp
 (setq shipit-issue-backend 'jira)
 (setq shipit-issue-backend-config
-      '(:host "https://your-instance.atlassian.net"
+      '(:base-url "https://your-instance.atlassian.net"
         :project-keys ("PROJ")))
 ```
 
-Per-repo configuration via `.dir-locals.el` is also supported.
+Credentials for `your-instance.atlassian.net` are picked up from
+auth-source (see the `~/.authinfo.gpg` entry earlier in this section).
+
+**Per-repo mapping** via `shipit-issue-repo-backends` — a list of
+`(REPO-PATTERN . CONFIG-PLIST)` where REPO-PATTERN is an exact match or
+regexp against `owner/name`:
+
+```elisp
+(setq shipit-issue-repo-backends
+      '(("myorg/backend"
+         :backend jira
+         :base-url "https://myorg.atlassian.net"
+         :project-keys ("BACK"))
+        ("myorg/frontend"
+         :backend jira
+         :base-url "https://myorg.atlassian.net"
+         :project-keys ("FE"))
+        ("myorg/.*"
+         :backend jira
+         :base-url "https://myorg.atlassian.net"
+         :project-keys ("MYORG"))))
+```
+
+Repos not matching any entry fall back to `shipit-issue-backend`.  The
+Atlassian dashboard (`M-x shipit-atlassian-dashboard`) refuses to open
+when the resolved backend isn't Jira — if you see that error, add a
+matching entry to `shipit-issue-repo-backends`.
+
+Per-repo configuration via `.dir-locals.el` is also supported; set
+`shipit-issue-backend` and `shipit-issue-backend-config` as buffer-local
+directory variables.
 
 ## Usage
 

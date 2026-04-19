@@ -202,7 +202,7 @@ Captured from the source buffer in `shipit-editor-open'.")
   ;; backend-aware and context-specific versions)
   (setq-local header-line-format
               (propertize " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel "
-                          'face 'mode-line-highlight))
+                          'font-lock-face 'mode-line-highlight))
   ;; Set up live preview updates
   (add-hook 'after-change-functions #'shipit-editor--schedule-preview-update nil t)
   ;; Set up completion cancellation on next keypress
@@ -281,34 +281,34 @@ CONTEXT is a plist with:
           (setq-local header-line-format
                       (propertize (format " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel, %s, @: User, :: Emoji "
                                           ref-hints)
-                                  'face 'mode-line-highlight)))
+                                  'font-lock-face 'mode-line-highlight)))
         ;; Update header line based on context (overrides default)
         (cond
          (commit-messages
           (setq-local header-line-format
                       (propertize (format " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel, M-n/M-p: Insert commit (%d available) "
                                           (length commit-messages))
-                                  'face 'mode-line-highlight)))
+                                  'font-lock-face 'mode-line-highlight)))
          ((eq (plist-get context :type) 'create-issue)
           (setq-local header-line-format
                       (propertize " New Issue - Line 1: Title, then blank line, then body. C-c C-c: Create, C-c C-k: Cancel "
-                                  'face 'mode-line-highlight)))
+                                  'font-lock-face 'mode-line-highlight)))
          ((memq (plist-get context :type) '(issue-comment issue-comment-edit))
           (setq-local header-line-format
                       (propertize " Issue Comment - C-c C-c: Save, C-c C-k: Cancel "
-                                  'face 'mode-line-highlight)))
+                                  'font-lock-face 'mode-line-highlight)))
          ((eq (plist-get context :type) 'issue-description)
           (setq-local header-line-format
                       (propertize " Issue Description - C-c C-c: Save, C-c C-k: Cancel "
-                                  'face 'mode-line-highlight)))
+                                  'font-lock-face 'mode-line-highlight)))
          ((eq (plist-get context :type) 'create-discussion)
           (setq-local header-line-format
                       (propertize " New Discussion - Line 1: Title, then blank line, then body. C-c C-c: Create, C-c C-k: Cancel "
-                                  'face 'mode-line-highlight)))
+                                  'font-lock-face 'mode-line-highlight)))
          ((memq (plist-get context :type) '(discussion-comment discussion-reply))
           (setq-local header-line-format
                       (propertize " Discussion Comment - C-c C-c: Save, C-c C-k: Cancel "
-                                  'face 'mode-line-highlight)))
+                                  'font-lock-face 'mode-line-highlight)))
          ((and (eq (plist-get context :type) 'review)
                (plist-get context :review-event))
           (let* ((event (plist-get context :review-event))
@@ -318,7 +318,7 @@ CONTEXT is a plist with:
                          (t (format "Review (%s)" event)))))
             (setq-local header-line-format
                         (propertize (format " %s - C-c C-c: Submit, C-c C-k: Cancel " label)
-                                    'face 'mode-line-highlight)))))
+                                    'font-lock-face 'mode-line-highlight)))))
         ;; Store preview overlay info
         (when preview-info
           (setq shipit-editor--preview-overlay (plist-get preview-info :overlay)
@@ -459,7 +459,7 @@ Adds appropriate indentation based on type."
                            (indent-3 "   ")       ; 3 spaces for description/preview-general
                            (t ""))))
     (if (string-empty-p (string-trim clean-content))
-        (propertize (concat indent-str "(empty)\n") 'face 'font-lock-comment-face)
+        (propertize (concat indent-str "(empty)\n") 'font-lock-face 'font-lock-comment-face)
       ;; Don't use shipit--render-markdown for preview - it uses markdown-mode
       ;; fontification which can strip language specifiers from code fences.
       ;; Instead, just return the content as-is and let code block backgrounds
@@ -471,8 +471,8 @@ Adds appropriate indentation based on type."
          (indent-reply
           (concat
            ;; Child connector and header with depth-based indentation
-           reply-header-indent "└─   " (propertize "You" 'face 'magit-log-author)
-           " " (propertize "(draft)" 'face 'font-lock-comment-face) "\n"
+           reply-header-indent "└─   " (propertize "You" 'font-lock-face 'magit-log-author)
+           " " (propertize "(draft)" 'font-lock-face 'font-lock-comment-face) "\n"
            ;; Body with child indentation
            (mapconcat (lambda (line) (concat indent-str line))
                       (split-string rendered "\n")
@@ -837,7 +837,7 @@ Returns plist with :overlay :start :end or nil."
                 (let ((header-start (point))
                       (icon (shipit--get-comment-type-icon "comment" "💬")))
                   (magit-insert-heading
-                    (propertize (format "     %s You (draft) (now)" icon) 'face 'bold))
+                    (propertize (format "     %s You (draft) (now)" icon) 'font-lock-face 'bold))
                   (add-text-properties header-start (point)
                                        `(shipit-comment t
                                          shipit-comment-id ,temp-comment-id)))
@@ -1010,11 +1010,11 @@ Returns plist with :overlay :start :end or nil."
                         (magit-insert-heading
                           (concat "   "
                                   icon-or-avatar
-                                  (propertize display-name 'face 'shipit-username-face)
+                                  (propertize display-name 'font-lock-face 'shipit-username-face)
                                   " "
-                                  (propertize draft-str 'face 'shadow)
+                                  (propertize draft-str 'font-lock-face 'shadow)
                                   " "
-                                  (propertize timestamp-str 'face 'shipit-timestamp-face)))
+                                  (propertize timestamp-str 'font-lock-face 'shipit-timestamp-face)))
                         (add-text-properties header-start (point)
                                              `(shipit-comment t
                                                shipit-comment-id ,temp-comment-id)))
@@ -1124,11 +1124,11 @@ Returns plist with :overlay :start :end or nil."
                     (magit-insert-heading
                       (concat "   "
                               icon-or-avatar
-                              (propertize display-name 'face 'shipit-username-face)
+                              (propertize display-name 'font-lock-face 'shipit-username-face)
                               " "
-                              (propertize "(draft)" 'face 'shadow)
+                              (propertize "(draft)" 'font-lock-face 'shadow)
                               " "
-                              (propertize "(now)" 'face 'shipit-timestamp-face)))
+                              (propertize "(now)" 'font-lock-face 'shipit-timestamp-face)))
                     (add-text-properties header-start (point)
                                          `(shipit-comment t
                                            shipit-comment-id ,temp-comment-id)))

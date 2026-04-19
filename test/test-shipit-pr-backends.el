@@ -1514,7 +1514,7 @@ AND RET calls shipit-open-repo-buffer."
         ;; THEN the URL text has 'link face
         (goto-char (point-min))
         (search-forward "https://")
-        (should (eq 'link (get-text-property (1- (point)) 'face)))
+        (should (eq 'link (get-text-property (1- (point)) 'font-lock-face)))
         ;; THEN RET calls shipit-open-repo-buffer with the repo name
         (goto-char (point-min))
         (search-forward "https://github.com/owner/repo")

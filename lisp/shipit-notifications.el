@@ -840,7 +840,7 @@ RESULT contains repo aliases (r0, r1...) with PR aliases (p123...)."
               ;; Show both mention count (@) and total count (🔔)
               ;; Use emoji directly — SVG icons render poorly in mode-line
               (propertize (concat " @" (number-to-string shipit--mention-count) "🔔" (number-to-string count))
-                          'face 'error  ; More prominent when mentions exist
+                          'font-lock-face 'error  ; More prominent when mentions exist
                           'help-echo (format "%d mentions, %d total notifications - click for mention actions"
                                              shipit--mention-count count)
                           
@@ -850,7 +850,7 @@ RESULT contains repo aliases (r0, r1...) with PR aliases (p123...)."
             ;; Standard notification display (no mentions)
             ;; Use emoji directly — SVG icons render poorly in mode-line
             (propertize (concat " 🔔" (number-to-string count))
-                        'face 'warning
+                        'font-lock-face 'warning
                         'help-echo (format "%d notifications - click to view" count)
                         
                         'local-map (let ((map (make-sparse-keymap)))
@@ -1111,8 +1111,8 @@ gets the updated state from GitHub instead of serving stale cached data."
       (with-current-buffer (get-buffer-create "*Shipit Mentions*")
         (read-only-mode -1)
         (erase-buffer)
-        (insert (propertize "PR Mentions\n" 'face 'header-line))
-        (insert (propertize "==================\n\n" 'face 'header-line))
+        (insert (propertize "PR Mentions\n" 'font-lock-face 'header-line))
+        (insert (propertize "==================\n\n" 'font-lock-face 'header-line))
 
         (dolist (mention shipit--mention-prs)
           (let* ((repo (cdr (assq 'repo mention)))

@@ -129,10 +129,10 @@ When VIEWER-HAS-UPVOTED is non-nil, highlight to show active state."
         (count (or upvote-count 0)))
     (if viewer-has-upvoted
         (propertize (concat icon " " (number-to-string count))
-                    'face '(:foreground "#fd7e14" :weight bold))
+                    'font-lock-face '(:foreground "#fd7e14" :weight bold))
       (concat icon " "
               (propertize (number-to-string count)
-                          'face (if (> count 0)
+                          'font-lock-face (if (> count 0)
                                     'font-lock-constant-face
                                   'shadow))))))
 
@@ -286,7 +286,7 @@ Provides a read-only interface for viewing GitHub Discussions.
     (magit-insert-heading
       (format "%s %s #%s: %s"
               (shipit--get-pr-field-icon icon-key emoji-fallback)
-              (propertize state-text 'face state-face)
+              (propertize state-text 'font-lock-face state-face)
               number
               (string-trim (shipit--clean-text title))))
     (add-text-properties header-start (point)
@@ -302,7 +302,7 @@ Provides a read-only interface for viewing GitHub Discussions.
     (magit-insert-heading
       (format "%s %s"
               (shipit--get-pr-field-icon "metadata" "📋")
-              (propertize "Metadata" 'face 'magit-section-heading)))
+              (propertize "Metadata" 'font-lock-face 'magit-section-heading)))
     (magit-insert-section-body
       ;; Repo URL
       (let ((repo-url (shipit-discussion--derive-repo-url data)))
@@ -320,7 +320,7 @@ Provides a read-only interface for viewing GitHub Discussions.
                             (concat (shipit--create-avatar-display
                                      user avatar-url 16) " ")
                           "")
-                        (propertize user 'face 'shipit-username-face))))
+                        (propertize user 'font-lock-face 'shipit-username-face))))
       ;; Category
       (let* ((category (cdr (assq 'category data)))
              (cat-name (cdr (assq 'name category)))
@@ -330,21 +330,21 @@ Provides a read-only interface for viewing GitHub Discussions.
                           (shipit--get-pr-field-icon "category" "📂")
                           cat-emoji
                           (propertize cat-name
-                                      'face 'font-lock-type-face)))))
+                                      'font-lock-face 'font-lock-type-face)))))
       ;; Answered state
       (let ((is-answered (cdr (assq 'is_answered data))))
         (insert (format "   %s State:     %s\n"
                         (shipit--get-pr-field-icon "state" "📌")
                         (if is-answered
-                            (propertize "Answered" 'face 'success)
-                          (propertize "Unanswered" 'face 'warning)))))
+                            (propertize "Answered" 'font-lock-face 'success)
+                          (propertize "Unanswered" 'font-lock-face 'warning)))))
       ;; Upvotes
       (let ((upvotes (or (cdr (assq 'upvote_count data)) 0)))
         (when (> upvotes 0)
           (insert (format "   %s Upvotes:   %s\n"
                           (shipit--get-pr-field-icon "upvotes" "▲")
                           (propertize (number-to-string upvotes)
-                                      'face 'font-lock-constant-face)))))
+                                      'font-lock-face 'font-lock-constant-face)))))
       ;; Created
       (let* ((created (or (cdr (assq 'created_at data)) ""))
              (formatted (if (and (fboundp 'shipit--format-timestamp)
@@ -354,7 +354,7 @@ Provides a read-only interface for viewing GitHub Discussions.
         (insert (format "   %s Created:   %s\n"
                         (shipit--get-pr-field-icon "created" "📅")
                         (propertize formatted
-                                    'face 'shipit-timestamp-face))))
+                                    'font-lock-face 'shipit-timestamp-face))))
       ;; Updated
       (let* ((updated (or (cdr (assq 'updated_at data)) ""))
              (formatted (if (and (fboundp 'shipit--format-timestamp)
@@ -365,7 +365,7 @@ Provides a read-only interface for viewing GitHub Discussions.
           (insert (format "   %s Updated:   %s\n"
                           (shipit--get-pr-field-icon "updated" "🔄")
                           (propertize formatted
-                                      'face 'shipit-timestamp-face)))))
+                                      'font-lock-face 'shipit-timestamp-face)))))
       ;; Labels
       (let ((labels (cdr (assq 'labels data))))
         (when (and labels (> (length labels) 0))
@@ -377,7 +377,7 @@ Provides a read-only interface for viewing GitHub Discussions.
                                           `(:foreground
                                             ,(concat "#" color)))))
                              (if face
-                                 (propertize name 'face face)
+                                 (propertize name 'font-lock-face face)
                                name)))
                          labels)))
             (insert (format "   %s Labels:    %s\n"
@@ -400,11 +400,11 @@ Provides a read-only interface for viewing GitHub Discussions.
       (magit-insert-heading
         (format "%s %s"
                 (shipit--get-pr-field-icon "description" "📝")
-                (propertize "Description:" 'face 'markdown-metadata-key-face)))
+                (propertize "Description:" 'font-lock-face 'markdown-metadata-key-face)))
       (magit-insert-section-body
         (let ((description-start (point)))
           (if (not clean-body)
-              (insert (propertize "   No description provided\n" 'face 'italic))
+              (insert (propertize "   No description provided\n" 'font-lock-face 'italic))
             (let* ((rendered (if (and (boundp 'shipit-render-markdown)
                                       shipit-render-markdown
                                       (fboundp 'shipit--render-markdown))
@@ -451,7 +451,7 @@ Provides a read-only interface for viewing GitHub Discussions.
         (format "%s %s"
                 (shipit--get-pr-field-icon "comment" "💬")
                 (propertize (format "Comments (%d)" comment-count)
-                            'face 'magit-section-heading)))
+                            'font-lock-face 'magit-section-heading)))
       (magit-insert-section-body
         (if (or (null comments) (= (length comments) 0))
             (insert "   No comments\n")
@@ -484,11 +484,11 @@ Provides a read-only interface for viewing GitHub Discussions.
                     (concat (shipit--create-avatar-display
                              user avatar-url 16) " ")
                   "")
-                (propertize user 'face 'shipit-username-face)
-                (propertize timestamp 'face 'shipit-timestamp-face)
+                (propertize user 'font-lock-face 'shipit-username-face)
+                (propertize timestamp 'font-lock-face 'shipit-timestamp-face)
                 (if is-answer
                     (concat "  " (propertize "✅ Answer"
-                                             'face 'success))
+                                             'font-lock-face 'success))
                   "")))
       (magit-insert-section-body
         ;; Comment body
@@ -569,7 +569,7 @@ Provides a read-only interface for viewing GitHub Discussions.
                   "")
                 (propertize user 'face
                             `(:foreground ,orange-color :weight bold))
-                (propertize timestamp 'face 'shipit-timestamp-face)))
+                (propertize timestamp 'font-lock-face 'shipit-timestamp-face)))
       (magit-insert-section-body
         (let* ((body (or (cdr (assq 'body reply)) ""))
                (clean (shipit--clean-text body))

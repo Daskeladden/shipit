@@ -973,15 +973,15 @@ Uses marginalia--fields when available for proper alignment."
             ;; Fallback without marginalia
             (let ((parts '()))
               (when (not (string-empty-p user-str))
-                (push (propertize user-str 'face 'font-lock-function-name-face) parts))
+                (push (propertize user-str 'font-lock-face 'font-lock-function-name-face) parts))
               (when (not (string-empty-p state-str))
-                (push (propertize state-str 'face state-face) parts))
+                (push (propertize state-str 'font-lock-face state-face) parts))
               (when (not (string-empty-p comments-str))
-                (push (propertize comments-str 'face 'font-lock-comment-face) parts))
+                (push (propertize comments-str 'font-lock-face 'font-lock-comment-face) parts))
               (when (and time-ago (not (string-empty-p time-ago)))
-                (push (propertize time-ago 'face 'font-lock-comment-face) parts))
+                (push (propertize time-ago 'font-lock-face 'font-lock-comment-face) parts))
               (when (not (string-empty-p labels-str))
-                (push (propertize labels-str 'face 'font-lock-keyword-face) parts))
+                (push (propertize labels-str 'font-lock-face 'font-lock-keyword-face) parts))
               (when parts
                 (concat " " (string-join (nreverse parts) " - "))))))))))
 

@@ -453,7 +453,7 @@ MAX-LABEL is the widest job name for alignment."
                 name padding
                 (if bar (concat "  " bar) "")
                 (if duration-text
-                    (concat "  " (propertize duration-text 'face 'shipit-timestamp-face))
+                    (concat "  " (propertize duration-text 'font-lock-face 'shipit-timestamp-face))
                   "")
                 "\n")))))
 
@@ -470,7 +470,7 @@ MAX-LABEL is the widest job name for alignment."
          (sect (magit-insert-section (actions-list-run-summary run)
                  (magit-insert-heading
                    (concat "        " icon " "
-                           (propertize "Summary" 'face 'magit-section-secondary-heading)
+                           (propertize "Summary" 'font-lock-face 'magit-section-secondary-heading)
                            "\n"))
                  (when has-cache
                    (shipit-actions-list--insert-summary-content cached "            ")))))
@@ -480,11 +480,11 @@ MAX-LABEL is the widest job name for alignment."
   "Insert rendered SUMMARIES content with INDENT prefix per line.
 SUMMARIES is a list of (job-name . content) pairs, or nil."
   (if (null summaries)
-      (insert indent (propertize "No annotations available" 'face 'shadow) "\n")
+      (insert indent (propertize "No annotations available" 'font-lock-face 'shadow) "\n")
     (dolist (entry summaries)
       (let ((job-name (car entry))
             (content (cdr entry)))
-        (insert indent (propertize job-name 'face 'bold) "\n")
+        (insert indent (propertize job-name 'font-lock-face 'bold) "\n")
         (dolist (line (split-string content "\n"))
           (insert indent line "\n"))
         (insert "\n")))))
@@ -712,9 +712,9 @@ list is used exclusively by the All Workflows section."
          (sect (magit-insert-section (actions-list-workflow 'all)
                  (magit-insert-heading
                    (concat "  " icon " "
-                           (propertize "All workflows" 'face 'magit-section-secondary-heading)
+                           (propertize "All workflows" 'font-lock-face 'magit-section-secondary-heading)
                            (if count-str
-                               (concat "  " (propertize count-str 'face 'shadow))
+                               (concat "  " (propertize count-str 'font-lock-face 'shadow))
                              "")
                            "\n"))
                  (shipit-actions-list--insert-runs shipit-actions-list--all-runs t))))
@@ -785,9 +785,9 @@ FETCHED is nil when runs haven't been loaded yet, or a number."
     (let ((sect (magit-insert-section (actions-list-workflow workflow)
                   (magit-insert-heading
                     (concat "  " status-icon " "
-                            (propertize name 'face 'magit-section-secondary-heading)
+                            (propertize name 'font-lock-face 'magit-section-secondary-heading)
                             (if count-str
-                                (concat "  " (propertize count-str 'face 'shadow))
+                                (concat "  " (propertize count-str 'font-lock-face 'shadow))
                               "")
                             "\n"))
                   (shipit-actions-list--insert-runs runs))))
@@ -816,9 +816,9 @@ FETCHED is nil when runs haven't been loaded yet, or a number."
 Respects text filter and hide-inactive toggle."
   (magit-insert-section (actions-list-workflows)
     (magit-insert-heading
-      (concat (propertize "Workflows" 'face 'magit-section-heading)
+      (concat (propertize "Workflows" 'font-lock-face 'magit-section-heading)
               (when-let ((status (shipit-actions-list--filter-status-text)))
-                (propertize status 'face 'shadow))))
+                (propertize status 'font-lock-face 'shadow))))
     (unless (or (shipit-actions-list--filter-active-p)
                 shipit-actions-list--hide-inactive)
       (shipit-actions-list--insert-all-workflows-entry))
@@ -905,9 +905,9 @@ When SHOW-WORKFLOW is non-nil, include workflow name."
          (age-padded (concat (make-string (max 0 (- age-w (length age))) ?\s)
                              age))
          (right-part (concat (if bar (concat bar "  ") "")
-                             (propertize dur-padded 'face 'shipit-timestamp-face)
+                             (propertize dur-padded 'font-lock-face 'shipit-timestamp-face)
                              "  "
-                             (propertize age-padded 'face 'shipit-timestamp-face)))
+                             (propertize age-padded 'font-lock-face 'shipit-timestamp-face)))
          (right-len (+ bar-w dur-w 2 age-w))
          (win-width (or (when-let* ((win (get-buffer-window (current-buffer))))
                           (window-body-width win))
@@ -923,18 +923,18 @@ When SHOW-WORKFLOW is non-nil, include workflow name."
          (commit-trunc (if (> (length commit) 0)
                            (truncate-string-to-width commit commit-max nil nil "...")
                          ""))
-         (mid-part (concat (propertize branch-trunc 'face 'shipit-filename-face)
+         (mid-part (concat (propertize branch-trunc 'font-lock-face 'shipit-filename-face)
                            (if (> (length commit-trunc) 0)
                                (concat "  " commit-trunc)
                              "")))
          (mid-len (+ (length branch-trunc)
                      (if (> (length commit-trunc) 0) (+ 2 (length commit-trunc)) 0)))
          (gap (max 1 (- win-width left-used mid-len right-len 2))))
-    (concat (propertize num 'face 'magit-section-secondary-heading)
+    (concat (propertize num 'font-lock-face 'magit-section-secondary-heading)
             (make-string (max 1 (- num-w (length num) -2)) ?\s)
             (when (and wf (> wf-w 0))
               (concat (propertize (truncate-string-to-width wf wf-w nil nil "...")
-                                  'face 'magit-tag-face)
+                                  'font-lock-face 'magit-tag-face)
                       (make-string (max 1 (- wf-w (min (length wf) wf-w) -2)) ?\s)))
             mid-part
             (make-string gap ?\s)
@@ -977,9 +977,9 @@ SHOW-WORKFLOW controls whether workflow column is included."
          (right-len (length right-part))
          (gap (max 1 (- win-width left-len right-len)))
          (header (concat prefix
-                         (propertize left-part 'face 'shadow)
+                         (propertize left-part 'font-lock-face 'shadow)
                          (make-string gap ?\s)
-                         (propertize right-part 'face 'shadow)
+                         (propertize right-part 'font-lock-face 'shadow)
                          "\n")))
     (insert header)))
 
@@ -1041,23 +1041,23 @@ Returns \"busy\" if busy, otherwise the runner's status field."
     (magit-insert-section (actions-list-runner runner)
       (magit-insert-heading
         (concat "    " icon " "
-                (propertize name 'face 'magit-section-secondary-heading)
+                (propertize name 'font-lock-face 'magit-section-secondary-heading)
                 "  "
-                (propertize os 'face 'shadow)
+                (propertize os 'font-lock-face 'shadow)
                 "  "
-                (propertize status-text 'face face)
+                (propertize status-text 'font-lock-face face)
                 "\n")))))
 
 (defun shipit-actions-list--insert-runners-section ()
   "Insert the Runners section."
   (magit-insert-section (actions-list-runners)
     (magit-insert-heading
-      (propertize "Runners" 'face 'magit-section-heading))
+      (propertize "Runners" 'font-lock-face 'magit-section-heading))
     (if shipit-actions-list--runners
         (let ((sect (magit-insert-section (actions-list-runner-group 'self-hosted)
                       (magit-insert-heading
                         (format "  %s"
-                                (propertize "Self-hosted" 'face 'magit-section-secondary-heading)))
+                                (propertize "Self-hosted" 'font-lock-face 'magit-section-secondary-heading)))
                       (dolist (runner shipit-actions-list--runners)
                         (shipit-actions-list--insert-runner runner)))))
           (magit-section-show sect))
@@ -1069,7 +1069,7 @@ Returns \"busy\" if busy, otherwise the runner's status field."
     (erase-buffer)
     (magit-insert-section (actions-list-root)
       (insert (propertize (format "Actions: %s" shipit-actions-list--repo)
-                          'face 'magit-header-line)
+                          'font-lock-face 'magit-header-line)
               "\n\n")
       (shipit-actions-list--insert-workflows-section)
       (insert "\n")

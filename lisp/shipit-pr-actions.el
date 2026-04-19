@@ -872,7 +872,7 @@ PR-NUMBER and REPO provide context for text properties."
                              (if shipit-show-avatars
                                  (concat (shipit--create-avatar-display user avatar-url 16) " ")
                                "")
-                             (propertize user 'face 'shipit-username-face)))
+                             (propertize user 'font-lock-face 'shipit-username-face)))
              (add-text-properties start (1- (point))
                                   `(shipit-assignees t
                                     shipit-pr-number ,pr-number
@@ -1535,9 +1535,9 @@ ACTION function takes no args, executes the handler behavior."
          (repo (get-text-property (point) 'shipit-repo))
          (pr-number (get-text-property (point) 'shipit-pr-number))
          (file-comments (shipit--get-file-level-comments file-path))
-         (add-label (concat (propertize "Add" 'face '(:foreground "green")) " "))
-         (edit-label (concat (propertize "Edit" 'face '(:foreground "orange")) ": "))
-         (delete-label (concat (propertize "Delete" 'face '(:foreground "red")) ": "))
+         (add-label (concat (propertize "Add" 'font-lock-face '(:foreground "green")) " "))
+         (edit-label (concat (propertize "Edit" 'font-lock-face '(:foreground "orange")) ": "))
+         (delete-label (concat (propertize "Delete" 'font-lock-face '(:foreground "red")) ": "))
          (options (if file-comments
                       (append
                        (list (concat add-label "new file comment"))
@@ -2234,7 +2234,7 @@ Checks reviews, status checks, and mergeable state from PR-DATA."
                 transient--prefix
                 (list "q"
                       (propertize "No direct merge methods available"
-                                  'face 'warning)
+                                  'font-lock-face 'warning)
                       'shipit-merge--quit))))
         ;; Not ready: show specific blocking reasons
         (t
@@ -2244,7 +2244,7 @@ Checks reviews, status checks, and mergeable state from PR-DATA."
               (transient-parse-suffix
                transient--prefix
                (list "q"
-                     (propertize reason 'face 'warning)
+                     (propertize reason 'font-lock-face 'warning)
                      'shipit-merge--quit)))
             reasons))))))]
   (interactive)

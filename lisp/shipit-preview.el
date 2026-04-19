@@ -240,10 +240,10 @@ Returns list compatible with `shipit--render-files-section'."
       (insert (propertize (format "PREVIEW — %s %s %s %s — Not yet created\n"
                                   (shipit--get-notification-source-icon (shipit-pr--backend-id))
                                   icon backend-name pr-label)
-                          'face '(:foreground "orange" :weight bold)))
+                          'font-lock-face '(:foreground "orange" :weight bold)))
       (insert (propertize (format "   %s  |  C-c C-c to create %s\n"
                                   shipit-preview--repo pr-label)
-                          'face 'font-lock-comment-face))
+                          'font-lock-face 'font-lock-comment-face))
       (insert "\n"))))
 
 (defun shipit-preview--edit-title ()
@@ -295,7 +295,7 @@ CURRENT-DESC is the current description text."
       (setq-local shipit-preview--source-buffer preview-buf)
       (setq-local header-line-format
                   (propertize " Edit PR Description - C-c C-c to save, C-c C-k to cancel "
-                              'face 'mode-line-highlight))
+                              'font-lock-face 'mode-line-highlight))
       (local-set-key (kbd "C-c C-c") #'shipit-preview--save-description)
       (local-set-key (kbd "C-c C-k") #'shipit-preview--cancel-description))
     (pop-to-buffer buf)))
@@ -500,9 +500,9 @@ Open diff for files."
           (format "%s %s %s: %s"
                   (shipit--get-notification-source-icon (shipit-pr--backend-id))
                   (shipit--get-pr-field-icon "pull-request" "🔀")
-                  (propertize pr-label 'face 'magit-section-heading)
+                  (propertize pr-label 'font-lock-face 'magit-section-heading)
                   (propertize (or shipit-preview--title shipit-preview--branch)
-                              'face 'magit-branch-local)))
+                              'font-lock-face 'magit-branch-local)))
         (add-text-properties start (point)
                              '(shipit-preview-title t
 
@@ -518,7 +518,7 @@ Open diff for files."
                 (if (and shipit-preview--description
                          (not (string-empty-p shipit-preview--description)))
                     ""
-                  (propertize "(click to add)" 'face 'font-lock-comment-face))))
+                  (propertize "(click to add)" 'font-lock-face 'font-lock-comment-face))))
       (add-text-properties start (point)
                            '(shipit-preview-description t
                              
@@ -535,7 +535,7 @@ Open diff for files."
               (insert (format "   %s\n" line))))
         (let ((start (point)))
           (insert (propertize "   Click here or press RET to add a description\n"
-                              'face 'font-lock-comment-face))
+                              'font-lock-face 'font-lock-comment-face))
           (add-text-properties start (point)
                                '(shipit-preview-description t
                                  )))))))
@@ -544,8 +544,8 @@ Open diff for files."
   "Insert the refs section showing base <- head."
   (let* ((base-branch (replace-regexp-in-string "^origin/" "" shipit-preview--base-ref))
          (refs-line (format "%s <- %s"
-                            (propertize base-branch 'face 'magit-branch-remote)
-                            (propertize shipit-preview--branch 'face 'magit-branch-local))))
+                            (propertize base-branch 'font-lock-face 'magit-branch-remote)
+                            (propertize shipit-preview--branch 'font-lock-face 'magit-branch-local))))
     (magit-insert-section (preview-refs)
       (insert (format "%s %-7s %s\n"
                       (shipit--get-pr-field-icon "refs" "🔗")
@@ -564,8 +564,8 @@ Open diff for files."
   (magit-insert-section (preview-draft)
     (let ((start (point))
           (status-text (if shipit-preview--draft
-                           (propertize "Draft" 'face 'font-lock-warning-face)
-                         (propertize "Ready for review" 'face 'success))))
+                           (propertize "Draft" 'font-lock-face 'font-lock-warning-face)
+                         (propertize "Ready for review" 'font-lock-face 'success))))
       (insert (format "%s %-7s %s\n"
                       (shipit--get-pr-field-icon "draft" "📝")
                       "Status:"
@@ -580,7 +580,7 @@ Open diff for files."
   (magit-insert-section (type)
     (magit-insert-heading heading)
     (insert (propertize (format "   %s\n" message)
-                        'face 'font-lock-comment-face))))
+                        'font-lock-face 'font-lock-comment-face))))
 
 (defun shipit-preview--insert-labels-section ()
   "Insert the labels section with current selections."
@@ -606,12 +606,12 @@ Open diff for files."
               (insert "   ")
               (if color
                   (insert (propertize (format "[%s]" label-name)
-                                      'face `(:foreground ,(format "#%s" color))))
+                                      'font-lock-face `(:foreground ,(format "#%s" color))))
                 (insert (format "[%s]" label-name)))
               (insert "\n")))
         (let ((start (point)))
           (insert (propertize "   Press RET to add labels\n"
-                              'face 'font-lock-comment-face))
+                              'font-lock-face 'font-lock-comment-face))
           (add-text-properties start (point)
                                '(shipit-preview-labels t
                                  )))))))
@@ -632,10 +632,10 @@ Open diff for files."
     (magit-insert-section-body
       (if shipit-preview--reviewers
           (dolist (username shipit-preview--reviewers)
-            (insert (format "   @%s\n" (propertize username 'face 'shipit-username-face))))
+            (insert (format "   @%s\n" (propertize username 'font-lock-face 'shipit-username-face))))
         (let ((start (point)))
           (insert (propertize "   Press RET to add reviewers\n"
-                              'face 'font-lock-comment-face))
+                              'font-lock-face 'font-lock-comment-face))
           (add-text-properties start (point)
                                '(shipit-preview-reviewers t
                                  )))))))
@@ -656,10 +656,10 @@ Open diff for files."
     (magit-insert-section-body
       (if shipit-preview--assignees
           (dolist (username shipit-preview--assignees)
-            (insert (format "   @%s\n" (propertize username 'face 'shipit-username-face))))
+            (insert (format "   @%s\n" (propertize username 'font-lock-face 'shipit-username-face))))
         (let ((start (point)))
           (insert (propertize "   Press RET to add assignees\n"
-                              'face 'font-lock-comment-face))
+                              'font-lock-face 'font-lock-comment-face))
           (add-text-properties start (point)
                                '(shipit-preview-assignees t
                                  )))))))
@@ -694,7 +694,7 @@ Open diff for files."
                                      help-echo "RET to edit/delete"))))
         (let ((start (point)))
           (insert (propertize "   Press RET to add a comment\n"
-                              'face 'font-lock-comment-face))
+                              'font-lock-face 'font-lock-comment-face))
           (add-text-properties start (point)
                                '(shipit-preview-general-comments t
                                  )))))))
@@ -1029,9 +1029,9 @@ COMMENT-ID is the comment to update, CONTENT is the new text."
     (user-error "Comments can only be added in the main Files Changed section, not in commit-specific files"))
   (let* ((file-path (get-text-property (point) 'shipit-file-path))
          (file-comments (shipit-preview--get-file-level-comments file-path))
-         (add-label (concat (propertize "Add" 'face '(:foreground "green")) " "))
-         (edit-label (concat (propertize "Edit" 'face '(:foreground "orange")) ": "))
-         (delete-label (concat (propertize "Delete" 'face '(:foreground "red")) ": "))
+         (add-label (concat (propertize "Add" 'font-lock-face '(:foreground "green")) " "))
+         (edit-label (concat (propertize "Edit" 'font-lock-face '(:foreground "orange")) ": "))
+         (delete-label (concat (propertize "Delete" 'font-lock-face '(:foreground "red")) ": "))
          (options (if file-comments
                       (append
                        (list (concat add-label "new file comment"))
@@ -1116,11 +1116,11 @@ If FILE-LEVEL-ONLY is non-nil, delete only file-level comments."
          (all-count (shipit-preview--count-comments-for-files file-set))
          (file-level-count (shipit-preview--count-comments-for-files file-set t))
          (inline-count (- all-count file-level-count))
-         (delete-all-label (concat (propertize "Delete" 'face '(:foreground "red"))
+         (delete-all-label (concat (propertize "Delete" 'font-lock-face '(:foreground "red"))
                                    (format " all comments (%d) on %s" all-count scope-label)))
-         (delete-file-label (concat (propertize "Delete" 'face '(:foreground "red"))
+         (delete-file-label (concat (propertize "Delete" 'font-lock-face '(:foreground "red"))
                                     (format " file-level comments (%d) on %s" file-level-count scope-label)))
-         (delete-inline-label (concat (propertize "Delete" 'face '(:foreground "red"))
+         (delete-inline-label (concat (propertize "Delete" 'font-lock-face '(:foreground "red"))
                                       (format " inline comments (%d) on %s" inline-count scope-label)))
          (options (list delete-all-label delete-file-label delete-inline-label))
          (choice (completing-read "Bulk comment action: " options nil t)))

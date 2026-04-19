@@ -499,7 +499,7 @@ Returns: nil"
       (let* ((icon (shipit--get-comment-icon comment (if actual-inline-expanded 'inline-expanded 'general)))
              (is-resolved (or resolved (shipit--is-comment-in-resolved-thread comment-id)))
              (resolved-suffix (if is-resolved
-                                 (propertize " [RESOLVED]" 'face 'magit-dimmed 'slant 'italic)
+                                 (propertize " [RESOLVED]" 'font-lock-face 'magit-dimmed 'slant 'italic)
                                ""))
              (header-prefix (if (and actual-include-prefix (> actual-depth 0))
                                (or prefix-str "└─ ")
@@ -509,7 +509,7 @@ Returns: nil"
         (insert header-str)
         (insert "\n")
         (add-text-properties header-start (point)
-                            (list 'face 'bold
+                            (list 'font-lock-face 'bold
                                   'shipit-comment t
                                   'shipit-comment-id comment-id
                                   'shipit-comment-body raw-body
@@ -522,11 +522,11 @@ Returns: nil"
             (when user-pos
               (put-text-property (+ header-start user-pos)
                                (+ header-start user-pos (length user))
-                               'face 'shipit-username-face))
+                               'font-lock-face 'shipit-username-face))
             (when (and paren-start-pos paren-end-pos)
               (put-text-property (+ header-start paren-start-pos 1)
                                (+ header-start paren-end-pos)
-                               'face 'shipit-timestamp-face))))))
+                               'font-lock-face 'shipit-timestamp-face))))))
     (let ((body-start (point)))
       ;; indented-body already includes proper indentation from shipit--render-comment-body
       (insert indented-body)
@@ -722,7 +722,7 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
                (header-start (point)))
           (magit-insert-heading
             (propertize header-str
-                        'face (if (and (boundp 'shipit-inline-comment-faces) shipit-inline-comment-faces)
+                        'font-lock-face (if (and (boundp 'shipit-inline-comment-faces) shipit-inline-comment-faces)
                                  'default
                                nil)
                         'shipit-comment t
@@ -1068,14 +1068,14 @@ Dispatches to the active PR backend's :fetch-requested-reviewers."
                                               (if shipit-show-avatars
                                                   (concat (shipit--create-avatar-display user avatar-url 16) " ")
                                                 "")
-                                              (propertize user 'face 'shipit-username-face) status-text
+                                              (propertize user 'font-lock-face 'shipit-username-face) status-text
                                               (truncate-string-to-width (or body "") 60 nil nil "..."))
                                     (format "   %s %s%s (%s)\n"
                                             status-icon
                                             (if shipit-show-avatars
                                                 (concat (shipit--create-avatar-display user avatar-url 16) " ")
                                               "")
-                                            (propertize user 'face 'shipit-username-face) status-text))))
+                                            (propertize user 'font-lock-face 'shipit-username-face) status-text))))
                   (insert line-text)
                   (add-text-properties start (point)
                                        `(shipit-reviewers t
@@ -1092,7 +1092,7 @@ Dispatches to the active PR backend's :fetch-requested-reviewers."
                                   (if shipit-show-avatars
                                       (concat (shipit--create-avatar-display reviewer-name avatar-url 16) " ")
                                     "")
-                                  (propertize reviewer-name 'face 'shipit-username-face)))
+                                  (propertize reviewer-name 'font-lock-face 'shipit-username-face)))
                   (add-text-properties start (point)
                                        `(shipit-reviewers t
                                                           shipit-pr-reviewers ,requested-reviewers
@@ -1161,9 +1161,9 @@ Uses svg-lib for rendering but fixes width and centering."
               (let ((tag (shipit--svg-lib-tag-fixed
                           name contrasting-color bg-color)))
                 (propertize name 'display tag 'shipit-label-face label-face))
-            (error (propertize (format " %s " name) 'face label-face
+            (error (propertize (format " %s " name) 'font-lock-face label-face
                                'shipit-label-face label-face)))
-        (propertize (format " %s " name) 'face label-face
+        (propertize (format " %s " name) 'font-lock-face label-face
                     'shipit-label-face label-face)))))
 
 
@@ -1261,7 +1261,7 @@ Uses svg-lib for rendering but fixes width and centering."
                                 (if shipit-show-avatars
                                     (concat (shipit--create-avatar-display user avatar-url 16) " ")
                                   "")
-                                (propertize user 'face 'shipit-username-face)))
+                                (propertize user 'font-lock-face 'shipit-username-face)))
                 (add-text-properties start (1- (point))
                                      `(shipit-assignees t
                                                         shipit-pr-number ,(cdr (assq 'number pr))
@@ -1406,7 +1406,7 @@ magit section structure for nested activity-event subsections."
                                                  (not (shipit--is-activity-read-p repo pr-number event-id)))))
                                         all-events)))
                        (unread-indicator (if (and unread-count (> unread-count 0))
-                                             (propertize " ●" 'face '(:foreground "red"))
+                                             (propertize " ●" 'font-lock-face '(:foreground "red"))
                                            "")))
                   (setq new-section
                         (magit-insert-section (pr-activity nil t)  ; hidden by default
@@ -1646,13 +1646,13 @@ PR-DATA and PR-HEAD-SHA are optional metadata to attach to the section."
             (dels (or deletions 0)))
         (let ((viewed (shipit--file-viewed-p filename))
               (viewed-icon (if (shipit--file-viewed-p filename)
-                               (propertize "✓" 'face 'success)
+                               (propertize "✓" 'font-lock-face 'success)
                              " ")))
           (magit-insert-heading
             (format " %s %s %s%s (%s %s)"
                     viewed-icon
                     (propertize status-char 'font-lock-face 'magit-diff-file-heading)
-                    (propertize filename 'face (if viewed 'shadow 'shipit-filename-face))
+                    (propertize filename 'font-lock-face (if viewed 'shadow 'shipit-filename-face))
                     comment-indicator
                     (if (> adds 0)
                         (propertize (format "+%d" adds) 'font-lock-face 'diff-added)
@@ -1881,7 +1881,7 @@ review decision data alist from shipit--fetch-review-decision-async."
                                                              (fboundp 'shipit--create-avatar-display))
                                                         (concat (shipit--create-avatar-display user avatar-url 16) " ")
                                                       (concat (shipit--get-user-type-icon "single" "🧑") " "))
-                                                    (propertize user 'face 'shipit-username-face)
+                                                    (propertize user 'font-lock-face 'shipit-username-face)
                                                     comment-text)))))
 
                               ;; Requested teams section
@@ -1902,7 +1902,7 @@ review decision data alist from shipit--fetch-review-decision-async."
                                                              (fboundp 'shipit--create-avatar-display))
                                                         (concat (shipit--create-avatar-display user avatar-url 16) " ")
                                                       (concat (shipit--get-user-type-icon "single" "🧑") " "))
-                                                    (propertize user 'face 'shipit-username-face))))))
+                                                    (propertize user 'font-lock-face 'shipit-username-face))))))
 
                               ;; Show who requested changes with details
                               (when (string-match-p "Changes Requested" (or review-decision-status ""))
@@ -1926,7 +1926,7 @@ review decision data alist from shipit--fetch-review-decision-async."
                                                                      (fboundp 'shipit--create-avatar-display))
                                                                 (concat (shipit--create-avatar-display user nil 16) " ")
                                                               (concat (shipit--get-user-type-icon "single" "🧑") " "))
-                                                            (propertize user 'face 'shipit-username-face)))
+                                                            (propertize user 'font-lock-face 'shipit-username-face)))
                                             (when (and single-line-body (not (string-empty-p single-line-body)))
                                               (insert (format " - %s"
                                                               (truncate-string-to-width single-line-body 60 nil nil "..."))))
@@ -2270,8 +2270,8 @@ Returns the section object."
               (let ((filter-display (shipit--get-files-filter-display)))
                 (when filter-display
                   (insert (propertize (format "   Filter: %s\n"
-                                              (propertize filter-display 'face 'font-lock-string-face))
-                                      'face 'italic))))
+                                              (propertize filter-display 'font-lock-face 'font-lock-string-face))
+                                      'font-lock-face 'italic))))
               ;; Text properties for other features
               (add-text-properties heading-start (point)
                                    `(shipit-pr-files t
@@ -2465,20 +2465,20 @@ The :raw-date contains the ISO timestamp for property storage."
                                  read-activities  ; Only show unread if PR has been viewed before
                                  (not (shipit--is-activity-read-p repo pr-number sha))))
                  (unread-indicator (if is-unread
-                                       (propertize "● " 'face '(:foreground "red"))
+                                       (propertize "● " 'font-lock-face '(:foreground "red"))
                                      "  "))
                  (metadata-parts (shipit--format-commit-metadata-inline author author-date))
                  (metadata-author (plist-get metadata-parts :author))
                  (metadata-date (plist-get metadata-parts :date))
                  (raw-date (plist-get metadata-parts :raw-date))
                  ;; Format metadata columns with fixed widths and apply faces
-                 (author-col (propertize (format "%11s" metadata-author) 'face 'shipit-username-face))
+                 (author-col (propertize (format "%11s" metadata-author) 'font-lock-face 'shipit-username-face))
                  ;; Fixed 16-char timestamp field, right-aligned (matches Activity section)
                  (date-text (substring-no-properties metadata-date))
                  (date-width (string-width date-text))
                  (date-pad (max 0 (- 16 date-width)))
                  (date-col (propertize (concat (make-string date-pad ?\s) date-text)
-                                       'face 'shipit-timestamp-face
+                                       'font-lock-face 'shipit-timestamp-face
                                        'shipit-raw-timestamp raw-date))
                  (metadata-str (format "%s | %s" author-col date-col))
                  ;; Calculate window width for right alignment
@@ -2497,8 +2497,8 @@ The :raw-date contains the ISO timestamp for property storage."
                                                                                       (or author-avatar-url
                                                                                           (shipit--generate-avatar-url author-github-username)) 16) " ")
                                              "")
-                                           (propertize title-str 'face 'markdown-metadata-value-face)))
-                 (left-part (format "%s %s" (propertize short-sha 'face 'magit-hash) title-with-avatar))
+                                           (propertize title-str 'font-lock-face 'markdown-metadata-value-face)))
+                 (left-part (format "%s %s" (propertize short-sha 'font-lock-face 'magit-hash) title-with-avatar))
                  ;; Calculate dynamic padding to right-align metadata to screen width
                  ;; Leave space for magit section indicator at the end
                  (left-width (string-width left-part))
@@ -2570,21 +2570,21 @@ The :raw-date contains the ISO timestamp for property storage."
                                                                            (or committer-avatar-url
                                                                                (shipit--generate-avatar-url committer-github-username)) 16) " ")
                                   "")
-                                (propertize committer 'face 'shipit-username-face)
-                                (propertize committer-email 'face 'shipit-username-face)))
+                                (propertize committer 'font-lock-face 'shipit-username-face)
+                                (propertize committer-email 'font-lock-face 'shipit-username-face)))
                 (when committer-date
                   (insert (format "           %s Committed: %s\n"
                                   (shipit--get-pr-field-icon "committed" "📅")
                                   (propertize (format-time-string "%Y-%m-%d %H:%M:%S %Z"
                                                                   (date-to-time committer-date))
-                                              'face 'shipit-timestamp-face)))))
+                                              'font-lock-face 'shipit-timestamp-face)))))
 
               ;; Statistics (if available)
               (when (or (> additions 0) (> deletions 0) (> files-changed 0))
                 (insert (format "           %s Changes: %s files, %s, %s\n"
                                 (shipit--get-pr-field-icon "stats" "📊")
                                 (if (> files-changed 0)
-                                    (propertize (number-to-string files-changed) 'face 'bold)
+                                    (propertize (number-to-string files-changed) 'font-lock-face 'bold)
                                   "0")
                                 (if (> additions 0)
                                     (propertize (format "+%d" additions) 'font-lock-face 'diff-added)
@@ -2657,8 +2657,8 @@ REPO and PR-NUMBER are used for context in file operations."
               (let ((filter-start (point)))
                 (insert (propertize (format "   Filter: %s\n"
                                            (propertize filter-display
-                                                       'face 'font-lock-string-face))
-                                   'face 'italic))
+                                                       'font-lock-face 'font-lock-string-face))
+                                   'font-lock-face 'italic))
                 (add-text-properties filter-start (point) '(shipit-pr-file t)))))
           ;; Add keymap for 'f' to filter (same filter as main Files Changed section)
           (let ((header-keymap (make-sparse-keymap)))
@@ -2850,7 +2850,7 @@ proper magit section hierarchy for TAB collapse to work correctly."
              (is-outdated (cdr (assq 'outdated comment)))
              (header-for-bold (replace-regexp-in-string " \\[\\(RESOLVED\\|OUTDATED\\)\\]" "" header-without-prefix))
              (header-str (concat reply-prefix (propertize header-for-bold
-                                                          'face 'bold
+                                                          'font-lock-face 'bold
                                                           'shipit-icon-color orange-color)))
              (header-start (point)))
         (magit-insert-heading header-str)
@@ -2864,12 +2864,12 @@ proper magit section hierarchy for TAB collapse to work correctly."
             (when user-pos
               (put-text-property (+ header-start prefix-len user-pos)
                                (+ header-start prefix-len user-pos (length user))
-                               'face 'shipit-username-face))
+                               'font-lock-face 'shipit-username-face))
             ;; Apply timestamp face - between opening and closing paren (adjust for reply-prefix)
             (when (and paren-start-pos paren-end-pos)
               (put-text-property (+ header-start prefix-len paren-start-pos 1)
                                (+ header-start prefix-len paren-end-pos)
-                               'face 'shipit-timestamp-face))))
+                               'font-lock-face 'shipit-timestamp-face))))
         ;; Add and style [RESOLVED] tag on the same heading line
         (when is-resolved
           (save-excursion
@@ -2877,13 +2877,13 @@ proper magit section hierarchy for TAB collapse to work correctly."
             (goto-char header-start)
             (end-of-line)
             ;; Insert [RESOLVED] on the same line
-            (insert (propertize " [RESOLVED]" 'face '(shadow italic)))))
+            (insert (propertize " [RESOLVED]" 'font-lock-face '(shadow italic)))))
         ;; Add and style [OUTDATED] tag on the same heading line
         (when is-outdated
           (save-excursion
             (goto-char header-start)
             (end-of-line)
-            (insert (propertize " [OUTDATED]" 'face '(warning italic)))))
+            (insert (propertize " [OUTDATED]" 'font-lock-face '(warning italic)))))
         ;; Add unread indicator at end of heading (after face styling to preserve red color)
         (save-excursion
           (goto-char header-start)
@@ -2970,8 +2970,8 @@ FILENAME, REPO, and PR-NUMBER provide context."
       (magit-insert-heading
         (format "   %s File comment by %s %s"
                 comment-icon
-                (propertize user 'face 'shipit-username-face)
-                (propertize formatted-timestamp 'face 'shipit-timestamp-face)))
+                (propertize user 'font-lock-face 'shipit-username-face)
+                (propertize formatted-timestamp 'font-lock-face 'shipit-timestamp-face)))
       ;; Insert body content - this is what gets hidden/shown when collapsing
       (let ((body-start (point)))
         (let ((wrapped-body (shipit--wrap-text body (- (window-width) 8))))
@@ -3039,7 +3039,7 @@ REPO, PR-NUMBER, and FILENAME provide context for the comments."
     (magit-insert-heading
       (propertize (format "     🕐 Outdated Comments (%d)"
                           (length outdated-comments))
-                  'face 'magit-section-heading))
+                  'font-lock-face 'magit-section-heading))
     (magit-insert-section-body
       (dolist (comment outdated-comments)
         (let ((in-reply-to (cdr (assq 'in_reply_to_id comment)))
@@ -3330,9 +3330,9 @@ Used for targeted refresh - preserves section structure."
                                0)))
         (insert (propertize (format "   Filter: %s (%d)\n"
                                     (propertize filter-display
-                                                'face 'font-lock-string-face)
+                                                'font-lock-face 'font-lock-string-face)
                                     filtered-count)
-                            'face 'italic))
+                            'font-lock-face 'italic))
         ;; Mark filter line with shipit-pr-file property so it gets deleted on refresh
         (add-text-properties filter-start (point) '(shipit-pr-file t)))))
 
@@ -3551,8 +3551,8 @@ Per magit-section best practices, we must:
                                                             (let ((filter-start (point)))
                                                               (insert (propertize (format "   Filter: %s\n"
                                                                                           (propertize filter-display
-                                                                                                      'face 'font-lock-string-face))
-                                                                                  'face 'italic))
+                                                                                                      'font-lock-face 'font-lock-string-face))
+                                                                                  'font-lock-face 'italic))
                                                               ;; Mark filter line with shipit-pr-file property so it gets deleted during refresh
                                                               (add-text-properties filter-start (point) '(shipit-pr-file t)))))
                                                         ;; Add keymap for 'f' to filter
@@ -3968,7 +3968,7 @@ This function adds 3 to create child indent (default 0 → margin 3)."
                          (not (shipit--is-activity-read-p repo pr-number event-id))))
          ;; Red dot indicator for unread items
          (unread-indicator (if is-unread
-                               (propertize "● " 'face '(:foreground "red"))
+                               (propertize "● " 'font-lock-face '(:foreground "red"))
                              "  "))
          ;; Get avatar info - try multiple sources
          (user-obj (or (cdr (assq 'user event))
@@ -4002,7 +4002,7 @@ This function adds 3 to create child indent (default 0 → margin 3)."
                         (shipit--activity-emoji-to-icon emoji-icon))
                        ;; Final fallback to raw emoji
                        (t emoji-icon)))
-             (actor-str (propertize actor 'face 'shipit-username-face))
+             (actor-str (propertize actor 'font-lock-face 'shipit-username-face))
              ;; Format: icon + avatar + actor + action
              (left-content (format "%s %s%s %s" icon-str avatar-display actor-str action))
              ;; Truncate left content to exact fixed width
@@ -4021,7 +4021,7 @@ This function adds 3 to create child indent (default 0 → margin 3)."
                                      (padded-ts (concat (make-string pad-needed ?\s) ts-text)))
                                 ;; Apply both face and raw-timestamp to entire field for proper in-place updates
                                 (propertize padded-ts
-                                            'face 'shipit-timestamp-face
+                                            'font-lock-face 'shipit-timestamp-face
                                             'shipit-raw-timestamp raw-ts))
                             (make-string 16 ?\s))))
         (insert (format "%s%s%s %s" margin-str unread-indicator padded-left timestamp-str)))
@@ -4259,7 +4259,7 @@ If HAS-UNREAD is non-nil, add red dot. Otherwise remove it if present."
               ;; Insert at end of first line (before newline)
               (end-of-line)
               (shipit--debug-log "SECTION-INDICATOR: Inserting indicator at pos %s" (point))
-              (insert (propertize " ●" 'face '(:foreground "red"))))))))))
+              (insert (propertize " ●" 'font-lock-face '(:foreground "red"))))))))))
 
 (defun shipit--update-section-unread-indicators ()
   "Update unread indicators on section headers based on unread activity types.
@@ -4610,11 +4610,11 @@ SECTION is the magit section object that will contain the files."
           (if files
               (shipit--render-commit-files-section-body section files nil)
             (insert (propertize "              No files in this commit\n"
-                                'face 'font-lock-comment-face))))
+                                'font-lock-face 'font-lock-comment-face))))
       (error
        (shipit--debug-log "local-washer: ERROR: %S" err)
        (insert (propertize (format "              Error: %s\n" (error-message-string err))
-                           'face 'error))))))
+                           'font-lock-face 'error))))))
 
 ;; Legacy: Using local-post-command-hook as a fallback to detect section changes
 (defvar shipit--last-section-at-point nil
@@ -4746,7 +4746,7 @@ Uses proper magit section safe update pattern:
                         (dels (or deletions 0)))
                     (magit-insert-heading (format "              %s %s%s (%s %s)"
                                                   (propertize status-char 'font-lock-face 'magit-diff-file-heading)
-                                                  (propertize (or filename "unknown") 'face 'shipit-filename-face)
+                                                  (propertize (or filename "unknown") 'font-lock-face 'shipit-filename-face)
                                                   comment-indicator
                                                   (if (> adds 0)
                                                       (propertize (format "+%d" adds) 'font-lock-face 'diff-added)

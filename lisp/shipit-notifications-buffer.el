@@ -146,10 +146,10 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
 
 (defun shipit-notifications-buffer--insert-header ()
   "Insert the buffer header."
-  (insert (propertize "Notifications" 'face 'bold))
+  (insert (propertize "Notifications" 'font-lock-face 'bold))
   (unless (string-empty-p shipit-notifications-buffer--filter-text)
     (insert (propertize (format "  [filter: %s]" shipit-notifications-buffer--filter-text)
-                        'face 'font-lock-comment-face)))
+                        'font-lock-face 'font-lock-comment-face)))
   (insert "\n\n"))
 
 (defun shipit-notifications-buffer--insert-notifications ()
@@ -172,7 +172,7 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
     (if activities
         (dolist (activity activities)
           (shipit-notifications-buffer--insert-notification activity))
-      (insert (propertize "  No notifications\n" 'face 'font-lock-comment-face)))))
+      (insert (propertize "  No notifications\n" 'font-lock-face 'font-lock-comment-face)))))
 
 (defun shipit-notifications-buffer--matches-filter-p (activity)
   "Check if ACTIVITY matches the current filter."
@@ -258,13 +258,13 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
                             source-icon
                             type-icon
                             (propertize (truncate-string-to-width repo repo-width nil ?\s)
-                                        'face 'font-lock-constant-face)
+                                        'font-lock-face 'font-lock-constant-face)
                             pr-str
                             spacer
                             (truncate-string-to-width subject title-width nil ?\s)
                             spacer
                             (propertize (truncate-string-to-width reason reason-width nil ?\s)
-                                        'face 'font-lock-keyword-face)))
+                                        'font-lock-face 'font-lock-keyword-face)))
          (icon-cols 4)
          (fixed-left-width (+ icon-cols 1 repo-width 1 (1+ pr-width)
                               spacing title-width spacing reason-width))
@@ -277,7 +277,7 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
     (concat left-part
             (make-string padding ?\s)
             (propertize time-text
-                        'face 'shipit-timestamp-face
+                        'font-lock-face 'shipit-timestamp-face
                         'shipit-raw-timestamp (get-text-property 0 'shipit-raw-timestamp time-ago)))))
 
 (defun shipit-notifications-buffer--insert-activity-details (activity)
@@ -296,16 +296,16 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
                        ("discussion" "Discussion")
                        (_ type)))
          (number-str (if (integerp number) (format "#%d" number) (format "%s" number))))
-    (insert "    " (propertize type-label 'face 'bold)
+    (insert "    " (propertize type-label 'font-lock-face 'bold)
             " " number-str " in " repo "\n")
     (insert "    " subject "\n")
     (when (and reason (not (string-empty-p reason)))
-      (insert "    Reason: " (propertize reason 'face 'font-lock-keyword-face) "\n"))
+      (insert "    Reason: " (propertize reason 'font-lock-face 'font-lock-keyword-face) "\n"))
     (when updated
       (insert "    Updated: " (propertize (shipit--format-timestamp updated)
-                                          'face 'shipit-timestamp-face) "\n"))
+                                          'font-lock-face 'shipit-timestamp-face) "\n"))
     (when url
-      (insert "    " (propertize url 'face 'link) "\n"))))
+      (insert "    " (propertize url 'font-lock-face 'link) "\n"))))
 
 (defun shipit-notifications-buffer--insert-description (description)
   "Insert DESCRIPTION as expandable body content.
@@ -329,7 +329,7 @@ Strips HTML tags and renders as plain text."
     ;; <strong>...</strong> → bold markers
     (goto-char (point-min))
     (while (re-search-forward "<strong>\\(.*?\\)</strong>" nil t)
-      (replace-match (propertize (match-string 1) 'face 'bold)))
+      (replace-match (propertize (match-string 1) 'font-lock-face 'bold)))
     ;; Strip remaining tags
     (goto-char (point-min))
     (while (re-search-forward "<[^>]+>" nil t)
@@ -477,7 +477,7 @@ Strips HTML tags and renders as plain text."
                                (concat (shipit--create-avatar-display author avatar-url 16) " ")
                              "")))
               (insert "    Author: " avatar
-                      (propertize author 'face 'shipit-username-face)
+                      (propertize author 'font-lock-face 'shipit-username-face)
                       "\n")))
           (when (and body-text (stringp body-text) (not (string-empty-p body-text)))
             (let ((desc-sect (magit-insert-section (notification-description body-text)
@@ -496,20 +496,20 @@ Strips HTML tags and renders as plain text."
                                      ((string= state "closed") "closed")
                                      (draft "draft")
                                      (t "open"))
-                                'face (cond (merged 'magit-tag-face)
+                                'font-lock-face (cond (merged 'magit-tag-face)
                                             ((string= state "closed") 'error)
                                             (draft 'shadow)
                                             (t 'success)))
                     "\n"))
           (when branch
             (insert "    Branch: "
-                    (propertize branch 'face 'magit-branch-remote)
+                    (propertize branch 'font-lock-face 'magit-branch-remote)
                     "\n"))
           (when (and labels (> (length labels) 0))
             (insert "    Labels: "
                     (mapconcat (lambda (l)
                                  (propertize (cdr (assq 'name l))
-                                             'face 'magit-tag-face))
+                                             'font-lock-face 'magit-tag-face))
                                labels ", ")
                     "\n")))
         (oset section end (point-marker))))))

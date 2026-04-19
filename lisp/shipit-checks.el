@@ -1035,9 +1035,9 @@ If CHECK-NAME is non-nil, auto-expand that job in the actions buffer."
       (let ((sect (magit-insert-section (check-item check)
                     (magit-insert-heading
                       (concat indent
-                              (propertize status-symbol 'face status-face)
+                              (propertize status-symbol 'font-lock-face status-face)
                               " "
-                              (propertize name 'face (if html-url 'link 'default))
+                              (propertize name 'font-lock-face (if html-url 'link 'default))
                               "\n")))))
         (magit-section-hide sect)))))
 

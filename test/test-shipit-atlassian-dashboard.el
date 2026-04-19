@@ -765,7 +765,7 @@ THEN the status text has the success face applied."
       (goto-char (point-min))
       (let ((pos (string-match "Closed" (buffer-string))))
         (should pos)
-        (should (eq 'success (get-text-property (+ (point-min) pos) 'face)))))))
+        (should (eq 'success (get-text-property (+ (point-min) pos) 'font-lock-face)))))))
 
 ;;; Issues section — JQL builder
 

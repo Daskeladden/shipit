@@ -178,7 +178,7 @@ SCROLL-TO, if `tags', scrolls to the Tags section."
                       (shipit--format-timestamp published))))
     (magit-insert-heading
       (format "  %s%s%s"
-              (propertize tag 'face 'magit-tag)
+              (propertize tag 'font-lock-face 'magit-tag)
               badges
               title-part)
       (format "%s%s  %s\n"
@@ -187,16 +187,16 @@ SCROLL-TO, if `tags', scrolls to the Tags section."
                            ?\s)
               (if (string-empty-p author)
                   ""
-                (propertize author 'face 'shipit-username-face))
-              (propertize timestamp 'face 'magit-dimmed)))))
+                (propertize author 'font-lock-face 'shipit-username-face))
+              (propertize timestamp 'font-lock-face 'magit-dimmed)))))
 
 (defun shipit-releases--format-badges (draft prerelease)
   "Format badge string for DRAFT and PRERELEASE flags."
   (let ((parts nil))
     (when draft
-      (push (propertize " [draft]" 'face 'warning) parts))
+      (push (propertize " [draft]" 'font-lock-face 'warning) parts))
     (when prerelease
-      (push (propertize " [pre-release]" 'face 'warning) parts))
+      (push (propertize " [pre-release]" 'font-lock-face 'warning) parts))
     (apply #'concat (nreverse parts))))
 
 ;;; Release body rendering
@@ -208,7 +208,7 @@ SCROLL-TO, if `tags', scrolls to the Tags section."
     (if (and body (not (string-empty-p body)))
         (shipit-releases--insert-rendered-body body)
       (insert (propertize "    No release notes.
-" 'face 'magit-dimmed)))
+" 'font-lock-face 'magit-dimmed)))
     (when assets
       (shipit-releases--insert-assets assets))
     (insert "\n")))
@@ -281,8 +281,8 @@ _REPO is accepted for interface consistency but currently unused."
     (magit-insert-section (shipit-tags-entry name)
       (magit-insert-heading
         (format "  %s  %s"
-                (propertize name 'face 'magit-tag)
-                (propertize short-sha 'face 'magit-hash))))))
+                (propertize name 'font-lock-face 'magit-tag)
+                (propertize short-sha 'font-lock-face 'magit-hash))))))
 
 ;;; Scroll-to-target
 

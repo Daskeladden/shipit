@@ -390,16 +390,16 @@ If SAVED-VISIBILITY is non-nil, restore section states from it."
       (insert (propertize (format "%s %s"
                                   (shipit--get-pr-field-icon "checks" "🔧")
                                   name)
-                          'face 'magit-section-heading)
+                          'font-lock-face 'magit-section-heading)
               "\n")
       (insert (format "%s Status:  %s %s"
                       (shipit-actions--status-icon display-status)
                       (propertize display-status
-                                  'face (shipit-actions--status-face display-status))
+                                  'font-lock-face (shipit-actions--status-face display-status))
                       (if duration
                           (format "  %s %s"
                                   (shipit--get-pr-field-icon "clock" "⏱")
-                                  (propertize duration 'face 'shipit-timestamp-face))
+                                  (propertize duration 'font-lock-face 'shipit-timestamp-face))
                         ""))
               "\n")
       (insert (format "%s Trigger: %s"
@@ -408,7 +408,7 @@ If SAVED-VISIBILITY is non-nil, restore section states from it."
               (if head-branch
                   (format "    %s %s"
                           (shipit--get-pr-field-icon "branch" "🌿")
-                          (propertize head-branch 'face 'shipit-filename-face))
+                          (propertize head-branch 'font-lock-face 'shipit-filename-face))
                 "")
               "\n")
       (when run-number
@@ -420,7 +420,7 @@ If SAVED-VISIBILITY is non-nil, restore section states from it."
         (let ((line (format "%s %s — %s"
                             (shipit--get-pr-field-icon "repo" "📦")
                             (propertize (substring head-sha 0 (min 7 (length head-sha)))
-                                        'face 'shipit-filename-face)
+                                        'font-lock-face 'shipit-filename-face)
                             (car (split-string commit-msg "\n")))))
           (insert (propertize line 'shipit-commit-sha head-sha) "\n"))))))
 
@@ -456,7 +456,7 @@ If SAVED-VISIBILITY is non-nil, restore section states from it."
          (bar-col (max max-job-content max-step-content)))
     (magit-insert-section (actions-header nil nil)
       (magit-insert-heading
-        (propertize "Jobs" 'face 'magit-section-heading))
+        (propertize "Jobs" 'font-lock-face 'magit-section-heading))
       (dolist (job jobs)
         (shipit-actions--insert-job-section job max-secs bar-col)))))
 
@@ -471,7 +471,7 @@ If SAVED-VISIBILITY is non-nil, restore section states from it."
          (sect (magit-insert-section (actions-run-summary run)
                  (magit-insert-heading
                    (concat icon " "
-                           (propertize "Summary" 'face 'magit-section-heading)
+                           (propertize "Summary" 'font-lock-face 'magit-section-heading)
                            "\n"))
                  (when has-cache
                    (shipit-actions-list--insert-summary-content cached "  ")))))
@@ -532,15 +532,15 @@ MAX-SECS is the longest job duration, BAR-COL is the unified column for bars."
                  (magit-insert-heading
                    (format "  %s %s%s%s  %s  %s"
                            (shipit-actions--status-icon display-status)
-                           (propertize name 'face 'magit-section-secondary-heading)
+                           (propertize name 'font-lock-face 'magit-section-secondary-heading)
                            (if (> step-count 0)
                                (propertize (format " (%d steps)" step-count)
-                                           'face 'shadow)
+                                           'font-lock-face 'shadow)
                              "")
                            padding
                            (or bar "")
                            (if duration
-                               (propertize duration 'face 'shipit-timestamp-face)
+                               (propertize duration 'font-lock-face 'shipit-timestamp-face)
                              "")))
                  (cond
                  ((eq log-state t)
@@ -593,10 +593,10 @@ INDENT is the prefix string (default \"    \")."
                              padding
                              (or bar "")
                              (if duration
-                                 (propertize duration 'face 'shipit-timestamp-face)
+                                 (propertize duration 'font-lock-face 'shipit-timestamp-face)
                                "")))
          (time-str (if start-time
-                       (propertize start-time 'face 'shipit-timestamp-face)
+                       (propertize start-time 'font-lock-face 'shipit-timestamp-face)
                      ""))
          (win-width (or (when-let* ((win (get-buffer-window (current-buffer))))
                           (window-body-width win))
@@ -827,7 +827,7 @@ INDENT is the prefix string (default \"        \")."
                            (format "%s%s %s"
                                    log-indent
                                    (shipit--get-pr-field-icon "metadata" "▶")
-                                   (propertize name 'face 'bold)))
+                                   (propertize name 'font-lock-face 'bold)))
                          (shipit-actions--insert-log-lines children log-indent))))
             ;; Track last timestamp from group children for next item
             (let ((last-child (car (last children))))
@@ -866,7 +866,7 @@ PREV-TS is the previous line's timestamp for gap coloring."
                           'shipit-timestamp-face))
                     'shipit-timestamp-face)))
         (insert (propertize (shipit-actions--format-timestamp-short ts)
-                            'face face)
+                            'font-lock-face face)
                 " ")))
     (insert (shipit-actions--annotate-log-line text) "\n")))
 
@@ -875,18 +875,18 @@ PREV-TS is the previous line's timestamp for gap coloring."
 Highlights [command], [error], [warning], [debug], and [notice] prefixes."
   (cond
    ((string-match "^\\[command\\]\\(.*\\)" text)
-    (propertize (match-string 1 text) 'face '(:foreground "#0366d6")))
+    (propertize (match-string 1 text) 'font-lock-face '(:foreground "#0366d6")))
    ((string-match "^\\[error\\]\\(.*\\)" text)
     (propertize (concat "Error: " (match-string 1 text))
-                'face '(:foreground "#cb2431")))
+                'font-lock-face '(:foreground "#cb2431")))
    ((string-match "^\\[warning\\]\\(.*\\)" text)
     (propertize (concat "Warning: " (match-string 1 text))
-                'face '(:foreground "#fd7e14")))
+                'font-lock-face '(:foreground "#fd7e14")))
    ((string-match "^\\[notice\\]\\(.*\\)" text)
     (propertize (concat "Notice: " (match-string 1 text))
-                'face '(:foreground "#fd7e14")))
+                'font-lock-face '(:foreground "#fd7e14")))
    ((string-match "^\\[debug\\]\\(.*\\)" text)
-    (propertize (match-string 1 text) 'face 'shadow))
+    (propertize (match-string 1 text) 'font-lock-face 'shadow))
    (t text)))
 
 ;;; Commands
@@ -1108,8 +1108,8 @@ in the group, STATUS is the conclusion/status for color."
                     (_ "#0366d6")))
            (bar (make-string filled ?█))
            (empty (make-string (- max-width filled) ?░)))
-      (concat (propertize bar 'face `(:foreground ,color))
-              (propertize empty 'face 'shadow)))))
+      (concat (propertize bar 'font-lock-face `(:foreground ,color))
+              (propertize empty 'font-lock-face 'shadow)))))
 
 (defun shipit-actions--status-icon (display-status)
   "Return an SVG or emoji status icon for DISPLAY-STATUS.
@@ -1311,10 +1311,10 @@ the Checks section of the PR buffer."
         (pos (line-beginning-position))
         (found nil))
     (while (and (not found) (< pos end))
-      (let ((face (get-text-property pos 'face)))
+      (let ((face (get-text-property pos 'font-lock-face)))
         (when (memq face faces)
           (setq found t)))
-      (setq pos (next-single-property-change pos 'face nil end)))
+      (setq pos (next-single-property-change pos 'font-lock-face nil end)))
     found))
 
 (defun shipit-actions-nav-next-gap ()

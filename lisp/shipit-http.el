@@ -3084,7 +3084,7 @@ Uses ETag caching for efficiency:
                      (clickable-header (propertize (format "[%s#L%d%s]"
                                                            file-path start-line
                                                            (if end-line (format "-L%d" end-line) ""))
-                                                   'face 'markdown-plain-url-face
+                                                   'font-lock-face 'markdown-plain-url-face
                                                    
                                                    'help-echo (format "Click to open %s at line %d" file-path start-line)
                                                    'shipit-protected-face t
@@ -3110,7 +3110,7 @@ Uses ETag caching for efficiency:
               (propertize (format "[%s#L%d%s]"
                                   file-path start-line
                                   (if end-line (format "-L%d" end-line) ""))
-                          'face 'markdown-plain-url-face
+                          'font-lock-face 'markdown-plain-url-face
                           
                           'help-echo (format "Click to open %s" fallback-url)
                           'shipit-protected-face t
@@ -3128,7 +3128,7 @@ Uses ETag caching for efficiency:
        (propertize (format "[%s#L%d%s]"
                            file-path start-line
                            (if end-line (format "-L%d" end-line) ""))
-                   'face 'markdown-plain-url-face
+                   'font-lock-face 'markdown-plain-url-face
                    
                    'help-echo (format "Click to open %s" fallback-url)
                    'shipit-protected-face t
@@ -4414,46 +4414,46 @@ REPO should be like \"owner/name\"."
     (cond
      ;; Merged takes highest precedence
      ((string= state "merged")
-      (propertize "🎉 merged" 'face '(:foreground "purple" :weight bold)))
+      (propertize "🎉 merged" 'font-lock-face '(:foreground "purple" :weight bold)))
 
      ;; Closed (without merge) - show if draft was closed
      ((string= state "closed")
       (if is-draft
-          (propertize "❌ closed (draft)" 'face '(:foreground "red" :weight bold))
-        (propertize "❌ closed" 'face '(:foreground "red" :weight bold))))
+          (propertize "❌ closed (draft)" 'font-lock-face '(:foreground "red" :weight bold))
+        (propertize "❌ closed" 'font-lock-face '(:foreground "red" :weight bold))))
 
      ;; Draft (only if still open)
      (is-draft
-      (propertize "🚧 draft" 'face '(:foreground "orange" :weight bold)))
+      (propertize "🚧 draft" 'font-lock-face '(:foreground "orange" :weight bold)))
 
      ;; Open - check merge readiness
      ((string= state "open")
       (cond
        ((string= mergeable-state "clean")
-        (propertize "✅ ready to merge" 'face '(:foreground "green" :weight bold)))
+        (propertize "✅ ready to merge" 'font-lock-face '(:foreground "green" :weight bold)))
        ((string= mergeable-state "blocked")
-        (propertize "🚫 blocked" 'face '(:foreground "red" :weight bold)))
+        (propertize "🚫 blocked" 'font-lock-face '(:foreground "red" :weight bold)))
        ((or (string= mergeable-state "unstable") (string= mergeable-state "checking"))
-        (propertize "⏳ checking" 'face '(:foreground "yellow" :weight bold)))
+        (propertize "⏳ checking" 'font-lock-face '(:foreground "yellow" :weight bold)))
        (t
-        (propertize "open" 'face '(:foreground "green" :weight bold)))))
+        (propertize "open" 'font-lock-face '(:foreground "green" :weight bold)))))
 
      ;; Fallback
-     (t (propertize state 'face '(:weight bold))))))
+     (t (propertize state 'font-lock-face '(:weight bold))))))
 
 (defun shipit--colorize-pr-state (state)
   "Apply appropriate color and styling to PR STATE string."
   (cond
    ((string= state "open")
-    (propertize state 'face '(:foreground "green" :weight bold)))
+    (propertize state 'font-lock-face '(:foreground "green" :weight bold)))
    ((string= state "closed")
-    (propertize state 'face '(:foreground "red" :weight bold)))
+    (propertize state 'font-lock-face '(:foreground "red" :weight bold)))
    ((string= state "merged")
-    (propertize state 'face '(:foreground "purple" :weight bold)))
+    (propertize state 'font-lock-face '(:foreground "purple" :weight bold)))
    ((string= state "draft")
-    (propertize state 'face '(:foreground "orange" :weight bold)))
+    (propertize state 'font-lock-face '(:foreground "orange" :weight bold)))
    (t
-    (propertize state 'face '(:weight bold)))))
+    (propertize state 'font-lock-face '(:weight bold)))))
 
 (defun shipit--group-comments-by-thread (review-comments)
   "Group review comments by file and line to create threads."
@@ -4535,11 +4535,11 @@ BASE-FACE is the primary face, HELP-TEXT is the tooltip, COMMENT-KEYMAP is the k
     (if shipit-enable-mouse-navigation
         (if base-face
             (if valid-keymap
-                `(face ,base-face
+                `(font-lock-face ,base-face
                        
                        help-echo ,help-text
                        keymap ,comment-keymap)
-              `(face ,base-face
+              `(font-lock-face ,base-face
                      
                      help-echo ,help-text))
           (if valid-keymap
@@ -4550,10 +4550,10 @@ BASE-FACE is the primary face, HELP-TEXT is the tooltip, COMMENT-KEYMAP is the k
                          help-echo ,help-text)))
       (if base-face
           (if valid-keymap
-              `(face ,base-face
+              `(font-lock-face ,base-face
                      help-echo ,help-text
                      keymap ,comment-keymap)
-            `(face ,base-face
+            `(font-lock-face ,base-face
                    help-echo ,help-text))
         (if valid-keymap
             `(help-echo ,help-text
@@ -5666,7 +5666,7 @@ comments are now cleared automatically during magit refresh."
                           (active-comments (shipit--filter-active-comments sorted-comments)))
                      (when active-comments
                        (insert (propertize (format "\n--- Comments on line %d (outside visible diff) ---\n" line-num)
-                                           'face 'shipit-inline-comment-face
+                                           'font-lock-face 'shipit-inline-comment-face
                                            'shipit-comment t))
                        (dolist (comment active-comments)
                          (let ((comment-text (shipit--format-comment-as-text comment t)))
@@ -5714,7 +5714,7 @@ comments are now cleared automatically during magit refresh."
              (heading-start (point)))
         ;; Add blank line before comment for spacing
         (insert "\n")
-        (magit-insert-heading (propertize heading-text 'face 'bold
+        (magit-insert-heading (propertize heading-text 'font-lock-face 'bold
                                          'shipit-comment t
                                          'shipit-comment-id comment-id
                                          'shipit-review-id (cdr (assq 'pull_request_review_id comment))))
@@ -5729,12 +5729,12 @@ comments are now cleared automatically during magit refresh."
             (when user-pos
               (put-text-property (+ adjusted-heading-start user-pos)
                                (+ adjusted-heading-start user-pos (length user))
-                               'face 'shipit-inline-comment-username-face))
+                               'font-lock-face 'shipit-inline-comment-username-face))
             ;; Apply timestamp face - between opening and closing paren
             (when (and paren-start-pos paren-end-pos)
               (put-text-property (+ adjusted-heading-start paren-start-pos 1)
                                (+ adjusted-heading-start paren-end-pos)
-                               'face 'shipit-inline-comment-timestamp-face)))))
+                               'font-lock-face 'shipit-inline-comment-timestamp-face)))))
       (progn
         ;; Use common rendering function - pass 0 for indent-level so we apply our own indentation
         (let* ((rendered-body (shipit--render-comment-body comment 0))
@@ -5767,7 +5767,7 @@ comments are now cleared automatically during magit refresh."
           (when reactions
             (insert "\n")  ;; Add blank line separator before reactions
             (insert (propertize (concat thread-prefix "    " (shipit--clean-text reactions) "\n")
-                                'face '(:foreground "#666666")
+                                'font-lock-face '(:foreground "#666666")
                                 ;; CRITICAL: Add same properties as comment body for DWIM handler
                                 'shipit-reactions t
                                 'shipit-comment t
@@ -5873,7 +5873,7 @@ comments are now cleared automatically during magit refresh."
           (shipit--debug-log "Using text-based comment insertion")
           ;; Insert padding before comment section
           (insert (propertize "\n"
-                              'face 'shipit-inline-comment-face
+                              'font-lock-face 'shipit-inline-comment-face
                               'shipit-comment t))
 
           ;; Insert each comment (comments should already be in chronological order)
@@ -5893,7 +5893,7 @@ comments are now cleared automatically during magit refresh."
 
           ;; Insert padding after comment section
           (insert (propertize "\n"
-                              'face 'shipit-inline-comment-face
+                              'font-lock-face 'shipit-inline-comment-face
                               'shipit-comment t))))
       (shipit--debug-log "shipit--insert-inline-comment-thread: Finished inserting comments")
       (shipit--debug-log "shipit--insert-inline-comment-thread: Buffer content around insertion point: '%s'"

@@ -457,18 +457,18 @@ as a child languages sub-section."
       (magit-insert-heading
         (format "%s %s"
                 (shipit--get-pr-field-icon "repo" "\U0001f4e6")
-                (propertize full-name 'face 'magit-section-heading)))
+                (propertize full-name 'font-lock-face 'magit-section-heading)))
       (insert (format "   %s Owner:    %s%s\n"
                       (shipit--get-pr-field-icon "author" "\U0001f464")
                       (if (and (boundp 'shipit-show-avatars) shipit-show-avatars
                                (fboundp 'shipit--create-avatar-display))
                           (concat (shipit--create-avatar-display owner avatar-url 16) " ")
                         "")
-                      (propertize owner 'face 'shipit-username-face)))
+                      (propertize owner 'font-lock-face 'shipit-username-face)))
       (when default-branch
         (insert (format "   %s Branch:   %s\n"
                         (shipit--get-pr-field-icon "branch" "\U0001f33f")
-                        (propertize default-branch 'face 'font-lock-constant-face))))
+                        (propertize default-branch 'font-lock-face 'font-lock-constant-face))))
       (when description
         (insert (format "   %s %s\n"
                         (shipit--get-pr-field-icon "description" "\U0001f4dd")
@@ -504,13 +504,13 @@ LANG-PCTS is a list of (NAME . PERCENT) pairs."
       (format "   %s %s"
               (shipit--get-pr-field-icon "language" "\U0001f4bb")
               (propertize (format "Languages (%d)" (length lang-pcts))
-                          'face 'magit-section-heading)))
+                          'font-lock-face 'magit-section-heading)))
     (magit-insert-section-body
       (dolist (entry lang-pcts)
         (insert (format "      %s %s\n"
-                        (propertize (car entry) 'face 'font-lock-type-face)
+                        (propertize (car entry) 'font-lock-face 'font-lock-type-face)
                         (propertize (format "%.1f%%" (cdr entry))
-                                    'face 'font-lock-comment-face))))
+                                    'font-lock-face 'font-lock-comment-face))))
       (insert "\n"))))
 
 (defun shipit-repo-buffer--insert-readme-section (readme-text)
@@ -519,10 +519,10 @@ LANG-PCTS is a list of (NAME . PERCENT) pairs."
     (magit-insert-heading
       (format "%s %s"
               (shipit--get-pr-field-icon "description" "\U0001f4c4")
-              (propertize "README" 'face 'magit-section-heading)))
+              (propertize "README" 'font-lock-face 'magit-section-heading)))
     (magit-insert-section-body
       (if (not readme-text)
-          (insert (propertize "   No README found\n" 'face 'italic))
+          (insert (propertize "   No README found\n" 'font-lock-face 'italic))
         (let* ((shipit--image-base-repo shipit-repo-buffer-repo)
                (readme-start (point)))
           (if (string-match-p "<details>" readme-text)
@@ -587,13 +587,13 @@ OPEN-HAS-MORE, when non-nil, adds a \"load more\" line to the open subsection."
         (magit-insert-heading
           (format "%s %s"
                   (shipit--get-pr-field-icon "pull-request" "\U0001f501")
-                  (propertize label 'face 'magit-section-heading)))
+                  (propertize label 'font-lock-face 'magit-section-heading)))
         (magit-insert-section-body
           (when open-prs
             (magit-insert-section (repo-prs-open nil nil)
               (magit-insert-heading
                 (propertize (format "  Open (%d)" (length open-prs))
-                            'face 'magit-section-heading))
+                            'font-lock-face 'magit-section-heading))
               (dolist (pr open-prs)
                 (shipit-repo-buffer--insert-item-line
                  pr repo 'shipit-repo-pr-number))
@@ -603,7 +603,7 @@ OPEN-HAS-MORE, when non-nil, adds a \"load more\" line to the open subsection."
             (magit-insert-section (repo-prs-closed nil nil)
               (magit-insert-heading
                 (propertize (format "  Closed (%d)" (length closed-prs))
-                            'face 'magit-section-heading))
+                            'font-lock-face 'magit-section-heading))
               (dolist (pr closed-prs)
                 (shipit-repo-buffer--insert-item-line
                  pr repo 'shipit-repo-pr-number))
@@ -621,13 +621,13 @@ OPEN-HAS-MORE, when non-nil, adds a \"load more\" line to the open subsection."
       (magit-insert-heading
         (format "%s %s"
                 (shipit--get-pr-field-icon "issue-open" "\U0001f41b")
-                (propertize "Issues" 'face 'magit-section-heading)))
+                (propertize "Issues" 'font-lock-face 'magit-section-heading)))
       (magit-insert-section-body
         (when open-issues
           (magit-insert-section (repo-issues-open nil nil)
             (magit-insert-heading
               (propertize (format "  Open (%d)" (length open-issues))
-                          'face 'magit-section-heading))
+                          'font-lock-face 'magit-section-heading))
             (dolist (issue open-issues)
               (shipit-repo-buffer--insert-item-line
                issue repo 'shipit-repo-issue-number))
@@ -637,7 +637,7 @@ OPEN-HAS-MORE, when non-nil, adds a \"load more\" line to the open subsection."
           (magit-insert-section (repo-issues-closed nil nil)
             (magit-insert-heading
               (propertize (format "  Closed (%d)" (length closed-issues))
-                          'face 'magit-section-heading))
+                          'font-lock-face 'magit-section-heading))
             (dolist (issue closed-issues)
               (shipit-repo-buffer--insert-item-line
                issue repo 'shipit-repo-issue-number))
@@ -654,7 +654,7 @@ DISCUSSIONS is a list of alists with `number' and `title' keys."
         (format "%s %s"
                 (shipit--get-pr-field-icon "discussion" "\U0001f4ac")
                 (propertize (format "Discussions (%d)" (length discussions))
-                            'face 'magit-section-heading)))
+                            'font-lock-face 'magit-section-heading)))
       (magit-insert-section-body
         (dolist (disc discussions)
           (shipit-repo-buffer--insert-item-line
@@ -1116,7 +1116,7 @@ to refresh, so this works correctly from minibuffer context."
                 (magit-insert-section (repo-prs-open nil nil)
                   (magit-insert-heading
                     (propertize (format "  Open (%d)" (length filtered-open))
-                                'face 'magit-section-heading))
+                                'font-lock-face 'magit-section-heading))
                   (dolist (pr filtered-open)
                     (shipit-repo-buffer--insert-item-line
                      pr repo 'shipit-repo-pr-number))
@@ -1127,7 +1127,7 @@ to refresh, so this works correctly from minibuffer context."
                 (magit-insert-section (repo-prs-closed nil nil)
                   (magit-insert-heading
                     (propertize (format "  Closed (%d)" (length filtered-closed))
-                                'face 'magit-section-heading))
+                                'font-lock-face 'magit-section-heading))
                   (dolist (pr filtered-closed)
                     (shipit-repo-buffer--insert-item-line
                      pr repo 'shipit-repo-pr-number))
@@ -1162,7 +1162,7 @@ to refresh, so this works correctly from minibuffer context."
                 (magit-insert-section (repo-issues-open nil nil)
                   (magit-insert-heading
                     (propertize (format "  Open (%d)" (length filtered-open))
-                                'face 'magit-section-heading))
+                                'font-lock-face 'magit-section-heading))
                   (dolist (issue filtered-open)
                     (shipit-repo-buffer--insert-item-line
                      issue repo 'shipit-repo-issue-number))
@@ -1173,7 +1173,7 @@ to refresh, so this works correctly from minibuffer context."
                 (magit-insert-section (repo-issues-closed nil nil)
                   (magit-insert-heading
                     (propertize (format "  Closed (%d)" (length filtered-closed))
-                                'face 'magit-section-heading))
+                                'font-lock-face 'magit-section-heading))
                   (dolist (issue filtered-closed)
                     (shipit-repo-buffer--insert-item-line
                      issue repo 'shipit-repo-issue-number))

@@ -293,7 +293,7 @@ column summary fills remaining space."
                              (concat (substring summary 0 (- summary-width 1)) "…")
                            summary)))
          (concat (propertize (format (format "%%-%ds" key-width) key)
-                             'face '(:inherit link :underline nil)
+                             'font-lock-face '(:inherit link :underline nil)
                              'shipit-issuelink-key key
                              'keymap shipit-issue--issuelink-keymap
                              'help-echo (format "RET: open %s" key))
@@ -302,7 +302,7 @@ column summary fills remaining space."
       ('key
        (let ((key (or (cdr (assq 'key item)) "")))
          (propertize (format (format "%%-%ds" width) key)
-                     'face '(:inherit link :underline nil)
+                     'font-lock-face '(:inherit link :underline nil)
                      'shipit-issuelink-key key
                      'keymap shipit-issue--issuelink-keymap
                      'help-echo (format "RET: open %s" key))))
@@ -311,7 +311,7 @@ column summary fills remaining space."
               (status-cat (cdr (assq 'status-category item)))
               (face-fn (cdr (assq 'status-category-face widths))))
          (propertize (format (format "%%-%ds" width) status)
-                     'face (if (and face-fn status-cat)
+                     'font-lock-face (if (and face-fn status-cat)
                                (funcall face-fn status-cat)
                              (shipit-issue--state-face status)))))
       ('issue-type-icon
@@ -332,7 +332,7 @@ column summary fills remaining space."
               (fmt-fn (cdr (assq 'relative-time-format widths)))
               (text (if (and fmt-fn ts) (funcall fmt-fn ts) "")))
          (propertize (format (format "%%-%ds" width) text)
-                     'face 'magit-dimmed)))
+                     'font-lock-face 'magit-dimmed)))
       ('assignee
        (let ((assignee (or (cdr (assq 'assignee item)) "Unassigned")))
          (format (format "%%-%ds" width) assignee)))

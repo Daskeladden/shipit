@@ -1149,7 +1149,7 @@ If IS-INLINE is non-nil, treats comment as an inline comment for proper reaction
     ;; Build the comment text with proper faces and keymaps
     (concat
      (propertize (format "💬 %s %s\n\n" comment-user formatted-timestamp)
-                 'face user-face
+                 'font-lock-face user-face
                  'shipit-comment t
                  'shipit-comment-id comment-id
                  'shipit-comment-body raw-comment-body)
@@ -1159,17 +1159,17 @@ If IS-INLINE is non-nil, treats comment as an inline comment for proper reaction
        (propertize formatted-body 'shipit-comment t))
      (if (not (string-empty-p reactions))
          (propertize (format "%s " reactions)
-                     'face comment-face
+                     'font-lock-face comment-face
                      'shipit-comment t
                      'shipit-comment-id comment-id
                      'shipit-comment-body raw-comment-body)
        (propertize "   "
-                   'face comment-face
+                   'font-lock-face comment-face
                    'shipit-comment t
                    'shipit-comment-id comment-id
                    'shipit-comment-body raw-comment-body))
      (propertize "[+]"
-                 'face button-face
+                 'font-lock-face button-face
                  'shipit-comment t
                  'shipit-comment-id comment-id
                  'shipit-comment-body raw-comment-body
@@ -1187,7 +1187,7 @@ If IS-INLINE is non-nil, treats comment as an inline comment for proper reaction
                                          (shipit--toggle-reaction-interactive comment-id)))
                            map))
      (propertize " [edit]\n\n"
-                 'face button-face
+                 'font-lock-face button-face
                  'shipit-comment t
                  'shipit-comment-id comment-id
                  'shipit-comment-body raw-comment-body
@@ -1361,7 +1361,7 @@ FORCE indicates whether to force display even if already shown."
           (end-of-line)
           (insert "\n")
           (insert (propertize (format "  💬 %s: %s" user body)
-                              'face (if is-outdated 'shadow 'font-lock-comment-face)
+                              'font-lock-face (if is-outdated 'shadow 'font-lock-comment-face)
                               'shipit-inline-comment t
                               'shipit-comment-data comment
                               ;; CRITICAL: Add missing properties needed for DWIM handler to recognize as inline comment
@@ -1470,7 +1470,7 @@ DIFF-HUNK provides context. Return t if found and point is positioned correctly.
                                              safe-user safe-timestamp
                                              (if is-outdated " [OUTDATED]" "")))
                        (heading-with-props (propertize heading-text
-                                                       'face user-face
+                                                       'font-lock-face user-face
                                                        'shipit-icon-color orange-color
                                                        'shipit-comment t
                                                        'shipit-comment-id comment-id

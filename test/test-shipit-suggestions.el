@@ -108,10 +108,10 @@ THEN removed lines have diff-removed face and added lines have diff-added face."
       (goto-char (point-min))
       ;; Find the line with "- old"
       (search-forward "- old")
-      (should (eq 'diff-removed (get-text-property (match-beginning 0) 'face)))
+      (should (eq 'diff-removed (get-text-property (match-beginning 0) 'font-lock-face)))
       ;; Find the line with "+ new"
       (search-forward "+ new")
-      (should (eq 'diff-added (get-text-property (match-beginning 0) 'face))))))
+      (should (eq 'diff-added (get-text-property (match-beginning 0) 'font-lock-face))))))
 
 ;;; --- render-comment-with-code Suggestion Integration Tests ---
 
@@ -153,7 +153,7 @@ THEN the output has diff-removed and diff-added faces on the suggestion lines."
       (goto-char (point-min))
       (should (search-forward "Suggested change:" nil t))
       (should (search-forward "+ new code" nil t))
-      (should (eq 'diff-added (get-text-property (match-beginning 0) 'face))))))
+      (should (eq 'diff-added (get-text-property (match-beginning 0) 'font-lock-face))))))
 
 (ert-deftest test-shipit-render-comment-body-suggestion-with-old-lines ()
   "GIVEN a comment with suggestion and a diff hunk containing the old line

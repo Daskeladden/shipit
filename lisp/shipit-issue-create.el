@@ -136,10 +136,10 @@ Returns non-nil if state was restored."
   (magit-insert-section (issue-create-header)
     (insert (shipit--get-notification-source-icon shipit-issue-create--backend-id)
             " "
-            (propertize "NEW ISSUE" 'face 'magit-section-heading) "\n")
+            (propertize "NEW ISSUE" 'font-lock-face 'magit-section-heading) "\n")
     (insert (propertize (format "   %s  |  C-c C-c to create  |  RET to edit field  |  q to quit"
                                 shipit-issue-create--repo)
-                        'face 'font-lock-comment-face)
+                        'font-lock-face 'font-lock-comment-face)
             "\n\n")))
 
 (defun shipit-issue-create--insert-title-section ()
@@ -149,10 +149,10 @@ Returns non-nil if state was restored."
       (magit-insert-heading
         (format "%s %s: %s"
                 (shipit--get-pr-field-icon "pull-request" "📋")
-                (propertize "Title" 'face 'magit-section-heading)
+                (propertize "Title" 'font-lock-face 'magit-section-heading)
                 (if shipit-issue-create--title
-                    (propertize shipit-issue-create--title 'face 'magit-branch-local)
-                  (propertize "(click to set)" 'face 'font-lock-comment-face))))
+                    (propertize shipit-issue-create--title 'font-lock-face 'magit-branch-local)
+                  (propertize "(click to set)" 'font-lock-face 'font-lock-comment-face))))
       (add-text-properties start (point)
                            '(shipit-issue-create-title t
                              help-echo "RET to edit title")))))
@@ -167,7 +167,7 @@ Returns non-nil if state was restored."
                 (if (and shipit-issue-create--body
                          (not (string-empty-p shipit-issue-create--body)))
                     ""
-                  (propertize "(click to add)" 'face 'font-lock-comment-face))))
+                  (propertize "(click to add)" 'font-lock-face 'font-lock-comment-face))))
       (add-text-properties start (point)
                            '(shipit-issue-create-description t
                              help-echo "RET to edit description")))
@@ -178,7 +178,7 @@ Returns non-nil if state was restored."
             (insert (format "   %s\n" line)))
         (let ((start (point)))
           (insert (propertize "   Click here or press RET to add a description\n"
-                              'face 'font-lock-comment-face))
+                              'font-lock-face 'font-lock-comment-face))
           (add-text-properties start (point)
                                '(shipit-issue-create-description t)))))))
 
@@ -202,8 +202,8 @@ Returns non-nil if state was restored."
       (insert (format "%s %-12s %s\n"
                       icon label
                       (if value
-                          (propertize value 'face 'magit-branch-local)
-                        (propertize "(none)" 'face 'font-lock-comment-face))))
+                          (propertize value 'font-lock-face 'magit-branch-local)
+                        (propertize "(none)" 'font-lock-face 'font-lock-comment-face))))
       (add-text-properties start (point)
                            `(shipit-issue-create-field ,name
                              help-echo ,(format "RET to select %s" label))))))
@@ -227,7 +227,7 @@ Returns non-nil if state was restored."
           (let ((start (point)))
             (insert (propertize (format "   Press RET to add %s\n"
                                         (downcase label))
-                                'face 'font-lock-comment-face))
+                                'font-lock-face 'font-lock-comment-face))
             (add-text-properties start (point)
                                  `(shipit-issue-create-field ,name))))))))
 

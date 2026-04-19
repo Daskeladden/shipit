@@ -319,7 +319,7 @@ THEN the callback is called and result has magit-dimmed face."
                   (relative-time-format . ,(lambda (ts) (ignore ts) "just now")))))
     (let ((result (shipit-issue--format-work-item-column item 'relative-time widths)))
       (should (string-match-p "just now" result))
-      (should (eq 'magit-dimmed (get-text-property 0 'face result))))))
+      (should (eq 'magit-dimmed (get-text-property 0 'font-lock-face result))))))
 
 (ert-deftest test-shipit-issue-format-status-with-category-face ()
   "GIVEN an item with status-category and a face callback in widths
@@ -332,7 +332,7 @@ THEN the status-category face is used instead of default."
                                                'magit-branch-remote))))))
     (let ((result (shipit-issue--format-work-item-column item 'status widths)))
       (should (string-match-p "In Progress" result))
-      (should (eq 'magit-branch-remote (get-text-property 0 'face result))))))
+      (should (eq 'magit-branch-remote (get-text-property 0 'font-lock-face result))))))
 
 (ert-deftest test-shipit-issue-format-status-falls-back-without-category ()
   "GIVEN an item without status-category
@@ -342,7 +342,7 @@ THEN the default state-face is used."
         (widths '((status . 10))))
     (let ((result (shipit-issue--format-work-item-column item 'status widths)))
       (should (string-match-p "Open" result))
-      (should (eq 'success (get-text-property 0 'face result))))))
+      (should (eq 'success (get-text-property 0 'font-lock-face result))))))
 
 (ert-deftest test-shipit-issue-compute-widths-icon-columns ()
   "GIVEN items and icon column types

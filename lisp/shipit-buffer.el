@@ -795,7 +795,7 @@ TARGET-BUFFER is the shipit buffer to update."
                                (goto-char pos)
                                (end-of-line)
                                (insert (propertize " [out-of-date]"
-                                                   'face '(:foreground "orange")
+                                                   'font-lock-face '(:foreground "orange")
                                                    'shipit-refs-line t))))))))))))
 
 (defun shipit--pr-type-label ()
@@ -813,7 +813,7 @@ Falls back to \"Pull Request\" when the backend has no :pr-type-label."
           (format "%s %s %s #%s: %s"
                   (shipit--get-notification-source-icon (shipit-pr--backend-id))
                   (shipit--get-pr-field-icon "pull-request" "🔀")
-                  (propertize (shipit--pr-type-label) 'face 'magit-section-heading)
+                  (propertize (shipit--pr-type-label) 'font-lock-face 'magit-section-heading)
                   (or pr-number "unknown")
                   (string-trim (or (shipit--clean-text title-raw) "No title")))))
       ;; Apply interactive properties to PR header (using original keymap if available)
@@ -837,7 +837,7 @@ REPO is the repository name (owner/repo format)."
       (let ((header-start (point)))
         (magit-insert-heading (format "%s %s"
                                       (shipit--get-pr-field-icon "description" "📝")
-                                      (propertize "Description:" 'face 'markdown-metadata-key-face)))
+                                      (propertize "Description:" 'font-lock-face 'markdown-metadata-key-face)))
         (add-text-properties header-start (point)
                              `(shipit-pr-description t
                                                      shipit-pr-number ,pr-number
@@ -848,7 +848,7 @@ REPO is the repository name (owner/repo format)."
               (is-empty (not clean-body))
               (has-details (and clean-body (string-match-p "<details>" clean-body))))
         (if is-empty
-            (insert (propertize "   No description provided\n" 'face 'italic))
+            (insert (propertize "   No description provided\n" 'font-lock-face 'italic))
           (if has-details
               ;; For details blocks, insert directly with magit-sections
               (shipit--insert-body-with-details clean-body 3)
@@ -966,7 +966,7 @@ REPO is the repository, PR-NUMBER is the PR number."
                                      (fboundp 'shipit--create-avatar-display))
                                 (concat (shipit--create-avatar-display user avatar-url 16) " ")
                               "")
-                            (propertize user 'face 'shipit-username-face))))))
+                            (propertize user 'font-lock-face 'shipit-username-face))))))
 
       ;; Created date section
       (shipit--time-operation "insert created section"
@@ -978,16 +978,16 @@ REPO is the repository, PR-NUMBER is the PR number."
           (magit-insert-section (pr-created nil)
             (magit-insert-heading (format "%s Created:   %s"
                             (shipit--get-pr-field-icon "created" "📅")
-                            (propertize formatted-date 'face 'shipit-timestamp-face))))))
+                            (propertize formatted-date 'font-lock-face 'shipit-timestamp-face))))))
 
       ;; Refs/branch section — rendered immediately, out-of-date fetched async
       (shipit--time-operation "insert refs section"
         (let* ((head-ref (cdr (assq 'ref (cdr (assq 'head pr-data)))))
                (base-ref (cdr (assq 'ref (cdr (assq 'base pr-data)))))
                (refs-line (if (and base-ref head-ref)
-                              (concat (propertize base-ref 'face 'magit-branch-local)
+                              (concat (propertize base-ref 'font-lock-face 'magit-branch-local)
                                       " ← "
-                                      (propertize head-ref 'face 'magit-branch-remote))
+                                      (propertize head-ref 'font-lock-face 'magit-branch-remote))
                             "unknown")))
           (magit-insert-section (pr-refs nil)
             (let ((line-start (point)))
@@ -1507,7 +1507,7 @@ otherwise opens in browser."
     (let ((start (point)))
       (insert (format "%s Repo URL:  %s\n"
                       (shipit--get-pr-field-icon "links" "🔗")
-                      (propertize url 'face 'link)))
+                      (propertize url 'font-lock-face 'link)))
       (let ((ov (make-overlay start (point)))
             (keymap (make-sparse-keymap)))
         (set-keymap-parent keymap (current-local-map))
@@ -1560,9 +1560,9 @@ Shows status (in-sync, out-of-sync, none), path, and last synced time."
                           ('different-repo "⭕"))))
          (status-text (pcase status
                         ('none "No worktree checked out")
-                        ('in-sync (concat (propertize "In Sync" 'face '(:foreground "green" :weight bold))
+                        ('in-sync (concat (propertize "In Sync" 'font-lock-face '(:foreground "green" :weight bold))
                                           " (PR #" (number-to-string pr-number) " @ "
-                                          (propertize (substring pr-head-sha 0 7) 'face 'magit-hash)
+                                          (propertize (substring pr-head-sha 0 7) 'font-lock-face 'magit-hash)
                                           ")"))
                         ('out-of-sync (let ((local-sha (condition-case nil
                                                            (string-trim-right
@@ -1570,12 +1570,12 @@ Shows status (in-sync, out-of-sync, none), path, and last synced time."
                                                              (format "cd %s && git rev-parse HEAD"
                                                                      (shell-quote-argument worktree-path))))
                                                          (error ""))))
-                                       (concat (propertize "Out of Sync" 'face 'font-lock-warning-face)
+                                       (concat (propertize "Out of Sync" 'font-lock-face 'font-lock-warning-face)
                                                (if (and local-sha (> (length local-sha) 0))
                                                    (concat " (local: "
-                                                           (propertize (substring local-sha 0 7) 'face 'magit-hash)
+                                                           (propertize (substring local-sha 0 7) 'font-lock-face 'magit-hash)
                                                            " upstream: "
-                                                           (propertize (substring pr-head-sha 0 7) 'face 'magit-hash)
+                                                           (propertize (substring pr-head-sha 0 7) 'font-lock-face 'magit-hash)
                                                            ")")
                                                  ""))))
                         ('different-repo "PR is from a different repository"))))
@@ -1604,7 +1604,7 @@ Shows status (in-sync, out-of-sync, none), path, and last synced time."
                       (if (file-directory-p worktree-path)
                           (dired worktree-path)
                         (user-error "Worktree path not found: %s" worktree-path))))
-                  (put-text-property path-start path-end 'face 'shipit-filename-face)
+                  (put-text-property path-start path-end 'font-lock-face 'shipit-filename-face)
                   (put-text-property path-start path-end 'keymap path-keymap)))
               (insert "\n"))
             ;; Insert timestamp with proper formatting and styling
@@ -1617,7 +1617,7 @@ Shows status (in-sync, out-of-sync, none), path, and last synced time."
                                       created-at)))
                   (insert formatted-ts)
                   (let ((timestamp-end (point)))
-                    (put-text-property timestamp-start timestamp-end 'face 'shipit-timestamp-face))
+                    (put-text-property timestamp-start timestamp-end 'font-lock-face 'shipit-timestamp-face))
                   (insert "\n")))))
           (add-text-properties body-start (point)
                                `(shipit-worktree t

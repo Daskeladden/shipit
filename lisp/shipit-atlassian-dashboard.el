@@ -596,9 +596,9 @@ and future expansion can add detail children."
         (format "%s %s"
                 (shipit--get-pr-field-icon "issues" "\U0001f4cb")
                 (propertize (format "My Open Issues (%d)" (length issues))
-                            'face 'magit-section-heading)))
+                            'font-lock-face 'magit-section-heading)))
       (if (null issues)
-          (insert (propertize "   No open issues\n" 'face 'magit-dimmed))
+          (insert (propertize "   No open issues\n" 'font-lock-face 'magit-dimmed))
         (let* ((prepared (shipit-atlassian-dashboard--prepare-widths issues))
                (columns (car prepared))
                (widths (cdr prepared))
@@ -607,7 +607,7 @@ and future expansion can add detail children."
             (magit-insert-section (atlassian-my-issues-project nil t)
               (magit-insert-heading
                 (propertize (format "   %s (%d)" (car group) (length (cdr group)))
-                            'face 'magit-section-heading))
+                            'font-lock-face 'magit-section-heading))
               (dolist (issue (cdr group))
                 (shipit-atlassian-dashboard--insert-issue-line issue columns widths)))))
         (insert "\n")))))
@@ -620,14 +620,14 @@ and future expansion can add detail children."
               (shipit--get-pr-field-icon "milestone" "\U0001f3af")
               (propertize (format "What's Next (%d)"
                                   (length shipit-atlassian-dashboard--whats-next))
-                          'face 'magit-section-heading)))
+                          'font-lock-face 'magit-section-heading)))
     (cond
      ((null shipit-atlassian-board-id)
       (insert (propertize "   Press RET to configure board ID\n"
-                          'face 'magit-dimmed
+                          'font-lock-face 'magit-dimmed
                           'shipit-atlassian-configure 'board-id)))
      ((null shipit-atlassian-dashboard--whats-next)
-      (insert (propertize "   No items in current sprint\n" 'face 'magit-dimmed)))
+      (insert (propertize "   No items in current sprint\n" 'font-lock-face 'magit-dimmed)))
      (t
       (let* ((prepared (shipit-atlassian-dashboard--prepare-widths
                         shipit-atlassian-dashboard--whats-next))
@@ -643,14 +643,14 @@ and future expansion can add detail children."
     (magit-insert-heading
       (format "%s %s"
               (shipit--get-pr-field-icon "project" "\U0001f4ca")
-              (propertize "Board" 'face 'magit-section-heading)))
+              (propertize "Board" 'font-lock-face 'magit-section-heading)))
     (cond
      ((null shipit-atlassian-board-id)
       (insert (propertize "   Press RET to configure board ID\n"
-                          'face 'magit-dimmed
+                          'font-lock-face 'magit-dimmed
                           'shipit-atlassian-configure 'board-id)))
      ((null shipit-atlassian-dashboard--board-data)
-      (insert (propertize "   No board data\n" 'face 'magit-dimmed)))
+      (insert (propertize "   No board data\n" 'font-lock-face 'magit-dimmed)))
      (t
       (let* ((all-issues (cl-mapcan (lambda (col)
                                       (copy-sequence (cdr (assq 'issues col))))
@@ -664,7 +664,7 @@ and future expansion can add detail children."
             (magit-insert-section (atlassian-board-column nil t)
               (magit-insert-heading
                 (propertize (format "   %s (%d)" col-name (length col-issues))
-                            'face 'magit-section-heading))
+                            'font-lock-face 'magit-section-heading))
               (dolist (issue col-issues)
                 (shipit-atlassian-dashboard--insert-issue-line
                  issue columns widths))))))))
@@ -691,10 +691,10 @@ and future expansion can add detail children."
                          (shipit-atlassian-dashboard--issues-heading-suffix)
                          (shipit-atlassian-dashboard--filter-summary
                           shipit-atlassian-dashboard--issues-filter))
-                 'face 'magit-section-heading)))
+                 'font-lock-face 'magit-section-heading)))
       (if (null issues)
           (insert (propertize "   No issues match the current filter\n"
-                              'face 'magit-dimmed))
+                              'font-lock-face 'magit-dimmed))
         (let* ((prepared (shipit-atlassian-dashboard--prepare-widths issues))
                (columns (car prepared))
                (widths (cdr prepared))
@@ -703,7 +703,7 @@ and future expansion can add detail children."
             (magit-insert-section (atlassian-issues-project-group (car group) t)
               (magit-insert-heading
                 (propertize (format "   %s (%d)" (car group) (length (cdr group)))
-                            'face 'magit-section-heading))
+                            'font-lock-face 'magit-section-heading))
               (dolist (issue (cdr group))
                 (shipit-atlassian-dashboard--insert-issue-line issue columns widths))))))
       (insert "\n"))))
@@ -762,9 +762,9 @@ Deduplicates, pushes to front, trims to max, and persists."
         (format "%s %s"
                 (shipit--get-pr-field-icon "clock" "\U0001f552")
                 (propertize (format "Frequently Visited (%d)" (length visits))
-                            'face 'magit-section-heading)))
+                            'font-lock-face 'magit-section-heading)))
       (if (null visits)
-          (insert (propertize "   No recently visited issues\n" 'face 'magit-dimmed))
+          (insert (propertize "   No recently visited issues\n" 'font-lock-face 'magit-dimmed))
         (let* ((fv-columns '(work relative-time))
                (mapped (mapcar #'shipit-issue--normalize-to-work-item visits))
                (widths (shipit-issue--dashboard-widths
@@ -785,10 +785,10 @@ Deduplicates, pushes to front, trims to max, and persists."
       ;; Header
       (insert (propertize (format "Atlassian Dashboard — %s\n"
                                   shipit-atlassian-dashboard--repo)
-                          'face 'magit-header-line))
+                          'font-lock-face 'magit-header-line))
       (when shipit-atlassian-dashboard--loading-p
         (insert (propertize "Loading data from Jira...\n"
-                            'face 'magit-dimmed)))
+                            'font-lock-face 'magit-dimmed)))
       (insert "\n")
       ;; Sections
       (shipit-atlassian-dashboard--insert-whats-next-section)

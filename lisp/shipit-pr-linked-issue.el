@@ -256,29 +256,29 @@ Returns the selected key string, or nil on abort/empty input."
              (overridden (shipit-pr-linked-issue--get-override repo pr-number))
              (tag (if overridden
                       (propertize " [manual]"
-                                  'face 'font-lock-comment-face)
+                                  'font-lock-face 'font-lock-comment-face)
                     "")))
         (format "%s Issue:     %s%s%s%s"
                 icon
-                (propertize issue-key 'face 'link)
+                (propertize issue-key 'font-lock-face 'link)
                 (if title
                     (concat " — "
-                            (propertize title 'face 'magit-section-heading))
+                            (propertize title 'font-lock-face 'magit-section-heading))
                   "")
                 (if state
                     (concat "  "
-                            (propertize (format "[%s]" state) 'face 'bold))
+                            (propertize (format "[%s]" state) 'font-lock-face 'bold))
                   "")
                 tag))
     (format "%s Issue:     %s"
             (shipit--get-pr-field-icon "linked-issue" "🎫")
             (propertize "— RET to link"
-                        'face 'font-lock-comment-face))))
+                        'font-lock-face 'font-lock-comment-face))))
 
 (defun shipit-pr-linked-issue--face (value face)
   "Return VALUE (string) propertized with FACE, or VALUE unchanged if nil/empty."
   (if (and value (stringp value) (not (string-empty-p value)))
-      (propertize value 'face face)
+      (propertize value 'font-lock-face face)
     value))
 
 (defun shipit-pr-linked-issue--render-typed-field (repo kind value)
@@ -302,8 +302,8 @@ fall back to plain `magit-dimmed' text with no icon."
            (icon (when render-fn (funcall render-fn value)))
            (color (when color-fn (funcall color-fn value)))
            (text (if color
-                     (propertize value 'face `(:foreground ,color :weight bold))
-                   (propertize value 'face 'magit-dimmed))))
+                     (propertize value 'font-lock-face `(:foreground ,color :weight bold))
+                   (propertize value 'font-lock-face 'magit-dimmed))))
       (if (and icon (stringp icon) (not (string-empty-p icon)))
           (concat icon " " text)
         text))))
@@ -326,7 +326,7 @@ Does nothing when BODY is empty."
   (when (and body (stringp body) (not (string-empty-p body)))
     (magit-insert-section (pr-linked-issue-description nil t)
       (magit-insert-heading
-        (propertize "   Description" 'face 'magit-section-heading))
+        (propertize "   Description" 'font-lock-face 'magit-section-heading))
       (magit-insert-section-body
         (dolist (line (split-string body "\n"))
           (insert "     " line "\n"))))))
@@ -336,7 +336,7 @@ Does nothing when BODY is empty."
   (let ((issue (shipit-pr-linked-issue--fetch-details repo issue-key)))
     (if (null issue)
         (insert (propertize "   (could not fetch details)\n"
-                            'face 'font-lock-comment-face))
+                            'font-lock-face 'font-lock-comment-face))
       (let* ((resolved (shipit-issue--resolve-for-repo repo))
              (backend (car resolved))
              (config (cdr resolved))

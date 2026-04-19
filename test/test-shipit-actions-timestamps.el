@@ -110,13 +110,13 @@
         (while (not (eobp))
           (let ((pos (text-property-any (line-beginning-position)
                                         (line-end-position)
-                                        'face 'shipit-timestamp-face)))
+                                        'font-lock-face 'shipit-timestamp-face)))
             (unless pos
               (setq pos (text-property-any (line-beginning-position)
                                            (line-end-position)
-                                           'face 'shipit-timestamp-gap-extreme-face)))
+                                           'font-lock-face 'shipit-timestamp-gap-extreme-face)))
             (when pos
-              (push (get-text-property pos 'face) faces)))
+              (push (get-text-property pos 'font-lock-face) faces)))
           (forward-line 1))
         (setq faces (nreverse faces))
         ;; First line: default face (no prev-ts)
@@ -138,7 +138,7 @@
       (while (not (eobp))
         (let ((pos (text-property-any (line-beginning-position)
                                       (line-end-position)
-                                      'face 'shipit-timestamp-gap-extreme-face)))
+                                      'font-lock-face 'shipit-timestamp-gap-extreme-face)))
           ;; No line should have the extreme face
           (should-not pos))
         (forward-line 1)))))

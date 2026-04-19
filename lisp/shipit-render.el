@@ -224,12 +224,12 @@ Returns nil if DIFF-HUNK is nil or invalid."
   "Render a suggestion as a diff-style block.
 NEW-CODE is the replacement text.  OLD-LINES is a list of original line strings.
 Returns a propertized string with diff-removed and diff-added faces."
-  (let ((parts (list (propertize "Suggested change:" 'face 'font-lock-comment-face))))
+  (let ((parts (list (propertize "Suggested change:" 'font-lock-face 'font-lock-comment-face))))
     (when old-lines
       (dolist (old-line old-lines)
-        (push (propertize (concat "- " old-line) 'face 'diff-removed) parts)))
+        (push (propertize (concat "- " old-line) 'font-lock-face 'diff-removed) parts)))
     (dolist (new-line (split-string new-code "\n"))
-      (push (propertize (concat "+ " new-line) 'face 'diff-added) parts))
+      (push (propertize (concat "+ " new-line) 'font-lock-face 'diff-added) parts))
     (mapconcat #'identity (nreverse parts) "\n")))
 
 (defun shipit--suggestion-lang-p (lang)
@@ -299,7 +299,7 @@ as a diff-style block showing old and new lines."
             (let* ((clean-lang (if (string-empty-p lang) "text" lang))
                    (highlighted-code (shipit--highlight-code-snippet code clean-lang)))
               (setq result (concat result
-                                   "\n" (propertize (format "[%s]" clean-lang) 'face 'font-lock-comment-face)
+                                   "\n" (propertize (format "[%s]" clean-lang) 'font-lock-face 'font-lock-comment-face)
                                    "\n" highlighted-code "\n"))))
 
           (setq last-pos end)))
@@ -467,9 +467,9 @@ Returns content with tables converted, or original content if no tables found."
       (let ((user-end (point)))
         ;; Apply conditional inline comment face if enabled
         (when shipit-inline-comment-faces
-          (put-text-property user-start user-end 'face 'shipit-inline-comment-username-face))
+          (put-text-property user-start user-end 'font-lock-face 'shipit-inline-comment-username-face))
         ;; Also apply the general username face
-        (put-text-property user-start user-end 'face 'shipit-username-face)))
+        (put-text-property user-start user-end 'font-lock-face 'shipit-username-face)))
 
     ;; Insert separator and timestamp with face
     (insert " • ")
@@ -478,9 +478,9 @@ Returns content with tables converted, or original content if no tables found."
       (let ((timestamp-end (point)))
         ;; Apply conditional inline comment face if enabled
         (when shipit-inline-comment-faces
-          (put-text-property timestamp-start timestamp-end 'face 'shipit-inline-comment-timestamp-face))
+          (put-text-property timestamp-start timestamp-end 'font-lock-face 'shipit-inline-comment-timestamp-face))
         ;; Also apply the general timestamp face
-        (put-text-property timestamp-start timestamp-end 'face 'shipit-timestamp-face)))
+        (put-text-property timestamp-start timestamp-end 'font-lock-face 'shipit-timestamp-face)))
 
     ;; Insert file path and line number if not general comment
     (unless is-general
@@ -498,7 +498,7 @@ Returns content with tables converted, or original content if no tables found."
             (insert (concat indent "  " body-line "\n"))
             ;; Apply body face if enabled
             (when shipit-inline-comment-faces
-              (put-text-property line-start (- (point) 1) 'face 'shipit-inline-comment-body-face))))))
+              (put-text-property line-start (- (point) 1) 'font-lock-face 'shipit-inline-comment-body-face))))))
 
     ;; Insert spacing between comments (1 blank line = 1 newline)
     (insert "\n")))
@@ -802,7 +802,7 @@ If SKIP-REACTIONS is non-nil, reactions are not rendered (caller will handle the
                                             shipit-comment-body ,raw-body
                                             shipit-comment-body-text t
                                             shipit-comment-type ,comment-type
-                                            ,@(when background-face `(face ,background-face))
+                                            ,@(when background-face `(font-lock-face ,background-face))
                                             ,@(when file-path `(shipit-file-path ,file-path))
                                             ,@(when repo `(shipit-repo ,repo))
                                             ,@(when pr-number `(shipit-pr-number ,pr-number))
@@ -903,11 +903,11 @@ If SKIP-REACTIONS is non-nil, reactions are not rendered (caller will handle the
                       (if shipit-show-avatars
                           (concat (shipit--create-avatar-display user avatar-url 16) " ")
                         "")
-                      (propertize user 'face 'shipit-username-face)
-                      (propertize formatted-timestamp 'face 'shipit-timestamp-face)))
+                      (propertize user 'font-lock-face 'shipit-username-face)
+                      (propertize formatted-timestamp 'font-lock-face 'shipit-timestamp-face)))
       ;; Add styling and shipit properties to entire header line
       (add-text-properties header-start (point)
-                           `(face ,header-face
+                           `(font-lock-face ,header-face
                                   shipit-comment t
                                   shipit-comment-id ,comment-id
                                   shipit-comment-body ,raw-body
@@ -1367,7 +1367,7 @@ Process <a> first so <em>/<strong> can wrap the converted links."
   (let ((result text))
     ;; <hr /> or <hr> -> markdown horizontal rule
     (setq result (replace-regexp-in-string
-                  "<hr[[:space:]]*/?>\\s-*" (concat (propertize (make-string 40 ?\x2500) 'face 'shadow) "\n") result))
+                  "<hr[[:space:]]*/?>\\s-*" (concat (propertize (make-string 40 ?\x2500) 'font-lock-face 'shadow) "\n") result))
     ;; <br /> or <br> -> newline
     (setq result (replace-regexp-in-string
                   "<br[[:space:]]*/?>\\s-*" "\n" result))
@@ -2088,7 +2088,7 @@ Must be called AFTER text is inserted into the final buffer."
                                 (overlay-put ov 'face `(:background ,code-block-bg :extend t))
                                 (overlay-put ov 'shipit-code-block t)))))
                         (setq block-start nil)))))
-                (setq pos (next-single-property-change pos 'face nil end)))
+                (setq pos (next-single-property-change pos 'font-lock-face nil end)))
               ;; Handle block that extends to end of region
               (when (and block-start (< block-start end))
                 (setq found-indented (1+ found-indented))
@@ -3148,7 +3148,7 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
                         pr-number
                         (upcase state)))
         (insert (propertize (truncate-string-to-width title 40)
-                           'face 'magit-section-heading))
+                           'font-lock-face 'magit-section-heading))
         (insert "\n"))
 
       ;; Author line with styled name and timestamp
@@ -3160,10 +3160,10 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
         (insert "  ")
         (insert (shipit--get-pr-field-icon "author" "👤"))
         (insert " ")
-        (insert (propertize author 'face 'shipit-username-face))
+        (insert (propertize author 'font-lock-face 'shipit-username-face))
         (when (not (string-empty-p timestamp))
           (insert " ")
-          (insert (propertize timestamp 'face 'shipit-timestamp-face)))
+          (insert (propertize timestamp 'font-lock-face 'shipit-timestamp-face)))
         (insert "\n"))
 
       ;; Dates line
@@ -3178,9 +3178,9 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
         (insert "  ")
         (insert (shipit--get-pr-field-icon "created" "📅"))
         (insert " Created: ")
-        (insert (propertize created-ts 'face 'shipit-timestamp-face))
+        (insert (propertize created-ts 'font-lock-face 'shipit-timestamp-face))
         (insert " | Updated: ")
-        (insert (propertize updated-ts 'face 'shipit-timestamp-face))
+        (insert (propertize updated-ts 'font-lock-face 'shipit-timestamp-face))
         (insert "\n"))
 
       ;; Stats line with emoji
@@ -3212,7 +3212,7 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
                                     (take activity-count (reverse events)))))
               (when (and recent-events (> (length recent-events) 0))
                 (insert "  ")
-                (insert (propertize "Recent:" 'face 'markdown-metadata-key-face))
+                (insert (propertize "Recent:" 'font-lock-face 'markdown-metadata-key-face))
                 (insert "\n")
                 (dolist (event recent-events)
                   (let* ((event-type (cdr (assq 'event event)))
@@ -3314,11 +3314,11 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
                     (when (not (string-empty-p avatar-display))
                       (insert avatar-display)
                       (insert " "))
-                    (insert (propertize actor 'face 'shipit-username-face))
+                    (insert (propertize actor 'font-lock-face 'shipit-username-face))
                     (insert " ")
-                    (insert (propertize action 'face 'shadow))
+                    (insert (propertize action 'font-lock-face 'shadow))
                     (insert " ")
-                    (insert (propertize timestamp 'face 'shipit-timestamp-face))
+                    (insert (propertize timestamp 'font-lock-face 'shipit-timestamp-face))
                     (insert "\n")))))
           (error (shipit--debug-log "Error fetching activities for popup: %s" err))))
 
@@ -3343,7 +3343,7 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
                                        rendered-body))
                  (indented-description (replace-regexp-in-string "\n" "\n  " wrapped-description)))
             (insert "  ")
-            (insert (propertize indented-description 'face 'default))
+            (insert (propertize indented-description 'font-lock-face 'default))
             (insert "\n")
             ;; Apply code block background overlays
             (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
@@ -3351,13 +3351,13 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
 
       ;; Actions section
       (insert "  ")
-      (insert (propertize "─────────────────────────────" 'face 'shadow))
+      (insert (propertize "─────────────────────────────" 'font-lock-face 'shadow))
       (insert "\n")
       (insert "  Actions:\n")
       ;; Render each action from preview-actions list
       (dolist (action preview-actions)
         (insert "    ")
-        (insert (propertize (car action) 'face 'font-lock-keyword-face))
+        (insert (propertize (car action) 'font-lock-face 'font-lock-keyword-face))
         (insert (format " - %s\n" (cadr action))))
 
       ;; Add bottom padding
@@ -3513,7 +3513,7 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
                           (format "%s" issue-number))
                         (upcase state)))
         (insert (propertize (truncate-string-to-width title 40)
-                           'face 'magit-section-heading))
+                           'font-lock-face 'magit-section-heading))
         (insert "\n"))
 
       ;; Author and dates
@@ -3527,17 +3527,17 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
         (insert "  ")
         (insert (shipit--get-pr-field-icon "author" "👤"))
         (insert " ")
-        (insert (propertize author 'face 'shipit-username-face))
+        (insert (propertize author 'font-lock-face 'shipit-username-face))
         (when (not (string-empty-p created-ts))
           (insert " ")
-          (insert (propertize created-ts 'face 'shipit-timestamp-face)))
+          (insert (propertize created-ts 'font-lock-face 'shipit-timestamp-face)))
         (insert "\n")
         (insert "  ")
         (insert (shipit--get-pr-field-icon "created" "📅"))
         (insert " Created: ")
-        (insert (propertize created-ts 'face 'shipit-timestamp-face))
+        (insert (propertize created-ts 'font-lock-face 'shipit-timestamp-face))
         (insert " | Updated: ")
-        (insert (propertize updated-ts 'face 'shipit-timestamp-face))
+        (insert (propertize updated-ts 'font-lock-face 'shipit-timestamp-face))
         (insert "\n"))
 
       ;; Labels
@@ -3547,7 +3547,7 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
           (insert (shipit--get-pr-field-icon "labels" "🏷"))
           (insert " ")
           (dolist (label labels)
-            (insert (propertize (cdr (assq 'name label)) 'face 'shipit-label-face))
+            (insert (propertize (cdr (assq 'name label)) 'font-lock-face 'shipit-label-face))
             (insert " "))
           (insert "\n")))
 
@@ -3569,19 +3569,19 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
                            rendered-body))
                  (indented (replace-regexp-in-string "\n" "\n  " wrapped)))
             (insert "  ")
-            (insert (propertize indented 'face 'default))
+            (insert (propertize indented 'font-lock-face 'default))
             (insert "\n")
             (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
               (shipit--apply-code-block-backgrounds-in-region description-start (point))))))
 
       ;; Actions
       (insert "  ")
-      (insert (propertize "─────────────────────────────" 'face 'shadow))
+      (insert (propertize "─────────────────────────────" 'font-lock-face 'shadow))
       (insert "\n")
       (insert "  Actions:\n")
       (dolist (action preview-actions)
         (insert "    ")
-        (insert (propertize (car action) 'face 'font-lock-keyword-face))
+        (insert (propertize (car action) 'font-lock-face 'font-lock-keyword-face))
         (insert (format " - %s\n" (cadr action))))
       (insert "\n")
 
@@ -3996,7 +3996,7 @@ Recursively handles nested details blocks with proper indentation."
                        (t user-face))))
     ;; Insert comment header with styling and text properties for interaction
     (insert (propertize (format "%s%s %s%s %s\n" indent-str header-icon header-prefix user formatted-timestamp)
-                        'face header-face
+                        'font-lock-face header-face
                         'shipit-comment t
                         'shipit-comment-id comment-id
                         'shipit-comment-body raw-body
@@ -4030,7 +4030,7 @@ Recursively handles nested details blocks with proper indentation."
         ;; If no reactions, add indentation to align buttons with comment text
         (insert body-indent-str)))
     (insert (propertize "[+]"
-                        'face button-face
+                        'font-lock-face button-face
                         
                         'help-echo "Click to add a reaction"
                         'keymap (let ((map (make-sparse-keymap)))
@@ -4045,7 +4045,7 @@ Recursively handles nested details blocks with proper indentation."
                                                 (shipit--toggle-reaction-interactive comment-id)))
                                   map)))
     (insert (propertize " [edit]"
-                        'face button-face
+                        'font-lock-face button-face
                         
                         'help-echo "Click to edit this comment"
                         'keymap (let ((map (make-sparse-keymap)))
@@ -4150,7 +4150,7 @@ behavior when switching between multiple PR buffers."
     (shipit--debug-log "GET-UNREAD-INDICATOR: comment-id=%s pr=%s repo=%s show=%s is-unread=%s"
                        comment-id pr-number repo shipit-show-unread-indicators is-unread)
     (if is-unread
-        (propertize " ●" 'face '(:foreground "red")
+        (propertize " ●" 'font-lock-face '(:foreground "red")
                     'shipit-unread-comment t
                     'shipit-unread-comment-id comment-id
                     'shipit-comment-id comment-id)  ; Also add shipit-comment-id for cursor detection
@@ -4201,10 +4201,10 @@ Returns either an image (from svglib) or a string (emoji fallback)."
        (error
         ;; Fall back to emoji if svglib rendering fails
         (shipit--debug-log "Failed to render SVG icon: %s, using emoji fallback" err)
-        (propertize "➕" 'face 'shipit-comment-reactions-placeholder))))
+        (propertize "➕" 'font-lock-face 'shipit-comment-reactions-placeholder))))
     ;; Fallback: Use grey plus sign emoji (clearly indicates "add reaction")
     (t
-     (propertize "➕" 'face 'shipit-comment-reactions-placeholder))))
+     (propertize "➕" 'font-lock-face 'shipit-comment-reactions-placeholder))))
 
 (defun shipit--event-type-to-octicon (event-type)
   "Map activity EVENT-TYPE to appropriate GitHub octicon name.
@@ -4778,7 +4778,7 @@ Returns an SVG icon string when svg-lib is available, text fallback otherwise."
                         '("mark-github" "octicons" . "#888888")))
          (color (cddr icon-spec))
          (fallback (propertize fallback-text
-                              'face (if color
+                              'font-lock-face (if color
                                         (list :foreground color)
                                       'font-lock-comment-face)))
          (use-svglib (and (display-graphic-p)

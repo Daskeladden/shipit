@@ -538,12 +538,12 @@ When in file view, switch to diff. When in diff view, switch back to file."
                                          filename
                                          (substring from-sha 0 7)
                                          (substring to-sha 0 7))
-                                 'face 'bold))
+                                 'font-lock-face 'bold))
               (insert (make-string 40 ?=))
               (insert "\n\n")
 
               (if (string-empty-p diff-output)
-                  (insert (propertize "No changes in this range.\n" 'face 'italic))
+                  (insert (propertize "No changes in this range.\n" 'font-lock-face 'italic))
                 ;; Get comments from various sources
                 (let* ((main-buffer-comments
                         (with-current-buffer main-buffer

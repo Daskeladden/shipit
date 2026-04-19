@@ -390,7 +390,7 @@ Unicode handling is now done at the HTTP response level."
             (font-lock-ensure))
           (buffer-string)))
     ;; Fallback: just add basic highlighting
-    (propertize code 'face 'font-lock-string-face)))
+    (propertize code 'font-lock-face 'font-lock-string-face)))
 
 (defvar shipit-comments-mode-map
   (let ((map (make-sparse-keymap)))

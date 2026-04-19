@@ -228,7 +228,7 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
                 (shipit-subscriptions--insert-repo-line
                  backend-id repo)))
           (insert (propertize "  No watched repos\n"
-                              'face 'font-lock-comment-face)))
+                              'font-lock-face 'font-lock-comment-face)))
         (insert "\n")))))
 
 (defun shipit-subscriptions--subscription-label (viewer-subscription)
@@ -260,7 +260,7 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
         (propertize
          (format "  %s  %s  %s  %s"
                  name-col owner-col
-                 (if sub-face (propertize sub-col 'face sub-face) sub-col)
+                 (if sub-face (propertize sub-col 'font-lock-face sub-face) sub-col)
                  star-icon)
          'shipit-subscriptions-repo full-name
          'shipit-subscriptions-backend-id backend-id)))))
@@ -287,7 +287,7 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
                        (t ""))))
     (magit-insert-section (shipit-subscriptions-root)
       (insert (propertize (format "Subscriptions%s\n\n" filter-desc)
-                          'face 'magit-section-heading))
+                          'font-lock-face 'magit-section-heading))
       (if data
           (dolist (entry data)
             (let* ((backend-id (nth 0 entry))
@@ -299,7 +299,7 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
               (shipit-subscriptions--insert-backend-section
                backend-id backend-plist filtered)))
         (insert (propertize "  No backends with subscription support\n"
-                            'face 'font-lock-comment-face))))))
+                            'font-lock-face 'font-lock-comment-face))))))
 
 ;;; Refresh
 

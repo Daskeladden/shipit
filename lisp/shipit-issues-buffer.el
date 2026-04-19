@@ -461,7 +461,7 @@ buffer-local overrides so the issue fetches use the correct backend
       (format "%s %s %s #%s: %s"
               (shipit--get-notification-source-icon shipit-issue-backend)
               (shipit--get-pr-field-icon icon-key emoji-fallback)
-              (propertize (capitalize state) 'face state-face)
+              (propertize (capitalize state) 'font-lock-face state-face)
               issue-number
               (string-trim (shipit--clean-text title))))
     (add-text-properties header-start (point)
@@ -477,7 +477,7 @@ buffer-local overrides so the issue fetches use the correct backend
     (magit-insert-heading
       (format "%s %s"
               (shipit--get-pr-field-icon "metadata" "📋")
-              (propertize "Metadata" 'face 'magit-section-heading)))
+              (propertize "Metadata" 'font-lock-face 'magit-section-heading)))
     (magit-insert-section-body
       ;; Repo URL
       (let ((repo-url (shipit-issue--derive-repo-url issue-data)))
@@ -494,13 +494,13 @@ buffer-local overrides so the issue fetches use the correct backend
                                  (fboundp 'shipit--create-avatar-display))
                             (concat (shipit--create-avatar-display user avatar-url 16) " ")
                           "")
-                        (propertize user 'face 'shipit-username-face))))
+                        (propertize user 'font-lock-face 'shipit-username-face))))
       ;; Type (Jira issues only)
       (let ((issue-type (cdr (assq 'issue-type issue-data))))
         (when issue-type
           (insert (format "   %s Type:      %s\n"
                           (shipit--get-pr-field-icon "type" "📦")
-                          (propertize issue-type 'face 'font-lock-type-face)))))
+                          (propertize issue-type 'font-lock-face 'font-lock-type-face)))))
       ;; Parent (Jira epic/parent issue)
       (let ((parent (cdr (assq 'parent issue-data))))
         (when parent
@@ -510,7 +510,7 @@ buffer-local overrides so the issue fetches use the correct backend
             (insert (format "   %s Parent:    %s %s%s\n"
                             (shipit--get-pr-field-icon "parent" "🔼")
                             (propertize key
-                                        'face 'link
+                                        'font-lock-face 'link
                                         'shipit-issuelink-key key
                                         'keymap shipit-issue--issuelink-keymap
                                         'help-echo (format "RET: open %s" key))
@@ -524,7 +524,7 @@ buffer-local overrides so the issue fetches use the correct backend
              (state-face (shipit-issue--state-face state)))
         (insert (format "   %s State:     %s\n"
                         (shipit--get-pr-field-icon "state" "📌")
-                        (propertize (capitalize state) 'face state-face))))
+                        (propertize (capitalize state) 'font-lock-face state-face))))
       ;; Created
       (let* ((created (or (cdr (assq 'created_at issue-data)) ""))
              (formatted (if (and (fboundp 'shipit--format-timestamp)
@@ -533,7 +533,7 @@ buffer-local overrides so the issue fetches use the correct backend
                           created)))
         (insert (format "   %s Created:   %s\n"
                         (shipit--get-pr-field-icon "created" "📅")
-                        (propertize formatted 'face 'shipit-timestamp-face))))
+                        (propertize formatted 'font-lock-face 'shipit-timestamp-face))))
       ;; Updated
       (let* ((updated (or (cdr (assq 'updated_at issue-data)) ""))
              (formatted (if (and (fboundp 'shipit--format-timestamp)
@@ -543,7 +543,7 @@ buffer-local overrides so the issue fetches use the correct backend
         (when (not (string-empty-p updated))
           (insert (format "   %s Updated:   %s\n"
                           (shipit--get-pr-field-icon "updated" "🔄")
-                          (propertize formatted 'face 'shipit-timestamp-face)))))
+                          (propertize formatted 'font-lock-face 'shipit-timestamp-face)))))
       ;; Assignees
       (let ((assignees (cdr (assq 'assignees issue-data))))
         (let ((names (when (and assignees (> (length assignees) 0))
@@ -553,9 +553,9 @@ buffer-local overrides so the issue fetches use the correct backend
                           (shipit--get-pr-field-icon "assignees" "👥")
                           (if names
                               (mapconcat (lambda (n)
-                                           (propertize n 'face 'shipit-username-face))
+                                           (propertize n 'font-lock-face 'shipit-username-face))
                                          names ", ")
-                            (propertize "Unassigned" 'face 'font-lock-comment-face))))
+                            (propertize "Unassigned" 'font-lock-face 'font-lock-comment-face))))
           (add-text-properties line-start (point)
                                '(shipit-issue-assignee t))))
       ;; Labels
@@ -567,7 +567,7 @@ buffer-local overrides so the issue fetches use the correct backend
                                              (face (when color
                                                      `(:foreground ,(concat "#" color)))))
                                         (if face
-                                            (propertize name 'face face)
+                                            (propertize name 'font-lock-face face)
                                           name)))
                                     labels)))
             (insert (format "   %s Labels:    %s\n"
@@ -580,7 +580,7 @@ buffer-local overrides so the issue fetches use the correct backend
             (when title
               (insert (format "   %s Milestone: %s\n"
                               (shipit--get-pr-field-icon "milestone" "🎯")
-                              (propertize title 'face 'font-lock-constant-face)))))))
+                              (propertize title 'font-lock-face 'font-lock-constant-face)))))))
       ;; Subscription status
       (let* ((resolved (shipit-pr--resolve-for-repo repo))
              (backend (car resolved))
@@ -611,11 +611,11 @@ buffer-local overrides so the issue fetches use the correct backend
       (magit-insert-heading
         (format "%s %s"
                 (shipit--get-pr-field-icon "description" "📝")
-                (propertize "Description:" 'face 'markdown-metadata-key-face)))
+                (propertize "Description:" 'font-lock-face 'markdown-metadata-key-face)))
       (magit-insert-section-body
         (let ((description-start (point)))
           (if (not clean-body)
-              (insert (propertize "   No description provided\n" 'face 'italic))
+              (insert (propertize "   No description provided\n" 'font-lock-face 'italic))
             (if (string-match-p "<details>" clean-body)
                 (shipit--insert-body-with-details clean-body 3)
               (let* ((rendered (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
@@ -697,7 +697,7 @@ is set and the display is graphical."
         (propertize (format "%s %s"
                             pin-icon
                             (propertize (format "Pinned by %s" pinned-by)
-                                        'face 'font-lock-keyword-face))
+                                        'font-lock-face 'font-lock-keyword-face))
                     'shipit-icon-color (or shipit-pinned-comment-bg-color "#1a2744")))
       (magit-insert-section-body
         ;; Comment header with avatar and username
@@ -706,8 +706,8 @@ is set and the display is graphical."
                                  (fboundp 'shipit--create-avatar-display))
                             (concat (shipit--create-avatar-display user avatar-url 16) " ")
                           "")
-                        (propertize user 'face 'shipit-username-face)
-                        (propertize timestamp 'face 'shipit-timestamp-face)))
+                        (propertize user 'font-lock-face 'shipit-username-face)
+                        (propertize timestamp 'font-lock-face 'shipit-timestamp-face)))
         ;; Truncated preview with wrapping
         (let* ((rendered (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
                                   (fboundp 'shipit--render-markdown))
@@ -728,7 +728,7 @@ is set and the display is graphical."
                 (propertize (format "   %s %s"
                         (shipit--get-pr-field-icon "description" "\u25b6")
                         (propertize "View full comment"
-                                    'face 'magit-section-heading))
+                                    'font-lock-face 'magit-section-heading))
                     'shipit-icon-color (or shipit-pinned-comment-bg-color "#1a2744")))
               (magit-insert-section-body
                 (dolist (line (seq-drop lines preview-n))
@@ -804,7 +804,7 @@ apply the magit-section-heading face."
   (format "%s %s"
           (shipit--get-pr-field-icon "comment" "\U0001f4ac")
           (propertize (format "Comments %s" label)
-                      'face 'magit-section-heading)))
+                      'font-lock-face 'magit-section-heading)))
 
 (defun shipit-issue--replace-comments-body-with (heading-label insert-body-fn)
   "Replace the body of the issue-comments section in place.
@@ -964,7 +964,7 @@ section object during targeted body replacement)."
                           (* (length unfetched) per-page))))
     (cond
      ((= total 0)
-      (insert (propertize "   No comments\n" 'face 'font-lock-comment-face)))
+      (insert (propertize "   No comments\n" 'font-lock-face 'font-lock-comment-face)))
      ((= hidden-count 0)
       (shipit-issue--insert-comments-chunked repo issue-number (append head tail)))
      (t
@@ -1008,7 +1008,7 @@ DIRECTION is oldest or recent (default oldest)."
       (magit-insert-heading
         (propertize (format "   ── Load %d more comment%s%s ──"
                             count (if (= count 1) "" "s") dir-indicator)
-                    'face 'font-lock-comment-face)))))
+                    'font-lock-face 'font-lock-comment-face)))))
 
 (defun shipit-issue--insert-comments-body (repo issue-number comments)
   "Insert only the BODY of the comments section for COMMENTS.
@@ -1024,7 +1024,7 @@ pagination."
                         (> total (+ head-n tail-n)))))
     (cond
      ((or (null comments) (= total 0))
-      (insert (propertize "   No comments\n" 'face 'font-lock-comment-face)))
+      (insert (propertize "   No comments\n" 'font-lock-face 'font-lock-comment-face)))
      (paginate
       (let ((head (seq-take comments head-n))
             (hidden (seq-subseq comments head-n (- total tail-n)))
@@ -1067,8 +1067,8 @@ in place."
                          (fboundp 'shipit--create-avatar-display))
                     (concat (shipit--create-avatar-display user avatar-url 16) " ")
                   "")
-                (propertize user 'face 'shipit-username-face)
-                (propertize timestamp 'face 'shipit-timestamp-face)))
+                (propertize user 'font-lock-face 'shipit-username-face)
+                (propertize timestamp 'font-lock-face 'shipit-timestamp-face)))
       (magit-insert-section-body
         ;; Indent 6 to align with username (3 spaces + emoji/avatar + space)
         ;; Skip reactions for backends without reaction support
@@ -1104,18 +1104,18 @@ and we render it directly (empty list → \"No activity yet\")."
                 (propertize (if loading-p
                                 "Activity (…)"
                               (format "Activity (%d)" (length changelog)))
-                            'face 'magit-section-heading)))
+                            'font-lock-face 'magit-section-heading)))
       (cond
        (loading-p
         (insert (propertize "   Loading activity…\n"
-                            'face 'font-lock-comment-face)))
+                            'font-lock-face 'font-lock-comment-face)))
        ((and changelog (> (length changelog) 0))
         (let ((user-col-width (shipit-issue--changelog-max-user-width changelog)))
           (dolist (entry (reverse changelog))
             (shipit-issue--insert-activity-event entry user-col-width))))
        (t
         (insert (propertize "   No activity yet\n"
-                            'face 'font-lock-comment-face))))
+                            'font-lock-face 'font-lock-comment-face))))
       (insert "\n"))))
 
 (defun shipit-issue--refresh-activity-section (changelog)
@@ -1132,7 +1132,7 @@ Called from the async events callback once the paginated fetch is done."
            (dolist (entry (reverse changelog))
              (shipit-issue--insert-activity-event entry user-col-width)))
        (insert (propertize "   No activity yet\n"
-                           'face 'font-lock-comment-face))))))
+                           'font-lock-face 'font-lock-comment-face))))))
 
 (defun shipit-issue--insert-activity-event (entry user-col-width)
   "Insert a single activity ENTRY as a magit subsection.
@@ -1150,7 +1150,7 @@ Timestamps are right-aligned to the window edge."
          (description (shipit-issue--format-changelog-items items))
          ;; Pad username to fixed column width
          (user-pad (max 0 (- user-col-width (string-width user))))
-         (user-col (concat (propertize user 'face 'shipit-username-face)
+         (user-col (concat (propertize user 'font-lock-face 'shipit-username-face)
                            (make-string user-pad ?\s)))
          ;; Build left part: "   <user-col>  <description>"
          (left-part (format "   %s  %s" user-col description))
@@ -1159,7 +1159,7 @@ Timestamps are right-aligned to the window edge."
          (ts-width (string-width ts-text))
          (ts-pad (max 0 (- 16 ts-width)))
          (ts-col (propertize (concat (make-string ts-pad ?\s) ts-text)
-                             'face 'shipit-timestamp-face
+                             'font-lock-face 'shipit-timestamp-face
                              'shipit-raw-timestamp created))
          ;; Right-align to window edge
          (win (or (get-buffer-window (current-buffer)) (selected-window)))
@@ -1181,19 +1181,19 @@ Timestamps are right-aligned to the window edge."
        (cond
         ;; User comments: just show "commented"
         ((equal field "comment")
-         (propertize "commented" 'face 'font-lock-keyword-face))
+         (propertize "commented" 'font-lock-face 'font-lock-keyword-face))
         ;; Mentioned in MR: "mentioned in !NNN"
         ((equal field "mentioned")
-         (format "mentioned in %s" (propertize (or to "") 'face 'font-lock-keyword-face)))
+         (format "mentioned in %s" (propertize (or to "") 'font-lock-face 'font-lock-keyword-face)))
         ;; Branch created: "created branch NAME"
         ((equal field "branch")
-         (format "created branch %s" (propertize (or to "") 'face 'font-lock-keyword-face)))
+         (format "created branch %s" (propertize (or to "") 'font-lock-face 'font-lock-keyword-face)))
         ;; Description changes: no from/to (too verbose)
         ((equal field "description")
-         (format "updated %s" (propertize "Description" 'face 'font-lock-keyword-face)))
+         (format "updated %s" (propertize "Description" 'font-lock-face 'font-lock-keyword-face)))
         ;; Status, assignee, and other field changes
         (t
-         (let ((display-field (propertize (capitalize field) 'face 'font-lock-keyword-face))
+         (let ((display-field (propertize (capitalize field) 'font-lock-face 'font-lock-keyword-face))
                (has-from (and from (not (string-empty-p from))))
                (has-to (and to (not (string-empty-p to)))))
            (cond
@@ -1230,7 +1230,7 @@ Shows placeholder; content loaded asynchronously."
           (format "%s %s"
                   (shipit--get-pr-field-icon "children" "📦")
                   (propertize "Child Work Items (loading...)"
-                              'face 'magit-section-heading)))
+                              'font-lock-face 'magit-section-heading)))
         (magit-insert-section-body
           (insert "   Loading child items...\n")
           (insert "\n"))))))
@@ -1292,7 +1292,7 @@ COLUMNS is a list of column symbols for the renderer."
               (delete-region content-pos end-pos))
             (goto-char content-pos)
             (insert (format "   Error loading children: %s\n"
-                            (propertize message 'face 'error)))
+                            (propertize message 'font-lock-face 'error)))
             (insert "\n")
             (oset section end (point-marker))
             (oset section content (copy-marker content-pos))))))))
@@ -1309,7 +1309,7 @@ COLUMNS is a list of column symbols for the renderer."
           (magit-insert-heading
             (propertize (format "   %s (%d)"
                                 (capitalize type-label) (length entries))
-                        'face 'magit-section-secondary-heading))
+                        'font-lock-face 'magit-section-secondary-heading))
           (dolist (entry entries)
             (magit-insert-section (issue-linked-item entry)
               (insert (format "   %s\n"
@@ -1328,7 +1328,7 @@ Groups links by type and renders each item with the column renderer."
           (format "%s %s"
                   (shipit--get-pr-field-icon "links" "🔗")
                   (propertize (format "Linked Work Items (%d)" (length links))
-                              'face 'magit-section-heading)))
+                              'font-lock-face 'magit-section-heading)))
         (shipit-issue--insert-linked-items-body links columns widths)
         (insert "\n")))))
 
@@ -1921,9 +1921,9 @@ Uses html_url and strips the issue-specific suffix."
             (when (eq face 'shipit-username-face)
               (setq result (buffer-substring-no-properties
                             (point)
-                            (or (next-single-property-change (point) 'face nil content)
+                            (or (next-single-property-change (point) 'font-lock-face nil content)
                                 content)))))
-          (goto-char (or (next-single-property-change (point) 'face nil content) content)))))
+          (goto-char (or (next-single-property-change (point) 'font-lock-face nil content) content)))))
     result))
 
 (defun shipit-issue--extract-timestamp-from-section (section)
@@ -2170,7 +2170,7 @@ Does not create a `magit-insert-section'.  The caller provides the
 section context and the heading (which includes the \"N of M\"
 filter count)."
   (if (null comments)
-      (insert (propertize "   No matching comments\n" 'face 'font-lock-comment-face))
+      (insert (propertize "   No matching comments\n" 'font-lock-face 'font-lock-comment-face))
     (shipit-issue--insert-comments-chunked repo issue-number comments))
   (insert "\n"))
 
@@ -2228,7 +2228,7 @@ Shows active filter details, match count, and unloaded count."
                      shipit-issue--active-filters " + "))
                    (status-text (format "   Filter: %s\n" (string-trim filters-desc))))
               (insert (propertize status-text
-                                 'face 'font-lock-warning-face
+                                 'font-lock-face 'font-lock-warning-face
                                  'shipit-filter-status t)))))))))
 
 

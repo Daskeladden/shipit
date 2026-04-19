@@ -79,6 +79,22 @@ Format is an alist keyed by repo string, each value an alist of
           (print-length nil))
       (prin1 shipit-pr-linked-issue--overrides (current-buffer)))))
 
+(defun shipit-pr-linked-issue-find-prs-for-issue (issue-key)
+  "Return manually-linked PRs for ISSUE-KEY as a list of (REPO . PR-NUMBER).
+REPO is an \"owner/repo\" string, PR-NUMBER is the PR number as a string.
+Walks the overrides file; matching is `string-equal' on the issue key."
+  (shipit-pr-linked-issue--load)
+  (let ((wanted (format "%s" issue-key))
+        (results nil))
+    (dolist (repo-entry shipit-pr-linked-issue--overrides)
+      (let ((repo (car repo-entry)))
+        (dolist (pr-entry (cdr repo-entry))
+          (let ((pr-key (car pr-entry))
+                (linked (cdr pr-entry)))
+            (when (and linked (string-equal linked wanted))
+              (push (cons repo pr-key) results))))))
+    (nreverse results)))
+
 (defun shipit-pr-linked-issue--get-override (repo pr-number)
   "Return the manually-overridden issue key for REPO PR-NUMBER, or nil."
   (shipit-pr-linked-issue--load)

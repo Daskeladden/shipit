@@ -314,6 +314,8 @@ buffer-local overrides so the issue fetches use the correct backend
               (when issuelinks
                 (let ((columns (shipit-issue--get-work-item-columns)))
                   (shipit-issue--insert-linked-items-section issuelinks columns))))
+            ;; Linked PRs -- reverse of PR-buffer Linked Issue
+            (shipit-issue--insert-linked-prs-section issue-number repo)
             (let* ((backend (shipit-issue--get-backend))
                    (timeline-async-p (and backend
                                           (plist-get backend :fetch-timeline-async))))
@@ -1345,6 +1347,335 @@ COLUMNS is the list of column symbols."
          (shipit-issue--insert-linked-items-body links columns widths)
          (insert "\n"))))))
 
+;;; Linked PRs section (reverse of PR-buffer "Linked Issue")
+
+(declare-function shipit-pr-linked-issue-find-prs-for-issue
+                  "shipit-pr-linked-issue")
+(declare-function shipit--open-pr-cross-repo "shipit-notifications")
+(declare-function shipit--get-pr-state-icon "shipit-render")
+(declare-function shipit--colorize-pr-state "shipit-http")
+
+(defvar shipit-issue--linked-pr-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'shipit-issue--open-linked-pr)
+    (define-key map [mouse-1] #'shipit-issue--open-linked-pr)
+    map)
+  "Keymap applied to each linked-PR section heading.
+RET / mouse-1 opens the PR in shipit; magit-section's TAB continues
+to expand or collapse the details body.")
+
+(defun shipit-issue--open-linked-pr ()
+  "Open the linked PR whose magit-section contains point."
+  (interactive)
+  (let* ((section (ignore-errors (magit-current-section)))
+         (value (and section (oref section value))))
+    (cond
+     ((and (consp value)
+           (stringp (car value))
+           (or (integerp (cdr value)) (stringp (cdr value))))
+      (let ((pr-num (if (stringp (cdr value))
+                        (string-to-number (cdr value))
+                      (cdr value))))
+        (shipit--open-pr-cross-repo pr-num (car value))))
+     (t
+      (user-error "No linked PR at point")))))
+
+(defun shipit-issue--linked-pr-plist-from-override (repo pr-number)
+  "Build a linked-PR plist from an override entry (REPO . PR-NUMBER)."
+  (list :repo repo
+        :number (if (stringp pr-number)
+                    (string-to-number pr-number)
+                  pr-number)))
+
+(defun shipit-issue--linked-pr-plist-from-search-item (item repo)
+  "Build a linked-PR plist from a search response ITEM scoped to REPO."
+  (let* ((pr-obj (cdr (assq 'pull_request item)))
+         (merged-at (and pr-obj (cdr (assq 'merged_at pr-obj))))
+         (raw-state (cdr (assq 'state item)))
+         (state (cond
+                 ((and merged-at (not (eq merged-at :json-null))) "merged")
+                 ((and raw-state (stringp raw-state)) raw-state)
+                 (t "unknown"))))
+    (list :repo repo
+          :number (cdr (assq 'number item))
+          :title (cdr (assq 'title item))
+          :state state
+          :author (cdr (assq 'login (cdr (assq 'user item))))
+          :body (cdr (assq 'body item))
+          :html-url (cdr (assq 'html_url item))
+          :created (cdr (assq 'created_at item))
+          :updated (cdr (assq 'updated_at item)))))
+
+(defun shipit-issue--linked-prs-from-overrides (issue-number)
+  "Return a list of linked-PR plists from the override file for ISSUE-NUMBER."
+  (require 'shipit-pr-linked-issue)
+  (let ((key (format "%s" issue-number))
+        (seen (make-hash-table :test 'equal))
+        (results nil))
+    (dolist (pair (shipit-pr-linked-issue-find-prs-for-issue key))
+      (let* ((plist (shipit-issue--linked-pr-plist-from-override
+                     (car pair) (cdr pair)))
+             (k (format "%s#%s" (plist-get plist :repo)
+                        (plist-get plist :number))))
+        (unless (gethash k seen)
+          (puthash k t seen)
+          (push plist results))))
+    (nreverse results)))
+
+(declare-function shipit-pr-linked-issue--extract-from-text
+                  "shipit-pr-linked-issue")
+
+(defun shipit-issue--linked-pr-plist-from-pr-list-item (pr repo)
+  "Build a linked-PR plist from a `/repos/OWNER/REPO/pulls' response PR.
+Unlike the `/search/issues' shape, the merge status lives on the
+top-level `merged_at' field rather than inside a `pull_request'
+sub-object."
+  (let* ((merged-at (cdr (assq 'merged_at pr)))
+         (raw-state (cdr (assq 'state pr)))
+         (state (cond
+                 ((and merged-at (not (eq merged-at :json-null))) "merged")
+                 ((and raw-state (stringp raw-state)) raw-state)
+                 (t "unknown"))))
+    (list :repo repo
+          :number (cdr (assq 'number pr))
+          :title (cdr (assq 'title pr))
+          :state state
+          :author (cdr (assq 'login (cdr (assq 'user pr))))
+          :body (cdr (assq 'body pr))
+          :html-url (cdr (assq 'html_url pr))
+          :created (cdr (assq 'created_at pr))
+          :updated (cdr (assq 'updated_at pr)))))
+
+(defun shipit-issue--search-linked-prs (issue-key repo)
+  "Find PRs in REPO referencing ISSUE-KEY without per-PR API fetches.
+
+Uses the backend `:search-raw' to get candidate PRs whose indexed
+text mentions the key, then verifies each candidate's own title
+and body contain the key as a bounded token (case-insensitive,
+non-alphanumeric or string-boundary on each side).  Drops the
+text-mention false positive where only the numeric tail of a Jira
+key happens to appear (e.g. `fix 12535' without `ZIVID-').
+
+The candidate text already comes back in the search response, so
+this makes one API call total — fast even with many candidates.
+Symmetric branch verification would require N extra `/pulls/N'
+calls; if that becomes desired the check can be re-added behind a
+defcustom.  Empty on error or when the backend lacks `:search-raw'."
+  (let* ((resolved (ignore-errors (shipit-pr--resolve-for-repo repo)))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (search-fn (and backend (plist-get backend :search-raw)))
+         (results nil))
+    (when (and search-fn repo (stringp issue-key)
+               (not (string-empty-p issue-key)))
+      (condition-case err
+          (let* ((query (format "repo:%s+is:pr+%s" repo issue-key))
+                 (response (funcall search-fn config query 1 30))
+                 (items (and (listp response)
+                             (or (cdr (assq 'items response))
+                                 (cdr (assq 'pull_requests response)))))
+                 (total 0)
+                 (matched 0)
+                 (pattern (concat "\\(\\`\\|[^[:alnum:]]\\)"
+                                  (regexp-quote issue-key)
+                                  "\\(\\'\\|[^[:alnum:]]\\)")))
+            (let ((case-fold-search t))
+              (dolist (item (append items nil))
+                (cl-incf total)
+                (let* ((title (or (cdr (assq 'title item)) ""))
+                       (body (or (cdr (assq 'body item)) ""))
+                       (text (concat title "\n" body)))
+                  (when (string-match-p pattern text)
+                    (cl-incf matched)
+                    (push (shipit-issue--linked-pr-plist-from-search-item
+                           item repo)
+                          results)))))
+            (shipit--debug-log
+             "LINKED-PRS: searched %d candidates, text-matched %d for key %s in %s"
+             total matched issue-key repo))
+        (error
+         (shipit--debug-log "LINKED-PRS: search error: %S"
+                            (error-message-string err)))))
+    (nreverse results)))
+
+
+(defun shipit-issue--linked-pr-key (plist)
+  "Return the dedupe key (\"repo#number\") for a linked-PR PLIST."
+  (format "%s#%s" (plist-get plist :repo) (plist-get plist :number)))
+
+(defun shipit-issue--linked-pr-plist-enriched-p (plist)
+  "Return non-nil when PLIST has search-enriched fields (title/state)."
+  (and (plist-get plist :title) t))
+
+(defun shipit-issue--merge-linked-prs (a b)
+  "Merge two linked-PR plist lists A and B preserving order, deduping.
+Entries appearing in both sources are reconciled so the enriched
+variant (typically from the search) survives."
+  (let ((ordered nil)
+        (seen (make-hash-table :test 'equal)))
+    (dolist (p (append a b))
+      (let ((k (shipit-issue--linked-pr-key p)))
+        (cond
+         ((not (gethash k seen))
+          (puthash k p seen)
+          (push k ordered))
+         ((and (not (shipit-issue--linked-pr-plist-enriched-p
+                     (gethash k seen)))
+               (shipit-issue--linked-pr-plist-enriched-p p))
+          (puthash k p seen)))))
+    (mapcar (lambda (k) (gethash k seen)) (nreverse ordered))))
+
+(defun shipit-issue--linked-prs-heading (count)
+  "Return the `Linked PRs (COUNT)' heading text."
+  (format "%s %s"
+          (shipit--get-pr-field-icon "pull-request" "🔀")
+          (propertize (format "Linked PRs (%s)" count)
+                      'font-lock-face 'magit-section-heading)))
+
+(defun shipit-issue--linked-pr-state-display (state)
+  "Return a propertized STATE string (possibly with SVG badge) for inline display."
+  (cond
+   ((or (null state) (equal state "unknown")) "")
+   ((fboundp 'shipit--colorize-pr-state)
+    (shipit--colorize-pr-state state))
+   (t state)))
+
+(defun shipit-issue--insert-linked-pr-description (body)
+  "Insert a collapsed `Description' sub-section with BODY text."
+  (let ((text (if (or (null body) (eq body :json-null)
+                      (and (stringp body) (string-empty-p body)))
+                  "(no description)"
+                body)))
+    (magit-insert-section (linked-pr-description nil t)
+      (magit-insert-heading
+        (propertize "      Description"
+                    'font-lock-face 'magit-section-heading))
+      (magit-insert-section-body
+        (dolist (line (split-string text "\n"))
+          (insert "         " line "\n"))))))
+
+(defun shipit-issue--insert-linked-pr-body (plist)
+  "Insert the detail body of a linked-PR section from PLIST."
+  (let ((title (plist-get plist :title))
+        (state (plist-get plist :state))
+        (author (plist-get plist :author))
+        (created (plist-get plist :created))
+        (updated (plist-get plist :updated))
+        (url (plist-get plist :html-url)))
+    (when title
+      (insert (format "      %-9s %s\n" "Title:"
+                      (propertize title
+                                  'font-lock-face 'magit-section-heading))))
+    (when state
+      (insert (format "      %-9s %s\n" "State:"
+                      (shipit-issue--linked-pr-state-display state))))
+    (when author
+      (insert (format "      %-9s %s\n" "Author:"
+                      (propertize author
+                                  'font-lock-face 'shipit-username-face))))
+    (when created
+      (insert (format "      %-9s %s\n" "Created:"
+                      (propertize (format "%s" created)
+                                  'font-lock-face 'shipit-timestamp-face))))
+    (when (and updated (not (equal updated created)))
+      (insert (format "      %-9s %s\n" "Updated:"
+                      (propertize (format "%s" updated)
+                                  'font-lock-face 'shipit-timestamp-face))))
+    (when url
+      (insert (format "      %-9s %s\n" "URL:"
+                      (propertize url 'font-lock-face 'link))))
+    (shipit-issue--insert-linked-pr-description (plist-get plist :body))))
+
+(defun shipit-issue--insert-linked-pr-section (plist)
+  "Insert one linked-PR as a collapsed magit-section, using PLIST fields."
+  (let* ((repo (plist-get plist :repo))
+         (number (plist-get plist :number))
+         (title (plist-get plist :title))
+         (state (plist-get plist :state))
+         (pr-icon (shipit--get-pr-state-icon (or state "open") "🔀"))
+         (heading-start (point))
+         (heading (format "   %s %s#%s%s%s"
+                          pr-icon
+                          (propertize repo
+                                      'font-lock-face 'shipit-username-face)
+                          (propertize (format "%s" number)
+                                      'font-lock-face 'link)
+                          (if title (concat "  " title) "")
+                          (if state (concat "  "
+                                            (shipit-issue--linked-pr-state-display
+                                             state))
+                            ""))))
+    (magit-insert-section (linked-pr (cons repo number) t)
+      (magit-insert-heading heading)
+      (add-text-properties
+       heading-start (point)
+       (list 'keymap shipit-issue--linked-pr-keymap
+             'help-echo "RET: open PR in shipit; TAB: toggle details"))
+      (magit-insert-section-body
+        (shipit-issue--insert-linked-pr-body plist)))))
+
+(defun shipit-issue--insert-linked-prs-body (plists)
+  "Insert each linked-PR section for PLISTS."
+  (dolist (p plists)
+    (shipit-issue--insert-linked-pr-section p)))
+
+(defun shipit-issue--replace-linked-prs-section (plists)
+  "Replace the linked-PRs section body with PLISTS via targeted refresh."
+  (shipit--refresh-section-targeted
+   'issue-linked-prs
+   "Linked PRs (\\([^)]*\\))"
+   (length plists)
+   (lambda (_section)
+     (shipit-issue--insert-linked-prs-body plists)
+     (insert "\n"))))
+
+(defun shipit-issue--populate-linked-prs-async (issue-number issue-repo)
+  "Defer the linked-PRs lookup, then fill the section via targeted refresh.
+Runs in the next event-loop tick so the initial buffer render completes
+first.  Combines overrides with PR backend search results when
+`shipit-issue-linked-prs-auto-detect' is non-nil."
+  (let ((buffer (current-buffer)))
+    (run-at-time
+     0 nil
+     (lambda ()
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (let* ((overrides (shipit-issue--linked-prs-from-overrides
+                              issue-number))
+                  (searched (when (and shipit-issue-linked-prs-auto-detect
+                                       issue-repo)
+                              (shipit-issue--search-linked-prs
+                               (format "%s" issue-number) issue-repo)))
+                  (plists (shipit-issue--merge-linked-prs overrides
+                                                          searched)))
+             (shipit-issue--replace-linked-prs-section plists))))))))
+
+(defun shipit-issue--insert-linked-prs-section (issue-number &optional issue-repo)
+  "Insert a collapsible `Linked PRs' section for ISSUE-NUMBER.
+Each linked PR is rendered as its own collapsed `linked-pr'
+sub-section; expand with TAB to see title, state, author, dates,
+URL, and a collapsed description sub-section.  RET on the heading
+opens the PR in shipit.  When `shipit-issue-linked-prs-auto-detect'
+is non-nil a backend search runs deferred and replaces the section
+in place.  This is the reverse of the PR-buffer Linked Issue section."
+  (let* ((overrides (shipit-issue--linked-prs-from-overrides issue-number))
+         (auto shipit-issue-linked-prs-auto-detect)
+         (initial-heading (cond
+                           (auto (shipit-issue--linked-prs-heading
+                                  (if overrides
+                                      (format "%d, searching…"
+                                              (length overrides))
+                                    "searching…")))
+                           (t (shipit-issue--linked-prs-heading
+                               (length overrides))))))
+    (magit-insert-section (issue-linked-prs nil nil)
+      (magit-insert-heading initial-heading)
+      (shipit-issue--insert-linked-prs-body overrides)
+      (insert "\n"))
+    (when auto
+      (shipit-issue--populate-linked-prs-async issue-number issue-repo))))
+
+
 ;;; Issue links helpers
 
 (defun shipit-issue--group-issuelinks (links)
@@ -1634,6 +1965,8 @@ how many comments to load."
         (shipit-issues-open-buffer work-item-key shipit-issue-buffer-repo))
        ((and section (eq (oref section type) 'issue-comments-load-more))
         (shipit-issue-load-more-menu))
+       ((and section (eq (oref section type) 'linked-pr))
+        (shipit-issue--open-linked-pr))
        ((shipit-issue--comment-id-at-point)
         (shipit-dwim))
        (t

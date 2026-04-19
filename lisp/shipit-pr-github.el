@@ -562,6 +562,16 @@ Used by `shipit--read-repo' to search via curl."
     (shipit--debug-log "GitHub PR backend: raw search page %d: %s" page query)
     (shipit--api-request endpoint)))
 
+(defun shipit-pr-github--list-prs (_config repo &optional state per-page)
+  "List PRs in REPO via the GitHub `/repos/OWNER/REPO/pulls' endpoint.
+STATE defaults to \"all\", PER-PAGE to 100.  Returns a vector/list of
+PR alists sorted by most-recent-update first.  One page only — callers
+needing full history should paginate."
+  (let ((endpoint (format "/repos/%s/pulls?state=%s&sort=updated&direction=desc&per_page=%d"
+                          repo (or state "all") (or per-page 100))))
+    (shipit--debug-log "GitHub PR backend: list PRs in %s" repo)
+    (shipit--api-request endpoint)))
+
 (defun shipit-pr-github--refspec-for-pr (_config pr-number _head-ref)
   "Return GitHub refspec for PR-NUMBER.
 GitHub exposes PR refs at refs/pull/N/head."
@@ -1395,6 +1405,7 @@ PAGE defaults to 1.  Returns the parsed JSON list."
        :fetch-compare #'shipit-pr-github--fetch-compare
        :fetch-file-content #'shipit-pr-github--fetch-file-content
        :search-raw #'shipit-pr-github--search-raw
+       :list-prs #'shipit-pr-github--list-prs
        :search-repos #'shipit-pr-github--search-repos
        :search-repos-request #'shipit-pr-github--search-repos-request
        :refspec-for-pr #'shipit-pr-github--refspec-for-pr

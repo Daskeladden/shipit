@@ -230,6 +230,16 @@ in shipit PR buffers) if it becomes a problem."
   :type 'boolean
   :group 'shipit)
 
+(defcustom shipit-issue-linked-prs-auto-detect t
+  "Whether to auto-detect linked PRs by searching the PR backend.
+
+When non-nil, the Linked PRs section in a shipit issue buffer runs
+an `is:pr <issue-key>' search scoped to the issue buffer's repo
+and merges the results with any manually-recorded links from
+`shipit-pr-linked-issue-file'.  Disable to show manual links only."
+  :type 'boolean
+  :group 'shipit)
+
 (defcustom shipit-pr-refine-hunks t
   "Whether to highlight intra-line changes in PR diff hunks.
 

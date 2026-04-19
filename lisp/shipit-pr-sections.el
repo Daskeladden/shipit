@@ -61,6 +61,7 @@
 (declare-function shipit--mark-comment-read "shipit-core")
 (declare-function shipit--get-comment-unread-indicator "shipit-render")
 (declare-function shipit--add-suggestion-text-properties "shipit-render")
+(declare-function shipit--fontify-diff-hunk-lines "shipit-render")
 (declare-function shipit--create-jira-mention-overlays "shipit-issue-jira")
 
 ;; Forward declarations for variables
@@ -1649,14 +1650,14 @@ PR-DATA and PR-HEAD-SHA are optional metadata to attach to the section."
           (magit-insert-heading
             (format " %s %s %s%s (%s %s)"
                     viewed-icon
-                    (propertize status-char 'face 'magit-diff-file-heading)
+                    (propertize status-char 'font-lock-face 'magit-diff-file-heading)
                     (propertize filename 'face (if viewed 'shadow 'shipit-filename-face))
                     comment-indicator
                     (if (> adds 0)
-                        (propertize (format "+%d" adds) 'face 'diff-added)
+                        (propertize (format "+%d" adds) 'font-lock-face 'diff-added)
                       "+0")
                     (if (> dels 0)
-                        (propertize (format "-%d" dels) 'face 'diff-removed)
+                        (propertize (format "-%d" dels) 'font-lock-face 'diff-removed)
                       "-0"))))
         (add-text-properties heading-start (point) file-props))
       ;; Body is lazily rendered - apply properties when it's actually inserted
@@ -1706,10 +1707,10 @@ that more files exist beyond the fetched limit."
                                     (shipit--get-files-icon "📄")
                                     count-display
                                     (if (> total-adds 0)
-                                        (propertize (format "+%d" total-adds) 'face 'diff-added)
+                                        (propertize (format "+%d" total-adds) 'font-lock-face 'diff-added)
                                       "+0")
                                     (if (> total-dels 0)
-                                        (propertize (format "-%d" total-dels) 'face 'diff-removed)
+                                        (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
                                       "-0")))
                           (add-text-properties header-start (point)
                                                `(shipit-pr-files t
@@ -2251,18 +2252,18 @@ Returns the section object."
                     (format "%s Files Changed (%d/%d, %s %s)"
                             (shipit--get-files-icon "📄") display-count total-count
                             (if (> total-adds 0)
-                                (propertize (format "+%d" total-adds) 'face 'diff-added)
+                                (propertize (format "+%d" total-adds) 'font-lock-face 'diff-added)
                               "+0")
                             (if (> total-dels 0)
-                                (propertize (format "-%d" total-dels) 'face 'diff-removed)
+                                (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
                               "-0"))
                   (format "%s Files Changed (%d, %s %s)"
                           (shipit--get-files-icon "📄") total-count
                           (if (> total-adds 0)
-                              (propertize (format "+%d" total-adds) 'face 'diff-added)
+                              (propertize (format "+%d" total-adds) 'font-lock-face 'diff-added)
                             "+0")
                           (if (> total-dels 0)
-                              (propertize (format "-%d" total-dels) 'face 'diff-removed)
+                              (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
                             "-0"))))
               ;; Add filter display if active
               (let ((filter-display (shipit--get-files-filter-display)))
@@ -2585,10 +2586,10 @@ The :raw-date contains the ISO timestamp for property storage."
                                     (propertize (number-to-string files-changed) 'face 'bold)
                                   "0")
                                 (if (> additions 0)
-                                    (propertize (format "+%d" additions) 'face 'diff-added)
+                                    (propertize (format "+%d" additions) 'font-lock-face 'diff-added)
                                   "+0")
                                 (if (> deletions 0)
-                                    (propertize (format "-%d" deletions) 'face 'diff-removed)
+                                    (propertize (format "-%d" deletions) 'font-lock-face 'diff-removed)
                                   "-0"))))
 
               ;; Full SHA moved to heading line for compact display
@@ -2643,10 +2644,10 @@ REPO and PR-NUMBER are used for context in file operations."
           (magit-insert-heading (format "%s Files Changed (%d, %s %s)"
                                         (shipit--get-files-icon "📄") total-count
                                         (if (> total-adds 0)
-                                            (propertize (format "+%d" total-adds) 'face 'diff-added)
+                                            (propertize (format "+%d" total-adds) 'font-lock-face 'diff-added)
                                           "+0")
                                         (if (> total-dels 0)
-                                            (propertize (format "-%d" total-dels) 'face 'diff-removed)
+                                            (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
                                           "-0")))
           (setq heading-end (point))
           ;; Add filter display if active
@@ -3217,7 +3218,8 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                        (current-old-line-number (string-to-number
                                                  (save-match-data
                                                    (when (string-match "^@@ -\\([0-9]+\\)" hunk-header)
-                                                     (match-string 1 hunk-header))))))
+                                                     (match-string 1 hunk-header)))))
+                       (diff-line-ranges nil))
                   (dolist (line hunk-lines)
                     (cond
                      ;; Added line
@@ -3229,7 +3231,8 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                                                     shipit-file-path ,filename
                                                     shipit-line-number ,current-line-number
                                                     shipit-repo ,repo
-                                                    shipit-pr-number ,pr-number)))
+                                                    shipit-pr-number ,pr-number))
+                        (push (list (+ start 6) (1- (point)) ?+) diff-line-ranges))
                       ;; Look up RIGHT side comments for added lines
                       (let ((comments-at-line (gethash current-line-number comments-by-line-right)))
                         (when comments-at-line
@@ -3251,7 +3254,8 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                                                     shipit-file-path ,filename
                                                     shipit-old-line-number ,current-old-line-number
                                                     shipit-repo ,repo
-                                                    shipit-pr-number ,pr-number)))
+                                                    shipit-pr-number ,pr-number))
+                        (push (list (+ start 6) (1- (point)) ?-) diff-line-ranges))
                       ;; Look up LEFT side comments for deleted lines
                       (let ((comments-at-line (gethash current-old-line-number comments-by-line-left)))
                         (when comments-at-line
@@ -3274,7 +3278,8 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                                                               shipit-line-number ,current-line-number
                                                               shipit-old-line-number ,current-old-line-number
                                                               shipit-repo ,repo
-                                                              shipit-pr-number ,pr-number)))
+                                                              shipit-pr-number ,pr-number))
+                        (push (list (+ start 6) (1- (point)) ?\s) diff-line-ranges))
                       ;; Look up RIGHT side comments for context lines (they appear on the new/right side)
                       (let ((comments-at-line (gethash current-line-number comments-by-line-right)))
                         (when comments-at-line
@@ -3287,7 +3292,10 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                               (unless in-reply-to
                                 (shipit--insert-threaded-file-comment comment comment-threads repo pr-number 0))))))
                       (setq current-line-number (1+ current-line-number))
-                      (setq current-old-line-number (1+ current-old-line-number)))))))))))
+                      (setq current-old-line-number (1+ current-old-line-number)))))
+                  (when (and shipit-pr-fontify-hunks diff-line-ranges)
+                    (shipit--fontify-diff-hunk-lines
+                     (nreverse diff-line-ranges) filename))))))))
         ;; Insert outdated comments section if there are any
         (shipit--debug-log "OUTDATED-SECTION: file=%s outdated-count=%d" filename (length outdated-comments))
         (when (and outdated-comments (> (length outdated-comments) 0))
@@ -3522,10 +3530,10 @@ Per magit-section best practices, we must:
                                                           (format "%s Files Changed (%d, %s %s)"
                                                                   (shipit--get-files-icon "📄") total-count
                                                                   (if (> total-adds 0)
-                                                                      (propertize (format "+%d" total-adds) 'face 'diff-added)
+                                                                      (propertize (format "+%d" total-adds) 'font-lock-face 'diff-added)
                                                                     "+0")
                                                                   (if (> total-dels 0)
-                                                                      (propertize (format "-%d" total-dels) 'face 'diff-removed)
+                                                                      (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
                                                                     "-0")))
                                                         (setq heading-end (point))
                                                         ;; Add filter field display after heading if filter is active (matches notifications pattern)
@@ -4728,14 +4736,14 @@ Uses proper magit section safe update pattern:
                         (adds (or additions 0))
                         (dels (or deletions 0)))
                     (magit-insert-heading (format "              %s %s%s (%s %s)"
-                                                  (propertize status-char 'face 'magit-diff-file-heading)
+                                                  (propertize status-char 'font-lock-face 'magit-diff-file-heading)
                                                   (propertize (or filename "unknown") 'face 'shipit-filename-face)
                                                   comment-indicator
                                                   (if (> adds 0)
-                                                      (propertize (format "+%d" adds) 'face 'diff-added)
+                                                      (propertize (format "+%d" adds) 'font-lock-face 'diff-added)
                                                     "+0")
                                                   (if (> dels 0)
-                                                      (propertize (format "-%d" dels) 'face 'diff-removed)
+                                                      (propertize (format "-%d" dels) 'font-lock-face 'diff-removed)
                                                     "-0")))
                     (add-text-properties heading-start (point) file-props))
                   ;; Body is lazily rendered - apply properties when actually inserted

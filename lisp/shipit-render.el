@@ -1770,6 +1770,121 @@ LANGUAGE is the language identifier from the code fence."
             (delete-region content-start content-end)
             (insert fontified)))))))
 
+(defvar shipit--fontify-hunk-scratch-buffer nil
+  "Persistent scratch buffer for PR hunk language fontification.")
+
+(defun shipit--fontify-hunk-scratch-buffer ()
+  "Return the scratch buffer used for hunk fontification, creating it if needed."
+  (unless (buffer-live-p shipit--fontify-hunk-scratch-buffer)
+    (setq shipit--fontify-hunk-scratch-buffer
+          (get-buffer-create " *shipit-fontify-hunk-scratch*")))
+  shipit--fontify-hunk-scratch-buffer)
+
+(defun shipit--language-for-filename (filename)
+  "Return a `shipit--language-mode-alist' key for FILENAME, or nil."
+  (let ((ext (and filename (file-name-extension filename))))
+    (and ext
+         (let ((key (downcase ext)))
+           (and (assoc key shipit--language-mode-alist) key)))))
+
+(defun shipit--diff-hunk-mode-for-filename (filename)
+  "Return the major-mode symbol to fontify a diff of FILENAME, or nil."
+  (let* ((key (shipit--language-for-filename filename))
+         (mode (and key (cdr (assoc key shipit--language-mode-alist)))))
+    (and mode (shipit--mode-available-p mode) mode)))
+
+(defun shipit--diff-hunk-fontify (fragments mode main-buf)
+  "Fontify FRAGMENTS in MODE, layer syntax foreground onto MAIN-BUF regions.
+FRAGMENTS is a list of (BUF-START . TEXT) cells in buffer order, each
+TEXT is the content portion of one diff line (no prefix) and BUF-START
+is the buffer position of its first character.  Diff lines on the same
+side (new or old) are concatenated with newlines so that language modes
+can reason about multi-line constructs."
+  (when fragments
+    (let ((concat-text (mapconcat #'cdr fragments "
+"))
+          (intervals nil))
+      (with-current-buffer (shipit--fontify-hunk-scratch-buffer)
+        (let ((inhibit-read-only t)
+              (inhibit-modification-hooks t))
+          (erase-buffer)
+          (unless (eq major-mode mode)
+            (delay-mode-hooks (funcall mode)))
+          (insert concat-text)
+          (font-lock-ensure))
+        ;; Walk fragments, collect (dest-start dest-end face) intervals.
+        (let ((scratch-pos (point-min)))
+          (dolist (frag fragments)
+            (let* ((buf-start (car frag))
+                   (text (cdr frag))
+                   (frag-end (+ scratch-pos (length text))))
+              (let ((pos scratch-pos))
+                (while (< pos frag-end)
+                  (let* ((face (or (get-text-property pos 'font-lock-face)
+                                   (get-text-property pos 'face)))
+                         (next (or (next-property-change pos nil frag-end)
+                                   frag-end))
+                         (clamped (min next frag-end)))
+                    (when face
+                      (push (list (+ buf-start (- pos scratch-pos))
+                                  (+ buf-start (- clamped scratch-pos))
+                                  face)
+                            intervals))
+                    (setq pos clamped))))
+              (setq scratch-pos (+ frag-end 1)))))) ; +1 for the inserted newline
+      (with-current-buffer main-buf
+        (dolist (iv (nreverse intervals))
+          ;; Prepend the syntax face onto the existing font-lock-face so
+          ;; its foreground wins over the diff face's foreground, while
+          ;; the diff face's background continues to apply for attributes
+          ;; the syntax face does not set.
+          (shipit--prepend-font-lock-face
+           (nth 0 iv) (nth 1 iv) (nth 2 iv)))))))
+
+(defun shipit--prepend-font-lock-face (start end face)
+  "Prepend FACE to the `font-lock-face' text property between START and END.
+Walks property intervals so any existing `font-lock-face' value is preserved
+per-interval and combined into a face list (newer face first)."
+  (let ((pos start))
+    (while (< pos end)
+      (let* ((existing (get-text-property pos 'font-lock-face))
+             (change (next-single-property-change pos 'font-lock-face nil end))
+             (next (or change end))
+             (merged (cond
+                      ((null existing) face)
+                      ((listp existing) (cons face existing))
+                      (t (list face existing)))))
+        (put-text-property pos next 'font-lock-face merged)
+        (setq pos next))))) 
+
+(defun shipit--fontify-diff-hunk-lines (line-ranges filename)
+  "Apply language fontification to LINE-RANGES in the current buffer.
+LINE-RANGES is a list of (CONTENT-START CONTENT-END PREFIX-CHAR) tuples
+where PREFIX-CHAR is one of ?+, ?-, ?\s, identifying which side the
+line belongs to.  Language is derived from FILENAME extension via
+`shipit--diff-hunk-mode-for-filename'.  No-op if the language has no
+mapped mode."
+  (let ((mode (shipit--diff-hunk-mode-for-filename filename)))
+    (when mode
+      (let ((new-frags nil)
+            (old-frags nil)
+            (main-buf (current-buffer)))
+        (dolist (range line-ranges)
+          (let* ((cstart (nth 0 range))
+                 (cend (nth 1 range))
+                 (prefix (nth 2 range))
+                 (text (buffer-substring-no-properties cstart cend)))
+            (cond
+             ((eq prefix ?+)
+              (push (cons cstart text) new-frags))
+             ((eq prefix ?-)
+              (push (cons cstart text) old-frags))
+             ((eq prefix ?\s)
+              (push (cons cstart text) new-frags)
+              (push (cons cstart text) old-frags)))))
+        (shipit--diff-hunk-fontify (nreverse new-frags) mode main-buf)
+        (shipit--diff-hunk-fontify (nreverse old-frags) mode main-buf)))))
+
 (defun shipit--adjust-color-brightness (color amount)
   "Adjust COLOR brightness by AMOUNT (-1.0 to 1.0).
 Positive AMOUNT lightens, negative darkens."

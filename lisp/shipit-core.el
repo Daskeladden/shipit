@@ -215,6 +215,20 @@ Examples: '.worktrees/', 'worktrees/', '.git/worktrees/'"
   :type 'string
   :group 'shipit)
 
+(defcustom shipit-pr-fontify-hunks nil
+  "Whether to apply language syntax highlighting inside PR diff hunks.
+
+When non-nil, shipit applies language-appropriate font-lock faces
+to the code content of each line in the Files Changed section,
+inferred from the filename extension and
+`shipit--language-mode-alist'.  Diff add/remove/context backgrounds
+stay in place and the syntax foreground is layered on top.
+
+Disabled by default because per-line fontification is synchronous
+and can add noticeable latency on large PRs."
+  :type 'boolean
+  :group 'shipit)
+
 (defcustom shipit-section-visibility-indicators nil
   "Value to use for `magit-section-visibility-indicators' in shipit buffers.
 

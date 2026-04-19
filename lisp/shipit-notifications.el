@@ -1299,7 +1299,10 @@ C-u prefix opens in browser instead."
      ;; Default — open in shipit issue buffer (works for all backends)
      (t
       (require 'shipit-issues-buffer)
-      (shipit-issues-open-buffer issue-number repo backend-id backend-config)))))
+      (shipit-issues-open-buffer issue-number repo backend-id backend-config)
+      ;; Return the issue buffer so callers (notification activity nav) can
+      ;; schedule follow-up work against it.
+      (get-buffer (shipit-issue-buffer-name repo issue-number))))))
 
 (defun shipit--open-notification-discussion (number repo)
   "Open discussion NUMBER from REPO in shipit discussion buffer.

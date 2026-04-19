@@ -648,19 +648,27 @@ plist has the keys consumed by `shipit-pr--dispatch-activity-navigation'."
 
 (defun shipit-notifications-buffer--schedule-activity-nav (buffer props)
   "In BUFFER, dispatch activity navigation using PROPS once the buffer is ready.
-When BUFFER still has pending async sections, register a one-shot
-`shipit-buffer-ready-hook' handler.  Otherwise dispatch immediately."
+Waits on `shipit-buffer-ready-hook' for shipit PR buffers with pending
+async sections; on `shipit-issue-buffer-ready-hook' for issue buffers
+whose comments are still loading; otherwise dispatches immediately.
+The hook handler is one-shot and buffer-local."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (if (and (boundp 'shipit-buffer--pending-async-sections)
-               shipit-buffer--pending-async-sections)
-          (let ((fn-sym (make-symbol "shipit-nav-on-ready")))
-            (fset fn-sym
-                  (lambda ()
-                    (remove-hook 'shipit-buffer-ready-hook fn-sym t)
-                    (shipit-pr--dispatch-activity-navigation props)))
-            (add-hook 'shipit-buffer-ready-hook fn-sym nil t))
-        (shipit-pr--dispatch-activity-navigation props)))))
+      (let* ((pr-pending (and (boundp 'shipit-buffer--pending-async-sections)
+                              shipit-buffer--pending-async-sections))
+             (issue-pending (and (derived-mode-p 'shipit-issue-mode)
+                                 (boundp 'shipit-issue-buffer-ready-hook)))
+             (hook-var (cond (pr-pending 'shipit-buffer-ready-hook)
+                             (issue-pending 'shipit-issue-buffer-ready-hook))))
+        (if hook-var
+            (let ((fn-sym (make-symbol "shipit-nav-on-ready")))
+              (fset fn-sym
+                    (lambda ()
+                      (remove-hook hook-var fn-sym t)
+                      (shipit-pr--dispatch-activity-navigation props)))
+              (add-hook hook-var fn-sym nil t))
+          (shipit-pr--dispatch-activity-navigation props))))))
+
 
 (defun shipit-notifications-buffer-open ()
   "Open the notification at point directly.
@@ -685,7 +693,11 @@ With prefix arg (C-u), show action menu instead."
                (when (and activity-props (bufferp buffer))
                  (shipit-notifications-buffer--schedule-activity-nav
                   buffer activity-props))))
-            ("issue" (shipit--open-notification-issue number repo activity))
+            ("issue"
+             (let ((buffer (shipit--open-notification-issue number repo activity)))
+               (when (and activity-props (bufferp buffer))
+                 (shipit-notifications-buffer--schedule-activity-nav
+                  buffer activity-props))))
             ("discussion" (shipit--open-notification-discussion number repo))
             ("rss" (when-let* ((url (cdr (assq 'browse-url activity))))
                      (browse-url url)))

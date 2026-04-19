@@ -217,6 +217,12 @@ Provides a read-only interface for viewing GitHub issues.
 
 ;;; Buffer lifecycle
 
+(defvar-local shipit-issue-buffer-ready-hook nil
+  "Buffer-local hook run after an issue buffer's head+tail comments are rendered.
+Activity-navigation callers (e.g. opening an issue from a notification)
+wait on this to dispatch once the target comment is actually present in
+the buffer.")
+
 (defun shipit-issue-buffer-name (repo issue-number)
   "Generate buffer name for REPO and ISSUE-NUMBER."
   (format "*shipit-issue: %s#%s*" repo issue-number))
@@ -405,7 +411,8 @@ buffer-local overrides so the issue fetches use the correct backend
                        (shipit-comment--fetch-reactions-batch visible repo nil))))
                    (let ((magit-root-section (or magit-root-section root-section)))
                      (shipit-issue--replace-comments-with-paginated-content
-                      repo issue-number result)))))))
+                      repo issue-number result))
+                   (run-hooks 'shipit-issue-buffer-ready-hook))))))
           ;; Fetch child items async for epics
           (let ((issue-type (cdr (assq 'issue-type issue-data))))
             (when (and issue-type (string-equal-ignore-case issue-type "Epic"))

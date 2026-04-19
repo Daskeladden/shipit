@@ -218,16 +218,13 @@ an RET / mouse-1 keymap that opens the matching issue in shipit."
   (when (fboundp 'font-lock-flush)
     (font-lock-flush)))
 
-(defun shipit-code-refs--turn-on-maybe ()
-  "Enable `shipit-code-refs-mode' in buffers where it makes sense.
-Currently: any `prog-mode' descendant."
-  (when (derived-mode-p 'prog-mode)
-    (shipit-code-refs-mode 1)))
-
 ;;;###autoload
 (define-globalized-minor-mode global-shipit-code-refs-mode
   shipit-code-refs-mode
-  shipit-code-refs--turn-on-maybe
+  (lambda ()
+    "Turn on `shipit-code-refs-mode' in `prog-mode' descendants."
+    (when (derived-mode-p 'prog-mode)
+      (shipit-code-refs-mode 1)))
   :group 'shipit-code-refs)
 
 ;;; Embark integration

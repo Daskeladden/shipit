@@ -81,7 +81,8 @@ are not inside a syntactic comment."
     (while (and (not found)
                 (re-search-forward shipit-code-refs-pattern bound t))
       (if shipit-code-refs-comments-only
-          (when (nth 4 (syntax-ppss (match-beginning 0)))
+          (when (save-match-data
+                  (nth 4 (syntax-ppss (match-beginning 0))))
             (setq found t))
         (setq found t)))
     found))
@@ -255,6 +256,39 @@ Category is `shipit-issue-ref', value is the bare key string."
   (add-to-list 'embark-target-finders #'shipit-code-refs-embark-target)
   (add-to-list 'embark-keymap-alist
                '(shipit-issue-ref . shipit-code-refs-embark-keymap)))
+
+;;;###autoload
+(defun shipit-code-refs-diagnose ()
+  "Report diagnostic information for the current buffer.
+
+Tells whether `shipit-code-refs-mode' is active, how many matches
+`shipit-code-refs-pattern' finds, and how many of those land inside
+syntactic comments.  Useful for figuring out why keys are or are not
+being highlighted."
+  (interactive)
+  (let ((mode-on (bound-and-true-p shipit-code-refs-mode))
+        (total 0)
+        (first-match nil)
+        (max-total 2000)
+        (start-time (current-time))
+        (case-fold-search nil))
+    ;; Cap the scan so a large buffer can never hang this command.
+    ;; `syntax-ppss' is intentionally not called here — some major
+    ;; modes make it very slow on cold buffers.
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (< total max-total)
+                  (re-search-forward shipit-code-refs-pattern nil t))
+        (cl-incf total)
+        (unless first-match
+          (setq first-match (match-string-no-properties 1)))))
+    (let ((elapsed (float-time (time-since start-time))))
+      (message
+       "shipit-code-refs: mode=%s, major-mode=%s, matches=%s%d, first=%s, comments-only=%s, scan=%.3fs"
+       (if mode-on "on" "OFF — run `shipit-code-refs-mode'")
+       major-mode
+       (if (>= total max-total) ">" "")
+       total (or first-match "nil") shipit-code-refs-comments-only elapsed))))
 
 (provide 'shipit-code-refs)
 ;;; shipit-code-refs.el ends here

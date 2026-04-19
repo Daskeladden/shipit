@@ -3,7 +3,7 @@
 ;; Copyright (C) 2025-2026 shipit contributors
 
 ;; Author: Daskeladden
-;; Version: 1.2.0
+;; Version: 1.3.0
 ;; Package-Requires: ((emacs "27.1") (magit "3.0.0") (transient "0.3.0") (dash "2.19.0"))
 ;; Keywords: vc tools git
 ;; URL: https://github.com/Daskeladden/shipit

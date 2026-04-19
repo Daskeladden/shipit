@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.3.0 (2026-04-19)
+
+### Performance
+
+- **Large issue buffers open in seconds, not minutes.** Popular GitHub issues (e.g. one with 500+ comments and 300+ reactions per comment) went from ~2.5 min to ~5 s to fully loaded. Combined wins:
+  - Issue activity uses `/issues/N/events` (state changes only) async with a 3-page cap, instead of sync `/issues/N/timeline` paginating through every comment-as-event.
+  - Reaction counts come from the `reactions` summary object on issue/PR/comment GET responses; the per-comment reactor fetch stops at page 1 (tooltip shows first 5 names + "+N more") instead of paginating 300+ reactors per comment.
+  - Avatar downloads prefetch in parallel when head+tail metadata arrives, so the sync `shipit--download-and-cache-avatar` call during each comment render becomes a file-cache hit.
+  - `shipit--wrap-text` reuses a single persistent scratch buffer instead of allocating a fresh `with-temp-buffer` per wrapped line — a 22 KB comment dropped from ~5.8 s to ~0.15 s to render.
+  - Comments section replacement rewrites only the body via targeted `replace-match` on the heading count and a marker-preserving body swap, instead of deleting the whole section. The body insert skips intermediate redisplay yields so the user's window-start stays anchored where they had it.
+  - Removed debug-log calls that were writing ~700 KB per comment to disk (full reaction alists dumped via `%S`) plus hundreds of per-reaction `Processing reaction...` lines.
+
+### Bug fixes
+
+- `shipit--extract-reaction-summary` now looks up GitHub reaction keys (`+1`, `-1`, `laugh`, …) via `(intern "+1")` at runtime. In Elisp source `+1` and `-1` read as *integers* — the previous quoted-symbol lookup silently dropped thumbs-up and thumbs-down counts and pushed callers onto the paginated fallback.
+- `shipit--api-request-paginated-async` no longer drops the callback when `max-pages` is hit on a full final page. The capped events fetch (3 pages × 100 items) hit this path on popular issues and left the activity section stuck on "Loading…" forever.
+- Added a `condition-case` + backtrace capture around the pinned-comment async insertion so any void-variable error in the insertion path lands in the debug log instead of a silent process-filter failure.
+
+---
+
 ## v1.2.0 (2026-04-18)
 
 ### Features

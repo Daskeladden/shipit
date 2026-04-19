@@ -215,6 +215,30 @@ Examples: '.worktrees/', 'worktrees/', '.git/worktrees/'"
   :type 'string
   :group 'shipit)
 
+(defcustom shipit-section-visibility-indicators nil
+  "Value to use for `magit-section-visibility-indicators' in shipit buffers.
+
+Magit defaults to showing a left-fringe `>' (collapsed) or `v'
+(expanded) marker on every expandable section.  Shipit buffers
+contain many nested sections where these indicators add visual
+noise, so the default here is nil to suppress them in shipit
+buffers without changing the global magit default.
+
+The value is applied buffer-locally; any format accepted by
+`magit-section-visibility-indicators' works.  Set to the symbol
+`inherit' to follow the global magit default instead."
+  :type '(choice (const :tag "No indicators" nil)
+                 (const :tag "Inherit global magit default" inherit)
+                 (sexp  :tag "Custom value"))
+  :group 'shipit)
+
+(defun shipit--apply-section-defaults ()
+  "Apply shipit buffer-local defaults for `magit-section-mode' customizations.
+Call from the body of each shipit mode derived from `magit-section-mode'."
+  (unless (eq shipit-section-visibility-indicators 'inherit)
+    (setq-local magit-section-visibility-indicators
+                shipit-section-visibility-indicators)))
+
 (defvar shipit-current-repo nil
   "Current repository in the format \\='owner/repo\\='.")
 

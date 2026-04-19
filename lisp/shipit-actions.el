@@ -145,7 +145,8 @@ Each job's logs are fetched lazily on first expand.")
                 (shipit-actions-refresh)))
   (setq-local buffer-read-only t)
   (setq-local truncate-lines t)
-  (setq-local magit-section-preserve-visibility nil))
+  (setq-local magit-section-preserve-visibility nil)
+  (shipit--apply-section-defaults))
 
 ;;; Entry point
 

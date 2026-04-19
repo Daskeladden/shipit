@@ -259,7 +259,8 @@ Kanban Board, and Frequently Visited sections.
   (setq-local truncate-lines nil)
   (add-hook 'magit-section-set-visibility-hook
             #'shipit-atlassian-dashboard--section-visibility nil t)
-  (setq-local magit-root-section nil))
+  (setq-local magit-root-section nil)
+  (shipit--apply-section-defaults))
 
 ;;; Buffer lifecycle
 

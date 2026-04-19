@@ -86,7 +86,8 @@ Displays repository releases and tags.
   :group 'shipit
   (setq-local revert-buffer-function #'shipit-releases-buffer-refresh)
   (setq-local buffer-read-only t)
-  (setq-local truncate-lines nil))
+  (setq-local truncate-lines nil)
+  (shipit--apply-section-defaults))
 
 ;;; Entry point
 

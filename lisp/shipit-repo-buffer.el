@@ -214,7 +214,8 @@ Displays repository metadata and README.
   (setq-local truncate-lines nil)
   (add-hook 'magit-section-set-visibility-hook
             #'shipit-repo-buffer--section-visibility nil t)
-  (setq-local magit-root-section nil))
+  (setq-local magit-root-section nil)
+  (shipit--apply-section-defaults))
 
 ;;; Data fetching
 

@@ -140,6 +140,7 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 \\{shipit-preview-mode-map}"
   :group 'shipit
   (setq-local revert-buffer-function #'shipit-preview--refresh)
+  (shipit--apply-section-defaults)
   ;; Initialize filter variables
   (setq-local shipit--files-filter-text "")
   (setq-local shipit--files-filter-mode nil)

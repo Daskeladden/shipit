@@ -101,7 +101,8 @@
   :group 'shipit
   (setq-local revert-buffer-function #'shipit-notifications-buffer-refresh)
   (setq-local truncate-lines t)
-  (setq-local tab-width 8))
+  (setq-local tab-width 8)
+  (shipit--apply-section-defaults))
 
 ;;; Buffer management
 

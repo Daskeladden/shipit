@@ -204,6 +204,7 @@ Provides a read-only interface for viewing GitHub Discussions.
   (setq-local truncate-lines t)
   (setq-local tab-width 8)
   (setq-local magit-root-section nil)
+  (shipit--apply-section-defaults)
   (font-lock-mode 1))
 
 ;;; Buffer lifecycle

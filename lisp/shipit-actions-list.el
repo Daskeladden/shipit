@@ -171,7 +171,8 @@ Case-insensitive substring match.  Nil or empty FILTER-TEXT matches all."
               (lambda (_ignore-auto _noconfirm)
                 (shipit-actions-list-refresh)))
   (setq-local buffer-read-only t)
-  (setq-local truncate-lines t))
+  (setq-local truncate-lines t)
+  (shipit--apply-section-defaults))
 
 ;;; Entry point
 

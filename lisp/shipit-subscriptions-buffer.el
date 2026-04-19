@@ -66,7 +66,8 @@
 \\{shipit-subscriptions-mode-map}"
   :group 'shipit
   (setq-local revert-buffer-function #'shipit-subscriptions-refresh)
-  (setq-local truncate-lines t))
+  (setq-local truncate-lines t)
+  (shipit--apply-section-defaults))
 
 ;;; Filter state
 

@@ -120,6 +120,7 @@ Returns non-nil if state was restored."
   :group 'shipit
   (setq-local revert-buffer-function #'shipit-issue-create--refresh)
   (setq-local shipit-issue-create--cached-options (make-hash-table :test 'eq))
+  (shipit--apply-section-defaults)
   (add-hook 'kill-buffer-hook #'shipit-issue-create--save-draft nil t))
 
 ;;; Buffer name

@@ -781,7 +781,7 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
                                             ((string= prefix "@") 'magit-diff-hunk-heading)
                                             (t 'magit-diff-context))))
                             ;; Apply face and shipit comment properties
-                            (let ((properties `(,@(when (facep diff-face) `(face ,diff-face))
+                            (let ((properties `(,@(when (facep diff-face) `(font-lock-face ,diff-face))
                                                 shipit-comment t
                                                 shipit-comment-id ,comment-id
                                                 shipit-comment-body ,(shipit--clean-text (or (cdr (assq 'body comment)) ""))
@@ -3021,13 +3021,13 @@ FILENAME, REPO, and PR-NUMBER provide context."
           (insert (concat "       " line "\n"))
           (cond
            ((string-prefix-p "+" line)
-            (add-text-properties start (point) '(face magit-diff-added)))
+            (add-text-properties start (point) '(font-lock-face magit-diff-added)))
            ((string-prefix-p "-" line)
-            (add-text-properties start (point) '(face magit-diff-removed)))
+            (add-text-properties start (point) '(font-lock-face magit-diff-removed)))
            ((string-prefix-p "@@" line)
-            (add-text-properties start (point) '(face magit-diff-hunk-heading)))
+            (add-text-properties start (point) '(font-lock-face magit-diff-hunk-heading)))
            (t
-            (add-text-properties start (point) '(face magit-diff-context)))))))))
+            (add-text-properties start (point) '(font-lock-face magit-diff-context)))))))))
 
 (defun shipit--insert-outdated-comments-section (outdated-comments comment-threads repo pr-number filename)
   "Insert a collapsible section for OUTDATED-COMMENTS.
@@ -3206,7 +3206,7 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                 (oset magit-insert-section--current hidden nil))
               ;; Insert the hunk header as the section heading
               (magit-insert-heading (propertize (concat "     " hunk-header)
-                                               'face 'magit-diff-hunk-heading))
+                                               'font-lock-face 'magit-diff-hunk-heading))
               ;; Insert hunk contents and comments in the section body
               (magit-insert-section-body
                 (let* ((current-line-number (string-to-number
@@ -3225,7 +3225,7 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                       (let ((start (point)))
                         (insert (concat "     " line "\n"))
                         (add-text-properties start (point)
-                                             `(face magit-diff-added
+                                             `(font-lock-face magit-diff-added
                                                     shipit-file-path ,filename
                                                     shipit-line-number ,current-line-number
                                                     shipit-repo ,repo
@@ -3247,7 +3247,7 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                       (let ((start (point)))
                         (insert (concat "     " line "\n"))
                         (add-text-properties start (point)
-                                             `(face magit-diff-removed
+                                             `(font-lock-face magit-diff-removed
                                                     shipit-file-path ,filename
                                                     shipit-old-line-number ,current-old-line-number
                                                     shipit-repo ,repo
@@ -3269,11 +3269,12 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                       (let ((start (point)))
                         (insert (concat "     " line "\n"))
                         (add-text-properties start (point)
-                                             `(shipit-file-path ,filename
-                                                                shipit-line-number ,current-line-number
-                                                                shipit-old-line-number ,current-old-line-number
-                                                                shipit-repo ,repo
-                                                                shipit-pr-number ,pr-number)))
+                                             `(font-lock-face magit-diff-context
+                                                              shipit-file-path ,filename
+                                                              shipit-line-number ,current-line-number
+                                                              shipit-old-line-number ,current-old-line-number
+                                                              shipit-repo ,repo
+                                                              shipit-pr-number ,pr-number)))
                       ;; Look up RIGHT side comments for context lines (they appear on the new/right side)
                       (let ((comments-at-line (gethash current-line-number comments-by-line-right)))
                         (when comments-at-line

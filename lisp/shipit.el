@@ -4,7 +4,7 @@
 
 ;; Author: Daskeladden
 ;; Version: 1.3.0
-;; Package-Requires: ((emacs "27.1") (magit "3.0.0") (transient "0.3.0") (dash "2.19.0"))
+;; Package-Requires: ((emacs "28.1") (magit "4.5.0") (magit-section "4.5.0") (transient "0.3.0") (dash "2.19.0"))
 ;; Keywords: vc tools git
 ;; URL: https://github.com/Daskeladden/shipit
 

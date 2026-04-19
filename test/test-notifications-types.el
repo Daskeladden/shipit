@@ -405,9 +405,12 @@ THEN changelog events appear with author and change description."
       (should (search-forward "Status" nil t)))))
 
 (ert-deftest test-issue-activity-section-empty-state-without-changelog ()
-  "GIVEN issue data without changelog key
+  "GIVEN issue data without changelog key and loading-p=nil
 WHEN rendering the activity section
-THEN Activity (0) heading is shown with empty state message."
+THEN Activity (0) heading is shown with empty state message.
+Callers that will fetch asynchronously pass loading-p=t and get a
+loading placeholder instead; see
+`test-issue-activity-section-loading-state-when-async'."
   (require 'shipit-issues-buffer)
   (let ((issue-data
          '((id . "PRJ-42")
@@ -422,10 +425,34 @@ THEN Activity (0) heading is shown with empty state message."
     (with-temp-buffer
       (let ((inhibit-read-only t))
         (magit-insert-section (_root 'root)
-          (shipit-issue--insert-activity-section "test/repo" issue-data))
+          (shipit-issue--insert-activity-section "test/repo" issue-data nil))
         (goto-char (point-min))
         (should (search-forward "Activity (0)" nil t))
         (should (search-forward "No activity yet" nil t))))))
+
+(ert-deftest test-issue-activity-section-loading-state-when-async ()
+  "GIVEN issue data without changelog key and loading-p=t
+WHEN rendering the activity section
+THEN the heading shows a loading indicator and the body says
+\"Loading activity…\" — the async events fetch will replace this
+placeholder once it completes."
+  (require 'shipit-issues-buffer)
+  (let ((issue-data
+         '((id . "42")
+           (number . 42)
+           (title . "Popular issue")
+           (state . "Open")
+           (body . "test"))))
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (magit-insert-section (_root 'root)
+          (shipit-issue--insert-activity-section "owner/repo" issue-data t))
+        (goto-char (point-min))
+        (should (search-forward "Activity (…)" nil t))
+        (goto-char (point-min))
+        (should (search-forward "Loading activity" nil t))
+        (goto-char (point-min))
+        (should-not (search-forward "No activity yet" nil t))))))
 
 (ert-deftest test-issue-format-changelog-items-status-change ()
   "GIVEN a changelog item for status change

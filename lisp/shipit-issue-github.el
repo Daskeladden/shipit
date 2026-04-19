@@ -36,16 +36,15 @@
 
 (defun shipit-issue-github--fetch-issue (config id)
   "Fetch issue ID using CONFIG.
-CONFIG must contain :repo.  Also fetches timeline for changelog."
+CONFIG must contain :repo.  Events (changelog) are NOT fetched here —
+use `:fetch-timeline-async' so the buffer renders without waiting
+for the paginated events endpoint."
   (let* ((repo (plist-get config :repo))
          (endpoint (format "/repos/%s/issues/%s" repo id))
          (result (shipit-gh-etag-get-json-with-refresh-cache endpoint nil shipit-github-token))
-         (issue (plist-get result :json))
-         (changelog (shipit-issue-github--fetch-timeline config id)))
+         (issue (plist-get result :json)))
     (shipit--debug-log "GitHub backend: fetched issue #%s from %s" id repo)
-    (if changelog
-        (append issue `((changelog . ,changelog)))
-      issue)))
+    issue))
 
 (defun shipit-issue-github--fetch-comments (config id)
   "Fetch comments for issue ID using CONFIG."
@@ -303,19 +302,54 @@ Returns a list of changelog entries, or nil if empty."
     (let ((events (append timeline nil)))
       (delq nil (mapcar #'shipit-issue-github--normalize-timeline-event events)))))
 
+(defconst shipit-issue-github--timeline-max-pages 3
+  "Maximum number of pages to fetch from the issue `/events' endpoint.
+Popular issues accumulate thousands of `subscribed'/`mentioned' events
+that we filter out anyway; capping pagination keeps the async fetch
+responsive while still covering plenty of real state-change activity
+(300 events → roughly 50–100 kept entries after filtering).")
+
 (defun shipit-issue-github--fetch-timeline (config id)
-  "Fetch timeline for issue ID using CONFIG.
-Returns normalized changelog entries or nil on failure."
+  "Fetch issue events for ID using CONFIG synchronously.
+Returns normalized changelog entries or nil on failure.
+Uses the `/issues/N/events' endpoint and caps pagination at
+`shipit-issue-github--timeline-max-pages' to stay responsive on
+issues with thousands of subscribe/mention events.
+
+Prefer `shipit-issue-github--fetch-timeline-async' — this sync
+variant exists only for contract parity."
   (condition-case err
       (let* ((repo (plist-get config :repo))
-             (endpoint (format "/repos/%s/issues/%s/timeline" repo id))
-             (raw (shipit--api-request-paginated endpoint)))
-        (shipit--debug-log "GitHub backend: fetched timeline for issue #%s (%d events)"
+             (endpoint (format "/repos/%s/issues/%s/events" repo id))
+             (raw (shipit--api-request-paginated
+                   endpoint nil shipit-issue-github--timeline-max-pages)))
+        (shipit--debug-log "GitHub backend: fetched events for issue #%s (%d events)"
                            id (length raw))
         (shipit-issue-github--normalize-timeline raw))
     (error
-     (shipit--debug-log "GitHub backend: timeline fetch failed for #%s: %s" id err)
+     (shipit--debug-log "GitHub backend: events fetch failed for #%s: %s" id err)
      nil)))
+
+(defun shipit-issue-github--fetch-timeline-async (config id callback)
+  "Fetch issue events for ID asynchronously using CONFIG.
+CONFIG must contain :repo.  Calls CALLBACK with a list of normalized
+changelog entries (possibly nil) when the fetch completes.  Pagination
+is capped at `shipit-issue-github--timeline-max-pages' to avoid the
+popular-issue pathology where subscribed/mentioned events balloon the
+payload far beyond what the filter keeps."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/issues/%s/events" repo id)))
+    (shipit--debug-log "GitHub backend: async fetching events for issue #%s (cap=%d pages)"
+                       id shipit-issue-github--timeline-max-pages)
+    (shipit--api-request-paginated-async
+     endpoint
+     (lambda (raw)
+       (let ((changelog (shipit-issue-github--normalize-timeline raw)))
+         (shipit--debug-log "GitHub backend: async events for issue #%s yielded %d changelog entries"
+                            id (length (or changelog '())))
+         (funcall callback changelog)))
+     100
+     shipit-issue-github--timeline-max-pages)))
 
 (defun shipit-issue-github--reference-patterns (_config)
   "Return reference patterns for GitHub issues.
@@ -345,15 +379,20 @@ CONFIG must contain :repo.  Returns a list of reaction alists."
     (shipit--api-request-paginated endpoint)))
 
 (defun shipit-issue-github--fetch-reactions-async (config issue-number callback)
-  "Fetch reactions for issue ISSUE-NUMBER asynchronously using CONFIG.
-CONFIG must contain :repo.  Calls CALLBACK with the list of reaction
-alists when complete.  Non-blocking — the HTTP requests run via
-`url-retrieve' so the main thread stays responsive."
+  "Fetch first page of reactions for ISSUE-NUMBER asynchronously using CONFIG.
+CONFIG must contain :repo.  Calls CALLBACK with up to 100 reaction
+alists (one page) when complete.  Non-blocking — the HTTP request runs
+via `url-retrieve' so the main thread stays responsive.
+
+Only the first page is fetched because accurate counts come from the
+issue's reactions summary object (populated into
+`shipit--reaction-summary-cache' at buffer render time).  The page-1
+sample provides reactor logins for the \"first N + M more\" tooltip."
   (let* ((repo (plist-get config :repo))
          (endpoint (format "/repos/%s/issues/%s/reactions" repo issue-number)))
-    (shipit--debug-log "GitHub backend: async fetching reactions for issue #%s from %s"
+    (shipit--debug-log "GitHub backend: async fetching reactions page 1 for issue #%s from %s"
                        issue-number repo)
-    (shipit--api-request-paginated-async endpoint callback)))
+    (shipit--api-request-paginated-async endpoint callback 100 1)))
 
 (defun shipit-issue-github--add-reaction (config issue-number reaction)
   "Add REACTION to issue ISSUE-NUMBER using CONFIG.
@@ -447,6 +486,8 @@ via the PR backend's mark-notification-read function."
        :fetch-comments-async #'shipit-issue-github--fetch-comments-async
        :fetch-comments-head-tail-async #'shipit-issue-github--fetch-comments-head-tail-async
        :fetch-pinned-comment-async #'shipit-issue-github--fetch-pinned-comment-async
+       :fetch-timeline #'shipit-issue-github--fetch-timeline
+       :fetch-timeline-async #'shipit-issue-github--fetch-timeline-async
        :search #'shipit-issue-github--search
        :create-issue #'shipit-issue-github--create-issue
        :reference-patterns #'shipit-issue-github--reference-patterns

@@ -172,13 +172,10 @@ when all pages are fetched."
             (let ((existing (gethash cache-key shipit--reaction-cache)))
               (puthash cache-key (append (or existing '()) (or reactions '()))
                        shipit--reaction-cache)))
-          (if (and reactions (= (length reactions) 100))
-              (let ((next-url (format "%s&page=%d" base-endpoint (1+ page))))
-                (url-retrieve next-url
-                              #'shipit-comment-github--handle-reaction-page
-                              (list comment-id cache-key base-endpoint (1+ page) results)
-                              t t))
-            (puthash comment-id t results))))
+          ;; Stop after page 1: display counts come from the comment's
+          ;; `reactions' summary object, not the enumerated list. The
+          ;; first-page sample is only used for tooltip reactor names.
+          (puthash comment-id t results)))
     (error
      (shipit--debug-log "[reactions-batch] Failed page %d for comment %s: %s"
                         page comment-id (error-message-string err))

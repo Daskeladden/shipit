@@ -1099,6 +1099,74 @@ Returns binary data as string, or nil if unchanged (304) or error."
         (kill-buffer (current-buffer))
         `(:status ,status-code :data ,data :etag ,etag)))))
 
+(defun shipit--prefetch-avatars-async (comments)
+  "Prefetch avatars for users in COMMENTS in parallel.
+For each comment, fire an async `url-retrieve' for the author's
+avatar and, on success, write the response body to the shipit
+avatar cache directory.  Subsequent synchronous renders find the
+cache file on disk and skip the blocking HTTP round trip — this is
+the entire benefit; results are otherwise ignored.
+
+Skips comments whose avatar is already cached fresh (as decided by
+`shipit--avatar-needs-refresh-p').  Fire-and-forget: errors are
+swallowed because the sync render path will still work for any
+avatar the prefetch missed."
+  (let* ((cache-dir (expand-file-name "shipit-avatars" user-emacs-directory))
+         (seen (make-hash-table :test 'equal)))
+    (unless (file-directory-p cache-dir)
+      (make-directory cache-dir t))
+    (dolist (comment comments)
+      (let* ((user-obj (cdr (assq 'user comment)))
+             (avatar-url (cdr (assq 'avatar_url user-obj)))
+             (username (cdr (assq 'login user-obj))))
+        (when (and avatar-url username
+                   (not (gethash username seen)))
+          (puthash username t seen)
+          (let* ((ext (if (string-match-p "\\.png" avatar-url) ".png" ".jpg"))
+                 (cache-file (expand-file-name (concat username ext) cache-dir)))
+            (when (shipit--avatar-needs-refresh-p cache-file username)
+              (shipit--prefetch-avatar-one avatar-url cache-file username))))))))
+
+(defun shipit--prefetch-avatar-one (avatar-url cache-file username)
+  "Kick off an async download of AVATAR-URL into CACHE-FILE for USERNAME.
+The response body is written to CACHE-FILE and the ETag timestamp is
+recorded so `shipit--avatar-needs-refresh-p' will return nil on the
+next call within an hour."
+  (let ((url-request-method "GET")
+        (url-request-extra-headers '(("User-Agent" . "shipit.el"))))
+    (condition-case err
+        (url-retrieve
+         avatar-url
+         (lambda (status &rest _)
+           (condition-case inner
+               (unless (plist-get status :error)
+                 (goto-char (point-min))
+                 (let (etag data-start)
+                   (save-excursion
+                     (goto-char (point-min))
+                     (while (and (not (looking-at "^\r?$"))
+                                 (zerop (forward-line 1)))
+                       (when (looking-at "^[Ee][Tt]ag: *\"?\\([^\"]+\\)\"?")
+                         (setq etag (match-string 1)))))
+                   (when (search-forward "\n\n" nil t)
+                     (setq data-start (point))
+                     (let ((coding-system-for-write 'binary))
+                       (write-region data-start (point-max)
+                                     cache-file nil 'silent))
+                     (when etag
+                       (puthash (format "avatar:%s" username)
+                                (list :etag etag :timestamp (float-time))
+                                shipit-gh-etag--persistent-cache)))))
+             (error
+              (shipit--debug-log "prefetch-avatar callback failed for %s: %s"
+                                 username (error-message-string inner))))
+           (when (buffer-live-p (current-buffer))
+             (kill-buffer (current-buffer))))
+         nil t t)
+      (error
+       (shipit--debug-log "prefetch-avatar kickoff failed for %s: %s"
+                          username (error-message-string err))))))
+
 (defun shipit--imagemagick-available-p ()
   "Check if ImageMagick convert command is available."
   (executable-find "convert"))
@@ -3392,12 +3460,12 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
     frame))
 
 (defun shipit--render-yield ()
-  "Refresh the display during a long-running render operation.
-Calls `redisplay' so partially-rendered content becomes visible to
-the user.  Intended to be called periodically from chunked insertion
-loops so the user sees content appearing progressively instead of
-waiting for the whole render to finish."
-  (redisplay t))
+  "Yield to the event loop during a long-running render operation.
+Calls `redisplay' so partially-rendered content becomes visible and
+`sit-for' so pending input, timers, and async HTTP callbacks get a
+chance to run between chunks."
+  (redisplay t)
+  (sit-for 0))
 
 (defcustom shipit-markdown-render-cache-size 500
   "Maximum number of entries in the markdown render cache.

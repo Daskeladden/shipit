@@ -1958,9 +1958,11 @@ Dispatches to the active PR backend's :fetch-files."
          (config (cdr resolved)))
     (funcall (plist-get backend :fetch-files) config pr-number)))
 
-(defun shipit--api-request-paginated (endpoint &optional per-page)
-  "Make paginated API requests to ENDPOINT, fetching all pages.
-PER-PAGE defaults to 100 (GitHub's maximum per page)."
+(defun shipit--api-request-paginated (endpoint &optional per-page max-pages)
+  "Make paginated API requests to ENDPOINT, fetching up to MAX-PAGES pages.
+PER-PAGE defaults to 100 (GitHub's maximum per page).
+MAX-PAGES defaults to unlimited; callers that care about a cap should
+pass it explicitly (e.g. to bound popular-issue event pagination)."
   (let ((per-page (or per-page 100))
         (page 1)
         (all-results '())
@@ -1977,10 +1979,9 @@ PER-PAGE defaults to 100 (GitHub's maximum per page)."
                   (progn
                     (setq all-results (append all-results page-results))
                     (setq page (1+ page))
-                    ;; Continue if we got a full page (might be more)
-                    (when (< (length page-results) per-page)
+                    (when (or (< (length page-results) per-page)
+                              (and max-pages (> page max-pages)))
                       (setq continue nil)))
-                ;; Empty page means we're done
                 (setq continue nil)))))
       (error
        (shipit--debug-log "Error in paginated API request: %S" err)
@@ -2003,7 +2004,13 @@ Uses ETag caching on each page to handle 304 Not Modified responses."
         (token (shipit--github-token)))
 
     (cl-labels ((fetch-next-page ()
-                  (when (<= page max-pages)
+                  (cond
+                   ((> page max-pages)
+                    (shipit--debug-log
+                     "Async paginated request capped at %d pages, %d items"
+                     max-pages (length all-results))
+                    (funcall callback all-results))
+                   (t
                     (let* ((page-params `((per_page . ,per-page) (page . ,page))))
                       (shipit--debug-log "Async fetching page %d from: %s" page endpoint)
                       ;; Use ETag-aware async to properly handle 304 Not Modified responses
@@ -2029,7 +2036,7 @@ Uses ETag caching on each page to handle 304 Not Modified responses."
                                 per-page page)
                          nil
                          (lambda (data)
-                           (handle-page-data data)))))))
+                           (handle-page-data data))))))))
 
                 (handle-page-data (data)
                   (cond
@@ -3672,6 +3679,40 @@ Point should be on the reactions line.  Returns t on success."
                              (append '(shipit-reactions t) extra-props))
         t))))
 
+(defconst shipit--reaction-summary-keys
+  '("+1" "-1" "laugh" "hooray" "confused" "heart" "rocket" "eyes")
+  "GitHub reaction `content' values we read out of the per-issue/PR/comment
+`reactions' summary object.  Keys in that object are JSON strings which
+Emacs interns as symbols — but `+1' and `-1' read as *integers* in
+source, so we hold the names as strings and intern lazily in
+`shipit--extract-reaction-summary'.")
+
+(defun shipit--extract-reaction-summary (reactions-obj)
+  "Return an alist of (\"content\" . COUNT) from REACTIONS-OBJ.
+REACTIONS-OBJ is the `reactions' alist returned on issue/PR/comment
+GET responses.  Its keys come from JSON and so arrive as interned
+symbols whose *names* are \"+1\", \"-1\", \"laugh\", etc.  Entries
+with zero or missing counts are omitted.  Returns nil when
+REACTIONS-OBJ is nil or has no positive counts."
+  (when reactions-obj
+    (let (summary)
+      (dolist (key-name shipit--reaction-summary-keys)
+        (let ((count (cdr (assq (intern key-name) reactions-obj))))
+          (when (and (numberp count) (> count 0))
+            (push (cons key-name count) summary))))
+      (nreverse summary))))
+
+(defun shipit--populate-reaction-summary (number reactions-obj)
+  "Populate the reaction summary cache for NUMBER from REACTIONS-OBJ.
+REACTIONS-OBJ is the `reactions' alist returned on issue/PR GET
+responses (symbol keys like `+1', values are integers).  Nil or empty
+REACTIONS-OBJ clears the summary for NUMBER."
+  (let ((cache-key (format "pr-%s" number))
+        (summary (shipit--extract-reaction-summary reactions-obj)))
+    (if summary
+        (puthash cache-key summary shipit--reaction-summary-cache)
+      (remhash cache-key shipit--reaction-summary-cache))))
+
 (defun shipit--insert-description-reactions (number repo extra-props)
   "Insert a reactions block for description NUMBER in REPO with EXTRA-PROPS.
 Renders: blank line, reactions line, blank line.
@@ -5076,73 +5117,72 @@ otherwise uses issue comment endpoint."
   ;; Use cached reactions only - reactions should already be fetched synchronously during refresh
   (let* ((cache-key (shipit--reaction-cache-key shipit-current-repo comment-id is-inline))
          (cached-result (gethash cache-key shipit--reaction-cache)))
-    (shipit--debug-log 'reactions "GET-COMMENT-REACTIONS: comment %s (%s): cache-key='%s', shipit-current-repo='%s', cached-result=%s"
-                       comment-id (if is-inline "inline" "general")
-                       cache-key
-                       shipit-current-repo
-                       (if cached-result (format "found %d reactions" (length cached-result)) "NOT FOUND"))
-    (when cached-result
-      (shipit--debug-log 'reactions "GET-COMMENT-REACTIONS: Returning %d reactions: %S" (length cached-result) cached-result))
     cached-result))
 
 (defun shipit--format-comment-reactions (comment &optional is-inline)
-  "Format reactions for COMMENT as a string with emoji, counts, and hover tooltips.
-If IS-INLINE is non-nil, treats comment as an inline comment."
+  "Format reactions for COMMENT with emoji, counts, and hover tooltips.
+If IS-INLINE is non-nil, treats comment as an inline comment.
+
+Counts are taken from the comment's `reactions' summary object when
+present (authoritative per-emoji totals from the GET response).  The
+fetched reactor list is used only to sample a handful of logins for
+the tooltip — the full list is not enumerated even on popular
+comments with hundreds of reactions."
   (let* ((comment-id (cdr (assq 'id comment)))
          (reactions (shipit--get-comment-reactions comment-id is-inline))
+         (summary (shipit--extract-reaction-summary
+                   (cdr (assq 'reactions comment))))
          (reaction-groups (make-hash-table :test 'equal)))
 
-    (shipit--debug-log 'reactions "🎭 REACTIONS DEBUG: comment-id=%s, is-inline=%s, reactions=%s"
-                       comment-id is-inline
-                       (if reactions (format "found %d" (length reactions)) "nil"))
-
-    ;; Group reactions by type and collect user info
-    ;; Convert vector to list if needed (GitHub API may return [] for empty reactions)
+    ;; Group the reactor sample by emoji type (only need first N names per type
+    ;; for the tooltip; counts come from the summary if available).
     (when (and reactions (vectorp reactions))
       (setq reactions (append reactions nil)))
     (when (and reactions (listp reactions) (> (length reactions) 0))
-      (shipit--debug-log "FORMAT: Grouping %d reactions for comment %s" (length reactions) comment-id)
       (dolist (reaction reactions)
         (let* ((content (cdr (assq 'content reaction)))
                (user (cdr (assq 'login (cdr (assq 'user reaction)))))
                (existing (gethash content reaction-groups)))
-          (shipit--debug-log "🎭 FORMAT: Processing reaction type='%s' user='%s'" content user)
-          (if existing
-              (puthash content (cons user existing) reaction-groups)
-            (puthash content (list user) reaction-groups)))))
+          (puthash content (cons user (or existing '())) reaction-groups))))
 
-    ;; Format as emoji with counts and hover tooltips
-    (shipit--debug-log "🎭 FORMAT: Reaction groups hash has %d entries" (hash-table-count reaction-groups))
-    ;; Always include placeholder icon, then append any reactions
-    (let ((placeholder (shipit--get-reactions-placeholder-icon))
-          (formatted-reactions '()))
-      (maphash (lambda (reaction-type users)
-                 (let ((emoji (shipit--reaction-to-emoji reaction-type))
-                       (count (length users))
-                       (user-list (mapconcat 'identity (reverse users) ", ")))
-                   (shipit--debug-log "🎭 FORMAT: reaction-type='%s' emoji='%s' count=%d users=%s"
-                                      reaction-type emoji count user-list)
-                   (when emoji
-                     (let ((reaction-text (format "%s %d" emoji count)))
-                       (shipit--debug-log "🎭 FORMAT: Created reaction-text='%s'" reaction-text)
-                       ;; Force emojify processing on the emoji character
-                       (when (and (fboundp 'emojify-string) (string-match-p "[^\x00-\x7F]" emoji))
-                         (setq reaction-text (replace-regexp-in-string
-                                              (regexp-quote emoji)
-                                              (emojify-string emoji)
-                                              reaction-text)))
-                       (let ((tooltip (format "%s: %s" reaction-type user-list)))
+    (let* ((placeholder (shipit--get-reactions-placeholder-icon))
+           (formatted-reactions '())
+           (emit (lambda (reaction-type count sample-users)
+                   (let ((emoji (shipit--reaction-to-emoji reaction-type)))
+                     (when (and emoji (> count 0))
+                       (let* ((reaction-text (format "%s %d" emoji count))
+                              (shown (seq-take (reverse (or sample-users '()))
+                                               shipit--reaction-tooltip-user-limit))
+                              (names (mapconcat #'identity shown ", "))
+                              (extra (- count (length shown)))
+                              (tooltip-body
+                               (cond
+                                ((and (null shown) (> extra 0))
+                                 (format "%d reactors" count))
+                                ((> extra 0)
+                                 (format "%s + %d more" names extra))
+                                (t names)))
+                              (tooltip (format "%s: %s" reaction-type tooltip-body)))
+                         (when (and (fboundp 'emojify-string)
+                                    (string-match-p "[^\x00-\x7F]" emoji))
+                           (setq reaction-text (replace-regexp-in-string
+                                                (regexp-quote emoji)
+                                                (emojify-string emoji)
+                                                reaction-text)))
                          (push (propertize reaction-text
                                            'help-echo tooltip
                                            'shipit-reaction-tooltip tooltip)
-                               formatted-reactions))))))
-               reaction-groups)
-      ;; Combine placeholder + reactions with space separator if reactions exist
+                               formatted-reactions)))))))
+      (if summary
+          (dolist (pair summary)
+            (funcall emit (car pair) (cdr pair)
+                     (gethash (car pair) reaction-groups)))
+        (maphash (lambda (reaction-type users)
+                   (funcall emit reaction-type (length users) users))
+                 reaction-groups))
       (if (> (length formatted-reactions) 0)
-          (concat placeholder " " (mapconcat 'identity formatted-reactions " "))
-        (progn
-          (shipit--debug-log "🎭 FORMAT: No reactions, returning placeholder only")
-          (concat placeholder " "))))))
+          (concat placeholder " " (mapconcat #'identity formatted-reactions " "))
+        (concat placeholder " ")))))
 
 (defun shipit--update-comment-reactions-display (comment-id is-inline repo)
   "Update the reactions display for COMMENT-ID in the shipit buffer.
@@ -5908,41 +5948,58 @@ comments are now cleared automatically during magit refresh."
                 (<= line-number new-end))))
        comments))))
 
+(defconst shipit--reaction-tooltip-user-limit 5
+  "Maximum number of reactor logins to list in a reaction tooltip before
+collapsing the remainder into a \"+ N more\" suffix.")
+
 (defun shipit--format-pr-reactions (pr-number)
-  "Format reactions for PR with PR-NUMBER as a string with emoji, counts, and hover tooltips."
-  (let* ((reactions (shipit--get-pr-reactions pr-number))
+  "Format reactions for PR-NUMBER as emoji, counts, and hover tooltips.
+
+Counts are taken from `shipit--reaction-summary-cache' when populated
+(the authoritative per-emoji totals from the issue/PR GET response).
+Reactor logins for the tooltip come from `shipit--reaction-cache' —
+typically only the first page (100 reactors) to avoid paginating every
+reactor on popular issues."
+  (let* ((summary (gethash (format "pr-%s" pr-number)
+                           shipit--reaction-summary-cache))
+         (reactions (shipit--get-pr-reactions pr-number))
          (reaction-groups (make-hash-table :test 'equal)))
-
-    ;; Group reactions by type and collect user info
-    (when reactions
-      (dolist (reaction reactions)
-        (let* ((content (cdr (assq 'content reaction)))
-               (user (cdr (assq 'login (cdr (assq 'user reaction)))))
-               (existing (gethash content reaction-groups)))
-          (if existing
-              (puthash content (cons user existing) reaction-groups)
-            (puthash content (list user) reaction-groups)))))
-
-    ;; Format as emoji with counts and hover tooltips
-    ;; Always include placeholder icon, then append any reactions
-    (let ((placeholder (shipit--get-reactions-placeholder-icon))
-          (formatted-reactions '()))
-      (maphash (lambda (reaction-type users)
-                 (let ((emoji (shipit--reaction-to-emoji reaction-type))
-                       (count (length users))
-                       (user-list (mapconcat 'identity (reverse users) ", ")))
-                   (when emoji
-                     (let ((reaction-text (format "%s %d" emoji count)))
-                       (let ((tooltip (format "%s: %s" reaction-type user-list)))
+    (dolist (reaction (or reactions '()))
+      (let* ((content (cdr (assq 'content reaction)))
+             (user (cdr (assq 'login (cdr (assq 'user reaction)))))
+             (existing (gethash content reaction-groups)))
+        (puthash content (cons user (or existing '())) reaction-groups)))
+    (let* ((placeholder (shipit--get-reactions-placeholder-icon))
+           (formatted-reactions '())
+           (emit (lambda (reaction-type count sample-users)
+                   (let ((emoji (shipit--reaction-to-emoji reaction-type)))
+                     (when (and emoji (> count 0))
+                       (let* ((shown (seq-take (reverse (or sample-users '()))
+                                               shipit--reaction-tooltip-user-limit))
+                              (names (mapconcat #'identity shown ", "))
+                              (extra (- count (length shown)))
+                              (tooltip-body
+                               (cond
+                                ((and (null shown) (> extra 0))
+                                 (format "%d reactors" count))
+                                ((> extra 0)
+                                 (format "%s + %d more" names extra))
+                                (t names)))
+                              (tooltip (format "%s: %s" reaction-type tooltip-body))
+                              (reaction-text (format "%s %d" emoji count)))
                          (push (propertize reaction-text
                                            'help-echo tooltip
                                            'shipit-reaction-tooltip tooltip)
-                               formatted-reactions))))))
-               reaction-groups)
-      ;; Combine placeholder + reactions with space separator if reactions exist
-      ;; NOTE: No leading indent - caller handles indentation
+                               formatted-reactions)))))))
+      (if summary
+          (dolist (pair summary)
+            (funcall emit (car pair) (cdr pair)
+                     (gethash (car pair) reaction-groups)))
+        (maphash (lambda (reaction-type users)
+                   (funcall emit reaction-type (length users) users))
+                 reaction-groups))
       (if (> (length formatted-reactions) 0)
-          (concat placeholder " " (mapconcat 'identity formatted-reactions " "))
+          (concat placeholder " " (mapconcat #'identity formatted-reactions " "))
         (concat placeholder " ")))))
 
 (defun shipit--get-pr-reactions (pr-number)

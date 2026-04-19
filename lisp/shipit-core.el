@@ -113,6 +113,12 @@ Nil in regular commit/stash/log diffs.  Set by diff openers so the
 (defvar shipit--reaction-fetch-in-progress (make-hash-table :test 'equal)
   "Track which reactions are currently being fetched to prevent duplicate requests.")
 
+(defvar shipit--reaction-summary-cache (make-hash-table :test 'equal)
+  "Per-emoji count summaries for issues/PRs, keyed by \"pr-NUMBER\".
+Each value is an alist like ((\"+1\" . 2500) (\"heart\" . 200)).
+Populated from the `reactions' object returned in issue/PR GET responses
+so we can render accurate counts without paginating every reactor.")
+
 (defvar shipit--codeowners-cache (make-hash-table :test 'equal)
   "Cache for CODEOWNERS file content to avoid repeated API calls.
 Key format: 'repo:base-ref-name' (e.g., 'owner/repo:main')")
@@ -1542,47 +1548,54 @@ Tabs align to multiples of 4 columns (GitHub's default for code blocks)."
         (setq col (1+ col))))
     result))
 
+(defvar shipit--wrap-text-scratch-buffer nil
+  "Module-level scratch buffer reused by `shipit--wrap-text'.
+Callers like `shipit--render-comment-body' invoke `shipit--wrap-text'
+once per line of a comment (hundreds of times for large comments);
+allocating a fresh `with-temp-buffer' each call dominated render time.
+Reusing a single hidden buffer eliminates that overhead.  Not
+thread-safe, but Emacs is single-threaded for buffer work.")
+
+(defun shipit--wrap-text-buffer ()
+  "Return the shared wrap-text scratch buffer, creating it if needed."
+  (or (and (buffer-live-p shipit--wrap-text-scratch-buffer)
+           shipit--wrap-text-scratch-buffer)
+      (setq shipit--wrap-text-scratch-buffer
+            (get-buffer-create " *shipit-wrap-text*"))))
+
 (defun shipit--wrap-text (text width &optional code-block-indent)
-  "Wrap TEXT to specified WIDTH, preserving word boundaries and intentional newlines.
-Lines inside code blocks (fenced with ```) are preserved exactly without wrapping.
-CODE-BLOCK-INDENT specifies the indent that will be added to lines later,
-used to correctly expand tabs to spaces (default 0)."
-  (if (string-match-p "\n" text)
-      ;; If text contains newlines, preserve them by processing each line separately
-      ;; Track whether we're inside a code block to preserve whitespace
-      (let ((in-code-block nil)
-            (indent (or code-block-indent 0))
-            (result '()))
+  "Wrap TEXT to WIDTH, preserving word boundaries and intentional newlines.
+Lines inside code blocks (fenced with ```) are preserved exactly without
+wrapping.  CODE-BLOCK-INDENT is the indent that will be added to lines
+later (used to expand tabs correctly; default 0).
+
+Uses the persistent `shipit--wrap-text-scratch-buffer' so repeated
+calls — common when a caller wraps a long comment body one line at a
+time to handle blockquotes — avoid the per-call buffer allocation
+that would otherwise dominate.  The first call allocates the buffer;
+every subsequent call reuses it via `erase-buffer'."
+  (let ((in-code-block nil)
+        (indent (or code-block-indent 0))
+        (result '()))
+    (with-current-buffer (shipit--wrap-text-buffer)
+      (let ((fill-column width))
         (dolist (line (split-string text "\n"))
           (cond
-           ;; Code fence - toggle state and preserve line as-is
            ((string-match-p "^\\s-*```" line)
             (setq in-code-block (not in-code-block))
             (push line result))
-           ;; Inside code block - expand tabs to spaces for correct alignment
            (in-code-block
             (push (shipit--expand-tabs-to-spaces line indent) result))
-           ;; Empty line outside code block
            ((string-empty-p line)
             (push "" result))
-           ;; Table line - preserve as-is to maintain column alignment
            ((string-match-p "^|" line)
             (push line result))
-           ;; Regular line - wrap it
            (t
-            (push (with-temp-buffer
-                    (insert line)
-                    (let ((fill-column width))
-                      (fill-region (point-min) (point-max)))
-                    (buffer-string))
-                  result))))
-        (mapconcat #'identity (nreverse result) "\n"))
-    ;; If no newlines, use original behavior
-    (with-temp-buffer
-      (insert text)
-      (let ((fill-column width))
-        (fill-region (point-min) (point-max)))
-      (buffer-string))))
+            (erase-buffer)
+            (insert line)
+            (fill-region (point-min) (point-max))
+            (push (buffer-string) result))))))
+    (mapconcat #'identity (nreverse result) "\n")))
 
 (defun shipit--humanize-workflow-name (filename)
   "Convert a workflow filename to a readable name."

@@ -65,6 +65,8 @@
 (declare-function shipit--fetch-pr-reactions-sync "shipit-http")
 (declare-function shipit--insert-description-reactions "shipit-http")
 (declare-function shipit--update-description-reactions "shipit-http")
+(declare-function shipit--populate-reaction-summary "shipit-http")
+(declare-function shipit--prefetch-avatars-async "shipit-render")
 (declare-function shipit--add-reaction-to-pr "shipit-http")
 (declare-function shipit--remove-reaction-from-pr "shipit-http")
 (declare-function shipit--get-current-user "shipit-pr-actions")
@@ -76,6 +78,8 @@
 (declare-function shipit-issue--backend-has-comment-reactions-p "shipit-issue-backends")
 (declare-function shipit-issues--fetch-reactions "shipit-issues")
 (declare-function shipit-issues--fetch-reactions-async "shipit-issues")
+(declare-function shipit-issues--fetch-timeline-async "shipit-issues")
+(declare-function shipit--refresh-section-targeted "shipit-core")
 (declare-function shipit-issues--fetch-comments-head-tail-async "shipit-issues")
 (declare-function shipit-issues--fetch-pinned-comment-async "shipit-issues")
 (declare-function shipit-issues--add-reaction "shipit-issues")
@@ -303,7 +307,11 @@ buffer-local overrides so the issue fetches use the correct backend
               (when issuelinks
                 (let ((columns (shipit-issue--get-work-item-columns)))
                   (shipit-issue--insert-linked-items-section issuelinks columns))))
-            (shipit-issue--insert-activity-section repo issue-data)
+            (let* ((backend (shipit-issue--get-backend))
+                   (timeline-async-p (and backend
+                                          (plist-get backend :fetch-timeline-async))))
+              (shipit-issue--insert-activity-section
+               repo issue-data timeline-async-p))
             (shipit-issue--insert-comments-placeholder repo issue-number))
           (goto-char (min pos (point-max))))
         ;; Fetch description reactions asynchronously so the initial
@@ -318,6 +326,16 @@ buffer-local overrides so the issue fetches use the correct backend
                  (with-current-buffer target-buffer
                    (shipit-issue--update-description-reactions-display
                     issue-number)))))))
+        ;; Fetch activity events asynchronously — the buffer rendered
+        ;; with a "Loading activity…" placeholder which we replace when
+        ;; the events payload arrives.
+        (let ((target-buffer (current-buffer)))
+          (shipit-issues--fetch-timeline-async
+           repo issue-number
+           (lambda (changelog)
+             (when (buffer-live-p target-buffer)
+               (with-current-buffer target-buffer
+                 (shipit-issue--refresh-activity-section changelog))))))
         ;; Fetch pinned comment async and insert before comments section
         (let ((target-buffer (current-buffer)))
           (shipit-issues--fetch-pinned-comment-async
@@ -325,16 +343,28 @@ buffer-local overrides so the issue fetches use the correct backend
            (lambda (pinned-data)
              (when (and pinned-data (buffer-live-p target-buffer))
                (with-current-buffer target-buffer
-                 ;; Fetch reactions for pinned comment before rendering
-                 (let ((pinned-comment (plist-get pinned-data :comment)))
-                   (when (and pinned-comment
-                              (shipit-issue--backend-has-reactions-p
-                               (shipit-issue--get-backend)))
-                     (let ((shipit-current-repo repo))
-                       (shipit-comment--fetch-reactions-batch
-                        (list pinned-comment) repo nil))))
-                 (shipit-issue--insert-pinned-comment-before-comments
-                  repo issue-number pinned-data))))))
+                 (condition-case err
+                     (progn
+                       (let ((pinned-comment (plist-get pinned-data :comment)))
+                         (when pinned-comment
+                           (when (fboundp 'shipit--prefetch-avatars-async)
+                             (shipit--prefetch-avatars-async
+                              (list pinned-comment)))
+                           (when (shipit-issue--backend-has-reactions-p
+                                  (shipit-issue--get-backend))
+                             (let ((shipit-current-repo repo))
+                               (shipit-comment--fetch-reactions-batch
+                                (list pinned-comment) repo nil)))))
+                       (shipit-issue--insert-pinned-comment-before-comments
+                        repo issue-number pinned-data))
+                   (error
+                    (let ((backtrace
+                           (with-output-to-string
+                             (let ((standard-output standard-output))
+                               (backtrace)))))
+                      (shipit--debug-log
+                       "PINNED-ERROR: %s\nBACKTRACE:\n%s"
+                       (error-message-string err) backtrace)))))))))
         ;; Fetch comments async
         (let ((target-buffer (current-buffer))
               (root-section magit-root-section))
@@ -349,6 +379,14 @@ buffer-local overrides so the issue fetches use the correct backend
                                   issue-number total)
                (when (buffer-live-p target-buffer)
                  (with-current-buffer target-buffer
+                   ;; Prefetch avatars in parallel — sync avatar fetches
+                   ;; were the dominant per-comment cost, writing each cache
+                   ;; file up front lets the sync render path skip the HTTP
+                   ;; roundtrip entirely.
+                   (when (fboundp 'shipit--prefetch-avatars-async)
+                     (shipit--prefetch-avatars-async
+                      (append (plist-get result :head)
+                              (plist-get result :tail))))
                    ;; Fetch reactions only for visible head + tail comments
                    (let* ((visible (append (plist-get result :head)
                                            (plist-get result :tail)))
@@ -599,6 +637,11 @@ buffer-local overrides so the issue fetches use the correct backend
             (shipit--apply-strikethrough-faces description-start (point)))
           ;; Reactions block (backends with :fetch-reactions support)
           (when (shipit-issue--backend-has-reactions-p (shipit-issue--get-backend))
+            ;; Prime summary counts from the issue response so the
+            ;; initial render shows accurate numbers without waiting
+            ;; for the async page-1 reactor fetch.
+            (shipit--populate-reaction-summary
+             issue-number (cdr (assq 'reactions issue-data)))
             (shipit--insert-description-reactions
              issue-number repo
              `(shipit-issue-description t
@@ -734,60 +777,95 @@ the parent's children list so magit section navigation works."
             (oset parent children fixed)))))))
 
 (defun shipit-issue--insert-comments-placeholder (_repo _issue-number)
-  "Insert comments placeholder while loading."
+  "Insert comments placeholder while loading.
+The heading \"Comments (loading...)\" is rewritten in place when
+the async head+tail arrives — the section itself is preserved so the
+user never sees a blank rectangle during async comment insertion."
   (magit-insert-section (issue-comments nil nil)
     (magit-insert-heading
-      (format "%s %s"
-              (shipit--get-pr-field-icon "comment" "💬")
-              (propertize "Comments (loading...)" 'face 'magit-section-heading)))
+      (shipit-issue--comments-heading-text "(loading...)"))
     (magit-insert-section-body
       (insert "   Loading comments...\n")
       (insert "\n"))))
 
-(defun shipit-issue--replace-comments-with-content (repo issue-number comments)
-  "Replace comments placeholder with COMMENTS for ISSUE-NUMBER in REPO.
-Uses the same pattern as `shipit--replace-general-comments-section-with-content'."
-  (shipit--debug-log "ASYNC: Replacing issue comments placeholder with %d comments"
-                     (length comments))
-  (shipit-issue--replace-comments-section-with
-   (lambda () (shipit-issue--insert-comments-section repo issue-number comments))))
+(defun shipit-issue--comments-heading-text (label)
+  "Return the heading text for the issue-comments section.
+LABEL is the count/status part (e.g. \"(42)\", \"(5 of 42)\",
+\"(loading...)\") — the caller formats it, we prepend the icon and
+apply the magit-section-heading face."
+  (format "%s %s"
+          (shipit--get-pr-field-icon "comment" "\U0001f4ac")
+          (propertize (format "Comments %s" label)
+                      'face 'magit-section-heading)))
 
-(defun shipit-issue--replace-comments-with-paginated-content (repo issue-number result)
-  "Replace comments placeholder with paginated RESULT for ISSUE-NUMBER.
-RESULT is a plist from the head+tail fetcher."
-  (shipit--debug-log "ASYNC: Replacing issue comments with paginated content, total=%d"
-                     (plist-get result :total))
-  (shipit-issue--replace-comments-section-with
-   (lambda () (shipit-issue--insert-paginated-comments-section repo issue-number result))))
+(defun shipit-issue--replace-comments-body-with (heading-label insert-body-fn)
+  "Replace the body of the issue-comments section in place.
+HEADING-LABEL is the new text for the count portion of the heading
+(e.g. \"(42)\" or \"(5 of 42)\").  INSERT-BODY-FN is called with
+point at the section's content marker and should insert the new body
+content (no outer `magit-insert-section' wrapper — the section object
+is preserved).
 
-(defun shipit-issue--replace-comments-section-with (insert-fn)
-  "Replace the issue-comments placeholder by calling INSERT-FN.
-INSERT-FN should insert a new issue-comments magit section at point."
+The heading count is patched via `replace-match' on a narrow capture
+(not a full heading line rewrite), so the section's `content' and
+`end' markers stay anchored outside the heading.  Window-start is
+saved and restored across the replacement because `redisplay' calls
+inside `shipit--render-yield' will follow point into the inserted
+body and scroll the window; without the save, the user's view ends
+up near the Load-more line with nothing but empty space beneath it
+until the tail comments render."
   (let ((section (shipit--find-section-by-type 'issue-comments)))
     (when section
-      (let* ((inhibit-read-only t)
-             (section-start (oref section start))
-             (section-end (oref section end))
-             (parent-section (oref section parent))
-             (children (and parent-section (oref parent-section children)))
-             (old-index (and children (seq-position children section #'eq)))
-             new-section)
-        (when (and section-start section-end)
-          (save-excursion
-            (delete-region section-start section-end)
-            (goto-char section-start)
-            (let ((magit-insert-section--parent parent-section))
-              (setq new-section (funcall insert-fn))))
-          ;; Fix parent's children list to maintain correct order
-          (when (and parent-section old-index new-section)
-            (let* ((current-children (oref parent-section children))
-                   (filtered (seq-remove (lambda (s)
-                                           (or (eq s section) (eq s new-section)))
-                                         current-children))
-                   (fixed (append (seq-take filtered old-index)
-                                  (list new-section)
-                                  (seq-drop filtered old-index))))
-              (oset parent-section children fixed))))))))
+      (let ((inhibit-read-only t)
+            ;; Suppress progressive yields during the initial body replace.
+            ;; With yields, Emacs redisplay auto-scrolls the window to follow
+            ;; the growing insertion point, stranding the user's view at the
+            ;; tail-comments gap.  Inserting everything in one synchronous
+            ;; block means Emacs only redisplays AFTER we return, and it
+            ;; keeps the user's window-start intact.
+            (shipit-comments-render-chunk-size 0))
+        (save-excursion
+          ;; 1. Patch the count inside the heading via replace-match on a
+          ;; narrow capture — leaves content/end markers intact.
+          (goto-char (oref section start))
+          (when (re-search-forward "Comments \\(([^)]+)\\)"
+                                   (line-end-position) t)
+            (replace-match heading-label t t nil 1))
+          ;; 2. Clear stale child section records before rebuilding body.
+          (oset section children nil)
+          ;; 3. Replace body content between content and end markers.
+          (let* ((content-pos (and (oref section content)
+                                   (marker-position (oref section content))))
+                 (end-pos (and (oref section end)
+                               (marker-position (oref section end)))))
+            (when (and content-pos end-pos)
+              (when (> end-pos content-pos)
+                (delete-region content-pos end-pos))
+              (goto-char content-pos)
+              (let ((magit-insert-section--parent section))
+                (funcall insert-body-fn))
+              (oset section end (point-marker))
+              (oset section content (copy-marker content-pos)))))))))
+
+(defun shipit-issue--replace-comments-with-content (repo issue-number comments)
+  "Replace comments placeholder body with COMMENTS for ISSUE-NUMBER in REPO."
+  (shipit--debug-log "ASYNC: Replacing issue comments body with %d comments"
+                     (length comments))
+  (shipit-issue--replace-comments-body-with
+   (format "(%d)" (length comments))
+   (lambda ()
+     (shipit-issue--insert-comments-body repo issue-number comments))))
+
+(defun shipit-issue--replace-comments-with-paginated-content (repo issue-number result)
+  "Replace comments placeholder body with paginated RESULT for ISSUE-NUMBER.
+RESULT is a plist from the head+tail fetcher."
+  (let ((total (plist-get result :total)))
+    (shipit--debug-log "ASYNC: Replacing issue comments body with paginated content, total=%d"
+                       total)
+    (shipit-issue--replace-comments-body-with
+     (format "(%d)" total)
+     (lambda ()
+       (shipit-issue--insert-paginated-comments-body repo issue-number result)))))
 
 (defcustom shipit-comments-pagination-threshold 30
   "Paginate issue comments when total count exceeds this threshold.
@@ -832,19 +910,26 @@ With C-u N, load exactly N.  With C-u alone, load all remaining."
   nil)
 (put 'issue-pinned-comment 'magit-section t)
 
-(defcustom shipit-comments-render-chunk-size 10
-  "Number of comments to render between progressive display refreshes.
+(defcustom shipit-comments-render-chunk-size 2
+  "Number of comments to render between yields to the event loop.
 After every N comments are inserted into the issue buffer, the display
-is refreshed via `shipit--render-yield' so the user sees comments
-appearing progressively instead of waiting for the whole batch to
-finish.  Set to 0 to disable progressive rendering."
+is refreshed and the event loop drains via `shipit--render-yield' so
+(a) the user sees comments appearing progressively, (b) keystrokes and
+scroll events stay responsive during the render, and (c) in-flight
+async HTTP responses (avatar prefetches, reactions) can land between
+chunks instead of piling up behind a long synchronous render.
+Set to 0 to disable yielding."
   :type 'integer
   :group 'shipit)
 
 (defun shipit-issue--insert-comments-chunked (repo issue-number comments)
   "Insert COMMENTS for ISSUE-NUMBER in REPO with progressive display refresh.
 Calls `shipit--render-yield' after every `shipit-comments-render-chunk-size'
-comments so the user sees content appearing progressively."
+comments so the buffer stays responsive and partial content appears as it
+is inserted.  When `shipit-comments-render-chunk-size' is 0 the yields are
+suppressed — callers doing a bulk body replace bind it to 0 so the whole
+insert runs synchronously, preventing Emacs from auto-scrolling the window
+to follow the growing insertion point."
   (let ((chunk-size shipit-comments-render-chunk-size)
         (counter 0))
     (dolist (comment comments)
@@ -854,10 +939,12 @@ comments so the user sees content appearing progressively."
                  (zerop (mod counter chunk-size)))
         (shipit--render-yield)))))
 
-(defun shipit-issue--insert-paginated-comments-section (repo issue-number result)
-  "Insert comments section from a head+tail RESULT plist.
-RESULT has :head :tail :hidden :total :unfetched :per-page.
-Renders head comments, a Load more section, then tail comments."
+(defun shipit-issue--insert-paginated-comments-body (repo issue-number result)
+  "Insert only the BODY of the paginated comments section.
+RESULT has :head :tail :hidden-head :hidden-tail :total :unfetched :per-page.
+Does not create a `magit-insert-section' — caller provides the section
+context (either a fresh one at initial render time or the existing
+section object during targeted body replacement)."
   (let* ((head (plist-get result :head))
          (tail (plist-get result :tail))
          (hidden-head (or (plist-get result :hidden-head) '()))
@@ -867,24 +954,29 @@ Renders head comments, a Load more section, then tail comments."
          (per-page (plist-get result :per-page))
          (hidden-count (+ (length hidden-head) (length hidden-tail)
                           (* (length unfetched) per-page))))
+    (cond
+     ((= total 0)
+      (insert (propertize "   No comments\n" 'face 'font-lock-comment-face)))
+     ((= hidden-count 0)
+      (shipit-issue--insert-comments-chunked repo issue-number (append head tail)))
+     (t
+      (shipit-issue--insert-comments-chunked repo issue-number head)
+      (shipit-issue--insert-load-more-section
+       hidden-head repo issue-number unfetched per-page nil hidden-tail)
+      (shipit-issue--insert-comments-chunked repo issue-number tail)))
+    (insert "\n")))
+
+(defun shipit-issue--insert-paginated-comments-section (repo issue-number result)
+  "Insert full comments section (heading + body) from a head+tail RESULT plist.
+Used at initial render time; async refresh uses
+`shipit-issue--replace-comments-with-paginated-content' which updates
+the body in place."
+  (let ((total (plist-get result :total)))
     (magit-insert-section (issue-comments nil nil)
       (magit-insert-heading
-        (format "%s %s"
-                (shipit--get-pr-field-icon "comment" "💬")
-                (propertize (format "Comments (%d)" total)
-                            'face 'magit-section-heading)))
+        (shipit-issue--comments-heading-text (format "(%d)" total)))
       (magit-insert-section-body
-        (cond
-         ((= total 0)
-          (insert (propertize "   No comments\n" 'face 'font-lock-comment-face)))
-         ((= hidden-count 0)
-          (shipit-issue--insert-comments-chunked repo issue-number (append head tail)))
-         (t
-          (shipit-issue--insert-comments-chunked repo issue-number head)
-          (shipit-issue--insert-load-more-section
-           hidden-head repo issue-number unfetched per-page nil hidden-tail)
-          (shipit-issue--insert-comments-chunked repo issue-number tail)))
-        (insert "\n")))))
+        (shipit-issue--insert-paginated-comments-body repo issue-number result)))))
 
 (defun shipit-issue--insert-load-more-section (hidden-comments repo issue-number
                                                                &optional unfetched-pages per-page direction
@@ -910,39 +1002,43 @@ DIRECTION is oldest or recent (default oldest)."
                             count (if (= count 1) "" "s") dir-indicator)
                     'face 'font-lock-comment-face)))))
 
+(defun shipit-issue--insert-comments-body (repo issue-number comments)
+  "Insert only the BODY of the comments section for COMMENTS.
+Does not create a `magit-insert-section' — caller provides the section
+context.  Honours `shipit-comments-pagination-threshold' for local
+pagination."
+  (let* ((total (length comments))
+         (threshold shipit-comments-pagination-threshold)
+         (head-n shipit-comments-initial-count)
+         (tail-n shipit-comments-tail-count)
+         (paginate (and (> threshold 0)
+                        (> total threshold)
+                        (> total (+ head-n tail-n)))))
+    (cond
+     ((or (null comments) (= total 0))
+      (insert (propertize "   No comments\n" 'face 'font-lock-comment-face)))
+     (paginate
+      (let ((head (seq-take comments head-n))
+            (hidden (seq-subseq comments head-n (- total tail-n)))
+            (tail (seq-subseq comments (- total tail-n))))
+        (shipit-issue--insert-comments-chunked repo issue-number head)
+        (shipit-issue--insert-load-more-section hidden repo issue-number)
+        (shipit-issue--insert-comments-chunked repo issue-number tail)))
+     (t
+      (shipit-issue--insert-comments-chunked repo issue-number comments))))
+  (insert "\n"))
+
 (defun shipit-issue--insert-comments-section (repo issue-number comments)
-  "Insert comments section with COMMENTS for issue ISSUE-NUMBER in REPO.
-When the number of comments exceeds `shipit-comments-pagination-threshold',
-only the first `shipit-comments-initial-count' and last
-`shipit-comments-tail-count' are rendered.  A Load more section in the
-middle lets the user reveal hidden comments on demand."
+  "Insert full comments section (heading + body) for COMMENTS.
+Used at initial render time; async refresh uses
+`shipit-issue--replace-comments-with-content' which updates the body
+in place."
   (magit-insert-section (issue-comments nil nil)
     (magit-insert-heading
-      (format "%s %s"
-              (shipit--get-pr-field-icon "comment" "💬")
-              (propertize (format "Comments (%d)" (length comments))
-                          'face 'magit-section-heading)))
+      (shipit-issue--comments-heading-text
+       (format "(%d)" (length comments))))
     (magit-insert-section-body
-      (let* ((total (length comments))
-             (threshold shipit-comments-pagination-threshold)
-             (head-n shipit-comments-initial-count)
-             (tail-n shipit-comments-tail-count)
-             (paginate (and (> threshold 0)
-                            (> total threshold)
-                            (> total (+ head-n tail-n)))))
-        (cond
-         ((or (null comments) (= total 0))
-          (insert (propertize "   No comments\n" 'face 'font-lock-comment-face)))
-         (paginate
-          (let ((head (seq-take comments head-n))
-                (hidden (seq-subseq comments head-n (- total tail-n)))
-                (tail (seq-subseq comments (- total tail-n))))
-            (shipit-issue--insert-comments-chunked repo issue-number head)
-            (shipit-issue--insert-load-more-section hidden repo issue-number)
-            (shipit-issue--insert-comments-chunked repo issue-number tail)))
-         (t
-          (shipit-issue--insert-comments-chunked repo issue-number comments))))
-      (insert "\n"))))
+      (shipit-issue--insert-comments-body repo issue-number comments))))
 
 (defun shipit-issue--insert-single-comment (repo issue-number comment)
   "Insert a single COMMENT for issue ISSUE-NUMBER in REPO."
@@ -986,21 +1082,49 @@ middle lets the user reveal hidden comments on demand."
              (w (string-width user)))
         (when (> w max-w) (setq max-w w))))))
 
-(defun shipit-issue--insert-activity-section (_repo issue-data)
-  "Insert activity/changelog section for ISSUE-DATA."
+(defun shipit-issue--insert-activity-section (_repo issue-data &optional loading-p)
+  "Insert activity/changelog section for ISSUE-DATA.
+When LOADING-P is non-nil, render a \"Loading activity…\" placeholder
+that `shipit-issue--refresh-activity-section' replaces once the async
+events fetch completes.  Otherwise the caller has the final changelog
+and we render it directly (empty list → \"No activity yet\")."
   (let ((changelog (cdr (assq 'changelog issue-data))))
     (magit-insert-section (issue-activity nil nil)
       (magit-insert-heading
         (format "%s %s"
                 (shipit--get-pr-field-icon "activity" "📋")
-                (propertize (format "Activity (%d)" (length changelog))
+                (propertize (if loading-p
+                                "Activity (…)"
+                              (format "Activity (%d)" (length changelog)))
                             'face 'magit-section-heading)))
-      (if (and changelog (> (length changelog) 0))
-          (let ((user-col-width (shipit-issue--changelog-max-user-width changelog)))
-            (dolist (entry (reverse changelog))
-              (shipit-issue--insert-activity-event entry user-col-width)))
-        (insert (propertize "   No activity yet\n" 'face 'font-lock-comment-face)))
+      (cond
+       (loading-p
+        (insert (propertize "   Loading activity…\n"
+                            'face 'font-lock-comment-face)))
+       ((and changelog (> (length changelog) 0))
+        (let ((user-col-width (shipit-issue--changelog-max-user-width changelog)))
+          (dolist (entry (reverse changelog))
+            (shipit-issue--insert-activity-event entry user-col-width))))
+       (t
+        (insert (propertize "   No activity yet\n"
+                            'face 'font-lock-comment-face))))
       (insert "\n"))))
+
+(defun shipit-issue--refresh-activity-section (changelog)
+  "Replace the Activity section body with CHANGELOG entries.
+Updates the heading count and rebuilds the body from CHANGELOG.
+Called from the async events callback once the paginated fetch is done."
+  (shipit--refresh-section-targeted
+   'issue-activity
+   "Activity (\\(…\\|[0-9]+\\))"
+   (length (or changelog '()))
+   (lambda (_section)
+     (if (and changelog (> (length changelog) 0))
+         (let ((user-col-width (shipit-issue--changelog-max-user-width changelog)))
+           (dolist (entry (reverse changelog))
+             (shipit-issue--insert-activity-event entry user-col-width)))
+       (insert (propertize "   No activity yet\n"
+                           'face 'font-lock-comment-face))))))
 
 (defun shipit-issue--insert-activity-event (entry user-col-width)
   "Insert a single activity ENTRY as a magit subsection.
@@ -2027,26 +2151,39 @@ Fetches all comments on first filter if not already loaded."
                         shipit-issue--all-comments))
              (total (length shipit-issue--all-comments))
              (shown (length filtered)))
-        (shipit-issue--replace-comments-section-with
-         (lambda ()
-           (shipit-issue--insert-filtered-comments-section
-            repo issue-number filtered total)))
+        (shipit-issue--replace-comments-with-filtered-content
+         repo issue-number filtered total)
         (shipit-issue--update-filter-status)
         (message "Showing %d of %d comments" shown total)))))
 
+(defun shipit-issue--insert-filtered-comments-body (repo issue-number comments)
+  "Insert only the BODY of the filtered comments section.
+Does not create a `magit-insert-section'.  The caller provides the
+section context and the heading (which includes the \"N of M\"
+filter count)."
+  (if (null comments)
+      (insert (propertize "   No matching comments\n" 'face 'font-lock-comment-face))
+    (shipit-issue--insert-comments-chunked repo issue-number comments))
+  (insert "\n"))
+
 (defun shipit-issue--insert-filtered-comments-section (repo issue-number comments total)
-  "Insert comments section with filtered COMMENTS. TOTAL is unfiltered count."
+  "Insert full filtered comments section (heading + body).
+TOTAL is the unfiltered comment count; used in the \"N of M\" heading."
   (magit-insert-section (issue-comments nil nil)
     (magit-insert-heading
-      (format "%s %s"
-              (shipit--get-pr-field-icon "comment" "\U0001f4ac")
-              (propertize (format "Comments (%d of %d)" (length comments) total)
-                          'face 'magit-section-heading)))
+      (shipit-issue--comments-heading-text
+       (format "(%d of %d)" (length comments) total)))
     (magit-insert-section-body
-      (if (null comments)
-          (insert (propertize "   No matching comments\n" 'face 'font-lock-comment-face))
-        (shipit-issue--insert-comments-chunked repo issue-number comments))
-      (insert "\n"))))
+      (shipit-issue--insert-filtered-comments-body repo issue-number comments))))
+
+(defun shipit-issue--replace-comments-with-filtered-content (repo issue-number comments total)
+  "Replace comments section body with filtered COMMENTS.
+TOTAL is the unfiltered comment count; the heading becomes
+\"Comments (shown of total)\"."
+  (shipit-issue--replace-comments-body-with
+   (format "(%d of %d)" (length comments) total)
+   (lambda ()
+     (shipit-issue--insert-filtered-comments-body repo issue-number comments))))
 
 (defun shipit-issue--update-filter-status ()
   "Insert or update a filter status line in the comments section.
@@ -2174,10 +2311,8 @@ Shows active filter details, match count, and unloaded count."
          (all shipit-issue--all-comments))
     (when all
       (let ((total (length all)))
-        (shipit-issue--replace-comments-section-with
-         (lambda ()
-           (shipit-issue--insert-filtered-comments-section
-            repo issue-number all total)))))
+        (shipit-issue--replace-comments-with-filtered-content
+         repo issue-number all total)))
     (shipit-issue--update-filter-status))
   (message "Comment filters cleared"))
 
@@ -2272,10 +2407,8 @@ If no Load more section exists, shows a message."
     ;; Re-render with all comments (no pagination)
     (when shipit-issue--all-comments
       (let ((total (length shipit-issue--all-comments)))
-        (shipit-issue--replace-comments-section-with
-         (lambda ()
-           (shipit-issue--insert-filtered-comments-section
-            repo issue-number shipit-issue--all-comments total)))
+        (shipit-issue--replace-comments-with-filtered-content
+         repo issue-number shipit-issue--all-comments total)
         (message "All %d comments loaded" total)))))
 
 (defun shipit-issue--load-more-n ()

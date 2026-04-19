@@ -146,6 +146,30 @@ Falls back to fetching all comments when the backend does not provide
                             (list :head head :tail tail :hidden hidden
                                   :total total :unfetched nil :per-page per-page))))))))
 
+(defun shipit-issues--fetch-timeline-async (repo issue-number callback)
+  "Fetch the activity timeline for ISSUE-NUMBER in REPO asynchronously.
+Dispatches to the active backend's `:fetch-timeline-async'.  Calls
+CALLBACK with a list of normalized changelog entries.  When the
+backend provides only a sync `:fetch-timeline', run it and invoke
+CALLBACK with the result.  Returns nil; the result flows via CALLBACK."
+  (let* ((resolved (shipit-issue--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (async-fn (plist-get backend :fetch-timeline-async))
+         (sync-fn (plist-get backend :fetch-timeline)))
+    (cond
+     (async-fn
+      (funcall async-fn config issue-number
+               (lambda (changelog)
+                 (when callback
+                   (funcall callback (or changelog '()))))))
+     (sync-fn
+      (let ((changelog (funcall sync-fn config issue-number)))
+        (when callback
+          (funcall callback (or changelog '())))))
+     (t
+      (when callback (funcall callback nil))))))
+
 (defun shipit-issues--fetch-reactions (repo issue-number)
   "Fetch reactions for issue ISSUE-NUMBER in REPO via the active backend.
 Caches the result in `shipit--reaction-cache' with key \"pr-ISSUE-NUMBER\"."

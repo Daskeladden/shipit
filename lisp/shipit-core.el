@@ -215,6 +215,16 @@ Examples: '.worktrees/', 'worktrees/', '.git/worktrees/'"
   :type 'string
   :group 'shipit)
 
+(defcustom shipit-code-refs-auto-enable t
+  "When non-nil, `shipit-init' enables `global-shipit-code-refs-mode'.
+
+This turns on issue-key highlighting (Jira-style keys like
+`ZIVID-12345') in every `prog-mode' derivative automatically.
+Set to nil in your init before calling `shipit-init' if you prefer
+to enable the mode manually or per buffer."
+  :type 'boolean
+  :group 'shipit)
+
 (defcustom shipit-pr-fontify-hunks t
   "Whether to apply language syntax highlighting inside PR diff hunks.
 

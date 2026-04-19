@@ -122,6 +122,12 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   ;; Initialize notifications system
   (shipit-notifications-init)
 
+  ;; Issue-key refs in code comments (opt-out via
+  ;; `shipit-code-refs-auto-enable').
+  (require 'shipit-code-refs)
+  (when shipit-code-refs-auto-enable
+    (global-shipit-code-refs-mode 1))
+
   (message "Shipit initialized successfully"))
 
 ;; SELECTIVE AUTOLOADS - Only for heavy features that benefit from deferred loading

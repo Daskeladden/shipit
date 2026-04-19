@@ -62,6 +62,7 @@
 (declare-function shipit--get-comment-unread-indicator "shipit-render")
 (declare-function shipit--add-suggestion-text-properties "shipit-render")
 (declare-function shipit--fontify-diff-hunk-lines "shipit-render")
+(declare-function shipit--refine-diff-hunk "shipit-render")
 (declare-function shipit--create-jira-mention-overlays "shipit-issue-jira")
 
 ;; Forward declarations for variables
@@ -3219,7 +3220,8 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                                                  (save-match-data
                                                    (when (string-match "^@@ -\\([0-9]+\\)" hunk-header)
                                                      (match-string 1 hunk-header)))))
-                       (diff-line-ranges nil))
+                       (diff-line-ranges nil)
+                       (hunk-body-start (point)))
                   (dolist (line hunk-lines)
                     (cond
                      ;; Added line
@@ -3232,6 +3234,8 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                                                     shipit-line-number ,current-line-number
                                                     shipit-repo ,repo
                                                     shipit-pr-number ,pr-number))
+                        (put-text-property (+ start 5) (+ start 6) 'font-lock-face
+                                           '(magit-diff-added-indicator magit-diff-added bold))
                         (push (list (+ start 6) (1- (point)) ?+) diff-line-ranges))
                       ;; Look up RIGHT side comments for added lines
                       (let ((comments-at-line (gethash current-line-number comments-by-line-right)))
@@ -3255,6 +3259,8 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                                                     shipit-old-line-number ,current-old-line-number
                                                     shipit-repo ,repo
                                                     shipit-pr-number ,pr-number))
+                        (put-text-property (+ start 5) (+ start 6) 'font-lock-face
+                                           '(magit-diff-removed-indicator magit-diff-removed bold))
                         (push (list (+ start 6) (1- (point)) ?-) diff-line-ranges))
                       ;; Look up LEFT side comments for deleted lines
                       (let ((comments-at-line (gethash current-old-line-number comments-by-line-left)))
@@ -3295,7 +3301,10 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                       (setq current-old-line-number (1+ current-old-line-number)))))
                   (when (and shipit-pr-fontify-hunks diff-line-ranges)
                     (shipit--fontify-diff-hunk-lines
-                     (nreverse diff-line-ranges) filename))))))))
+                     (nreverse diff-line-ranges) filename))
+                  (when (and shipit-pr-refine-hunks
+                             (> (point) hunk-body-start))
+                    (shipit--refine-diff-hunk hunk-body-start (point)))))))))
         ;; Insert outdated comments section if there are any
         (shipit--debug-log "OUTDATED-SECTION: file=%s outdated-count=%d" filename (length outdated-comments))
         (when (and outdated-comments (> (length outdated-comments) 0))
@@ -4923,6 +4932,123 @@ instead of the default emoji name."
 
 (with-eval-after-load 'emojify
   (advice-add 'emojify-help-function :around #'shipit--emojify-help-with-reaction-tooltip))
+
+;;; Diff-hunk relayer (in-place re-render, no API refetch)
+
+(defun shipit--walk-sections (section fn)
+  "Call FN with SECTION and each of its descendants in pre-order."
+  (funcall fn section)
+  (dolist (child (oref section children))
+    (shipit--walk-sections child fn)))
+
+(defun shipit--diff-hunk-filename (section)
+  "Return the filename associated with diff-hunk SECTION.
+Walks up the section tree to the enclosing pr-file section and
+returns its value slot, or nil if not found."
+  (let ((parent (oref section parent)))
+    (while (and parent (not (eq (oref parent type) 'pr-file)))
+      (setq parent (oref parent parent)))
+    (and parent (oref parent value))))
+
+(defun shipit--diff-hunk-line-ranges (body-start body-end)
+  "Collect (CONTENT-START CONTENT-END PREFIX-CHAR) for each diff line in BODY-START..BODY-END.
+Only lines matching shipit's `     +', `     -', or `      ' gutter are
+returned, so inline comments interleaved in the hunk body are skipped."
+  (let ((ranges nil))
+    (save-excursion
+      (goto-char body-start)
+      (while (< (point) body-end)
+        (let ((lstart (line-beginning-position))
+              (lend (line-end-position)))
+          (when (and (>= (- lend lstart) 6)
+                     (string= (buffer-substring-no-properties
+                               lstart (+ lstart 5))
+                              "     ")
+                     (memq (char-after (+ lstart 5)) '(?+ ?- ?\s)))
+            (push (list (+ lstart 6) lend (char-after (+ lstart 5)))
+                  ranges)))
+        (forward-line 1)))
+    (nreverse ranges)))
+
+(defun shipit--reset-diff-hunk-content-faces (ranges)
+  "Reset `font-lock-face' on each range in RANGES to the base diff face.
+Each entry is (CONTENT-START CONTENT-END PREFIX-CHAR).  Used to peel
+off any language-syntax face layer before re-applying or clearing."
+  (let ((inhibit-read-only t))
+    (dolist (r ranges)
+      (let* ((start (nth 0 r))
+             (end (nth 1 r))
+             (prefix (nth 2 r))
+             (base (cond ((eq prefix ?+) 'magit-diff-added)
+                         ((eq prefix ?-) 'magit-diff-removed)
+                         (t 'magit-diff-context))))
+        (put-text-property start end 'font-lock-face base)))))
+
+(defun shipit--remove-diff-refine-overlays (body-start body-end)
+  "Delete `diff-refine-{added,removed}' overlays between BODY-START and BODY-END."
+  (dolist (ov (overlays-in body-start body-end))
+    (when (memq (overlay-get ov 'face) '(diff-refine-added diff-refine-removed))
+      (delete-overlay ov))))
+
+(defun shipit--relayer-diff-hunk-section (section)
+  "Strip existing fontify/refine layers on SECTION and re-apply per current defcustoms."
+  (let* ((content-m (oref section content))
+         (end-m (oref section end))
+         (body-start (and content-m (if (markerp content-m)
+                                        (marker-position content-m)
+                                      content-m)))
+         (body-end (and end-m (if (markerp end-m)
+                                  (marker-position end-m)
+                                end-m))))
+    (when (and body-start body-end (< body-start body-end))
+      (shipit--remove-diff-refine-overlays body-start body-end)
+      (let ((ranges (shipit--diff-hunk-line-ranges body-start body-end))
+            (filename (shipit--diff-hunk-filename section)))
+        (shipit--reset-diff-hunk-content-faces ranges)
+        (when (and shipit-pr-fontify-hunks ranges filename)
+          (shipit--fontify-diff-hunk-lines ranges filename))
+        (when shipit-pr-refine-hunks
+          (shipit--refine-diff-hunk body-start body-end))))))
+
+(defun shipit--relayer-all-diff-hunks ()
+  "Re-apply diff visual layers on every diff-hunk section in the current buffer.
+No API calls; walks `magit-root-section' and rewrites font-lock-face /
+refine overlays in place per current defcustoms."
+  (when (and (boundp 'magit-root-section) magit-root-section)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (shipit--walk-sections
+         magit-root-section
+         (lambda (s)
+           (when (eq (oref s type) 'diff-hunk)
+             (shipit--relayer-diff-hunk-section s))))))))
+
+(defun shipit--pr-apply-diff-toggle ()
+  "Re-apply diff layers in the current shipit PR buffer, no refetch."
+  (when (derived-mode-p 'shipit-mode)
+    (shipit--relayer-all-diff-hunks)))
+
+;;;###autoload
+(defun shipit-pr-toggle-fontify-hunks ()
+  "Toggle language syntax highlighting in PR diff hunks.
+Flips `shipit-pr-fontify-hunks' and relayers the current shipit PR
+buffer in place (no API refetch)."
+  (interactive)
+  (setq shipit-pr-fontify-hunks (not shipit-pr-fontify-hunks))
+  (message "PR hunk language fontification %s"
+           (if shipit-pr-fontify-hunks "enabled" "disabled"))
+  (shipit--pr-apply-diff-toggle))
+
+;;;###autoload
+(defun shipit-pr-toggle-refine-hunks ()
+  "Toggle intra-line refinement in PR diff hunks.
+Flips `shipit-pr-refine-hunks' and relayers the current shipit PR
+buffer in place (no API refetch)."
+  (interactive)
+  (setq shipit-pr-refine-hunks (not shipit-pr-refine-hunks))
+  (message "PR hunk refinement %s"
+           (if shipit-pr-refine-hunks "enabled" "disabled"))
+  (shipit--pr-apply-diff-toggle))
 
 (provide 'shipit-pr-sections)
 ;;; shipit-pr-sections.el ends here

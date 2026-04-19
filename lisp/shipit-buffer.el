@@ -597,6 +597,8 @@ with focused context and optimized performance.
   (define-key shipit-mode-map (kbd "f") #'shipit-files-filter)
   (define-key shipit-mode-map (kbd "+") 'shipit-load-more-files)
   (define-key shipit-mode-map (kbd "k") #'shipit-delete-comment-at-point)
+  (define-key shipit-mode-map (kbd "T f") #'shipit-pr-toggle-fontify-hunks)
+  (define-key shipit-mode-map (kbd "T r") #'shipit-pr-toggle-refine-hunks)
 
   (setq-local revert-buffer-function #'shipit-buffer-refresh)
   (setq-local buffer-read-only t)

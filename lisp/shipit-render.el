@@ -1885,6 +1885,52 @@ mapped mode."
         (shipit--diff-hunk-fontify (nreverse new-frags) mode main-buf)
         (shipit--diff-hunk-fontify (nreverse old-frags) mode main-buf)))))
 
+(defvar shipit--refine-removed-props '((face . diff-refine-removed))
+  "Overlay props applied to differing characters on `-\' lines during refinement.")
+
+(defvar shipit--refine-added-props '((face . diff-refine-added))
+  "Overlay props applied to differing characters on `+\' lines during refinement.")
+
+(defun shipit--collect-diff-line-block (prefix-char body-end)
+  "From point, walk forward over consecutive lines starting with PREFIX-CHAR.
+Return (CONTENT-START . CONTENT-END) covering the content portions of
+all such lines (newlines included between lines, so smerge/diff can see
+line boundaries), or nil if point is not on a matching line.
+BODY-END caps the search."
+  (let ((re (format "^     %s" (regexp-quote (char-to-string prefix-char)))))
+    (when (and (< (point) body-end)
+               (looking-at-p re))
+      (let ((start (+ (point) 6)))
+        (while (and (< (point) body-end)
+                    (looking-at-p re))
+          (forward-line 1))
+        (cons start (1- (point)))))))
+
+(defun shipit--refine-diff-hunk (hunk-body-start hunk-body-end)
+  "Add intra-line refinement highlighting to paired -/+ blocks.
+Walks the buffer range HUNK-BODY-START..HUNK-BODY-END, pairs consecutive
+runs of `-' lines with immediately following `+' lines, and calls
+`smerge-refine-regions' on their content portions so differing
+characters get `diff-refine-removed' / `diff-refine-added' overlays."
+  (require 'smerge-mode)
+  (save-excursion
+    (goto-char hunk-body-start)
+    (while (< (point) hunk-body-end)
+      (let ((removed (shipit--collect-diff-line-block ?- hunk-body-end)))
+        (if removed
+            (let ((added (shipit--collect-diff-line-block ?+ hunk-body-end)))
+              (when added
+                (condition-case err
+                    (smerge-refine-regions
+                     (car removed) (cdr removed)
+                     (car added) (cdr added)
+                     nil nil
+                     shipit--refine-removed-props
+                     shipit--refine-added-props)
+                  (error
+                   (shipit--debug-log "REFINE-ERROR: %s" err)))))
+          (forward-line 1))))))
+
 (defun shipit--adjust-color-brightness (color amount)
   "Adjust COLOR brightness by AMOUNT (-1.0 to 1.0).
 Positive AMOUNT lightens, negative darkens."

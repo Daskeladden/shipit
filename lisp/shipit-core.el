@@ -215,7 +215,7 @@ Examples: '.worktrees/', 'worktrees/', '.git/worktrees/'"
   :type 'string
   :group 'shipit)
 
-(defcustom shipit-pr-fontify-hunks nil
+(defcustom shipit-pr-fontify-hunks t
   "Whether to apply language syntax highlighting inside PR diff hunks.
 
 When non-nil, shipit applies language-appropriate font-lock faces
@@ -224,8 +224,23 @@ inferred from the filename extension and
 `shipit--language-mode-alist'.  Diff add/remove/context backgrounds
 stay in place and the syntax foreground is layered on top.
 
-Disabled by default because per-line fontification is synchronous
-and can add noticeable latency on large PRs."
+Fontification is synchronous and can add noticeable latency on
+large PRs; toggle off with `shipit-pr-toggle-fontify-hunks' (`T f'
+in shipit PR buffers) if it becomes a problem."
+  :type 'boolean
+  :group 'shipit)
+
+(defcustom shipit-pr-refine-hunks t
+  "Whether to highlight intra-line changes in PR diff hunks.
+
+When non-nil, shipit uses `smerge-refine-regions' to mark the exact
+characters that differ between paired `-'/`+' lines with the
+`diff-refine-removed' and `diff-refine-added' faces, matching the
+fine-diff style of ediff and `magit-diff-refine-hunk'.  Helpful for
+spotting case/punctuation changes that are otherwise easy to miss.
+
+Each paired `-'/`+' block invokes the external `diff' program; on
+very large PRs this can add latency, in which case set to nil."
   :type 'boolean
   :group 'shipit)
 

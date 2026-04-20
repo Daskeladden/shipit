@@ -551,7 +551,7 @@ buffer-local overrides so the issue fetches use the correct backend
         (let ((names (when (and assignees (> (length assignees) 0))
                        (mapcar (lambda (a) (cdr (assq 'login a))) assignees)))
               (line-start (point)))
-          (insert (format "   %s Assignee: %s\n"
+          (insert (format "   %s Assignee:  %s\n"
                           (shipit--get-pr-field-icon "assignees" "👥")
                           (if names
                               (mapconcat (lambda (n)

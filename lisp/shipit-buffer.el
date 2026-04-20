@@ -536,6 +536,8 @@ section and search for the child by name."
 
     ;; Actions
     (define-key map (kbd "RET") #'shipit--open-file-at-point)
+    (define-key map (kbd "C-RET") #'shipit--open-file-from-worktree-at-point)
+    (define-key map [C-return] #'shipit--open-file-from-worktree-at-point)
     (define-key map (kbd "SPC") #'shipit-dwim)
     (define-key map (kbd "M-;") #'shipit-dwim)
     (define-key map (kbd "c") #'shipit-comment)
@@ -587,6 +589,8 @@ with focused context and optimized performance.
 
   ;; Re-bind keys to ensure they override parent bindings
   (define-key shipit-mode-map (kbd "RET") #'shipit--open-file-at-point)
+  (define-key shipit-mode-map (kbd "C-RET") #'shipit--open-file-from-worktree-at-point)
+  (define-key shipit-mode-map [C-return] #'shipit--open-file-from-worktree-at-point)
   (define-key shipit-mode-map (kbd "SPC") #'shipit-dwim)
   (define-key shipit-mode-map (kbd "e") #'shipit--ediff-file-at-point)
   (define-key shipit-mode-map (kbd "d") #'shipit--show-diff-at-point)

@@ -1439,6 +1439,8 @@ DIFF-HUNK provides context. Return t if found and point is positioned correctly.
                             ;; Allow undefined keys to fall through to parent keybindings
                             (set-keymap-parent map (current-local-map))
                             (define-key map [return] 'shipit--file-at-point)
+                            (define-key map [C-return] 'shipit--open-file-from-worktree-at-point)
+                            (define-key map (kbd "C-RET") 'shipit--open-file-from-worktree-at-point)
                             (define-key map (kbd "SPC") 'shipit--file-at-point)
                             (define-key map (kbd "M-;")
                                         (lambda ()
@@ -1944,6 +1946,70 @@ PR-DATA is the full PR data object."
                              (substring (or shipit-review--base-sha "unknown") 0 7)
                              (substring pr-head-sha 0 7))))
       buf)))
+
+(defun shipit--repo-root-head-sha ()
+  "Return the current HEAD SHA of the repo-root working tree, or nil."
+  (let ((root (shipit--get-repo-root)))
+    (when root
+      (condition-case nil
+          (let ((sha (string-trim-right
+                      (shell-command-to-string
+                       (format "cd %s && git rev-parse HEAD"
+                               (shell-quote-argument root))))))
+            (and (not (string-empty-p sha)) sha))
+        (error nil)))))
+
+(defun shipit--open-file-from-worktree-at-point ()
+  "Open the file-at-point from the filesystem under the repo root.
+Uses plain `find-file' on the working-tree path so LSP, xref, and
+flycheck attach normally.  The content is the current working-tree
+version — it may differ from the PR head SHA.  Positions point on
+the diff's current line when possible.
+
+When the working tree's HEAD differs from the PR head SHA, prints a
+short warning in the echo area so you know the file content may not
+match the diff.  Intended for users reviewing their own PR while
+checked out on the PR branch."
+  (interactive)
+  (let* ((file-path (or (get-text-property (point) 'shipit-file-path)
+                        (user-error "No file at point")))
+         (repo-root (or (shipit--get-repo-root)
+                        (user-error "Not in a git repository")))
+         (pr-head-sha (or (get-text-property (point) 'shipit-pr-head-sha)
+                          (and (boundp 'shipit-buffer-pr-data)
+                               shipit-buffer-pr-data
+                               (cdr (assq 'sha
+                                          (cdr (assq 'head
+                                                     shipit-buffer-pr-data)))))))
+         (head-sha (shipit--repo-root-head-sha))
+         (mismatch (and pr-head-sha head-sha
+                        (not (string-equal head-sha pr-head-sha))))
+         (line-number (shipit--get-diff-line-number-at-point))
+         (full-path (expand-file-name file-path repo-root)))
+    (shipit--debug-log
+     "OPEN-WT: file=%s repo-root=%s pr-head=%s wt-head=%s mismatch=%s line=%s"
+     file-path repo-root
+     (or pr-head-sha "<nil>") (or head-sha "<nil>")
+     mismatch (or line-number "<nil>"))
+    (unless (file-exists-p full-path)
+      (user-error "File does not exist in the working tree: %s" full-path))
+    (find-file full-path)
+    (when line-number
+      (goto-char (point-min))
+      (forward-line (1- line-number)))
+    (when mismatch
+      (shipit--debug-log
+       "OPEN-WT: scheduling mismatch warning in 0.2s")
+      ;; Defer so the message isn't overwritten by find-file-hook noise
+      ;; (recentf, lsp bookkeeping, flycheck startup, etc.).
+      (run-at-time
+       0.2 nil
+       (lambda (h pr)
+         (shipit--debug-log "OPEN-WT: mismatch message firing now")
+         (message
+          "shipit: working tree HEAD %s differs from PR head %s — file content may not match diff"
+          (substring h 0 7) (substring pr 0 7)))
+       head-sha pr-head-sha))))
 
 (defun shipit--file-at-point ()
   "Open file from review mode if worktree available, otherwise open diff.

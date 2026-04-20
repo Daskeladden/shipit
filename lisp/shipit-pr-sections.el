@@ -163,6 +163,7 @@
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
     (define-key map (kbd "RET") 'shipit--file-at-point)
+    (define-key map (kbd "C-RET") 'shipit--open-file-from-worktree-at-point)
     (define-key map (kbd "SPC") 'shipit--file-at-point)
     (define-key map (kbd "e") 'shipit--ediff-file-at-point)
     (define-key map (kbd "o") 'shipit--open-file-at-point)

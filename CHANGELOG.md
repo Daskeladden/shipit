@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.4.0 (2026-04-20)
+
+### ⚠️ Breaking: dependency bump
+
+- **Package-Requires** now demands `emacs 28.1`, `magit 4.5.0` and the newly split-out `magit-section 4.5.0` (previously `emacs 27.1` / `magit 3.0.0`). The bump unlocks magit's paint/visibility-indicator APIs that shipit already relies on, and plugs a regression in magit 4.6 that was clearing diff `face` text properties during refontification.
+- **Optional**: install `consult` to get live server-side issue search for the new code-refs picker. Without consult, the non-consult fallback uses vanilla `completing-read` with dynamic re-fetching — no dependency required, still interactive.
+
+### Features
+
+- **Code-refs** — new module that highlights Jira-style issue keys in code comments and makes them actionable:
+  - `shipit-code-refs-mode` (and `global-shipit-code-refs-mode` for `prog-mode`/`text-mode`/`yaml-ts-mode` etc.) underlines `PRJ-1234` refs with RET/M-; actions to open in shipit, browse in the web UI, copy URL/key.
+  - `completion-at-point` kicks in after `PRJ-` inside a comment; candidates come from the repo's backend `:search` and are cached per project.
+  - `shipit-code-refs-auto-picker` auto-opens the picker on `PRJ-`, replacing the typed prefix with the selected key. Works with `electric-pair-mode` (skips auto-closed delims) and with your preferred insert format via `shipit-code-refs-insert-format` (`key`, `key-title`, or a format string using `%k`/`%t`/`%u`).
+  - Picker includes a `+ Create new issue` entry that opens `shipit-issue-create-buffer`.
+  - Embark target finder exposes the key as `shipit-issue-ref` so users can bind their own actions.
+  - Narrowing: only prefixes in `:project-keys` are highlighted; tree-sitter-aware comment detection keeps typing responsive in `yaml-ts-mode`; `shipit-code-refs-dwim` opens the menu on `C-u RET`.
+- **PR diff rendering** — opt-in language syntax inside unified diff hunks (`shipit-pr-fontify-hunks`) plus ediff-style intra-line refinement (`shipit-pr-refine-hunks`). Both have runtime toggles (`T f`, `T r`) that re-lay the existing buffer in place — no API refetch.
+- **C-RET on a file or hunk** opens the working-tree file via plain `find-file` so LSP, xref, flycheck attach normally. When the working tree's HEAD differs from the PR head SHA, the echo area prints a short warning.
+- **Linked PRs section on issue buffers** — auto-detects PRs that reference the issue (reverse of the PR-buffer "Linked Issue") with SVG icons and collapsible per-PR sections.
+- **Activity navigation from notifications** now works on issue buffers too — RET on an activity line in an expanded notification jumps to the comment/commit/review and pulses the landing line.
+- **Section visibility indicators** — new `shipit-section-visibility-indicators` defcustom that forwards magit's `>`/`v` folding indicator preference to all shipit sections.
+
+### Bug fixes
+
+- **Diff line colors** — bulk face → `font-lock-face` migration across shipit-pr-sections/shipit-render/shipit-pr-linked-issue fixes line coloring under magit 4.6's new repaint cycle. Context lines now also get `magit-diff-context`. Header +/- stats are colored again.
+- **General comment headers** — username uses `shipit-username-face` and timestamp uses `shipit-timestamp-face` again. The whole-header `font-lock-face 'default` override (introduced by the bulk face→font-lock-face migration) was hiding them behind `magit-section-heading`.
+- **Marginalia annotator** — `shipit--select-pr` no longer crashes with `invalid-function marginalia--fields` when shipit is byte-compiled without marginalia loaded. The macro is now expanded at runtime via `eval`.
+- **Globalized code-refs mode** — `global-shipit-code-refs-mode` uses an inline turn-on lambda so activation works regardless of when the file was byte-compiled.
+- **Code-refs diagnose** — no longer hangs on large buffers; uses a scan cap and lazy syntax-ppss.
+
+---
+
 ## v1.3.0 (2026-04-19)
 
 ### Performance

@@ -722,28 +722,29 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
                (header-start (point)))
           (magit-insert-heading
             (propertize header-str
-                        'font-lock-face (if (and (boundp 'shipit-inline-comment-faces) shipit-inline-comment-faces)
-                                 'default
-                               nil)
                         'shipit-comment t
                         'shipit-comment-id comment-id
                         'shipit-comment-body (shipit--clean-text (or (cdr (assq 'body comment)) ""))
                         'shipit-resolved thread-is-resolved
                         'keymap status-comment-keymap
                         'local-map status-comment-keymap))
-          ;; Apply component faces to username and timestamp after insertion
+          ;; Apply component faces to username and timestamp after insertion.
+          ;; Magit's `magit-insert-heading' sets `font-lock-face' to
+          ;; `magit-section-heading' across the whole heading; that wins
+          ;; over plain `face' props under font-lock-mode, so we must
+          ;; override `font-lock-face' directly on these regions.
           (let* ((header-end (point))
                  (header-content (buffer-substring header-start header-end))
                  (user-pos (string-match (regexp-quote plain-user) header-content)))
             (when user-pos
-              (add-face-text-property (+ header-start user-pos)
-                                      (+ header-start user-pos (length plain-user))
-                                      'shipit-username-face nil))
+              (put-text-property (+ header-start user-pos)
+                                 (+ header-start user-pos (length plain-user))
+                                 'font-lock-face 'shipit-username-face))
             (let ((ts-pos (string-match (regexp-quote formatted-timestamp) header-content)))
               (when ts-pos
-                (add-face-text-property (+ header-start ts-pos)
-                                        (+ header-start ts-pos (length formatted-timestamp))
-                                        'shipit-timestamp-face nil))))
+                (put-text-property (+ header-start ts-pos)
+                                   (+ header-start ts-pos (length formatted-timestamp))
+                                   'font-lock-face 'shipit-timestamp-face))))
             ;; Apply dimmed face to [RESOLVED] tag if present
             (when thread-is-resolved
               (let ((resolved-pos (string-match "\\[RESOLVED\\]" header-content)))

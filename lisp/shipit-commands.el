@@ -961,15 +961,21 @@ Uses marginalia--fields when available for proper alignment."
           (shipit--debug-log "ANNOTATE: user=%s state=%s updated=%s draft=%s labels=%s"
                              user state updated draft label-names)
           (if (fboundp 'marginalia--fields)
-              ;; Use marginalia's field alignment
-              ;; Note: Variables must be wrapped in (or VAR "") to prevent
-              ;; marginalia--fields from interpreting them as function calls
-              (marginalia--fields
-               ((or user-str "") :truncate 15 :face 'marginalia-value)
-               ((or state-str "") :width 7 :face state-face)
-               ((or comments-str "") :width 5 :face 'marginalia-number)
-               ((or labels-str "") :truncate 25 :face 'marginalia-type)
-               ((or time-ago "") :width -12 :face 'marginalia-date))
+              ;; Use marginalia's field alignment.
+              ;; `marginalia--fields' is a MACRO; if this file was
+              ;; byte-compiled without marginalia loaded, the macro
+              ;; call stays unexpanded and a direct invocation here
+              ;; fails at runtime with `invalid-function'.  Force
+              ;; expansion via `eval' so the macro runs against the
+              ;; currently loaded marginalia.
+              (eval
+               `(marginalia--fields
+                 (,(or user-str "") :truncate 15 :face 'marginalia-value)
+                 (,(or state-str "") :width 7 :face ',state-face)
+                 (,(or comments-str "") :width 5 :face 'marginalia-number)
+                 (,(or labels-str "") :truncate 25 :face 'marginalia-type)
+                 (,(or time-ago "") :width -12 :face 'marginalia-date))
+               t)
             ;; Fallback without marginalia
             (let ((parts '()))
               (when (not (string-empty-p user-str))

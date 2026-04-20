@@ -1461,15 +1461,23 @@ this makes one API call total — fast even with many candidates.
 Symmetric branch verification would require N extra `/pulls/N'
 calls; if that becomes desired the check can be re-added behind a
 defcustom.  Empty on error or when the backend lacks `:search-raw'."
-  (let* ((resolved (ignore-errors (shipit-pr--resolve-for-repo repo)))
+  ;; For cross-backend issues (Jira issue → GitHub PR) REPO is the
+  ;; Jira project key (e.g. "PRJ"), not a GitHub "owner/name".  GitHub's
+  ;; search requires `repo:OWNER/NAME', so fall back to the working
+  ;; directory's git remote when REPO doesn't already look like one.
+  (let* ((gh-repo (if (string-match-p "/" (or repo ""))
+                      repo
+                    (ignore-errors (shipit--get-repo-from-remote))))
+         (resolved (and gh-repo (ignore-errors
+                                  (shipit-pr--resolve-for-repo gh-repo))))
          (backend (car resolved))
          (config (cdr resolved))
          (search-fn (and backend (plist-get backend :search-raw)))
          (results nil))
-    (when (and search-fn repo (stringp issue-key)
+    (when (and search-fn gh-repo (stringp issue-key)
                (not (string-empty-p issue-key)))
       (condition-case err
-          (let* ((query (format "repo:%s+is:pr+%s" repo issue-key))
+          (let* ((query (format "repo:%s+is:pr+%%22%s%%22" gh-repo issue-key))
                  (response (funcall search-fn config query 1 30))
                  (items (and (listp response)
                              (or (cdr (assq 'items response))

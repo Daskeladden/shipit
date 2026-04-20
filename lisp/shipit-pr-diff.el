@@ -2015,26 +2015,35 @@ checked out on the PR branch."
   "Open file from review mode if worktree available, otherwise open diff.
 Checks for available worktree first:
 1. If worktree exists and in-sync, open file in review mode
-2. Otherwise, fall back to magit-diff (current behavior)"
+2. Otherwise, fall back to magit-diff (current behavior)
+Falls back to `shipit-buffer-pr-data' when per-char text properties
+are missing (e.g. on newly-added files whose hunk lines inherited
+properties unevenly)."
   (interactive)
-  (let* ((file-path (get-text-property (point) 'shipit-file-path))
-         (repo (get-text-property (point) 'shipit-repo))
-         (pr-number (get-text-property (point) 'shipit-pr-number))
-         (pr-head-sha (get-text-property (point) 'shipit-pr-head-sha))
-         ;; Try to get full PR data from buffer context
-         (pr-data (get-text-property (point) 'shipit-pr-data)))
-    (if (and file-path repo pr-number pr-head-sha pr-data)
-        (if (shipit--should-use-review-mode-p pr-number repo pr-head-sha)
-            ;; Use review mode with worktree
-            (let ((worktree-path (shipit--find-worktree-for-pr pr-number repo)))
-              (shipit--open-file-in-review-mode file-path worktree-path pr-number repo pr-head-sha pr-data))
-          ;; Fall back to diff view (current behavior)
-          (shipit--open-pr-file-diff repo pr-number file-path))
-      ;; No file information - try overlay actions, then fall back to DWIM
+  (let* ((buf-pr (and (boundp 'shipit-buffer-pr-data) shipit-buffer-pr-data))
+         (file-path (get-text-property (point) 'shipit-file-path))
+         (repo (or (get-text-property (point) 'shipit-repo)
+                   (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base buf-pr))))))))
+         (pr-number (or (get-text-property (point) 'shipit-pr-number)
+                        (cdr (assq 'number buf-pr))))
+         (pr-head-sha (or (get-text-property (point) 'shipit-pr-head-sha)
+                          (cdr (assq 'sha (cdr (assq 'head buf-pr))))))
+         (pr-data (or (get-text-property (point) 'shipit-pr-data) buf-pr)))
+    (cond
+     ((not file-path)
       (or (shipit--try-overlay-action-at-point)
           (if (fboundp 'shipit-dwim)
               (shipit-dwim)
-            (message "Cannot open file: missing file information"))))))
+            (message "Cannot open file: no file at point"))))
+     ((and pr-number pr-head-sha pr-data
+           (shipit--should-use-review-mode-p pr-number repo pr-head-sha))
+      (let ((worktree-path (shipit--find-worktree-for-pr pr-number repo)))
+        (shipit--open-file-in-review-mode file-path worktree-path
+                                          pr-number repo pr-head-sha pr-data)))
+     ((and repo pr-number)
+      (shipit--open-pr-file-diff repo pr-number file-path))
+     (t
+      (message "Cannot open file: missing PR context")))))
 
 (defun shipit--ediff-file-at-point ()
   "Open ediff for file at point, comparing base and head versions.

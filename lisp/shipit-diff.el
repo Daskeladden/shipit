@@ -610,9 +610,21 @@ If LINE-NUMBER is provided, position cursor on that line."
             (let ((inhibit-read-only t))
               (erase-buffer)
               (insert content))
-            ;; Set appropriate mode based on file extension
+            ;; Set appropriate mode based on file extension.
+            ;; `delay-mode-hooks' suppresses user mode-hooks (lsp-mode,
+            ;; flyspell, flycheck, company-mode, …) on this read-only
+            ;; SHA-blob buffer — font-lock and syntax setup from the
+            ;; mode itself still run, but we skip the heavyweight tooling
+            ;; that a real file-visit would attach.
             (let ((buffer-file-name file-path))
-              (set-auto-mode))
+              (delay-mode-hooks (set-auto-mode)))
+            ;; Disable font-lock in the ephemeral blob buffer.  Some
+            ;; modes (notably `markdown-mode') have `syntax-propertize'
+            ;; patterns that go into regex backtracking on real-world
+            ;; content; fontifying them on display can hang hard enough
+            ;; that `C-g' can't interrupt the C regex engine.  Users who
+            ;; want colouring can `M-x font-lock-mode' locally.
+            (font-lock-mode -1)
             (setq buffer-read-only t)
             (goto-char (point-min))
             (when line-number

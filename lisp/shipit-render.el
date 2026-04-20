@@ -1797,53 +1797,73 @@ LANGUAGE is the language identifier from the code fence."
          (mode (and key (cdr (assoc key shipit--language-mode-alist)))))
     (and mode (shipit--mode-available-p mode) mode)))
 
+(defcustom shipit-pr-fontify-max-bytes 40000
+  "Skip diff-hunk language fontification when concat text exceeds this size.
+`markdown-mode' and a handful of other font-lock setups have regex paths
+that degrade into multi-second hangs on large inputs.  The cap protects
+interactive section expansion; raise it if you are happy to wait."
+  :type 'integer
+  :group 'shipit)
+
 (defun shipit--diff-hunk-fontify (fragments mode main-buf)
   "Fontify FRAGMENTS in MODE, layer syntax foreground onto MAIN-BUF regions.
 FRAGMENTS is a list of (BUF-START . TEXT) cells in buffer order, each
 TEXT is the content portion of one diff line (no prefix) and BUF-START
 is the buffer position of its first character.  Diff lines on the same
 side (new or old) are concatenated with newlines so that language modes
-can reason about multi-line constructs."
+can reason about multi-line constructs.
+
+Skipped when the concatenated text exceeds
+`shipit-pr-fontify-max-bytes' or when `font-lock-ensure' signals an
+error (some modes hit pathological regex paths)."
   (when fragments
-    (let ((concat-text (mapconcat #'cdr fragments "
+    (let* ((concat-text (mapconcat #'cdr fragments "
 "))
-          (intervals nil))
-      (with-current-buffer (shipit--fontify-hunk-scratch-buffer)
-        (let ((inhibit-read-only t)
-              (inhibit-modification-hooks t))
-          (erase-buffer)
-          (unless (eq major-mode mode)
-            (delay-mode-hooks (funcall mode)))
-          (insert concat-text)
-          (font-lock-ensure))
-        ;; Walk fragments, collect (dest-start dest-end face) intervals.
-        (let ((scratch-pos (point-min)))
-          (dolist (frag fragments)
-            (let* ((buf-start (car frag))
-                   (text (cdr frag))
-                   (frag-end (+ scratch-pos (length text))))
-              (let ((pos scratch-pos))
-                (while (< pos frag-end)
-                  (let* ((face (or (get-text-property pos 'font-lock-face)
-                                   (get-text-property pos 'face)))
-                         (next (or (next-property-change pos nil frag-end)
-                                   frag-end))
-                         (clamped (min next frag-end)))
-                    (when face
-                      (push (list (+ buf-start (- pos scratch-pos))
-                                  (+ buf-start (- clamped scratch-pos))
-                                  face)
-                            intervals))
-                    (setq pos clamped))))
-              (setq scratch-pos (+ frag-end 1)))))) ; +1 for the inserted newline
-      (with-current-buffer main-buf
-        (dolist (iv (nreverse intervals))
-          ;; Prepend the syntax face onto the existing font-lock-face so
-          ;; its foreground wins over the diff face's foreground, while
-          ;; the diff face's background continues to apply for attributes
-          ;; the syntax face does not set.
-          (shipit--prepend-font-lock-face
-           (nth 0 iv) (nth 1 iv) (nth 2 iv)))))))
+           (intervals nil))
+      (when (<= (length concat-text) shipit-pr-fontify-max-bytes)
+        (with-current-buffer (shipit--fontify-hunk-scratch-buffer)
+          ;; Defensively disable any globalized minor mode that may have
+          ;; attached to the scratch via a derived major mode.  In
+          ;; particular `shipit-code-refs-mode' calls `syntax-ppss' in
+          ;; its matcher, which under `markdown-mode' can take minutes
+          ;; on content with nested fences or many backticks.
+          (when (bound-and-true-p shipit-code-refs-mode)
+            (shipit-code-refs-mode -1))
+          (let ((inhibit-read-only t)
+                (inhibit-modification-hooks t))
+            (erase-buffer)
+            (unless (eq major-mode mode)
+              (delay-mode-hooks (funcall mode)))
+            (insert concat-text)
+            (ignore-errors (font-lock-ensure)))
+          ;; Walk fragments, collect (dest-start dest-end face) intervals.
+          (let ((scratch-pos (point-min)))
+            (dolist (frag fragments)
+              (let* ((buf-start (car frag))
+                     (text (cdr frag))
+                     (frag-end (+ scratch-pos (length text))))
+                (let ((pos scratch-pos))
+                  (while (< pos frag-end)
+                    (let* ((face (or (get-text-property pos 'font-lock-face)
+                                     (get-text-property pos 'face)))
+                           (next (or (next-property-change pos nil frag-end)
+                                     frag-end))
+                           (clamped (min next frag-end)))
+                      (when face
+                        (push (list (+ buf-start (- pos scratch-pos))
+                                    (+ buf-start (- clamped scratch-pos))
+                                    face)
+                              intervals))
+                      (setq pos clamped))))
+                (setq scratch-pos (+ frag-end 1))))) ; +1 for the inserted newline
+          (with-current-buffer main-buf
+            (dolist (iv (nreverse intervals))
+              ;; Prepend the syntax face onto the existing font-lock-face so
+              ;; its foreground wins over the diff face's foreground, while
+              ;; the diff face's background continues to apply for attributes
+              ;; the syntax face does not set.
+              (shipit--prepend-font-lock-face
+               (nth 0 iv) (nth 1 iv) (nth 2 iv)))))))))
 
 (defun shipit--prepend-font-lock-face (start end face)
   "Prepend FACE to the `font-lock-face' text property between START and END.
@@ -1924,15 +1944,21 @@ characters get `diff-refine-removed' / `diff-refine-added' overlays."
         (if removed
             (let ((added (shipit--collect-diff-line-block ?+ hunk-body-end)))
               (when added
-                (condition-case err
-                    (smerge-refine-regions
-                     (car removed) (cdr removed)
-                     (car added) (cdr added)
-                     nil nil
-                     shipit--refine-removed-props
-                     shipit--refine-added-props)
-                  (error
-                   (shipit--debug-log "REFINE-ERROR: %s" err)))))
+                ;; Skip refine for very large blocks — smerge-refine does
+                ;; character-level diff and gets quadratic on big inputs.
+                (let ((removed-size (- (cdr removed) (car removed)))
+                      (added-size (- (cdr added) (car added))))
+                  (when (and (<= removed-size shipit-pr-fontify-max-bytes)
+                             (<= added-size shipit-pr-fontify-max-bytes))
+                    (condition-case err
+                        (smerge-refine-regions
+                         (car removed) (cdr removed)
+                         (car added) (cdr added)
+                         nil nil
+                         shipit--refine-removed-props
+                         shipit--refine-added-props)
+                      (error
+                       (shipit--debug-log "REFINE-ERROR: %s" err))))))) 
           (forward-line 1))))))
 
 (defun shipit--adjust-color-brightness (color amount)

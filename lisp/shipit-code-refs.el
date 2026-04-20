@@ -117,19 +117,34 @@ result."
         (and keys
              (member (car (split-string key "-")) keys)))))
 
+(defcustom shipit-code-refs-prose-modes
+  '(markdown-mode gfm-mode rst-mode adoc-mode asciidoc-mode text-mode)
+  "Modes where the whole buffer is treated as prose for code-refs.
+In these modes there is no meaningful in-comment question — the file
+is all prose — and `syntax-ppss' under some of them (notably
+`markdown-mode') can hit `syntax-propertize' regex backtracking that
+hangs on real-world content.  Setting this list makes
+`shipit-code-refs--in-comment-p' always return t for buffers derived
+from any of the listed modes, bypassing `syntax-ppss'."
+  :type '(repeat symbol)
+  :group 'shipit-code-refs)
+
 (defun shipit-code-refs--in-comment-p (pos)
   "Return non-nil if POS is inside a comment.
-Prefers `treesit-node-at' when a tree-sitter parser is active in the
-buffer (fast and incrementally updated); otherwise falls back to
-`syntax-ppss'.  Using tree-sitter avoids `syntax-ppss' scans from
-`point-min' in tree-sitter modes whose syntax table does not classify
-comments, which can make live typing unresponsive."
-  (if (and (fboundp 'treesit-parser-list)
-           (treesit-parser-list))
-      (when-let* ((node (treesit-node-at pos))
-                  (type (treesit-node-type node)))
-        (string-match-p "comment" type))
-    (nth 4 (syntax-ppss pos))))
+Strategy:
+- In `shipit-code-refs-prose-modes' derivatives (markdown, rst, text,
+  …) always return t — the whole buffer is prose and `syntax-ppss'
+  can backtrack hard there.
+- When a tree-sitter parser is active in the buffer, use
+  `treesit-node-at' (fast, incremental).
+- Otherwise fall back to `syntax-ppss'."
+  (cond
+   ((apply #'derived-mode-p shipit-code-refs-prose-modes) t)
+   ((and (fboundp 'treesit-parser-list) (treesit-parser-list))
+    (when-let* ((node (treesit-node-at pos))
+                (type (treesit-node-type node)))
+      (string-match-p "comment" type)))
+   (t (nth 4 (syntax-ppss pos)))))
 
 (defface shipit-code-refs-face
   '((t :inherit link :underline t))
@@ -818,8 +833,13 @@ When `shipit-code-refs-enable-completion' is non-nil, also adds
 (define-globalized-minor-mode global-shipit-code-refs-mode
   shipit-code-refs-mode
   (lambda ()
-    "Turn on `shipit-code-refs-mode' in `shipit-code-refs-global-modes'."
-    (when (apply #'derived-mode-p shipit-code-refs-global-modes)
+    "Turn on `shipit-code-refs-mode' in `shipit-code-refs-global-modes'.
+Skips hidden/internal buffers (names starting with a space) to avoid
+activating the mode inside shipit's own scratch buffers — notably the
+diff-hunk fontify scratch, where running our matcher over markdown
+content hangs on `syntax-ppss'."
+    (when (and (not (string-prefix-p " " (buffer-name)))
+               (apply #'derived-mode-p shipit-code-refs-global-modes))
       (shipit-code-refs-mode 1)))
   :group 'shipit-code-refs)
 

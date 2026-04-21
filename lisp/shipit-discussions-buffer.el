@@ -205,6 +205,7 @@ Provides a read-only interface for viewing GitHub Discussions.
   (setq-local tab-width 8)
   (setq-local magit-root-section nil)
   (shipit--apply-section-defaults)
+  (shipit--enable-issue-ref-eldoc)
   (font-lock-mode 1))
 
 ;;; Buffer lifecycle

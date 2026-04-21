@@ -29,6 +29,7 @@
 (require 'subr-x)
 (require 'transient)
 (require 'shipit-core)
+(require 'shipit-issue-titles)
 
 (declare-function shipit-issue--resolve-for-repo "shipit-issue-backends")
 (declare-function shipit-issues-open-buffer "shipit-issues-buffer")
@@ -791,6 +792,23 @@ transient instead."
       (shipit-code-refs-menu)
     (shipit-code-refs-open-issue)))
 
+(defun shipit-code-refs--eldoc-function (_callback &rest _ignored)
+  "Eldoc function for issue keys tagged by `shipit-code-refs-mode'.
+Reads the `shipit-issue-ref' text property at point, resolves repo via
+`shipit-code-refs--current-repo', and returns a one-line summary from
+the shared title cache (kicking off an async fetch on first visit)."
+  (let ((key (get-text-property (point) 'shipit-issue-ref)))
+    (when key
+      (let ((repo (shipit-code-refs--current-repo))
+            (buf (current-buffer)))
+        (when repo
+          (shipit--issue-title-eldoc-doc
+           key repo
+           (lambda ()
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (when (fboundp 'eldoc) (eldoc)))))))))))
+
 ;;; Minor modes
 
 ;;;###autoload
@@ -820,12 +838,17 @@ When `shipit-code-refs-enable-completion' is non-nil, also adds
           (add-hook 'completion-at-point-functions
                     #'shipit-code-refs-capf nil t))
         (add-hook 'post-self-insert-hook
-                  #'shipit-code-refs--maybe-auto-picker nil t))
+                  #'shipit-code-refs--maybe-auto-picker nil t)
+        (add-hook 'eldoc-documentation-functions
+                  #'shipit-code-refs--eldoc-function nil t)
+        (eldoc-mode 1))
     (font-lock-remove-keywords nil shipit-code-refs--font-lock-keywords)
     (remove-hook 'completion-at-point-functions
                  #'shipit-code-refs-capf t)
     (remove-hook 'post-self-insert-hook
-                 #'shipit-code-refs--maybe-auto-picker t))
+                 #'shipit-code-refs--maybe-auto-picker t)
+    (remove-hook 'eldoc-documentation-functions
+                 #'shipit-code-refs--eldoc-function t))
   (when (fboundp 'font-lock-flush)
     (font-lock-flush)))
 

@@ -211,6 +211,7 @@ Provides a read-only interface for viewing GitHub issues.
   (setq-local magit-root-section nil)
   (shipit--apply-section-defaults)
   (font-lock-mode 1)
+  (shipit--enable-issue-ref-eldoc)
   (add-hook 'post-command-hook #'shipit-issue--update-comment-position nil t)
   (setq-local mode-line-process
               '(:eval (shipit-issue--mode-line-comment-position))))

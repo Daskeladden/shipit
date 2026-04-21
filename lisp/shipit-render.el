@@ -28,6 +28,7 @@
 (require 'shipit-core)  ; For utility functions like shipit--wrap-text
 (require 'shipit-gh-etag)  ; For ETag-based caching of avatars
 (require 'shipit-issue-backends)  ; For backend reference patterns
+(require 'shipit-issue-titles)  ; For shared eldoc title cache/fetcher
 (require 'shipit-pr-backends)  ; For PR backend dispatch in #NNN routing
 
 ;; Forward declarations for variables from shipit-core
@@ -2321,6 +2322,9 @@ Currently provides styling only - interactive keybindings deferred."
                   (overlay-put ov 'face 'markdown-plain-url-face)
                   (overlay-put ov 'keymap keymap)
                   (overlay-put ov 'evaporate t)
+                  ;; Metadata for eldoc description lookup
+                  (overlay-put ov 'shipit-issue-id ref-num-int)
+                  (overlay-put ov 'shipit-issue-repo repo)
                   ;; Generic help-echo (could be issue or PR)
                   (overlay-put ov 'help-echo (format "#%s - RET: actions" ref-num))
                   (when (fboundp 'shipit--debug-log)
@@ -2398,6 +2402,8 @@ INC-FOUND and INC-OVERLAY are thunks called to increment counters."
                         (overlay-put ov 'face 'markdown-plain-url-face)
                         (overlay-put ov 'keymap keymap)
                         (overlay-put ov 'evaporate t)
+                        (overlay-put ov 'shipit-issue-id ref-id)
+                        (overlay-put ov 'shipit-issue-repo repo)
                         (overlay-put ov 'help-echo (format "%s - RET: actions" ref-str))
                         (shipit--debug-log "Created backend overlay for %s at %d-%d"
                                            ref-str start end))))))))))
@@ -2421,6 +2427,75 @@ references in GitLab MR buffers route through GitLab, not GitHub."
       (?c (kill-new url)
           (message "Copied %s to kill ring" url))
       (?q nil))))
+
+;;; Issue reference eldoc — show description in echo area
+
+(defun shipit--issue-ref-overlay-at-point ()
+  "Return the shipit issue-reference overlay at point, or nil."
+  (cl-find-if (lambda (ov) (overlay-get ov 'shipit-issue-id))
+              (overlays-at (point))))
+
+(defun shipit--issue-ref-eldoc-function (_callback &rest _ignored)
+  "Eldoc documentation function for issue references.
+When point rests on an issue reference overlay, returns a one-line
+description from cache, or kicks off an async fetch and returns
+\"Loading…\".  CALLBACK is accepted for eldoc protocol compatibility;
+re-display is driven by the fetch completion triggering eldoc."
+  (let ((ov (shipit--issue-ref-overlay-at-point)))
+    (when ov
+      (let* ((id (overlay-get ov 'shipit-issue-id))
+             (repo (overlay-get ov 'shipit-issue-repo))
+             (buf (current-buffer)))
+        (shipit--issue-title-eldoc-doc
+         id repo
+         (lambda ()
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (when (fboundp 'eldoc) (eldoc))))))))))
+
+(defun shipit--enable-issue-ref-eldoc ()
+  "Register `shipit--issue-ref-eldoc-function' in the current buffer."
+  (add-hook 'eldoc-documentation-functions
+            #'shipit--issue-ref-eldoc-function nil t)
+  (eldoc-mode 1)
+  (shipit--debug-log "Enabled issue-ref eldoc in %s" (buffer-name)))
+
+;;;###autoload
+(defun shipit-debug-issue-ref-at-point ()
+  "Diagnose the issue-reference overlay at point and invoke eldoc lookup.
+Prints overlay properties, cache entry, and raw eldoc output to *Messages*."
+  (interactive)
+  (let* ((ov (shipit--issue-ref-overlay-at-point))
+         (id (and ov (overlay-get ov 'shipit-issue-id)))
+         (repo (and ov (overlay-get ov 'shipit-issue-repo)))
+         (key (and id repo (shipit--issue-cache-key repo id)))
+         (entry (and key (gethash key shipit--issue-title-cache)))
+         (doc (shipit--issue-ref-eldoc-function #'ignore))
+         (all-at (overlays-at (point)))
+         (nearby (overlays-in (max (point-min) (- (point) 20))
+                              (min (point-max) (+ (point) 20))))
+         (props-at (mapcar (lambda (o) (overlay-properties o)) all-at))
+         (tp (text-properties-at (point)))
+         (shipit-ovs-in-buffer
+          (seq-filter (lambda (o) (overlay-get o 'shipit-issue-id))
+                      (overlays-in (point-min) (point-max)))))
+    (message "shipit eldoc diag:
+  point=%d char=%S
+  overlays-at-point=%d (shipit-ov=%S)
+  overlays-in-±20=%d
+  shipit-id-overlays-in-buffer=%d
+  text-props-at-point=%S
+  overlay-props=%S
+  id=%S repo=%S entry=%S eldoc=%S eldoc-on=%S"
+             (point)
+             (and (char-after) (char-to-string (char-after)))
+             (length all-at) (and ov t)
+             (length nearby)
+             (length shipit-ovs-in-buffer)
+             tp
+             props-at
+             id repo entry doc
+             (bound-and-true-p eldoc-mode))))
 
 (defun shipit--create-commit-sha-overlays (repo &optional body-start body-end)
   "Create overlays for commit SHAs in comment body.

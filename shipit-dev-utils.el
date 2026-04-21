@@ -86,7 +86,8 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
       ;; Load files in dependency order (core → specific modules)
       (let ((load-files '("shipit-lib.el" "shipit-sections.el" "shipit-core.el" "shipit-cache.el" "shipit-comments.el"
                           "shipit-worktree.el" "shipit-http.el" "shipit-gh-etag.el"
-                          "shipit-issue-backends.el" "shipit-issue-github.el" "shipit-issue-jira.el" "shipit-issue-gitlab.el"
+                          "shipit-issue-backends.el" "shipit-issue-titles.el"
+                          "shipit-issue-github.el" "shipit-issue-jira.el" "shipit-issue-gitlab.el"
                           "shipit-pr-backends.el" "shipit-pr-github.el"
                           "shipit-gitlab-http.el" "shipit-pr-gitlab.el"
                           "shipit-comment-backends.el" "shipit-comment-github.el" "shipit-comment-gitlab.el"
@@ -108,6 +109,7 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
                           "shipit-discussions.el" "shipit-discussions-buffer.el"
                           "shipit-atlassian-board.el" "shipit-atlassian-dashboard.el"
                           "shipit-notifications-rss.el"
+                          "shipit-code-refs.el"
                           "shipit-debug.el" "shipit.el")))
         ;; First pass: Delete all .elc bytecode files to force fresh load
         (dolist (file load-files)

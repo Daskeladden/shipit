@@ -49,6 +49,7 @@ test-unit: compile
 		-l test/test-shipit-issue-github.el \
 		-l test/test-shipit-issue-jira.el \
 		-l test/test-shipit-issue-render.el \
+		-l test/test-shipit-issue-eldoc.el \
 		-l test/test-shipit-issue-create.el \
 		-l test/test-shipit-issue-create-buffer.el \
 		-l test/test-shipit-issue-comment-actions.el \

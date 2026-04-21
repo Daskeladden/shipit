@@ -612,6 +612,7 @@ with focused context and optimized performance.
   ;; Initialize magit-root-section to nil - will be set by first magit-insert-section call
   (setq-local magit-root-section nil)
   (shipit--apply-section-defaults)
+  (shipit--enable-issue-ref-eldoc)
   ;; Enable font-lock for syntax highlighting in code sections
   (font-lock-mode 1)
   ;; Set up imenu for section navigation (following magit-mode pattern)

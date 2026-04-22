@@ -28,11 +28,21 @@ Returns absolute path to worktree directory."
      (or (shipit--get-repo-root) "."))))
 
 (defun shipit--get-repo-root ()
-  "Get git repository root directory, or nil if not in a git repo."
-  (condition-case nil
-      (string-trim-right
-       (shell-command-to-string "git rev-parse --show-toplevel"))
-    (error nil)))
+  "Get git repository root directory, or nil if not in a git worktree.
+`git rev-parse --show-toplevel' exits non-zero when run from inside
+the `.git/' directory (e.g. editing `COMMIT_EDITMSG').
+`shell-command-to-string' captures stderr into the return value and
+does not signal a Lisp error, so the previous `condition-case'
+guard was a no-op — callers could end up with the literal string
+\"fatal: this operation must be run in a work tree\" as a path.
+Use `process-file' with exit-code checking, and sanity-check the
+result."
+  (with-temp-buffer
+    (when (zerop (process-file "git" nil t nil "rev-parse" "--show-toplevel"))
+      (let ((root (string-trim (buffer-string))))
+        (and (not (string-empty-p root))
+             (file-directory-p root)
+             root)))))
 
 (defun shipit--get-current-repo ()
   "Get current repository from git remote origin.

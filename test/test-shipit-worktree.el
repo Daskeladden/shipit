@@ -14,6 +14,28 @@
   "Test checking if worktree exists."
   (should (booleanp (shipit--worktree-exists-p "/fake/path"))))
 
+(ert-deftest shipit--get-repo-root-from-git-dir-returns-nil-test ()
+  "Test that repo-root detection returns nil when rev-parse fails.
+GIVEN default-directory inside `.git/' (where `git rev-parse
+--show-toplevel' exits non-zero with \"fatal: this operation must
+be run in a work tree\" on stderr)
+WHEN `shipit--get-repo-root' is called
+THEN it should return nil, not the stderr text — otherwise
+callers use the error string as a path and subsequent file ops
+blow up with \"Setting current directory: No such file or
+directory\"."
+  (let* ((tmp (make-temp-file "shipit-repo-root-test-" t))
+         (git-dir (expand-file-name ".git" tmp)))
+    (unwind-protect
+        (progn
+          (let ((default-directory tmp))
+            (call-process "git" nil nil nil "init" "-q"))
+          (let ((default-directory (file-name-as-directory git-dir)))
+            (let ((result (shipit--get-repo-root)))
+              (should (or (null result)
+                          (file-directory-p result))))))
+      (delete-directory tmp t))))
+
 (ert-deftest shipit--get-pr-info-from-worktree-test ()
   "Test reading .shipit-pr-info.json from worktree."
   ;; This will need a mock worktree or temp directory

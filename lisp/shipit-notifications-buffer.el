@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'transient)
 (require 'shipit-core)
 (require 'magit-section)
 
@@ -57,6 +58,21 @@
 (defvar-local shipit-notifications-buffer--filter-text ""
   "Current filter text for the notifications buffer.")
 
+(defvar-local shipit-notifications-buffer--display-scope 'unread
+  "Buffer-local display scope for the notifications buffer.
+One of `unread' (GitHub's unread feed, usually a single short page)
+or `all' (include read notifications, paginated on demand via
+`shipit-notifications-buffer-load-more').  Kept buffer-local so
+toggling in the buffer does not affect the background poll's
+`shipit-notifications-scope' setting.")
+
+(defvar-local shipit-notifications-buffer--page-limit 1
+  "Number of pages currently loaded into the notifications buffer.
+Meaningful mainly when `shipit-notifications-buffer--display-scope'
+is `all'; incremented by `shipit-notifications-buffer-load-more'.
+Starts at 1 and resets to 1 on every scope toggle so switching
+views doesn't silently fan out 10 pages of network requests.")
+
 ;; Section types
 (defun notification-entry (&rest _args)
   "Magit section identifier for notification entries.")
@@ -77,7 +93,7 @@
     (set-keymap-parent map magit-section-mode-map)
     (define-key map (kbd "g") #'shipit-notifications-buffer-refresh)
     (define-key map (kbd "q") #'quit-window)
-    (define-key map (kbd "f") #'shipit-notifications-buffer-set-filter)
+    (define-key map (kbd "f") #'shipit-notifications-buffer-filter-menu)
     (define-key map (kbd "RET") #'shipit-notifications-buffer-open)
     (define-key map (kbd "M-;") #'shipit-notifications-buffer-action)
     (define-key map (kbd "TAB") #'shipit-notifications-buffer-toggle-section)
@@ -117,12 +133,16 @@
 
 (defun shipit-notifications-buffer-refresh (&optional _ignore-auto _noconfirm)
   "Refresh the notifications buffer content.
-Fetches fresh data from the API before re-rendering.
+Fetches fresh data from the API before re-rendering using the
+buffer-local `shipit-notifications-buffer--display-scope' and
+`shipit-notifications-buffer--page-limit'.
 Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
   (interactive)
   (message "Fetching notifications...")
-  (when (fboundp 'shipit--check-notifications-background)
-    (shipit--check-notifications-background t))
+  (let ((scope shipit-notifications-buffer--display-scope)
+        (pages shipit-notifications-buffer--page-limit))
+    (when (fboundp 'shipit--check-notifications-background)
+      (shipit--check-notifications-background t scope pages)))
   (shipit-notifications-buffer--rerender)
   (message "Notifications refreshed"))
 
@@ -145,8 +165,15 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
     (shipit-notifications-buffer--insert-notifications)))
 
 (defun shipit-notifications-buffer--insert-header ()
-  "Insert the buffer header."
+  "Insert the buffer header, including scope and page info."
   (insert (propertize "Notifications" 'font-lock-face 'bold))
+  (insert (propertize
+           (format "  [%s%s]"
+                   (symbol-name shipit-notifications-buffer--display-scope)
+                   (if (eq shipit-notifications-buffer--display-scope 'all)
+                       (format ", pages: %d" shipit-notifications-buffer--page-limit)
+                     ""))
+           'font-lock-face 'font-lock-comment-face))
   (unless (string-empty-p shipit-notifications-buffer--filter-text)
     (insert (propertize (format "  [filter: %s]" shipit-notifications-buffer--filter-text)
                         'font-lock-face 'font-lock-comment-face)))
@@ -837,7 +864,75 @@ For RSS entries, opens the link in browser directly."
           (shipit-notifications-buffer-refresh))
       (message "No notifications to mark as read"))))
 
+;;; Scope / pagination
+
+(defun shipit-notifications-buffer-toggle-scope ()
+  "Flip between `unread' and `all' display scopes.
+Resets `shipit-notifications-buffer--page-limit' to 1 so that
+switching views never silently fans out 10 pages of API requests,
+then refreshes."
+  (interactive)
+  (setq shipit-notifications-buffer--display-scope
+        (if (eq shipit-notifications-buffer--display-scope 'all) 'unread 'all))
+  (setq shipit-notifications-buffer--page-limit 1)
+  (message "Notifications scope: %s"
+           shipit-notifications-buffer--display-scope)
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer-load-more ()
+  "Fetch one more page of notifications in `all' scope.
+Refuses in `unread' scope, where GitHub's own feed is already
+scoped to what's unread and pagination is rarely meaningful."
+  (interactive)
+  (unless (eq shipit-notifications-buffer--display-scope 'all)
+    (user-error "Load-more only applies in 'all' scope (current: %s)"
+                shipit-notifications-buffer--display-scope))
+  (cl-incf shipit-notifications-buffer--page-limit)
+  (message "Loading page %d..." shipit-notifications-buffer--page-limit)
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer-clear-filter ()
+  "Clear the live text filter."
+  (interactive)
+  (setq shipit-notifications-buffer--filter-text "")
+  (shipit-notifications-buffer--rerender))
+
 ;;; Filter
+
+(defun shipit-notifications-buffer--scope-description ()
+  "Describe the current scope toggle for the transient."
+  (format "Scope: %s  (toggle unread/all)"
+          shipit-notifications-buffer--display-scope))
+
+(defun shipit-notifications-buffer--load-more-description ()
+  "Describe the load-more action for the transient."
+  (if (eq shipit-notifications-buffer--display-scope 'all)
+      (format "Load more (next page: %d)"
+              (1+ shipit-notifications-buffer--page-limit))
+    "Load more (unavailable in 'unread' scope)"))
+
+(defun shipit-notifications-buffer--text-filter-description ()
+  "Describe the text-filter action for the transient."
+  (if (string-empty-p shipit-notifications-buffer--filter-text)
+      "Text filter…"
+    (format "Text filter: %s" shipit-notifications-buffer--filter-text)))
+
+;;;###autoload (autoload 'shipit-notifications-buffer-filter-menu "shipit-notifications-buffer" nil t)
+(transient-define-prefix shipit-notifications-buffer-filter-menu ()
+  "Filter and scope controls for the notifications buffer."
+  [["Scope"
+    ("s" shipit-notifications-buffer-toggle-scope
+     :description shipit-notifications-buffer--scope-description)
+    ("m" shipit-notifications-buffer-load-more
+     :description shipit-notifications-buffer--load-more-description
+     :transient t)]
+   ["Text filter"
+    ("t" shipit-notifications-buffer-set-filter
+     :description shipit-notifications-buffer--text-filter-description)
+    ("c" "Clear text filter" shipit-notifications-buffer-clear-filter)]
+   ["Refresh"
+    ("g" "Refresh now" shipit-notifications-buffer-refresh)
+    ("q" "Quit" transient-quit-one)]])
 
 (defun shipit-notifications-buffer-set-filter ()
   "Set or clear the filter for notifications with live updates as you type."

@@ -554,16 +554,29 @@ Uses nesting depth counter to handle nested pause/resume calls."
       (shipit--start-notifications-polling))
     (shipit--debug-log "▶️  RESUMED notifications polling")))
 
-(defun shipit--check-notifications-background (&optional force-fresh)
+(defun shipit--notification-params-for-scope (scope)
+  "Return the query-param alist that matches SCOPE.
+SCOPE is one of `all', `participating', `unread',
+`unread-participating'."
+  (pcase scope
+    ('all '((all . "true") (per_page . 100)))
+    ('participating '((participating . "true") (per_page . 100)))
+    ('unread '((per_page . 100)))
+    ('unread-participating '((participating . "true") (per_page . 100)))
+    (_ '((per_page . 100)))))
+
+(defun shipit--check-notifications-background (&optional force-fresh scope-override max-pages)
   "Check GitHub notifications in background using ETag caching with pagination.
-If FORCE-FRESH is non-nil, bypasses ETag cache to get fresh data."
+If FORCE-FRESH is non-nil, bypasses ETag cache to get fresh data.
+SCOPE-OVERRIDE, when non-nil, replaces `shipit-notifications-scope'
+for this call only — useful for the notifications buffer's
+buffer-local display scope.
+MAX-PAGES caps the number of pages fetched (default 10)."
   (condition-case err
-      (let* ((params (pcase shipit-notifications-scope
-                       ('all '((all . "true") (per_page . 100)))
-                       ('participating '((participating . "true") (per_page . 100)))
-                       ('unread '((per_page . 100)))  ; Default: unread only, all repos
-                       ('unread-participating '((participating . "true") (per_page . 100)))))
-             (all-notifications (shipit--fetch-all-notifications params nil force-fresh)))
+      (let* ((scope (or scope-override shipit-notifications-scope))
+             (params (shipit--notification-params-for-scope scope))
+             (all-notifications
+              (shipit--fetch-all-notifications params nil force-fresh max-pages)))
         (shipit--process-notifications all-notifications)
         ;; Poll backend notifications if backends are configured
         (when (featurep 'shipit-issue-backends)
@@ -571,11 +584,12 @@ If FORCE-FRESH is non-nil, bypasses ETag cache to get fresh data."
     (error
      (shipit--debug-log "Background notifications check failed: %s" (error-message-string err)))))
 
-(defun shipit--fetch-all-notifications (params &optional since-watermark force-fresh)
+(defun shipit--fetch-all-notifications (params &optional since-watermark force-fresh max-pages)
   "Fetch notifications following GitHub's protocol.
 Uses Last-Modified headers and respects X-Poll-Interval.
 If SINCE-WATERMARK is provided, filters to only notifications after that timestamp.
-If FORCE-FRESH is non-nil, bypasses ETag caching."
+If FORCE-FRESH is non-nil, bypasses ETag caching.
+MAX-PAGES caps the number of pages fetched (defaults to 10)."
   (let* ((resolved (shipit-pr--resolve-for-repo
                     (or (shipit--get-repo-from-remote) "")))
          (backend (car resolved))
@@ -583,9 +597,10 @@ If FORCE-FRESH is non-nil, bypasses ETag caching."
          (fetch-fn (plist-get backend :fetch-notifications))
          (all-notifications '())
          (page 1)
-         (has-more t))
+         (has-more t)
+         (page-cap (or max-pages 10)))
 
-    (while (and has-more (< page 10)) ; Safety limit of 10 pages (1000 notifications max)
+    (while (and has-more (<= page page-cap))
       (let* ((page-params (append params `((page . ,page))))
              (page-notifications
               (if fetch-fn
@@ -1060,13 +1075,9 @@ Removes marked notifications from the display without full buffer refresh."
 Used after marking notifications as read to get updated state from GitHub."
   (shipit--debug-log "🔄 Force refreshing notifications (bypassing cache)")
   (condition-case err
-      (let* ((params (pcase shipit-notifications-scope
-                       ('all '((all . "true") (per_page . 100)))
-                       ('participating '((participating . "true") (per_page . 100)))
-                       ('unread '((per_page . 100)))  ; Default: unread only, all repos
-                       ('unread-participating '((participating . "true") (per_page . 100)))))
+      (let* ((params (shipit--notification-params-for-scope shipit-notifications-scope))
              ;; Force fresh fetch to bypass ETag cache
-             (all-notifications (shipit--fetch-all-notifications params t)))
+             (all-notifications (shipit--fetch-all-notifications params nil t)))
         (shipit--process-notifications all-notifications)
         ;; Poll backend notifications if backends are configured
         (when (featurep 'shipit-issue-backends)
@@ -1578,11 +1589,7 @@ TYPE is \"pr\" or \"issue\" (defaults to \"pr\" for backward compatibility)."
   "Check GitHub notifications asynchronously to prevent Emacs stuttering.
 If FORCE-FRESH is non-nil, bypasses ETag cache to get fresh data."
   (condition-case err
-      (let* ((params (pcase shipit-notifications-scope
-                       ('all '((all . "true") (per_page . 100)))
-                       ('participating '((participating . "true") (per_page . 100)))
-                       ('unread '((per_page . 100)))  ; Default: unread only, all repos
-                       ('unread-participating '((participating . "true") (per_page . 100))))))
+      (let* ((params (shipit--notification-params-for-scope shipit-notifications-scope)))
         ;; Fetch first page asynchronously
         (shipit--fetch-all-notifications-async
          params

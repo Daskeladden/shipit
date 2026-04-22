@@ -161,6 +161,10 @@ buffer-local `shipit-notifications-buffer--display-scope',
 Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
   (interactive)
   (message "Fetching notifications...")
+  ;; Invalidate the cached total immediately so the header doesn't
+  ;; keep showing a stale repo-specific total after e.g. the repo
+  ;; filter was cleared.  The async probe below refreshes it.
+  (setq shipit-notifications-buffer--total-count nil)
   (let ((scope shipit-notifications-buffer--display-scope)
         (pages shipit-notifications-buffer--page-limit)
         (repo shipit-notifications-buffer--repo-filter)

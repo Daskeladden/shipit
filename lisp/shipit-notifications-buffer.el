@@ -192,10 +192,22 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
 ;;; Rendering
 
 (defun shipit-notifications-buffer--render ()
-  "Render the notifications buffer content."
-  (magit-insert-section (notifications-root)
-    (shipit-notifications-buffer--insert-header)
-    (shipit-notifications-buffer--insert-notifications)))
+  "Render the notifications buffer content.
+Bind `shipit-notifications-buffer--render-pool' once per render so
+the three callers that need the repo-filtered activity pool share
+a single hash walk + filter."
+  (let ((shipit-notifications-buffer--render-pool
+         (seq-filter #'shipit-notifications-buffer--matches-repo-filter-p
+                     (shipit-notifications-buffer--all-activities))))
+    (magit-insert-section (notifications-root)
+      (shipit-notifications-buffer--insert-header)
+      (shipit-notifications-buffer--insert-notifications))))
+
+(defvar shipit-notifications-buffer--render-pool nil
+  "Dynamic cache of the repo-filtered activity pool during one render.
+Bound by `shipit-notifications-buffer--render' so header helpers and
+the list renderer share a single hash walk per render instead of
+repeating it for every count call.  Nil outside the render.")
 
 (defun shipit-notifications-buffer--all-activities ()
   "Return the list of all activities in the global hash (unfiltered)."
@@ -218,12 +230,12 @@ case-insensitive because GitHub repo names are case-insensitive."
 
 (defun shipit-notifications-buffer--repo-filtered-activities ()
   "Activities after the server-side repo filter (still all text-filter states).
-This is the pool that both the loaded-count and the shown-count
-draw from, so the two numbers stay consistent when a repo filter
-is active — the Jira backend's entries, which live in the same
-hash but don't belong to the selected repo, drop out here."
-  (seq-filter #'shipit-notifications-buffer--matches-repo-filter-p
-              (shipit-notifications-buffer--all-activities)))
+Reuses `shipit-notifications-buffer--render-pool' when set so the
+hash walk + repo filter happen once per render instead of three
+times (header shown-count, header loaded-count, list renderer)."
+  (or shipit-notifications-buffer--render-pool
+      (seq-filter #'shipit-notifications-buffer--matches-repo-filter-p
+                  (shipit-notifications-buffer--all-activities))))
 
 (defun shipit-notifications-buffer--loaded-count ()
   "Return the number of activities visible under the repo filter.
@@ -1117,33 +1129,50 @@ fetch and the total-count probe hit the per-repo endpoint."
     ("g" "Refresh now" shipit-notifications-buffer-refresh)
     ("q" "Quit" transient-quit-one)]])
 
+(defcustom shipit-notifications-filter-live-delay 0.25
+  "Idle delay in seconds before re-rendering on live text-filter typing.
+Raising this makes fast typing less laggy at the cost of a slightly
+delayed preview; lowering it makes the preview feel more immediate
+at the cost of extra renders per keystroke."
+  :type 'number
+  :group 'shipit)
+
 (defun shipit-notifications-buffer-set-filter ()
-  "Set or clear the filter for notifications with live updates as you type."
+  "Set or clear the filter for notifications with live updates as you type.
+Updates are debounced by `shipit-notifications-filter-live-delay' so
+bursty typing re-renders the notifications buffer once per pause,
+not once per keystroke; the text filter is also checked against
+the cached last-rendered value so unchanged input is a no-op."
   (interactive)
   (let* ((original-buffer (current-buffer))
          (timer nil)
-         (minibuf nil))
+         (minibuf nil)
+         (last-rendered nil))
     (minibuffer-with-setup-hook
         (lambda ()
           (setq minibuf (current-buffer))
           (add-hook 'post-command-hook
                     (lambda ()
-                      (when timer
-                        (cancel-timer timer))
+                      (when timer (cancel-timer timer))
                       (setq timer
-                            (run-with-idle-timer 0.05 nil
-                                                 (lambda ()
-                                                   (condition-case nil
-                                                       (when (and (buffer-live-p minibuf)
-                                                                  (minibufferp minibuf))
-                                                         (let ((current-input (with-current-buffer minibuf
-                                                                                (minibuffer-contents-no-properties))))
-                                                           (when (buffer-live-p original-buffer)
-                                                             (with-current-buffer original-buffer
-                                                               (setq shipit-notifications-buffer--filter-text current-input)
-                                                               (shipit-notifications-buffer--rerender)
-                                                               (redisplay t)))))
-                                                     (error nil))))))
+                            (run-with-idle-timer
+                             shipit-notifications-filter-live-delay nil
+                             (lambda ()
+                               (condition-case nil
+                                   (when (and (buffer-live-p minibuf)
+                                              (minibufferp minibuf))
+                                     (let ((current-input
+                                            (with-current-buffer minibuf
+                                              (minibuffer-contents-no-properties))))
+                                       (when (and (buffer-live-p original-buffer)
+                                                  (not (equal current-input
+                                                               last-rendered)))
+                                         (setq last-rendered current-input)
+                                         (with-current-buffer original-buffer
+                                           (setq shipit-notifications-buffer--filter-text
+                                                 current-input)
+                                           (shipit-notifications-buffer--rerender)))))
+                                 (error nil))))))
                     nil t))
       (let ((new-filter (read-string "Filter notifications: "
                                      shipit-notifications-buffer--filter-text)))

@@ -780,6 +780,99 @@ Filters to MergeRequest and Issue target types client-side."
                        (length todos) (length relevant))
     (mapcar #'shipit-issue-gitlab--todo-to-activity relevant)))
 
+(defun shipit-issue-gitlab--fetch-todos-async (config callback)
+  "Async variant of `shipit-issue-gitlab--fetch-todos'.
+Calls CALLBACK with a list of activity alists when the API
+responds.  Calls back with nil on error."
+  (shipit-gitlab--api-request-async
+   config "/todos?state=pending&per_page=100"
+   (lambda (raw)
+     (let* ((todos (when raw (append raw nil)))
+            (relevant (seq-filter
+                       (lambda (todo)
+                         (member (cdr (assq 'target_type todo))
+                                 '("MergeRequest" "Issue")))
+                       todos)))
+       (shipit--debug-log "GitLab notifications (async): fetched %d todos (%d relevant)"
+                          (length (or todos '())) (length (or relevant '())))
+       (when callback
+         (funcall callback
+                  (mapcar #'shipit-issue-gitlab--todo-to-activity relevant)))))))
+
+(defun shipit-issue-gitlab--fetch-events-async (config since callback)
+  "Async variant of `shipit-issue-gitlab--fetch-events'.
+Issues per-project requests in parallel and calls CALLBACK with
+the merged activity list once all responses arrive.  Callback gets
+nil on error or when no projects are configured."
+  (let* ((api-url (or (plist-get config :api-url) "https://gitlab.com"))
+         (date-param (when since
+                       (when (string-match
+                              "\\`\\([0-9]\\{4\\}\\)-\\([0-9]\\{2\\}\\)-\\([0-9]\\{2\\}\\)" since)
+                         (let* ((y (string-to-number (match-string 1 since)))
+                                (m (string-to-number (match-string 2 since)))
+                                (d (string-to-number (match-string 3 since)))
+                                (prev (encode-time 0 0 0 (1- d) m y)))
+                           (format-time-string "%Y-%m-%d" prev))))))
+    (shipit-issue-gitlab--ensure-project-cache config)
+    (let* ((project-ids (seq-take shipit-issue-gitlab--project-ids
+                                  shipit-issue-gitlab--max-event-projects))
+           (pending (length project-ids))
+           (all-events nil))
+      (if (zerop pending)
+          (when callback (funcall callback nil))
+        (dolist (project-id project-ids)
+          (let* ((path (format "/projects/%s/events?per_page=25%s"
+                               project-id
+                               (if date-param (concat "&after=" date-param) ""))))
+            (shipit-gitlab--api-request-async
+             config path
+             (lambda (raw)
+               (when raw (setq all-events (nconc all-events (append raw nil))))
+               (setq pending (1- pending))
+               (when (zerop pending)
+                 (let ((relevant (seq-filter #'shipit-issue-gitlab--event-relevant-p
+                                             all-events)))
+                   (shipit--debug-log
+                    "GitLab events (async): fetched %d events from %d projects (%d relevant)"
+                    (length all-events) (length project-ids) (length relevant))
+                   (when callback
+                     (funcall callback
+                              (mapcar (lambda (ev)
+                                        (shipit-issue-gitlab--event-to-activity ev api-url))
+                                      relevant)))))))))))))
+
+(defun shipit-issue-gitlab--fetch-notifications-async (config &optional since callback)
+  "Async variant of `shipit-issue-gitlab--fetch-notifications'.
+Fetches todos and (optionally) events in parallel, then merges and
+invokes CALLBACK with the combined activity list."
+  (let ((todo-activities nil)
+        (event-activities nil)
+        (todos-done nil)
+        (events-done (not shipit-gitlab-notifications-include-events)))
+    (cl-labels
+        ((finish ()
+           (when (and todos-done events-done)
+             (let ((merged (make-hash-table :test 'equal)))
+               (dolist (a (or event-activities '()))
+                 (puthash (shipit-issue-gitlab--activity-key a) a merged))
+               (dolist (a (or todo-activities '()))
+                 (puthash (shipit-issue-gitlab--activity-key a) a merged))
+               (let ((result nil))
+                 (maphash (lambda (_k v) (push v result)) merged)
+                 (shipit--debug-log
+                  "GitLab notifications (async): %d todos + %d events = %d combined"
+                  (length (or todo-activities '()))
+                  (length (or event-activities '()))
+                  (length result))
+                 (when callback (funcall callback result)))))))
+      (shipit-issue-gitlab--fetch-todos-async
+       config
+       (lambda (acts) (setq todo-activities acts todos-done t) (finish)))
+      (when shipit-gitlab-notifications-include-events
+        (shipit-issue-gitlab--fetch-events-async
+         config since
+         (lambda (acts) (setq event-activities acts events-done t) (finish)))))))
+
 (defun shipit-issue-gitlab--fetch-notifications (config &optional since)
   "Fetch GitLab notifications combining Todos and Events.
 CONFIG is the backend config plist.  SINCE is an ISO8601 timestamp
@@ -857,6 +950,7 @@ Returns (\"gitlab.com\" . config-plist) when credentials found, nil otherwise."
        :add-reaction #'shipit-issue-gitlab--add-reaction
        :remove-reaction #'shipit-issue-gitlab--remove-reaction
        :notifications #'shipit-issue-gitlab--fetch-notifications
+       :notifications-async #'shipit-issue-gitlab--fetch-notifications-async
        :mark-notification-read #'shipit-issue-gitlab--mark-notification-read
        :autodiscover #'shipit-issue-gitlab--autodiscover
        :icon-spec '("gitlab" "simple" . "#FC6D26")

@@ -1029,7 +1029,10 @@ THEN returns empty list (no duplicate)."
   "GIVEN shipit-issue-repo-backends is empty
 AND auto-discover returns a gitlab entry with a token
 WHEN shipit--poll-backend-notifications runs
-THEN shipit-issue-gitlab--fetch-notifications is called."
+THEN shipit-issue-gitlab--fetch-notifications is called.
+Backend polls now run on idle timers to avoid blocking the UI;
+the test pumps the idle queue with a brief sit-for so the timer
+fires before assertions."
   (let ((shipit-issue-repo-backends nil)
         (shipit--backend-last-poll-time nil)
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
@@ -1041,8 +1044,21 @@ THEN shipit-issue-gitlab--fetch-notifications is called."
               ((symbol-function 'shipit-issue-gitlab--fetch-notifications)
                (lambda (_config _since)
                  (setq fetch-called t)
-                 nil)))
+                 nil))
+              ;; Async variant takes precedence in `shipit--poll-one-backend',
+              ;; so mock it too — either path counts as "fetch was called".
+              ((symbol-function 'shipit-issue-gitlab--fetch-notifications-async)
+               (lambda (_config _since cb)
+                 (setq fetch-called t)
+                 (when cb (funcall cb nil)))))
       (shipit--poll-backend-notifications)
+      ;; Drain idle timers — in batch mode they do not fire on their
+      ;; own.  Each iteration pops the head, removes it from the
+      ;; idle queue, and runs its function/args directly.
+      (while timer-idle-list
+        (let ((timer (car timer-idle-list)))
+          (setq timer-idle-list (cdr timer-idle-list))
+          (apply (timer--function timer) (timer--args timer))))
       (should fetch-called))))
 
 ;;; Events API Integration Tests

@@ -67,6 +67,30 @@ Returns the parsed XML tree, or nil on error."
      (shipit--debug-log "RSS fetch error for %s: %s" url (error-message-string err))
      nil)))
 
+(defun shipit-rss--fetch-feed-async (url callback)
+  "Async variant of `shipit-rss--fetch-feed'.
+Calls CALLBACK with the parsed XML tree (or nil on error) when
+the feed response arrives."
+  (condition-case err
+      (let ((url-request-method "GET")
+            (url-show-status nil))
+        (url-retrieve
+         url
+         (lambda (status)
+           (let ((buf (current-buffer))
+                 (result nil))
+             (unwind-protect
+                 (unless (plist-get status :error)
+                   (goto-char (point-min))
+                   (when (search-forward "\n\n" nil t)
+                     (setq result (libxml-parse-xml-region (point) (point-max)))))
+               (kill-buffer buf))
+             (when callback (funcall callback result))))
+         nil t t))
+    (error
+     (shipit--debug-log "RSS fetch (async) error for %s: %s" url (error-message-string err))
+     (when callback (funcall callback nil)))))
+
 (defun shipit-rss--parse-entries (xml url)
   "Extract feed entries from parsed XML tree for feed at URL.
 Returns a list of alists with keys: title, link, guid, published, summary."
@@ -214,6 +238,47 @@ On first poll (SINCE is nil), defaults to 1 hour ago."
                        (or since "1h ago"))
     (nreverse all-activities)))
 
+(defun shipit-rss--fetch-notifications-async (_config &optional since callback)
+  "Async variant of `shipit-rss--fetch-notifications'.
+Issues parallel feed fetches and calls CALLBACK with the merged
+activity list once all feeds have responded."
+  (let* ((cutoff (float-time
+                  (if since
+                      (date-to-time since)
+                    (time-subtract nil (* 60 60)))))
+         (feeds shipit-rss-feeds)
+         (pending (length feeds))
+         (all-activities nil))
+    (if (zerop pending)
+        (when callback (funcall callback nil))
+      (dolist (feed feeds)
+        (let* ((feed-cell feed)
+               (url (plist-get feed :url)))
+          (shipit-rss--fetch-feed-async
+           url
+           (lambda (xml)
+             (let ((entries (when xml (shipit-rss--parse-entries xml url))))
+               (shipit--debug-log "RSS (async): %s returned %d entries (seen-guids: %d)"
+                                  url (length (or entries '()))
+                                  (hash-table-count shipit-rss--seen-guids))
+               (dolist (entry entries)
+                 (let* ((guid (cdr (assq 'guid entry)))
+                        (published (cdr (assq 'published entry)))
+                        (entry-time (condition-case nil
+                                        (float-time (date-to-time published))
+                                      (error 0))))
+                   (when (>= entry-time cutoff)
+                     (unless (gethash guid shipit-rss--seen-guids)
+                       (puthash guid t shipit-rss--seen-guids))
+                     (push (shipit-rss--entry-to-activity feed-cell entry)
+                           all-activities)))))
+             (setq pending (1- pending))
+             (when (zerop pending)
+               (shipit--debug-log "RSS (async): returning %d new activities (cutoff: %s)"
+                                  (length (or all-activities '()))
+                                  (or since "1h ago"))
+               (when callback (funcall callback (nreverse all-activities)))))))))))
+
 (defun shipit-rss--mark-read (_config _activity)
   "Mark RSS notification ACTIVITY as read (local tracking only)."
   ;; No remote API to mark read — handled by the global locally-marked-read mechanism
@@ -239,6 +304,7 @@ On first poll (SINCE is nil), defaults to 1 hour ago."
        :id-to-string #'identity
        :string-to-id #'identity
        :notifications #'shipit-rss--fetch-notifications
+       :notifications-async #'shipit-rss--fetch-notifications-async
        :mark-notification-read #'shipit-rss--mark-read
        :icon-spec '("rss" "simple" . "#ee802f")
        :icon-fallback-text "RS"))

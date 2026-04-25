@@ -4811,6 +4811,13 @@ Returns (octicon . color) or nil."
     ("issue"      '("issue-opened" . "#8250df"))         ; Purple
     ("discussion" '("comment-discussion" . "#0366d6"))   ; Blue
     ("rss"        '("rss" . "#ee802f"))                  ; Orange
+    ("release"    '("rocket" . "#1a7f37"))               ; Green
+    ("deployment" '("rocket" . "#8250df"))               ; Purple (deployment)
+    ("check"      '("check-circle" . "#28a745"))         ; Green
+    ("commit"     '("git-commit" . "#8250df"))           ; Purple
+    ("workflow"   '("workflow" . "#28a745"))             ; Green
+    ("alert"      '("shield" . "#da3633"))               ; Red
+    ("invitation" '("mail" . "#0366d6"))                 ; Blue
     (_ nil)))
 
 (defun shipit--get-notification-type-icon (type emoji-fallback)

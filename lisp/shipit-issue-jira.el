@@ -477,6 +477,42 @@ Add to ~/.authinfo.gpg: machine %s login <email> password <api-token>" host host
       (error "Jira backend requires :base-url in config"))
     (concat (string-trim-right base-url "/") path)))
 
+(defun shipit-issue-jira--api-request-async (config path callback)
+  "Async GET to Jira REST API using CONFIG at PATH.
+CALLBACK is called with parsed JSON (or nil on error) once the
+response arrives.  Uses `url-retrieve' so the request does not
+block the UI even when Jira is slow."
+  (let* ((url (shipit-issue-jira--build-url config path))
+         (auth (shipit-issue-jira--auth-header config))
+         (url-request-method "GET")
+         (url-request-extra-headers
+          `(("Content-Type" . "application/json")
+            ,@(when auth `(("Authorization" . ,auth))))))
+    (shipit--debug-log "Jira API (async): GET %s" url)
+    (url-retrieve
+     url
+     (lambda (status)
+       (let ((buf (current-buffer)))
+         (unwind-protect
+             (if (plist-get status :error)
+                 (progn
+                   (shipit--debug-log "Jira API (async): error %S" (plist-get status :error))
+                   (when callback (funcall callback nil)))
+               (goto-char (point-min))
+               (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+                   (goto-char (1+ url-http-end-of-headers))
+                 (re-search-forward "\\r?\\n\\r?\\n" nil t))
+               (set-buffer-multibyte nil)
+               (set-buffer-multibyte t)
+               (let ((data (condition-case err
+                               (json-read)
+                             (error
+                              (shipit--debug-log "Jira API (async): JSON parse error: %s" err)
+                              nil))))
+                 (when callback (funcall callback data))))
+           (kill-buffer buf))))
+     nil t t)))
+
 (defun shipit-issue-jira--api-request (config path)
   "Make a GET request to Jira REST API using CONFIG at PATH.
 Authenticates via auth-source (Basic auth with email:api-token).
@@ -1121,6 +1157,28 @@ CONFIG is the backend config plist."
               (shipit-issue-jira--issue-to-activity config issue))
             issues)))
 
+(defun shipit-issue-jira--fetch-notifications-async (config &optional since callback)
+  "Async variant of `shipit-issue-jira--fetch-notifications'.
+Calls CALLBACK with the list of activity alists when the JQL
+search returns.  CONFIG and SINCE behave identically to the sync
+version.  CALLBACK is called with nil on error."
+  (let* ((since-time (shipit-issue-jira--notifications-since-time since))
+         (jql (shipit-issue-jira--build-notifications-jql config since-time))
+         (fields "key,summary,status,updated")
+         (path (format "/rest/api/3/search/jql?jql=%s&maxResults=50&fields=%s"
+                       (url-hexify-string jql) fields)))
+    (shipit-issue-jira--api-request-async
+     config path
+     (lambda (raw)
+       (let ((issues (when raw (append (cdr (assq 'issues raw)) nil))))
+         (shipit--debug-log "Jira notifications (async): JQL=%s returned %d issues"
+                            jql (length (or issues '())))
+         (when callback
+           (funcall callback
+                    (mapcar (lambda (issue)
+                              (shipit-issue-jira--issue-to-activity config issue))
+                            issues))))))))
+
 (defun shipit-issue-jira--notifications-since-time (since)
   "Compute the since-time for notification polling.
 SINCE is an ISO8601 string or nil.  Returns a formatted Jira datetime string.
@@ -1440,6 +1498,7 @@ Call `shipit-issue-jira--clear-icon-memo' after a theme switch.")
        :get-transitions #'shipit-issue-jira--get-transitions
        :transition-status #'shipit-issue-jira--transition-status
        :notifications #'shipit-issue-jira--fetch-notifications
+       :notifications-async #'shipit-issue-jira--fetch-notifications-async
        :creation-fields #'shipit-issue-jira--creation-fields
        :create-issue-extended #'shipit-issue-jira--create-issue-extended
        :fetch-children #'shipit-issue-jira--fetch-children

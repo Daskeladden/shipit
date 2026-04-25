@@ -137,7 +137,7 @@ THEN scope flips back to `unread'."
             (should (= shipit-notifications-buffer--current-page 1)))
         (kill-buffer buf)))))
 
-(ert-deftest test-shipit-notifications-buffer-load-more-increments ()
+(ert-deftest test-shipit-notifications-buffer-page-forward-increments ()
   "Test that load-more bumps page-limit when scope is `all'.
 GIVEN a buffer in `all' scope with page-limit=1
 WHEN load-more is called
@@ -149,13 +149,13 @@ THEN page-limit becomes 2."
           (with-current-buffer buf
             (setq shipit-notifications-buffer--display-scope 'all
                   shipit-notifications-buffer--current-page 1)
-            (shipit-notifications-buffer-load-more)
+            (shipit-notifications-buffer-page-forward)
             (should (= shipit-notifications-buffer--current-page 2))
-            (shipit-notifications-buffer-load-more)
+            (shipit-notifications-buffer-page-forward)
             (should (= shipit-notifications-buffer--current-page 3)))
         (kill-buffer buf)))))
 
-(ert-deftest test-shipit-notifications-buffer-load-more-noop-in-unread ()
+(ert-deftest test-shipit-notifications-buffer-page-forward-noop-in-unread ()
   "Test that load-more does nothing when scope is `unread'.
 GIVEN a buffer in `unread' scope
 WHEN load-more is called
@@ -165,7 +165,7 @@ THEN page-limit stays at 1 and user-error is signalled."
         (with-current-buffer buf
           (setq shipit-notifications-buffer--display-scope 'unread
                 shipit-notifications-buffer--current-page 1)
-          (should-error (shipit-notifications-buffer-load-more)
+          (should-error (shipit-notifications-buffer-page-forward)
                         :type 'user-error)
           (should (= shipit-notifications-buffer--current-page 1)))
       (kill-buffer buf))))

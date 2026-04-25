@@ -467,9 +467,9 @@ THEN the sorted distinct type list is returned."
 (ert-deftest test-notifications-buffer-M-n-bound-to-load-more ()
   "GIVEN the notifications buffer
 WHEN looking up M-n in its mode map
-THEN it runs `shipit-notifications-buffer-load-more'."
+THEN it runs `shipit-notifications-buffer-page-forward'."
   (require 'shipit-notifications-buffer)
-  (should (eq 'shipit-notifications-buffer-load-more
+  (should (eq 'shipit-notifications-buffer-page-forward
               (lookup-key shipit-notifications-buffer-mode-map (kbd "M-n")))))
 
 (ert-deftest test-notifications-buffer-M-p-bound-to-page-back ()
@@ -1393,6 +1393,43 @@ THEN it returns 0 and never calls `shipit--mark-notification-read'."
                shipit--notification-pr-activities)
       (should (= 0 (shipit--auto-mark-rules-apply)))
       (should-not called))))
+
+;;; Mark-thread-read dispatch
+
+(ert-deftest test-shipit--dispatch-mark-thread-read-uses-backend-plist ()
+  "GIVEN a PR backend that exposes `:mark-notification-read'
+WHEN `shipit--dispatch-mark-thread-read' is invoked for a repo
+THEN the backend's plist function is called with the resolved
+config and the thread-id (no direct backend-specific call)."
+  (let ((called-with nil))
+    (cl-letf (((symbol-function 'shipit-pr--resolve-for-repo)
+               (lambda (_repo)
+                 (cons (list :name "Mock"
+                             :mark-notification-read
+                             (lambda (config id)
+                               (setq called-with (list config id))))
+                       (list :repo "mock/repo")))))
+      (shipit--dispatch-mark-thread-read "mock/repo" "12345")
+      (should (equal called-with
+                     (list (list :repo "mock/repo") "12345"))))))
+
+(ert-deftest test-shipit--dispatch-mark-thread-read-noop-when-backend-misses ()
+  "GIVEN a PR backend without `:mark-notification-read'
+WHEN the dispatcher runs
+THEN it logs and returns nil — never raises and never falls back
+to a backend-specific symbol."
+  (cl-letf (((symbol-function 'shipit-pr--resolve-for-repo)
+             (lambda (_repo) (cons (list :name "Mock") (list :repo "x")))))
+    (should (null (shipit--dispatch-mark-thread-read "x" "1")))))
+
+(ert-deftest test-shipit--dispatch-mark-thread-read-tolerates-resolve-error ()
+  "GIVEN `shipit-pr--resolve-for-repo' signals (no backend registered)
+WHEN the dispatcher runs
+THEN it returns nil without raising — the auto-mark feature
+should never break notification fetching."
+  (cl-letf (((symbol-function 'shipit-pr--resolve-for-repo)
+             (lambda (_repo) (error "no backend"))))
+    (should (null (shipit--dispatch-mark-thread-read "x" "1")))))
 
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

@@ -39,8 +39,6 @@
 ;; Forward declarations for functions defined later in this file
 (declare-function shipit--check-notifications-background-async "shipit-notifications")
 (declare-function shipit--notifications-header-actions "shipit-notifications")
-(declare-function shipit-issue-gitlab--mark-todo-done "shipit-issue-gitlab")
-(declare-function shipit-pr-github--mark-notification-read "shipit-pr-github" (config id))
 (declare-function shipit-discussion--resolve-for-repo "shipit-discussion-backends")
 
 ;; Magit section types - declare for byte compiler
@@ -201,6 +199,24 @@ Key is notification ID, value is timestamp when marked read.")
 Format: \"repo:type:number\" to prevent collisions between PR and Issue."
   (format "%s:%s:%s" repo type number))
 
+(defun shipit--dispatch-mark-thread-read (repo thread-id)
+  "Mark notification THREAD-ID as read via the PR backend for REPO.
+Resolves the backend through `shipit-pr--resolve-for-repo\=' and
+calls its `:mark-notification-read\=' plist function with the
+resolved config.  Logs and returns nil when the backend does not
+expose `:mark-notification-read\=' — local hash removal stays
+the caller\='s responsibility either way."
+  (let* ((resolved (ignore-errors (shipit-pr--resolve-for-repo repo)))
+         (backend (car-safe resolved))
+         (config (cdr-safe resolved))
+         (mark-fn (and backend (plist-get backend :mark-notification-read))))
+    (cond
+     (mark-fn (funcall mark-fn config thread-id))
+     (t (shipit--debug-log
+         "No :mark-notification-read on backend for %s; skipping thread %s"
+         repo thread-id)
+        nil))))
+
 (defun shipit--thread-id-as-number (thread-id)
   "Return THREAD-ID parsed as a number, or nil if it is not all digits.
 GitHub thread ids are numeric strings; used as a fallback activity
@@ -328,7 +344,7 @@ hash."
                (thread-id (cdr (assq 'id notif))))
           (when thread-id
             (shipit--debug-log "Auto-marking resolved approval: %s %s" repo thread-id)
-            (shipit-pr-github--mark-notification-read nil thread-id)
+            (shipit--dispatch-mark-thread-read repo thread-id)
             (remhash (car entry) shipit--notification-pr-activities)))))))
 
 (defun shipit--enrich-workflow-notifications ()
@@ -1865,15 +1881,9 @@ TYPE is \"pr\" or \"issue\" (defaults to \"pr\" for backward compatibility)."
             (cond
              ;; GitHub notification: dispatch through PR backend
              (activity-notification-id
-              (let* ((resolved (shipit-pr--resolve-for-repo repo))
-                     (pr-backend (car resolved))
-                     (pr-config (cdr resolved))
-                     (mark-fn (plist-get pr-backend :mark-notification-read)))
-                (shipit--debug-log "   notification thread %s — dispatching via PR backend"
-                                   activity-notification-id)
-                (if mark-fn
-                    (funcall mark-fn pr-config activity-notification-id)
-                  (shipit--debug-log "   PR backend has no :mark-notification-read, local removal only"))))
+              (shipit--debug-log "   notification thread %s — dispatching via PR backend"
+                                 activity-notification-id)
+              (shipit--dispatch-mark-thread-read repo activity-notification-id))
              ;; Backend notification: dispatch through backend registry
              (activity-backend-id
               (require 'shipit-issue-backends)

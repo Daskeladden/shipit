@@ -64,14 +64,14 @@
   "Buffer-local display scope for the notifications buffer.
 One of `unread' (GitHub's unread feed, usually a single short page)
 or `all' (include read notifications, paginated on demand via
-`shipit-notifications-buffer-load-more').  Kept buffer-local so
+`shipit-notifications-buffer-page-forward').  Kept buffer-local so
 toggling in the buffer does not affect the background poll's
 `shipit-notifications-scope' setting.")
 
 (defvar-local shipit-notifications-buffer--current-page 1
   "Number of pages currently loaded into the notifications buffer.
 Meaningful mainly when `shipit-notifications-buffer--display-scope'
-is `all'; incremented by `shipit-notifications-buffer-load-more'.
+is `all'; incremented by `shipit-notifications-buffer-page-forward'.
 Starts at 1 and resets to 1 on every scope toggle so switching
 views doesn't silently fan out 10 pages of network requests.")
 
@@ -100,8 +100,15 @@ Combines with the repo filter and the text filter.")
 When `shipit-notifications-buffer--actionable-only\=' is non-nil,
 the buffer hides every activity whose `reason\=' is not a member
 of this list — distilling the inbox to items that arguably need
-the user's attention.  Customize freely if your team uses other
-reasons (e.g. \"ci_activity\" for required CI signal)."
+the user\='s attention.
+
+The default values are GitHub reason strings.  Notifications that
+flow in from other backends (GitLab todos, Jira mentions, RSS) use
+their own reason strings which need to be added explicitly here
+to participate in the actionable-only filter.  See the
+`reason\=' field on activities in the
+`shipit--notification-pr-activities\=' hash for the strings each
+backend produces."
   :type '(repeat string)
   :group 'shipit)
 
@@ -186,7 +193,7 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "M") #'shipit-notifications-buffer-mark-all-read)
     (define-key map (kbd "n") #'magit-section-forward)
     (define-key map (kbd "p") #'magit-section-backward)
-    (define-key map (kbd "M-n") #'shipit-notifications-buffer-load-more)
+    (define-key map (kbd "M-n") #'shipit-notifications-buffer-page-forward)
     (define-key map (kbd "M-p") #'shipit-notifications-buffer-page-back)
     (define-key map (kbd "M-<") #'shipit-notifications-buffer-first-page)
     (define-key map (kbd "M->") #'shipit-notifications-buffer-last-page)
@@ -1683,7 +1690,7 @@ then refreshes."
            shipit-notifications-buffer--display-scope)
   (shipit-notifications-buffer-refresh))
 
-(defun shipit-notifications-buffer-load-more ()
+(defun shipit-notifications-buffer-page-forward ()
   "Advance to the next page of notifications in `all' scope.
 Windowed: the buffer replaces the current view with only page N+1,
 it does not accumulate.  Refuses in `unread' scope where GitHub's

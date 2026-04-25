@@ -1175,6 +1175,11 @@ Available condition keys:
   :reason   GitHub reason string (subscribed, mention, etc.).
   :title    regex tested against the activity's `subject'.
   :repo     OWNER/REPO slug, case-insensitive.
+  :not      sub-rule plist; matches when the sub-rule does NOT match.
+            Example: (:not (:title \"mythos\")) auto-marks anything
+            whose title does not contain \"mythos\".  Composes with
+            sibling conditions: (:state merged :not (:title \"mythos\"))
+            auto-marks merged PRs whose title lacks \"mythos\".
 
 Each rule's conditions are combined with AND; multiple rules act
 as OR — match any rule and the notification is marked.  Each
@@ -1186,7 +1191,8 @@ rules see fresh GraphQL data.  Set to nil to disable."
                                 (const :type)
                                 (const :reason)
                                 (const :title)
-                                (const :repo))
+                                (const :repo)
+                                (const :not))
                         :value-type sexp))
   :group 'shipit)
 
@@ -1206,7 +1212,10 @@ never match.  `draft' = open + isDraft; `open' = open + not-draft;
      (t (equal state wanted)))))
 
 (defun shipit--auto-mark-condition-matches-p (key val activity)
-  "Return non-nil when ACTIVITY satisfies the single (KEY VAL) condition."
+  "Return non-nil when ACTIVITY satisfies the single (KEY VAL) condition.
+The special key `:not' takes a sub-rule plist as VAL and matches when
+that sub-rule does NOT match — e.g. (:not (:title \"mythos\")) matches
+activities whose title does not contain \"mythos\"."
   (pcase key
     (:state (shipit--auto-mark-state-condition-matches-p val activity))
     (:draft (eq (and (cdr (assq 'draft activity)) t) (and val t)))
@@ -1220,6 +1229,7 @@ never match.  `draft' = open + isDraft; `open' = open + not-draft;
              (and (stringp repo)
                   (stringp val)
                   (string-equal-ignore-case repo val))))
+    (:not (not (shipit--auto-mark-rule-matches-activity-p val activity)))
     (_ nil)))
 
 (defun shipit--auto-mark-rule-matches-activity-p (rule activity)

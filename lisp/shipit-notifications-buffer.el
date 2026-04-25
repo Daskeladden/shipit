@@ -386,6 +386,17 @@ Applies both the repo filter and the text filter."
         (length pool)
       (length (seq-filter #'shipit-notifications-buffer--matches-filter-p pool)))))
 
+(defun shipit-notifications-buffer--pending-mark-count ()
+  "Return the count of notifications locally marked but not yet on the server.
+The server reports `shipit-notifications-buffer--total-count' for the
+current scope.  Local auto-mark-read removes entries from the activity
+cache, so the gap between that total and the loaded activity count is
+the number of marks that haven't propagated yet (they'll vanish on the
+next refresh)."
+  (let ((total shipit-notifications-buffer--total-count)
+        (loaded (length (shipit-notifications-buffer--all-activities))))
+    (if (and total (> total loaded)) (- total loaded) 0)))
+
 (defun shipit-notifications-buffer--insert-header ()
   "Insert the buffer header, including scope, page info, and count.
 Fraction semantics: when a text filter is active the denominator is
@@ -460,7 +471,11 @@ in `font-lock-comment-face' so only the active value pops."
                            total-pages)
                  (format "%d" shipit-notifications-buffer--current-page))
                'font-lock-face 'font-lock-constant-face)))
-    (insert (propertize count-part 'font-lock-face cmt))
+    (let ((pending (shipit-notifications-buffer--pending-mark-count)))
+      (insert (propertize count-part 'font-lock-face cmt))
+      (when (> pending 0)
+        (insert (propertize (format ", %d pending refresh" pending)
+                            'font-lock-face cmt))))
     (insert (propertize "]" 'font-lock-face cmt))))
 
 (defun shipit-notifications-buffer--insert-notifications ()
@@ -1531,7 +1546,8 @@ or the third-party `visual-regexp' package."
 (defun shipit-notifications-buffer--read-auto-mark-value (key)
   "Read a value for condition KEY with key-appropriate completion.
 Returns the value (correctly typed for the rule plist).  KEY is
-one of the auto-mark condition keywords."
+one of the auto-mark condition keywords.  For `:not' the value is
+itself a single-condition sub-rule read recursively."
   (pcase key
     (:state
      (intern (completing-read
@@ -1548,46 +1564,170 @@ one of the auto-mark condition keywords."
     (:title
      (shipit-notifications-buffer--read-title-regex-with-preview))
     (:draft
-     (intern (completing-read "Draft: " '("t" "nil") nil t)))))
+     (intern (completing-read "Draft: " '("t" "nil") nil t)))
+    (:not
+     (shipit-notifications-buffer--read-auto-mark-condition
+      "Negate condition: " nil))))
+
+(defun shipit-notifications-buffer--read-auto-mark-condition (prompt include-not)
+  "Read one (KEY VALUE) condition from the minibuffer and return it as a list.
+PROMPT is shown for the key choice.  When INCLUDE-NOT is non-nil,
+`:not' is offered as a key option; selecting it recursively reads
+an inner condition (no further nesting)."
+  (let* ((keys (append '(":state" ":type" ":repo" ":reason" ":title" ":draft")
+                       (and include-not '(":not"))))
+         (chosen (completing-read (or prompt "Condition: ") keys nil t))
+         (key (intern chosen))
+         (value (shipit-notifications-buffer--read-auto-mark-value key)))
+    (list key value)))
 
 (defun shipit-notifications-buffer-add-auto-mark-rule ()
   "Add an auto-mark rule via a guided minibuffer flow.
-Prompts for the condition key from a completion list (`:state',
-`:type', `:repo', `:reason', `:title', `:draft'), then for the
-value with key-appropriate candidates.  For `:title' the regex
-input shows live overlay preview in the notifications buffer."
+Prompts for one condition at a time and keeps prompting (with a
+y-or-n confirmation) until you decline; all collected conditions
+end up in the same rule plist and are combined with AND when the
+matcher evaluates the rule.
+
+Per-condition keys: `:state', `:type', `:repo', `:reason', `:title',
+`:draft', `:not'.  Choosing `:not' recursively prompts for an inner
+condition (one level deep), producing a sub-form like
+\(:not (:title \"mythos\")) that matches activities where the
+inner condition does NOT match.  For `:title' the regex input
+shows live overlay preview in the notifications buffer.
+
+Saves the rule but does NOT apply it — invoke
+`shipit-notifications-apply-auto-mark-rules' (`u' in the auto-mark
+transient) when you want the new rule to take effect."
   (interactive)
-  (let* ((keys '(":state" ":type" ":repo" ":reason" ":title" ":draft"))
-         (chosen (completing-read "Condition: " keys nil t))
-         (key (intern chosen))
-         (value (shipit-notifications-buffer--read-auto-mark-value key)))
-    (when (or value (eq key :draft))
-      (let ((rule (list key value))
-            (existing shipit-notifications-auto-mark-read-rules))
+  (let ((conds nil)
+        (more t)
+        (n 0))
+    (while more
+      (cl-incf n)
+      (let* ((prompt (if (= n 1) "Condition: "
+                       (format "Condition #%d: " n)))
+             (cond (shipit-notifications-buffer--read-auto-mark-condition
+                    prompt t))
+             (k (car cond))
+             (v (cadr cond)))
+        (when (or v (eq k :draft) (eq k :not))
+          (setq conds (append conds cond)))
+        (setq more (y-or-n-p "Add another condition (AND)? "))))
+    (when conds
+      (let ((existing shipit-notifications-auto-mark-read-rules))
         (shipit-notifications--save-auto-mark-rules
-         (append existing (list rule)))
-        (message "Added auto-mark rule: %S" rule)
-        (shipit-notifications-apply-auto-mark-rules)))))
+         (append existing (list conds)))
+        (message "Added auto-mark rule: %S (press u in auto-mark menu to apply)"
+                 conds)
+        (when (get-buffer-window "*shipit-auto-mark-rules*" t)
+          (shipit-notifications-buffer-list-auto-mark-rules))))))
+
+(defvar shipit-notifications-buffer--auto-mark-edit-history nil
+  "Minibuffer history for editing auto-mark rules in-place.")
+
+(defun shipit-notifications-buffer--edit-auto-mark-rule-at (idx)
+  "Edit the rule at IDX (0-based) by prompting in the minibuffer.
+Pre-fills with the current rule's sexp.  Replaces the entry on save."
+  (let* ((rules shipit-notifications-auto-mark-read-rules)
+         (current (nth idx rules))
+         (input (read-from-minibuffer
+                 (format "Edit rule %d: " (1+ idx))
+                 (prin1-to-string current)
+                 nil nil
+                 'shipit-notifications-buffer--auto-mark-edit-history))
+         (parsed (condition-case err
+                     (read input)
+                   (error
+                    (user-error "Cannot parse rule: %s"
+                                (error-message-string err))))))
+    (unless (and (listp parsed)
+                 (keywordp (car-safe parsed))
+                 (zerop (mod (length parsed) 2)))
+      (user-error
+       "Rule must be a plist like (:repo \"owner/name\") or (:state merged :draft t)"))
+    (let ((new-rules (append (cl-subseq rules 0 idx)
+                             (list parsed)
+                             (cl-subseq rules (1+ idx)))))
+      (shipit-notifications--save-auto-mark-rules new-rules)
+      (message "Updated rule %d: %S" (1+ idx) parsed))))
+
+(defun shipit-notifications-buffer-edit-auto-mark-rule-at-point ()
+  "Edit the auto-mark rule on the current line of the rules-list buffer."
+  (interactive)
+  (let ((idx (get-text-property (point) 'shipit-auto-mark-rule-idx)))
+    (if idx
+        (progn
+          (shipit-notifications-buffer--edit-auto-mark-rule-at idx)
+          (when (get-buffer "*shipit-auto-mark-rules*")
+            (shipit-notifications-buffer-list-auto-mark-rules)))
+      (message "No auto-mark rule on this line"))))
+
+(defun shipit-notifications-buffer-edit-auto-mark-rule ()
+  "Pick a rule by its current value and edit it via the minibuffer."
+  (interactive)
+  (let ((rules shipit-notifications-auto-mark-read-rules))
+    (if (null rules)
+        (message "No auto-mark rules to edit")
+      (let* ((labels (mapcar (lambda (r) (format "%S" r)) rules))
+             (choice (completing-read "Edit rule: " labels nil t))
+             (idx (cl-position choice labels :test #'equal)))
+        (when idx
+          (shipit-notifications-buffer--edit-auto-mark-rule-at idx)
+          (when (get-buffer "*shipit-auto-mark-rules*")
+            (shipit-notifications-buffer-list-auto-mark-rules)))))))
+
+(defun shipit-notifications-buffer-delete-auto-mark-rule-at-point ()
+  "Delete the auto-mark rule on the current line of the rules-list buffer."
+  (interactive)
+  (let ((idx (get-text-property (point) 'shipit-auto-mark-rule-idx)))
+    (cond
+     ((not idx)
+      (message "No auto-mark rule on this line"))
+     ((yes-or-no-p (format "Remove rule %d? " (1+ idx)))
+      (shipit-notifications-buffer--remove-auto-mark-rule-at idx)
+      (message "Removed rule %d" (1+ idx))
+      (when (get-buffer "*shipit-auto-mark-rules*")
+        (shipit-notifications-buffer-list-auto-mark-rules))))))
 
 (defun shipit-notifications-buffer-list-auto-mark-rules ()
-  "Show current auto-mark rules in a help-style buffer."
+  "Show current auto-mark rules in a help-style buffer.
+Each rule line carries `shipit-auto-mark-rule-idx' as a text property
+so RET/e edits the rule at point and d deletes it.  + adds a new rule."
   (interactive)
   (let ((rules shipit-notifications-auto-mark-read-rules))
     (with-help-window "*shipit-auto-mark-rules*"
       (with-current-buffer "*shipit-auto-mark-rules*"
         (let ((inhibit-read-only t))
           (erase-buffer)
-          (insert "Active auto-mark-read rules:
-
-")
+          (insert "Active auto-mark-read rules:\n")
+          (insert (propertize
+                   "Keys: RET/e edit rule at point, a add, d delete, q quit\n\n"
+                   'face 'font-lock-comment-face))
           (if (null rules)
-              (insert "  (no rules configured)
-")
-            (let ((idx 1))
+              (insert "  (no rules configured)\n")
+            (let ((idx 0))
               (dolist (rule rules)
-                (insert (format "  %2d. %S
-" idx rule))
-                (cl-incf idx)))))))))
+                (let ((start (point)))
+                  (insert (format "  %2d. %S\n" (1+ idx) rule))
+                  (add-text-properties
+                   start (point)
+                   `(shipit-auto-mark-rule-idx ,idx mouse-face highlight)))
+                (cl-incf idx)))))))
+    ;; with-help-window puts the buffer in help-mode; install our own
+    ;; buffer-local key bindings on top so RET / e / d / + work.
+    (when (get-buffer "*shipit-auto-mark-rules*")
+      (with-current-buffer "*shipit-auto-mark-rules*"
+        (use-local-map (copy-keymap (current-local-map)))
+        (local-set-key (kbd "RET")
+                       #'shipit-notifications-buffer-edit-auto-mark-rule-at-point)
+        (local-set-key (kbd "e")
+                       #'shipit-notifications-buffer-edit-auto-mark-rule-at-point)
+        (local-set-key (kbd "d")
+                       #'shipit-notifications-buffer-delete-auto-mark-rule-at-point)
+        (local-set-key (kbd "a")
+                       #'shipit-notifications-buffer-add-auto-mark-rule)
+        (local-set-key (kbd "+")
+                       #'shipit-notifications-buffer-add-auto-mark-rule)))))
 
 (defun shipit-notifications-buffer-toggle-auto-mark-rules-list ()
   "Toggle the auto-mark rules-list buffer in another window/frame.
@@ -1640,9 +1780,8 @@ with rule edits made from the transient."
     ("a" "Add rule (guided)"
      shipit-notifications-buffer-add-auto-mark-rule)]
    ["Manage"
-    ("l" "Toggle rules list"
-     shipit-notifications-buffer-toggle-auto-mark-rules-list
-     :transient t)
+    ("l" "Show rules list"
+     shipit-notifications-buffer-toggle-auto-mark-rules-list)
     ("d" "Remove a rule"
      shipit-notifications-buffer-remove-auto-mark-rule)
     ("X" "Clear all rules"

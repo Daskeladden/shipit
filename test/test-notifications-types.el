@@ -1431,5 +1431,32 @@ should never break notification fetching."
              (lambda (_repo) (error "no backend"))))
     (should (null (shipit--dispatch-mark-thread-read "x" "1")))))
 
+(ert-deftest test-shipit--auto-mark-not-condition-inverts ()
+  "GIVEN a rule using `:not' with a sub-rule
+WHEN the sub-rule does NOT match the activity
+THEN the rule matches; when the sub-rule matches, the rule does not."
+  (let ((with-mythos '((subject . "[mythos] roll out the new feature")
+                       (type . "pr")))
+        (without-mythos '((subject . "Random PR title")
+                          (type . "pr"))))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             '(:not (:title "mythos")) without-mythos))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 '(:not (:title "mythos")) with-mythos))))
+
+(ert-deftest test-shipit--auto-mark-not-composes-with-and ()
+  "GIVEN a rule combining `:state merged' with `:not (:title \"mythos\")'
+WHEN both conditions hold (merged AND title lacks mythos)
+THEN the rule matches; otherwise it does not."
+  (let ((merged-no-mythos '((pr-state . "merged") (subject . "fix bug")))
+        (merged-with-mythos '((pr-state . "merged") (subject . "[mythos] big change")))
+        (open-no-mythos '((pr-state . "open") (subject . "todo"))))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             '(:state merged :not (:title "mythos")) merged-no-mythos))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 '(:state merged :not (:title "mythos")) merged-with-mythos))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 '(:state merged :not (:title "mythos")) open-no-mythos))))
+
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

@@ -109,6 +109,12 @@
 (defvar-local shipit-actions-list--runners nil
   "List of runner alists for this buffer.")
 
+(defvar-local shipit-actions-list--pending-run-id nil
+  "Run id to navigate to once rendering completes, or nil.
+Set by `shipit-open-actions-list' when called with a RUN-ID;
+consumed by `shipit-actions-list--fetch-and-render' after the
+first render.")
+
 (defvar-local shipit-actions-list--run-jobs (make-hash-table :test 'eql)
   "Hash table mapping run-id to list of job alists.")
 
@@ -177,9 +183,12 @@ Case-insensitive substring match.  Nil or empty FILTER-TEXT matches all."
 ;;; Entry point
 
 ;;;###autoload
-(defun shipit-open-actions-list (repo)
+(defun shipit-open-actions-list (repo &optional run-id)
   "Open a shipit buffer listing Actions workflows for REPO.
-REPO should be in \"owner/name\" format.
+REPO should be in \"owner/name\" format.  When RUN-ID is non-nil,
+after the first render the buffer tries to expand and move point
+to the run with that id — useful when opening from a GitHub
+WorkflowRun notification whose subject URL carries the run id.
 Creates or reuses a buffer named *shipit-actions: REPO*."
   (interactive
    (list (or (ignore-errors (shipit--get-repo-from-remote))
@@ -189,14 +198,26 @@ Creates or reuses a buffer named *shipit-actions: REPO*."
     (if existing
         (progn
           (switch-to-buffer existing)
+          (when run-id
+            (with-current-buffer existing
+              (unless (shipit-actions-list--navigate-to-run run-id)
+                (setq shipit-actions-list--pending-run-id run-id)
+                (shipit-actions-list--finalize-render repo))))
           existing)
       (let ((buffer (generate-new-buffer buf-name)))
         (with-current-buffer buffer
           (shipit-actions-list-mode)
           (setq shipit-actions-list--repo repo)
+          (setq shipit-actions-list--pending-run-id run-id)
           (shipit-actions-list--fetch-and-render))
         (switch-to-buffer buffer)
         buffer))))
+
+(defun shipit-actions-list--navigate-to-run (run-id)
+  "Try to expand and move point to RUN-ID in the current buffer.
+Returns non-nil on success, nil if the run is not present."
+  (goto-char (point-min))
+  (shipit-actions-list--find-and-expand-run run-id nil))
 
 ;;; API fetching
 
@@ -246,6 +267,16 @@ Result is sorted newest first by created_at."
           (lambda (a b)
             (string> (or (cdr (assq 'created_at a)) "")
                      (or (cdr (assq 'created_at b)) ""))))))
+
+(defun shipit-actions-list--fetch-single-run (repo run-id callback)
+  "Fetch a single workflow run by RUN-ID for REPO.
+Calls CALLBACK with the run alist, or nil if the API call fails.
+Used when opening the buffer from a notification targeting a run
+that may fall outside the default recent-runs window."
+  (shipit--api-request
+   (format "/repos/%s/actions/runs/%s" repo run-id)
+   nil
+   (lambda (data) (funcall callback data))))
 
 (defun shipit-actions-list--fetch-all-runs (repo callback)
   "Fetch recent runs and all active runs for REPO.
@@ -352,6 +383,40 @@ Calls CALLBACK with runners list or nil on error."
              (funcall callback nil)))
          (kill-buffer (current-buffer)))))))
 
+(defun shipit-actions-list--run-in-list-p (run-id)
+  "Return non-nil if RUN-ID is present in the buffer's all-runs list."
+  (cl-some (lambda (r) (equal (cdr (assq 'id r)) run-id))
+           shipit-actions-list--all-runs))
+
+(defun shipit-actions-list--finalize-render (repo)
+  "Render the buffer and navigate to any pending run.
+If a pending run is set but missing from `shipit-actions-list--all-runs',
+fetch it by id and prepend it before rendering so navigation succeeds
+for runs that fall outside the recent-runs window."
+  (let ((buf (current-buffer))
+        (pending shipit-actions-list--pending-run-id))
+    (if (and pending (not (shipit-actions-list--run-in-list-p pending)))
+        (shipit-actions-list--fetch-single-run
+         repo pending
+         (lambda (run)
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (when run
+                 (push run shipit-actions-list--all-runs))
+               (shipit-actions-list--render-and-navigate repo)))))
+      (shipit-actions-list--render-and-navigate repo))))
+
+(defun shipit-actions-list--render-and-navigate (repo)
+  "Render the buffer and consume any `--pending-run-id'."
+  (shipit-actions-list--render)
+  (let ((pending shipit-actions-list--pending-run-id))
+    (setq shipit-actions-list--pending-run-id nil)
+    (if (and pending
+             (shipit-actions-list--navigate-to-run pending))
+        (message "Actions for %s loaded; jumped to run %s." repo pending)
+      (goto-char (point-min))
+      (message "Actions for %s loaded." repo))))
+
 (defun shipit-actions-list--fetch-and-render ()
   "Fetch workflows, all runs, and runners, then render."
   (let ((buf (current-buffer))
@@ -375,9 +440,7 @@ Calls CALLBACK with runners list or nil on error."
                      (when (buffer-live-p buf)
                        (with-current-buffer buf
                          (setq shipit-actions-list--runners runners)
-                         (shipit-actions-list--render)
-                         (goto-char (point-min))
-                         (message "Actions for %s loaded." repo)))))))))))))))
+                         (shipit-actions-list--finalize-render repo)))))))))))))))
 
 (defun shipit-actions-list--fetch-run-jobs (run-id callback)
   "Fetch jobs for RUN-ID, call CALLBACK with jobs list.
@@ -1083,16 +1146,21 @@ Returns \"busy\" if busy, otherwise the runner's status field."
     (if (eq val 'all) 'all (cdr (assq 'id val)))))
 
 (defun shipit-actions-list--find-and-expand-run (run-id workflow-id)
-  "Find the run section with RUN-ID under workflow WORKFLOW-ID and expand it.
-WORKFLOW-ID is a numeric workflow id or \\='all."
+  "Find the run section with RUN-ID and expand it.
+WORKFLOW-ID restricts the search: a numeric workflow id, the
+symbol \\='all, or nil (match regardless of parent workflow).  A
+nil WORKFLOW-ID is useful when callers only know the run id —
+e.g. when navigating from a GitHub notification whose subject URL
+identifies the run but not the workflow."
   (cl-labels ((walk (section)
                 (when (and (eq (oref section type) 'actions-list-run)
                            (equal (cdr (assq 'id (oref section value))) run-id))
                   (let ((parent (oref section parent)))
                     (when (and parent
                                (eq (oref parent type) 'actions-list-workflow)
-                               (equal (shipit-actions-list--workflow-section-id parent)
-                                      workflow-id))
+                               (or (null workflow-id)
+                                   (equal (shipit-actions-list--workflow-section-id parent)
+                                          workflow-id)))
                       (magit-section-show parent)
                       (magit-section-show section)
                       (goto-char (oref section start))

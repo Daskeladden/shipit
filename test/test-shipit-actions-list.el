@@ -1426,4 +1426,56 @@
   (should-not (shipit-actions-list--build-job-content "" nil))
   (should-not (shipit-actions-list--build-job-content :null nil)))
 
+(ert-deftest test-find-and-expand-run-with-nil-workflow-matches-any ()
+  "GIVEN rendered workflows where run 101 lives under Deploy (id 2)
+WHEN find-and-expand-run is called with workflow-id=nil
+THEN it still finds and moves point to run 101, without having
+to know the workflow id up front — this lets the notifications
+buffer navigate to a run when it only has the run-id from the
+subject URL."
+  (let ((buf (generate-new-buffer "*test-find-any-workflow*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (shipit-actions-list-mode)
+          (setq shipit-actions-list--repo "owner/repo")
+          (setq shipit-actions-list--workflows
+                '(((id . 1) (name . "CI") (state . "active"))
+                  ((id . 2) (name . "Deploy") (state . "active"))))
+          (setq shipit-actions-list--all-runs
+                '(((id . 100) (workflow_id . 1)
+                   (name . "CI run")
+                   (status . "completed") (conclusion . "success"))
+                  ((id . 101) (workflow_id . 2)
+                   (name . "Deploy run")
+                   (status . "completed") (conclusion . "failure"))))
+          (setq shipit-actions-list--runners nil)
+          (shipit-actions-list--render)
+          (goto-char (point-min))
+          (should (shipit-actions-list--find-and-expand-run 101 nil))
+          (should (> (point) (point-min))))
+      (kill-buffer buf))))
+
+(ert-deftest test-find-and-expand-run-returns-nil-when-missing ()
+  "GIVEN rendered workflows that do not contain run 999
+WHEN find-and-expand-run is called with run-id=999 and any
+workflow-id
+THEN it returns nil without moving point — the caller can then
+fall back to leaving point at the top of the buffer."
+  (let ((buf (generate-new-buffer "*test-find-missing-run*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (shipit-actions-list-mode)
+          (setq shipit-actions-list--repo "owner/repo")
+          (setq shipit-actions-list--workflows
+                '(((id . 1) (name . "CI") (state . "active"))))
+          (setq shipit-actions-list--all-runs
+                '(((id . 100) (workflow_id . 1)
+                   (name . "CI run")
+                   (status . "completed") (conclusion . "success"))))
+          (setq shipit-actions-list--runners nil)
+          (shipit-actions-list--render)
+          (goto-char (point-min))
+          (should-not (shipit-actions-list--find-and-expand-run 999 nil)))
+      (kill-buffer buf))))
+
 ;;; test-shipit-actions-list.el ends here

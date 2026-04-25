@@ -93,6 +93,15 @@ Nil means all types; a type string like \"pr\" or \"workflow\"
 restricts the view to activities with that internal type.
 Combines with the repo filter and the text filter.")
 
+(defvar-local shipit-notifications-buffer--state-filter nil
+  "Buffer-local client-side PR-state filter for the notifications buffer.
+Nil means no filtering.  Set to one of `open'/`closed'/`merged'/`draft'
+to show only PRs in that state — non-PR activities (issues, workflows,
+releases, etc.) are also hidden when the filter is active so picking
+`draft' actually shows just drafts, not drafts + everything stateless.
+Filter values mirror the icon-picker: `draft' = open + isDraft;
+`open' = open + not-draft.")
+
 (defvar-local shipit-notifications-buffer--before-filter nil
   "Buffer-local server-side `before' timestamp filter.
 Nil means no time filter (GitHub's default of ~last 2 weeks applies).
@@ -231,7 +240,8 @@ share a single hash walk + filter."
   (let ((shipit-notifications-buffer--render-pool
          (seq-filter (lambda (a)
                        (and (shipit-notifications-buffer--matches-repo-filter-p a)
-                            (shipit-notifications-buffer--matches-type-filter-p a)))
+                            (shipit-notifications-buffer--matches-type-filter-p a)
+                            (shipit-notifications-buffer--matches-state-filter-p a)))
                      (shipit-notifications-buffer--all-activities))))
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
@@ -269,15 +279,34 @@ When no type filter is set, always returns t."
     (or (null filter)
         (equal (cdr (assq 'type activity)) filter))))
 
+(defun shipit-notifications-buffer--matches-state-filter-p (activity)
+  "Return non-nil if ACTIVITY passes the buffer-local state filter.
+When the filter is nil, always returns t.  When set, only PRs with
+the matching state pass — non-PR activities are hidden so picking
+`draft' shows just drafts.  Filter values: `draft' = open + isDraft;
+`open' = open + not-draft; `merged' / `closed' = direct state match."
+  (let ((filter shipit-notifications-buffer--state-filter))
+    (or (null filter)
+        (and (equal (cdr (assq 'type activity)) "pr")
+             (let ((state (cdr (assq 'pr-state activity)))
+                   (draft (cdr (assq 'draft activity))))
+               (cond
+                ((or (null state)
+                     (and (stringp state) (string-empty-p state))) nil)
+                ((equal filter "draft") (and (equal state "open") draft))
+                ((equal filter "open") (and (equal state "open") (not draft)))
+                (t (equal state filter))))))))
+
 (defun shipit-notifications-buffer--repo-filtered-activities ()
-  "Activities after the structural (repo + type) filters.
+  "Activities after the structural (repo + type + state) filters.
 Reuses `shipit-notifications-buffer--render-pool' when set so the
 hash walk + filters happen once per render instead of three times
 (header shown-count, header loaded-count, list renderer)."
   (or shipit-notifications-buffer--render-pool
       (seq-filter (lambda (a)
                     (and (shipit-notifications-buffer--matches-repo-filter-p a)
-                         (shipit-notifications-buffer--matches-type-filter-p a)))
+                         (shipit-notifications-buffer--matches-type-filter-p a)
+                         (shipit-notifications-buffer--matches-state-filter-p a)))
                   (shipit-notifications-buffer--all-activities))))
 
 (defun shipit-notifications-buffer--loaded-count ()
@@ -306,6 +335,8 @@ probe-derived server total for the current scope, when known."
    "repo" shipit-notifications-buffer--repo-filter nil)
   (shipit-notifications-buffer--insert-filter-bracket
    "type" shipit-notifications-buffer--type-filter nil)
+  (shipit-notifications-buffer--insert-filter-bracket
+   "state" shipit-notifications-buffer--state-filter 'font-lock-keyword-face)
   (shipit-notifications-buffer--insert-filter-bracket
    "before" shipit-notifications-buffer--before-filter 'shipit-timestamp-face)
   (shipit-notifications-buffer--insert-filter-bracket
@@ -429,9 +460,12 @@ are extracted from the activity alist.  WorkflowRuns with
 REASON=\"approval_requested\" map to \"deployment\" so the rocket
 icon matches GitHub's web UI for deployment review requests."
   (cond
-   ((and (string= type "pr") is-draft) "pr-draft")
+   ;; Terminal PR states (merged/closed) take precedence over the draft
+   ;; flag — `isDraft' stays t on closed-while-draft PRs but the user
+   ;; cares about the latest state, not the historical one.
    ((and (string= type "pr") (equal pr-state "merged")) "pr-merged")
    ((and (string= type "pr") (equal pr-state "closed")) "pr-closed")
+   ((and (string= type "pr") is-draft) "pr-draft")
    ((and (string= type "workflow") (equal reason "approval_requested"))
     "deployment")
    (t type)))
@@ -490,7 +524,9 @@ icon matches GitHub's web UI for deployment review requests."
                                         'font-lock-face 'font-lock-constant-face)
                             pr-str
                             spacer
-                            (truncate-string-to-width subject title-width nil ?\s)
+                            (propertize
+                             (truncate-string-to-width subject title-width nil ?\s)
+                             'shipit-notification-title t)
                             spacer
                             (propertize (truncate-string-to-width reason reason-width nil ?\s)
                                         'font-lock-face 'font-lock-keyword-face)))
@@ -1089,6 +1125,332 @@ For RSS entries, opens the link in browser directly."
           (shipit-notifications-buffer-refresh))
       (message "No notifications to mark as read"))))
 
+(defun shipit-notifications-buffer--collect-resolved-prs ()
+  "Return a list of (NUMBER REPO TYPE) tuples for resolved PRs.
+Resolved means `pr-state' is `merged' or `closed' — the same set
+the GitHub-discussion bookmarklet targets.  Walks the global hash
+directly so off-screen / unfetched-page entries are also found."
+  (let ((resolved '()))
+    (when (and (boundp 'shipit--notification-pr-activities)
+               shipit--notification-pr-activities)
+      (maphash
+       (lambda (_k a)
+         (let ((state (cdr (assq 'pr-state a))))
+           (when (member state '("merged" "closed"))
+             (push (list (or (cdr (assq 'number a))
+                             (cdr (assq 'pr-number a)))
+                         (cdr (assq 'repo a))
+                         (or (cdr (assq 'type a)) "pr"))
+                   resolved))))
+       shipit--notification-pr-activities))
+    resolved))
+
+(defun shipit-notifications-buffer-customize-auto-mark-rules ()
+  "Open a customize buffer for `shipit-notifications-auto-mark-read-rules'.
+Convenience wrapper so the filter transient can offer a discoverable
+entry point to edit rules without dropping into M-x customize."
+  (interactive)
+  (customize-variable 'shipit-notifications-auto-mark-read-rules))
+
+;;; Auto-mark rules editor
+
+(defface shipit-auto-mark-preview-face
+  '((t :inherit font-lock-warning-face :strike-through t))
+  "Face for notification rows previewed as auto-mark targets.
+Strike-through reinforces the visual that these rows would
+disappear once the rule fires."
+  :group 'shipit)
+
+(defface shipit-auto-mark-preview-match-face
+  '((t :inherit lazy-highlight :weight bold))
+  "Face for the actual characters that match the regex in a
+row that is being previewed as an auto-mark target.  Inherits
+from `lazy-highlight' so the visual cue is familiar from
+isearch — but bolded so it pops over the row's strike-through."
+  :group 'shipit)
+
+(defvar-local shipit-notifications-buffer--auto-mark-preview-overlays nil
+  "Overlays placed on rows that match the regex being previewed.
+Buffer-local because preview is per-buffer, and torn down when
+the prompt closes (success or abort).")
+
+(defun shipit-notifications-buffer--clear-auto-mark-preview ()
+  "Remove every preview overlay from the current buffer."
+  (dolist (ov shipit-notifications-buffer--auto-mark-preview-overlays)
+    (delete-overlay ov))
+  (setq shipit-notifications-buffer--auto-mark-preview-overlays nil))
+
+(defun shipit-notifications-buffer--title-region-in-section (section)
+  "Return (BEG . END) for the title text inside SECTION, or nil.
+Title cells are marked with a `shipit-notification-title' text
+property at render time; this walks the section bounds and
+returns the contiguous run carrying that property."
+  (let* ((beg (oref section start))
+         (end (oref section end))
+         (start (text-property-any beg end 'shipit-notification-title t)))
+    (when start
+      (let ((stop (or (next-single-property-change
+                       start 'shipit-notification-title nil end)
+                      end)))
+        (cons start stop)))))
+
+(defun shipit-notifications-buffer--add-preview-row-overlay (section)
+  "Install the strike-through whole-row overlay on SECTION."
+  (let ((ov (make-overlay (oref section start) (oref section end))))
+    (overlay-put ov 'face 'shipit-auto-mark-preview-face)
+    (overlay-put ov 'priority 100)
+    (push ov shipit-notifications-buffer--auto-mark-preview-overlays)))
+
+(defun shipit-notifications-buffer--add-preview-match-overlays (section regex)
+  "Install per-match character overlays inside SECTION's title region.
+Walks the title sub-region only — repo / reason / timestamp text
+in the same row stays unhighlighted even if it accidentally
+matches REGEX, so the preview reflects what the rule actually
+checks (i.e., the activity's `subject')."
+  (let ((title (shipit-notifications-buffer--title-region-in-section
+                section)))
+    (when title
+      (save-excursion
+        (goto-char (car title))
+        (while (re-search-forward regex (cdr title) t)
+          ;; Skip empty matches (e.g. a regex like ".*" matching at
+          ;; every position) so we don't loop forever or spam zero-
+          ;; width overlays.
+          (when (> (match-end 0) (match-beginning 0))
+            (let ((mov (make-overlay (match-beginning 0) (match-end 0))))
+              (overlay-put mov 'face 'shipit-auto-mark-preview-match-face)
+              (overlay-put mov 'priority 110)
+              (push mov
+                    shipit-notifications-buffer--auto-mark-preview-overlays))))))))
+
+(defun shipit-notifications-buffer--apply-auto-mark-preview (regex)
+  "Highlight notification rows whose subject matches REGEX.
+Each matching row gets a strike-through overlay; the actual
+characters that the regex picks up inside the title also get a
+brighter sub-match overlay so the user can see *what* matched.
+Clears any previous preview first.  An invalid (mid-typing) regex
+is silently skipped — the user will get a fresh preview as soon as
+the input parses again, instead of a flurry of error messages."
+  (shipit-notifications-buffer--clear-auto-mark-preview)
+  (when (and regex
+             (stringp regex)
+             (not (string-empty-p regex))
+             (bound-and-true-p magit-root-section)
+             (condition-case nil
+                 (progn (string-match-p regex "") t)
+               (error nil)))
+    (dolist (child (oref magit-root-section children))
+      (when (eq (oref child type) 'notification-entry)
+        (let* ((activity (oref child value))
+               (subj (cdr (assq 'subject activity))))
+          (when (and (stringp subj) (string-match-p regex subj))
+            (shipit-notifications-buffer--add-preview-row-overlay child)
+            (shipit-notifications-buffer--add-preview-match-overlays
+             child regex)))))))
+
+(defun shipit-notifications-buffer--candidate-reasons ()
+  "Return the sorted distinct list of reason strings in the hash."
+  (let ((seen (make-hash-table :test 'equal)))
+    (dolist (a (shipit-notifications-buffer--all-activities))
+      (let ((r (cdr (assq 'reason a))))
+        (when (and r (stringp r) (> (length r) 0))
+          (puthash r t seen))))
+    (sort (hash-table-keys seen) #'string<)))
+
+(defun shipit-notifications--save-auto-mark-rules (new-list)
+  "Set `shipit-notifications-auto-mark-read-rules' to NEW-LIST and persist.
+Wraps `customize-save-variable' so tests can stub the persistence
+path while still exercising the value update."
+  (customize-save-variable
+   'shipit-notifications-auto-mark-read-rules new-list))
+
+(defun shipit-notifications-buffer--read-title-regex-with-preview ()
+  "Read a regex from the minibuffer with live overlay preview.
+Strike-through highlights rows in the notifications buffer that
+would be auto-marked, debounced by `shipit-notifications-filter-live-delay'.
+Cleans up overlays whether the prompt is confirmed or aborted.
+
+For richer regex editing tooling, see also `re-builder' (built-in)
+or the third-party `visual-regexp' package."
+  (let ((original-buffer (current-buffer))
+        (timer nil)
+        (minibuf nil)
+        (last-input nil))
+    (unwind-protect
+        (minibuffer-with-setup-hook
+            (lambda ()
+              (setq minibuf (current-buffer))
+              (add-hook
+               'post-command-hook
+               (lambda ()
+                 (when timer (cancel-timer timer))
+                 (setq timer
+                       (run-with-idle-timer
+                        shipit-notifications-filter-live-delay nil
+                        (lambda ()
+                          (when (and (buffer-live-p minibuf)
+                                     (buffer-live-p original-buffer))
+                            (let ((input (with-current-buffer minibuf
+                                           (minibuffer-contents-no-properties))))
+                              (unless (equal input last-input)
+                                (setq last-input input)
+                                (with-current-buffer original-buffer
+                                  (shipit-notifications-buffer--apply-auto-mark-preview
+                                   input)))))))))
+               nil t))
+          (read-string "Title regex (live preview): "))
+      (when (buffer-live-p original-buffer)
+        (with-current-buffer original-buffer
+          (shipit-notifications-buffer--clear-auto-mark-preview))))))
+
+(defun shipit-notifications-buffer--read-auto-mark-value (key)
+  "Read a value for condition KEY with key-appropriate completion.
+Returns the value (correctly typed for the rule plist).  KEY is
+one of the auto-mark condition keywords."
+  (pcase key
+    (:state
+     (intern (completing-read
+              "State: " '("merged" "closed" "open" "draft") nil t)))
+    (:type
+     (let ((cands (shipit-notifications-buffer--candidate-types)))
+       (completing-read "Type: " cands nil t)))
+    (:repo
+     (let ((cands (shipit-notifications-buffer--candidate-repos)))
+       (completing-read "Repo: " cands nil t)))
+    (:reason
+     (let ((cands (shipit-notifications-buffer--candidate-reasons)))
+       (completing-read "Reason: " cands nil t)))
+    (:title
+     (shipit-notifications-buffer--read-title-regex-with-preview))
+    (:draft
+     (intern (completing-read "Draft: " '("t" "nil") nil t)))))
+
+(defun shipit-notifications-buffer-add-auto-mark-rule ()
+  "Add an auto-mark rule via a guided minibuffer flow.
+Prompts for the condition key from a completion list (`:state',
+`:type', `:repo', `:reason', `:title', `:draft'), then for the
+value with key-appropriate candidates.  For `:title' the regex
+input shows live overlay preview in the notifications buffer."
+  (interactive)
+  (let* ((keys '(":state" ":type" ":repo" ":reason" ":title" ":draft"))
+         (chosen (completing-read "Condition: " keys nil t))
+         (key (intern chosen))
+         (value (shipit-notifications-buffer--read-auto-mark-value key)))
+    (when (or value (eq key :draft))
+      (let ((rule (list key value))
+            (existing shipit-notifications-auto-mark-read-rules))
+        (shipit-notifications--save-auto-mark-rules
+         (append existing (list rule)))
+        (message "Added auto-mark rule: %S" rule)
+        (shipit-notifications-apply-auto-mark-rules)))))
+
+(defun shipit-notifications-buffer-list-auto-mark-rules ()
+  "Show current auto-mark rules in a help-style buffer."
+  (interactive)
+  (let ((rules shipit-notifications-auto-mark-read-rules))
+    (with-help-window "*shipit-auto-mark-rules*"
+      (with-current-buffer "*shipit-auto-mark-rules*"
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert "Active auto-mark-read rules:
+
+")
+          (if (null rules)
+              (insert "  (no rules configured)
+")
+            (let ((idx 1))
+              (dolist (rule rules)
+                (insert (format "  %2d. %S
+" idx rule))
+                (cl-incf idx)))))))))
+
+(defun shipit-notifications-buffer-toggle-auto-mark-rules-list ()
+  "Toggle the auto-mark rules-list buffer in another window/frame.
+When the list buffer is shown anywhere, dismiss it via `quit-window'
+so it works whether `with-help-window' chose a side window, a
+separate frame, or the only window of a frame; otherwise re-render
+and pop it up.  Re-rendering on each open keeps the view in sync
+with rule edits made from the transient."
+  (interactive)
+  (let ((win (get-buffer-window "*shipit-auto-mark-rules*" t)))
+    (if win
+        (with-selected-window win (quit-window))
+      (shipit-notifications-buffer-list-auto-mark-rules))))
+
+(defun shipit-notifications-buffer--remove-auto-mark-rule-at (idx)
+  "Persist the rules list with the entry at IDX removed (0-based)."
+  (let* ((rules shipit-notifications-auto-mark-read-rules)
+         (new-list (append (cl-subseq rules 0 idx)
+                           (cl-subseq rules (1+ idx)))))
+    (shipit-notifications--save-auto-mark-rules new-list)))
+
+(defun shipit-notifications-buffer-remove-auto-mark-rule ()
+  "Pick a rule by its current value and remove it."
+  (interactive)
+  (let ((rules shipit-notifications-auto-mark-read-rules))
+    (if (null rules)
+        (message "No auto-mark rules to remove")
+      (let* ((labels (mapcar (lambda (r) (format "%S" r)) rules))
+             (choice (completing-read "Remove rule: " labels nil t))
+             (idx (cl-position choice labels :test #'equal)))
+        (when idx
+          (shipit-notifications-buffer--remove-auto-mark-rule-at idx)
+          (message "Removed: %s" choice))))))
+
+(defun shipit-notifications-buffer-clear-auto-mark-rules ()
+  "Clear every auto-mark rule (with confirmation)."
+  (interactive)
+  (let ((n (length shipit-notifications-auto-mark-read-rules)))
+    (cond
+     ((zerop n) (message "No auto-mark rules to clear"))
+     ((yes-or-no-p (format "Clear all %d auto-mark rule%s? "
+                           n (if (= n 1) "" "s")))
+      (shipit-notifications--save-auto-mark-rules nil)
+      (message "Auto-mark rules cleared")))))
+
+;;;###autoload (autoload 'shipit-notifications-buffer-auto-mark-menu "shipit-notifications-buffer" nil t)
+(transient-define-prefix shipit-notifications-buffer-auto-mark-menu ()
+  "Manage auto-mark-read rules without leaving the notifications buffer."
+  [["Add"
+    ("a" "Add rule (guided)"
+     shipit-notifications-buffer-add-auto-mark-rule)]
+   ["Manage"
+    ("l" "Toggle rules list"
+     shipit-notifications-buffer-toggle-auto-mark-rules-list
+     :transient t)
+    ("d" "Remove a rule"
+     shipit-notifications-buffer-remove-auto-mark-rule)
+    ("X" "Clear all rules"
+     shipit-notifications-buffer-clear-auto-mark-rules)]
+   ["Apply / advanced"
+    ("u" "Apply rules now"
+     shipit-notifications-apply-auto-mark-rules
+     :transient t)
+    ("c" "Open customize buffer"
+     shipit-notifications-buffer-customize-auto-mark-rules)
+    ("q" "Back" transient-quit-one)]])
+
+(defun shipit-notifications-buffer-mark-resolved-read ()
+  "Mark all merged and closed PR notifications as read.
+Walks the full activity hash (not just visible rows) so users can
+clean up resolved noise without paging through every entry first.
+Prompts with the count before marking."
+  (interactive)
+  (let ((resolved (shipit-notifications-buffer--collect-resolved-prs)))
+    (cond
+     ((null resolved)
+      (message "No resolved PRs to mark as read"))
+     ((yes-or-no-p (format "Mark %d resolved PR%s (merged/closed) as read? "
+                           (length resolved)
+                           (if (= 1 (length resolved)) "" "s")))
+      (dolist (notif resolved)
+        (when (fboundp 'shipit--mark-notification-read)
+          (shipit--mark-notification-read (car notif) (cadr notif) t (caddr notif))))
+      (message "Marked %d resolved PR%s as read"
+               (length resolved)
+               (if (= 1 (length resolved)) "" "s"))
+      (shipit-notifications-buffer-refresh)))))
+
 ;;; Scope / pagination
 
 (defun shipit-notifications-buffer-toggle-scope ()
@@ -1303,6 +1665,36 @@ all data locally, we just re-render."
   (message "Type filter cleared")
   (shipit-notifications-buffer--rerender))
 
+(defun shipit-notifications-buffer--candidate-states ()
+  "Return the canonical list of state-filter values.
+Static set matching the icon-picker: open / merged / closed / draft."
+  '("open" "merged" "closed" "draft"))
+
+(defun shipit-notifications-buffer-set-state-filter ()
+  "Prompt for a PR state to restrict the notifications buffer client-side.
+Candidates: open / merged / closed / draft.  Picking the clear-label
+entry unscopes the filter.  Re-renders without refetching since the
+data is already enriched locally."
+  (interactive)
+  (let* ((clear-label "<all states>")
+         (candidates (cons clear-label
+                           (shipit-notifications-buffer--candidate-states)))
+         (choice (completing-read
+                  "State: " candidates nil t nil nil
+                  (or shipit-notifications-buffer--state-filter clear-label))))
+    (setq shipit-notifications-buffer--state-filter
+          (if (string= choice clear-label) nil choice))
+    (message "State filter: %s"
+             (or shipit-notifications-buffer--state-filter "all states"))
+    (shipit-notifications-buffer--rerender)))
+
+(defun shipit-notifications-buffer-clear-state-filter ()
+  "Clear the state filter and re-render."
+  (interactive)
+  (setq shipit-notifications-buffer--state-filter nil)
+  (message "State filter cleared")
+  (shipit-notifications-buffer--rerender))
+
 (defun shipit-notifications-buffer--read-iso-timestamp (prompt)
   "Prompt for a date/time and return an ISO-8601 timestamp string.
 Uses `org-read-date' when available (accepts inputs like
@@ -1357,14 +1749,15 @@ Resets current-page to 1, then refreshes."
   (shipit-notifications-buffer-refresh))
 
 (defun shipit-notifications-buffer-clear-all-filters ()
-  "Clear every filter (text, repo, type, before, since) and refresh.
+  "Clear every filter (text, repo, type, state, before, since) and refresh.
 Resets `current-page' to 1 since the visible window changes, then
 issues a single refresh so the server-side repo/before/since
-clearing takes effect alongside the client-side text/type reset."
+clearing takes effect alongside the client-side text/type/state reset."
   (interactive)
   (setq shipit-notifications-buffer--filter-text ""
         shipit-notifications-buffer--repo-filter nil
         shipit-notifications-buffer--type-filter nil
+        shipit-notifications-buffer--state-filter nil
         shipit-notifications-buffer--before-filter nil
         shipit-notifications-buffer--since-filter nil
         shipit-notifications-buffer--current-page 1)
@@ -1409,6 +1802,12 @@ clearing takes effect alongside the client-side text/type reset."
       (format "Type: %s" shipit-notifications-buffer--type-filter)
     "Type: <all types>"))
 
+(defun shipit-notifications-buffer--state-filter-description ()
+  "Describe the state-filter action for the transient."
+  (if shipit-notifications-buffer--state-filter
+      (format "State: %s" shipit-notifications-buffer--state-filter)
+    "State: <all states>"))
+
 (defun shipit-notifications-buffer--before-filter-description ()
   "Describe the before-filter action for the transient."
   (if shipit-notifications-buffer--before-filter
@@ -1435,22 +1834,31 @@ clearing takes effect alongside the client-side text/type reset."
     ("r" shipit-notifications-buffer-set-repo-filter
      :description shipit-notifications-buffer--repo-filter-description)
     ("R" "Clear repo filter" shipit-notifications-buffer-clear-repo-filter)]
-   ["Type filter"
-    ("y" shipit-notifications-buffer-set-type-filter
-     :description shipit-notifications-buffer--type-filter-description)
-    ("Y" "Clear type filter" shipit-notifications-buffer-clear-type-filter)]
    ["Time window"
     ("b" shipit-notifications-buffer-set-before-filter
      :description shipit-notifications-buffer--before-filter-description)
     ("B" "Clear before filter" shipit-notifications-buffer-clear-before-filter)
     ("a" shipit-notifications-buffer-set-since-filter
      :description shipit-notifications-buffer--since-filter-description)
-    ("A" "Clear since filter" shipit-notifications-buffer-clear-since-filter)]
+    ("A" "Clear since filter" shipit-notifications-buffer-clear-since-filter)]]
+  [["Type filter"
+    ("y" shipit-notifications-buffer-set-type-filter
+     :description shipit-notifications-buffer--type-filter-description)
+    ("Y" "Clear type filter" shipit-notifications-buffer-clear-type-filter)]
+   ["State filter"
+    ("e" shipit-notifications-buffer-set-state-filter
+     :description shipit-notifications-buffer--state-filter-description)
+    ("E" "Clear state filter" shipit-notifications-buffer-clear-state-filter)]
    ["Text filter"
     ("t" shipit-notifications-buffer-set-filter
      :description shipit-notifications-buffer--text-filter-description)
     ("c" "Clear text filter" shipit-notifications-buffer-clear-filter)]
-   ["Refresh"
+   ["Bulk / auto-mark"
+    ("Z" "Mark merged/closed as read"
+     shipit-notifications-buffer-mark-resolved-read)
+    ("M" "Manage auto-mark rules…"
+     shipit-notifications-buffer-auto-mark-menu)]]
+  [["Refresh"
     ("g" "Refresh now" shipit-notifications-buffer-refresh)
     ("x" "Clear all filters" shipit-notifications-buffer-clear-all-filters)
     ("q" "Quit" transient-quit-one)]])

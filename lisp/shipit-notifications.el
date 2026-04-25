@@ -40,6 +40,7 @@
 (declare-function shipit--check-notifications-background-async "shipit-notifications")
 (declare-function shipit--notifications-header-actions "shipit-notifications")
 (declare-function shipit-issue-gitlab--mark-todo-done "shipit-issue-gitlab")
+(declare-function shipit-pr-github--mark-notification-read "shipit-pr-github" (config id))
 (declare-function shipit-discussion--resolve-for-repo "shipit-discussion-backends")
 
 ;; Magit section types - declare for byte compiler
@@ -200,29 +201,191 @@ Key is notification ID, value is timestamp when marked read.")
 Format: \"repo:type:number\" to prevent collisions between PR and Issue."
   (format "%s:%s:%s" repo type number))
 
+(defun shipit--thread-id-as-number (thread-id)
+  "Return THREAD-ID parsed as a number, or nil if it is not all digits.
+GitHub thread ids are numeric strings; used as a fallback activity
+key for subject types without an intrinsic number (e.g. Commit)."
+  (and thread-id
+       (stringp thread-id)
+       (> (length thread-id) 0)
+       (cl-every (lambda (c) (and (>= c ?0) (<= c ?9))) thread-id)
+       (string-to-number thread-id)))
+
 (defun shipit--extract-notification-number (subject-url subject-type)
   "Extract number from SUBJECT-URL based on SUBJECT-TYPE.
 PR URLs have /pulls/N, Issue URLs have /issues/N,
-Discussion URLs have /discussions/N."
+Discussion URLs have /discussions/N, Release URLs have /releases/N,
+CheckSuite URLs have /check-suites/N, WorkflowRun URLs have /runs/N.
+Returns nil for Commit (SHA, not a number) and other types without
+an intrinsic numeric id — callers fall back to the thread id."
   (cond
    ((string= subject-type "PullRequest")
-    (when (string-match "/pulls/\\([0-9]+\\)" subject-url)
+    (when (and subject-url (string-match "/pulls/\\([0-9]+\\)" subject-url))
       (string-to-number (match-string 1 subject-url))))
    ((string= subject-type "Issue")
-    (when (string-match "/issues/\\([0-9]+\\)" subject-url)
+    (when (and subject-url (string-match "/issues/\\([0-9]+\\)" subject-url))
       (string-to-number (match-string 1 subject-url))))
    ((string= subject-type "Discussion")
-    (when (string-match "/discussions/\\([0-9]+\\)" subject-url)
+    (when (and subject-url (string-match "/discussions/\\([0-9]+\\)" subject-url))
+      (string-to-number (match-string 1 subject-url))))
+   ((string= subject-type "Release")
+    (when (and subject-url (string-match "/releases/\\([0-9]+\\)" subject-url))
+      (string-to-number (match-string 1 subject-url))))
+   ((string= subject-type "CheckSuite")
+    (when (and subject-url (string-match "/check-suites/\\([0-9]+\\)" subject-url))
+      (string-to-number (match-string 1 subject-url))))
+   ((string= subject-type "WorkflowRun")
+    (when (and subject-url (string-match "/runs/\\([0-9]+\\)" subject-url))
       (string-to-number (match-string 1 subject-url))))
    (t nil)))
 
 (defun shipit--notification-type-from-subject (subject-type)
-  "Map GitHub SUBJECT-TYPE to internal type: \"pr\", \"issue\", or \"discussion\"."
+  "Map GitHub SUBJECT-TYPE to a short internal type string.
+Known types are \"pr\", \"issue\", \"discussion\", \"release\",
+\"check\", \"commit\", \"workflow\", \"alert\", and \"invitation\".
+Returns nil for genuinely unknown types so the caller can log and
+skip them rather than guess."
   (pcase subject-type
     ("PullRequest" "pr")
     ("Issue" "issue")
     ("Discussion" "discussion")
+    ("Release" "release")
+    ("CheckSuite" "check")
+    ("Commit" "commit")
+    ("WorkflowRun" "workflow")
+    ("RepositoryVulnerabilityAlert" "alert")
+    ("RepositoryAdvisory" "alert")
+    ("RepositoryInvitation" "invitation")
     (_ nil)))
+
+(defcustom shipit-notifications-auto-mark-resolved-approvals nil
+  "If non-nil, approval-requested workflow notifications whose run is
+no longer in status=waiting are automatically marked read at fetch
+time.  This keeps the list free of stale approval requests where
+the review has already been handled (by you or another reviewer)
+or the run has been cancelled.
+
+Disabled by default — enabling it causes shipit to issue PATCH
+requests to /notifications/threads/ during each refresh for
+resolved approval notifications, which is a silent write to
+GitHub.  Turn it on if you want the list pruned automatically."
+  :type 'boolean
+  :group 'shipit)
+
+(defun shipit--closest-run-by-time (runs target-iso)
+  "Return the run from RUNS whose updated_at is closest to TARGET-ISO.
+RUNS is a list of run alists; TARGET-ISO is an ISO-8601 timestamp
+string.  Used to pick which of several currently-waiting runs a
+particular approval-requested notification most likely refers to."
+  (when (and runs target-iso)
+    (let ((target (float-time (date-to-time target-iso)))
+          (best nil)
+          (best-dist most-positive-fixnum))
+      (dolist (run runs)
+        (let ((upd (cdr (assq 'updated_at run))))
+          (when upd
+            (let ((dist (abs (- (float-time (date-to-time upd)) target))))
+              (when (< dist best-dist)
+                (setq best run best-dist dist))))))
+      best)))
+
+(defun shipit--workflow-approval-notifications-by-repo ()
+  "Return hash of repo → list of (key . activity) for approval-requested workflows."
+  (let ((by-repo (make-hash-table :test 'equal)))
+    (maphash
+     (lambda (key activity)
+       (when (and (equal (cdr (assq 'type activity)) "workflow")
+                  (equal (cdr (assq 'reason activity)) "approval_requested"))
+         (let ((repo (cdr (assq 'repo activity))))
+           (when (and repo (stringp repo))
+             (push (cons key activity) (gethash repo by-repo))))))
+     shipit--notification-pr-activities)
+    by-repo))
+
+(defun shipit--set-activity-browse-url (activity url)
+  "Destructively update ACTIVITY's browse-url cell to URL."
+  (let ((cell (assq 'browse-url activity)))
+    (when cell (setcdr cell url))))
+
+(defun shipit--enrich-workflow-one-repo (repo entries runs)
+  "Apply waiting-run ENRICHMENT to REPO's ENTRIES using fetched RUNS.
+If RUNS is non-empty, update each entry's browse-url to the closest
+waiting run.  If RUNS is empty and the auto-mark defcustom is set,
+mark each notification thread read and drop it from the activities
+hash."
+  (if runs
+      (dolist (entry entries)
+        (let* ((activity (cdr entry))
+               (target (cdr (assq 'updated-at activity)))
+               (run (or (shipit--closest-run-by-time runs target) (car runs)))
+               (url (and run (cdr (assq 'html_url run)))))
+          (when url
+            (shipit--set-activity-browse-url activity url))))
+    (when shipit-notifications-auto-mark-resolved-approvals
+      (dolist (entry entries)
+        (let* ((activity (cdr entry))
+               (notif (cdr (assq 'notification activity)))
+               (thread-id (cdr (assq 'id notif))))
+          (when thread-id
+            (shipit--debug-log "Auto-marking resolved approval: %s %s" repo thread-id)
+            (shipit-pr-github--mark-notification-read nil thread-id)
+            (remhash (car entry) shipit--notification-pr-activities)))))))
+
+(defun shipit--enrich-workflow-notifications ()
+  "Post-process approval-requested WorkflowRun notifications.
+For each repo that has such notifications, query the waiting runs
+and either (a) enrich the activities with the specific run URL or
+(b) auto-mark them read if the run is no longer waiting and the
+user opted into `shipit-notifications-auto-mark-resolved-approvals'.
+Re-renders the notifications buffer after each repo's enrichment
+so URL updates surface as soon as they arrive."
+  (let ((by-repo (shipit--workflow-approval-notifications-by-repo)))
+    (maphash
+     (lambda (repo entries)
+       (shipit--api-request
+        (format "/repos/%s/actions/runs" repo)
+        (list (list "status" "waiting") (list "per_page" "30"))
+        (lambda (data)
+          (let ((runs (when data (append (cdr (assq 'workflow_runs data)) nil))))
+            (shipit--enrich-workflow-one-repo repo entries runs)
+            (shipit--rerender-notifications-buffer-if-visible)))))
+     by-repo)))
+
+(defun shipit--notification-browse-url (notification)
+  "Return a browse URL for NOTIFICATION, or nil.
+Derives a usable HTML URL for subject types that don't open in a
+shipit buffer (Release, CheckSuite, Commit, Alert, …) so that
+pressing RET in the notifications buffer still opens something
+sensible in the browser."
+  (let* ((repo-info (cdr (assq 'repository notification)))
+         (repo-full (cdr (assq 'full_name repo-info)))
+         (repo-html (or (cdr (assq 'html_url repo-info))
+                        (and repo-full (format "https://github.com/%s" repo-full))))
+         (subject (cdr (assq 'subject notification)))
+         (subj-type (cdr (assq 'type subject)))
+         (subj-url (cdr (assq 'url subject))))
+    (pcase subj-type
+      ("Release"
+       (and repo-html (concat repo-html "/releases")))
+      ("CheckSuite"
+       (and repo-html (concat repo-html "/actions")))
+      ("WorkflowRun"
+       (or (and subj-url repo-html
+                (string-match "/runs/\\([0-9]+\\)" subj-url)
+                (concat repo-html "/actions/runs/" (match-string 1 subj-url)))
+           (and repo-html (concat repo-html "/actions"))))
+      ("Commit"
+       (or (and subj-url repo-html
+                (string-match "/commits/\\([0-9a-f]+\\)" subj-url)
+                (concat repo-html "/commit/" (match-string 1 subj-url)))
+           repo-html))
+      ("RepositoryVulnerabilityAlert"
+       (and repo-html (concat repo-html "/security")))
+      ("RepositoryAdvisory"
+       (and repo-html (concat repo-html "/security/advisories")))
+      ("RepositoryInvitation"
+       (and repo-html (concat repo-html "/invitations")))
+      (_ repo-html))))
 
 ;;; Alert Toggle Functions (must be defined before transient menu)
 
@@ -587,22 +750,26 @@ lookup ignores case."
                           (list (cons "Link" (cdr link-pair)))))))
     (or last-page (length (or json '())))))
 
-(defun shipit--fetch-notifications-total-count-async (scope callback &optional repo)
+(defun shipit--fetch-notifications-total-count-async (scope callback &optional repo before since)
   "Fetch the total notification count for SCOPE asynchronously.
 Fires a lightweight per_page=1 request to /notifications, then
-calls CALLBACK with an integer (or nil on failure).  With
-per_page=1, each notification is on its own page, so the
-last-page number from the pagination Link header equals the total
-item count.
-REPO, when a non-empty `OWNER/REPO' string, scopes the probe to
-that repository's per-repo notifications endpoint, giving an
-exact server-side count for just that repo."
+calls CALLBACK with an integer (or nil on failure).
+REPO, when a non-empty OWNER/REPO string, scopes the probe to
+that repository per-repo endpoint.  BEFORE and SINCE are ISO
+timestamp strings that, when non-nil, time-window the probe so
+the returned count matches the filtered view."
   (require 'shipit-http)
   (condition-case setup-err
       (let* ((scope-params (shipit--notification-params-for-scope scope))
              (probe-params (cons '(per_page . 1)
                                  (assq-delete-all 'per_page
                                                   (copy-sequence scope-params))))
+             (probe-params (if (and before (stringp before) (> (length before) 0))
+                               (cons (cons 'before before) probe-params)
+                             probe-params))
+             (probe-params (if (and since (stringp since) (> (length since) 0))
+                               (cons (cons 'since since) probe-params)
+                             probe-params))
              (qstr (mapconcat (lambda (p)
                                 (format "%s=%s" (car p) (cdr p)))
                               probe-params "&"))
@@ -653,47 +820,59 @@ exact server-side count for just that repo."
                         (error-message-string setup-err))
      (funcall callback nil))))
 
-(defun shipit--check-notifications-background (&optional force-fresh scope-override max-pages repo)
+(defun shipit--check-notifications-background (&optional force-fresh scope-override max-pages repo start-page before since)
   "Check GitHub notifications in background using ETag caching with pagination.
-If FORCE-FRESH is non-nil, bypasses ETag cache to get fresh data.
-SCOPE-OVERRIDE, when non-nil, replaces `shipit-notifications-scope'
-for this call only — useful for the notifications buffer's
-buffer-local display scope.
+FORCE-FRESH bypasses the ETag cache when non-nil.
+SCOPE-OVERRIDE replaces `shipit-notifications-scope' for this call.
 MAX-PAGES caps the number of pages fetched (default 10).
-REPO, when a non-empty `OWNER/REPO' string, is smuggled into PARAMS
-as a `:repo' entry; the backend\='s `:fetch-notifications' uses it
-to target the per-repo endpoint (see
-`shipit-pr-github--fetch-notifications')."
+REPO, a non-empty OWNER/REPO, targets the per-repo endpoint.
+START-PAGE is the first page to request (default 1).
+BEFORE and SINCE are ISO-8601 timestamp strings passed as the
+GitHub query parameters of the same name when non-nil; use them
+to time-travel past GitHub's default 2-week window."
   (condition-case err
       (let* ((scope (or scope-override shipit-notifications-scope))
              (base-params (shipit--notification-params-for-scope scope))
              (params (if (and repo (stringp repo) (> (length repo) 0))
                          (cons (cons :repo repo) base-params)
                        base-params))
+             (params (if (and before (stringp before) (> (length before) 0))
+                         (cons (cons 'before before) params)
+                       params))
+             (params (if (and since (stringp since) (> (length since) 0))
+                         (cons (cons 'since since) params)
+                       params))
              (all-notifications
-              (shipit--fetch-all-notifications params nil force-fresh max-pages)))
+              (shipit--fetch-all-notifications params nil force-fresh max-pages start-page)))
         (shipit--process-notifications all-notifications)
-        ;; Poll backend notifications if backends are configured
+        ;; Schedule backend poll on next idle tick rather than running it
+        ;; inline — backend fetches (Jira, RSS, GitLab) are sync and block
+        ;; the buffer refresh by 2-3s.  The user already sees the GitHub
+        ;; data and the backends merge in shortly after.
         (when (featurep 'shipit-issue-backends)
-          (shipit--poll-backend-notifications)))
+          (run-with-idle-timer 0 nil #'shipit--poll-backend-notifications)))
     (error
      (shipit--debug-log "Background notifications check failed: %s" (error-message-string err)))))
 
-(defun shipit--fetch-all-notifications (params &optional since-watermark force-fresh max-pages)
+(defun shipit--fetch-all-notifications (params &optional since-watermark force-fresh max-pages start-page)
   "Fetch notifications following GitHub's protocol.
 Uses Last-Modified headers and respects X-Poll-Interval.
 If SINCE-WATERMARK is provided, filters to only notifications after that timestamp.
 If FORCE-FRESH is non-nil, bypasses ETag caching.
-MAX-PAGES caps the number of pages fetched (defaults to 10)."
+MAX-PAGES caps the number of pages fetched (defaults to 10).
+START-PAGE is the first page to request (defaults to 1); combined
+with MAX-PAGES=1 this fetches a single specific page — used by
+the notifications buffer windowed pagination."
   (let* ((resolved (shipit-pr--resolve-for-repo
                     (or (shipit--get-repo-from-remote) "")))
          (backend (car resolved))
          (config (cdr resolved))
          (fetch-fn (plist-get backend :fetch-notifications))
          (all-notifications '())
-         (page 1)
+         (first-page (or start-page 1))
+         (page first-page)
          (has-more t)
-         (page-cap (or max-pages 10)))
+         (page-cap (+ first-page (1- (or max-pages 10)))))
 
     (while (and has-more (<= page page-cap))
       (let* ((page-params (append params `((page . ,page))))
@@ -762,6 +941,18 @@ Returns plist with :json, :status, :headers."
        (shipit--debug-log "Notifications fetch error: %s" (error-message-string err))
        nil))))
 
+(defun shipit--rerender-notifications-buffer-if-visible ()
+  "Re-render the shipit notifications buffer if it exists.
+Used by deferred enrichment paths to surface freshly-resolved
+draft/state/author icons and workflow run URLs without forcing
+the user to press `g'."
+  (let ((buf (and (boundp 'shipit-notifications-buffer-name)
+                  (get-buffer shipit-notifications-buffer-name))))
+    (when (and buf (buffer-live-p buf))
+      (with-current-buffer buf
+        (when (fboundp 'shipit-notifications-buffer--rerender)
+          (shipit-notifications-buffer--rerender))))))
+
 (defun shipit--process-notifications (notifications)
   "Process notifications and extract PR and Issue activity."
   (let ((activities (make-hash-table :test 'equal))
@@ -805,13 +996,18 @@ Returns plist with :json, :status, :headers."
           ;; Debug: Log all notification types and reasons
           (shipit--debug-log "Notification type: %s, reason: %s, unread: %s" subject-type reason unread)
 
-          ;; Process PullRequest and Issue notifications
+          ;; Process all supported notification subject types.  Types
+          ;; without an intrinsic numeric id (e.g. Commit's SHA) fall
+          ;; back to the thread id so the activity key is still unique.
           (let ((internal-type (shipit--notification-type-from-subject subject-type)))
             (when internal-type
               (let* ((repo-info (cdr (assq 'repository notification)))
                      (repo-full-name (cdr (assq 'full_name repo-info)))
                      (updated-at (cdr (assq 'updated_at notification)))
-                     (number (shipit--extract-notification-number subject-url subject-type)))
+                     (extracted-number (shipit--extract-notification-number subject-url subject-type))
+                     (thread-id-number (shipit--thread-id-as-number notification-id))
+                     (number (or extracted-number thread-id-number))
+                     (browse-url (shipit--notification-browse-url notification)))
 
                 (if (and repo-full-name number)
                     (let* ((activity-key (shipit--notification-activity-key repo-full-name internal-type number))
@@ -821,6 +1017,7 @@ Returns plist with :json, :status, :headers."
                                        (updated-at . ,updated-at)
                                        (subject . ,(cdr (assq 'title subject)))
                                        (reason . ,reason)
+                                       (browse-url . ,browse-url)
                                        (notification . ,notification))))
                       (puthash activity-key activity activities)
                       (setq total-count (1+ total-count))
@@ -848,8 +1045,16 @@ Returns plist with :json, :status, :headers."
 
     ;; Merge GitHub notifications into the global table (preserving backend entries)
     (shipit--merge-github-notifications activities)
-    ;; Enrich PR notifications with draft/state/author via single GraphQL call
+    ;; Apply auto-mark rules that don't depend on PR-state (type, reason,
+    ;; title, repo) immediately after merge.  State-dependent rules will
+    ;; be re-applied at the end of `shipit--apply-pr-enrichment'; the
+    ;; mark-read API is idempotent so the duplicate fire is harmless.
+    (shipit--auto-mark-rules-apply)
+    ;; Enrichments are async — the GraphQL PR enrichment kicks off here and
+    ;; rerenders on completion; workflow enrichment fires per-repo HTTP
+    ;; requests that are also async and rerender on completion.
     (shipit--enrich-pr-notifications)
+    (shipit--enrich-workflow-notifications)
     (setq shipit--mention-prs mention-prs)
     (setq shipit--mention-count mention-count)
 
@@ -877,13 +1082,15 @@ Fetches all PR metadata in a single request grouped by repo."
              shipit--notification-pr-activities)
     ;; Skip if no PR notifications
     (when (> (hash-table-count pr-by-repo) 0)
-      (condition-case err
-          (let* ((query (shipit--build-pr-enrichment-query pr-by-repo))
-                 (result (shipit--graphql-query query nil)))
-            (when result
-              (shipit--apply-pr-enrichment result pr-by-repo)))
-        (error
-         (shipit--debug-log "PR enrichment failed: %s" (error-message-string err)))))))
+      (let ((query (shipit--build-pr-enrichment-query pr-by-repo)))
+        (shipit--graphql-request
+         query nil
+         (lambda (response)
+           (let ((data (and response (cdr (assq 'data response)))))
+             (when data
+               (shipit--apply-pr-enrichment data pr-by-repo)
+               (shipit--auto-mark-rules-apply)
+               (shipit--rerender-notifications-buffer-if-visible)))))))))
 
 (defun shipit--build-pr-enrichment-query (pr-by-repo)
   "Build a GraphQL query to fetch PR metadata for all repos.
@@ -935,6 +1142,120 @@ RESULT contains repo aliases (r0, r1...) with PR aliases (p123...)."
                    (puthash activity-key enriched shipit--notification-pr-activities)))))))
        (setq repo-idx (1+ repo-idx)))
      pr-by-repo)))
+
+;;; Auto-mark-read rules
+
+(defcustom shipit-notifications-auto-mark-read-rules nil
+  "Rules that automatically mark matching notifications as read.
+A list of plists; each plist combines one or more conditions that
+must all match for the rule to fire.  Activities matching ANY rule
+are marked as read after each fetch + enrichment pass.
+
+Available condition keys:
+  :state    one of `merged'/`closed'/`open'/`draft' as symbol or
+            string.  PR-only — non-PR activities never match.
+  :draft    t or nil — match the activity's `draft' flag.
+  :type     activity type string (pr/issue/workflow/etc.).
+  :reason   GitHub reason string (subscribed, mention, etc.).
+  :title    regex tested against the activity's `subject'.
+  :repo     OWNER/REPO slug, case-insensitive.
+
+Each rule's conditions are combined with AND; multiple rules act
+as OR — match any rule and the notification is marked.  Each
+refresh applies the rules after PR enrichment so state-based
+rules see fresh GraphQL data.  Set to nil to disable."
+  :type '(repeat (plist :key-type
+                        (choice (const :state)
+                                (const :draft)
+                                (const :type)
+                                (const :reason)
+                                (const :title)
+                                (const :repo))
+                        :value-type sexp))
+  :group 'shipit)
+
+(defun shipit--auto-mark-state-condition-matches-p (val activity)
+  "Return non-nil when ACTIVITY satisfies a `:state' VAL condition.
+VAL may be a symbol or a string.  Activities without `pr-state'
+never match.  `draft' = open + isDraft; `open' = open + not-draft;
+`merged' / `closed' = direct match on `pr-state'."
+  (let ((wanted (if (symbolp val) (symbol-name val) val))
+        (state (cdr (assq 'pr-state activity)))
+        (draft (cdr (assq 'draft activity))))
+    (cond
+     ((or (null state)
+          (and (stringp state) (string-empty-p state))) nil)
+     ((equal wanted "draft") (and (equal state "open") draft))
+     ((equal wanted "open") (and (equal state "open") (not draft)))
+     (t (equal state wanted)))))
+
+(defun shipit--auto-mark-condition-matches-p (key val activity)
+  "Return non-nil when ACTIVITY satisfies the single (KEY VAL) condition."
+  (pcase key
+    (:state (shipit--auto-mark-state-condition-matches-p val activity))
+    (:draft (eq (and (cdr (assq 'draft activity)) t) (and val t)))
+    (:type (equal (cdr (assq 'type activity)) val))
+    (:reason (equal (cdr (assq 'reason activity)) val))
+    (:title (let ((subject (cdr (assq 'subject activity))))
+              (and (stringp subject)
+                   (stringp val)
+                   (string-match-p val subject))))
+    (:repo (let ((repo (cdr (assq 'repo activity))))
+             (and (stringp repo)
+                  (stringp val)
+                  (string-equal-ignore-case repo val))))
+    (_ nil)))
+
+(defun shipit--auto-mark-rule-matches-activity-p (rule activity)
+  "Return non-nil when ACTIVITY satisfies every condition in RULE.
+RULE is a plist of conditions; an empty rule matches everything
+(no conditions to fail), which is intentional — users can use it
+as a kill-switch when scoped behind another condition."
+  (cl-loop for (key val) on rule by #'cddr
+           always (shipit--auto-mark-condition-matches-p key val activity)))
+
+(defun shipit--auto-mark-rules-apply ()
+  "Mark every activity matching any auto-mark rule as read.
+Walks `shipit--notification-pr-activities', collects activities
+that match any rule in `shipit-notifications-auto-mark-read-rules',
+then marks each via `shipit--mark-notification-read'.  Returns the
+number of activities marked.  No-op when the rules list is empty
+so adding the hook has zero cost for users who do not configure it."
+  (let ((rules shipit-notifications-auto-mark-read-rules)
+        (count 0))
+    (when (and rules
+               (boundp 'shipit--notification-pr-activities)
+               shipit--notification-pr-activities)
+      (let ((to-mark '()))
+        (maphash
+         (lambda (_k activity)
+           (when (cl-some (lambda (rule)
+                            (shipit--auto-mark-rule-matches-activity-p
+                             rule activity))
+                          rules)
+             (push activity to-mark)))
+         shipit--notification-pr-activities)
+        (dolist (a to-mark)
+          (let ((number (or (cdr (assq 'number a))
+                            (cdr (assq 'pr-number a))))
+                (repo (cdr (assq 'repo a)))
+                (type (or (cdr (assq 'type a)) "pr")))
+            (when (and number repo)
+              (shipit--mark-notification-read number repo t type)
+              (cl-incf count))))))
+    count))
+
+(defun shipit-notifications-apply-auto-mark-rules ()
+  "Interactively apply `shipit-notifications-auto-mark-read-rules' now.
+Same logic the post-enrichment hook fires automatically; useful
+when you have just edited the rules and want them to take effect
+without waiting for the next refresh."
+  (interactive)
+  (let ((n (shipit--auto-mark-rules-apply)))
+    (message (if (zerop n)
+                 "Auto-mark rules: nothing matched"
+               (format "Auto-mark rules: marked %d notification%s as read"
+                       n (if (= n 1) "" "s"))))))
 
 (defun shipit--handle-new-notifications (count)
   "Handle new notifications - update visual indicators."
@@ -1306,16 +1627,19 @@ from the section at point."
       ;; Otherwise show type-aware actions
       (pcase type
         ("pr"
+         (push "Manage auto-mark rules…" actions)
          (push "Open PR" actions)
          (push "Preview PR" actions)
          (push "Mark as read" actions)
          (push "Configure notifications" actions))
         ("discussion"
+         (push "Manage auto-mark rules…" actions)
          (push "Open Discussion" actions)
          (push "Open in browser" actions)
          (push "Mark as read" actions)
          (push "Configure notifications" actions))
         (_
+         (push "Manage auto-mark rules…" actions)
          (push "Open Issue" actions)
          (push "Mark as read" actions)
          (push "Configure notifications" actions))))
@@ -1349,6 +1673,9 @@ from the section at point."
         (shipit--preview-pr pr-number repo))
        ((string= choice "Configure notifications")
         (shipit-notifications-menu))
+       ((string= choice "Manage auto-mark rules…")
+        (require 'shipit-notifications-buffer)
+        (shipit-notifications-buffer-auto-mark-menu))
        ((string-match "Mark \\([0-9]+\\) selected as read" choice)
         (shipit--mark-region-notifications-read))
        (t (message "No action selected"))))))
@@ -1903,29 +2230,54 @@ Skips backends already present in `shipit-issue-repo-backends'."
               (push found result))))))
     (nreverse result)))
 
+(defun shipit--poll-one-backend (entry since)
+  "Poll a single backend ENTRY using SINCE as the watermark.
+Uses the backend's :notifications-async function when available so
+slow HTTP (e.g. Jira) does not block the UI; otherwise falls back
+to the sync :notifications function."
+  (let* ((config-plist (cdr entry))
+         (backend-id (plist-get config-plist :backend))
+         (backend-plist (cdr (assq backend-id shipit-issue-backends)))
+         (async-fn (and backend-plist
+                        (plist-get backend-plist :notifications-async))))
+    (when (and backend-plist
+               (shipit-issue--backend-has-notifications-p backend-plist))
+      (condition-case err
+          (if async-fn
+              (funcall async-fn config-plist since
+                       (lambda (activities)
+                         (when activities
+                           (shipit--merge-backend-notifications activities)
+                           (shipit--rerender-notifications-buffer-if-visible))))
+            (let ((activities (shipit-issue--fetch-notifications
+                               backend-plist config-plist since)))
+              (when activities
+                (shipit--merge-backend-notifications activities))))
+        (error
+         (shipit--debug-log "Backend notification poll failed for %s: %s"
+                            backend-id (error-message-string err)))))))
+
 (defun shipit--poll-backend-notifications ()
   "Poll configured backends that have :notifications and merge results.
-Iterates `shipit-issue-repo-backends' plus auto-discovered backends,
-calls :notifications for each backend that supports it, merges
-activities into the global hash table."
+Each backend is scheduled on its own idle timer with a small
+stagger so a slow backend (Jira can take 3+ seconds) does not
+pile up with the others into one long UI freeze."
   (when (featurep 'shipit-issue-backends)
     (let* ((since shipit--backend-last-poll-time)
            (all-entries (append shipit-issue-repo-backends
-                               (shipit--autodiscover-notification-backends))))
-      (setq shipit--backend-last-poll-time (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
+                               (shipit--autodiscover-notification-backends)))
+           (delay 0.0))
+      (setq shipit--backend-last-poll-time
+            (format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))
       (dolist (entry all-entries)
-        (let* ((config-plist (cdr entry))
-               (backend-id (plist-get config-plist :backend))
-               (backend-plist (cdr (assq backend-id shipit-issue-backends))))
-          (when (and backend-plist
-                     (shipit-issue--backend-has-notifications-p backend-plist))
-            (condition-case err
-                (let ((activities (shipit-issue--fetch-notifications backend-plist config-plist since)))
-                  (when activities
-                    (shipit--merge-backend-notifications activities)))
-              (error
-               (shipit--debug-log "Backend notification poll failed for %s: %s"
-                                  backend-id (error-message-string err))))))))))
+        (let ((entry-cell entry)
+              (since-snapshot since))
+          (run-with-idle-timer
+           delay nil
+           (lambda ()
+             (shipit--poll-one-backend entry-cell since-snapshot)
+             (shipit--rerender-notifications-buffer-if-visible))))
+        (setq delay (+ delay 0.1))))))
 
 (defun shipit--merge-github-notifications (github-activities)
   "Merge GITHUB-ACTIVITIES into the global hash table.

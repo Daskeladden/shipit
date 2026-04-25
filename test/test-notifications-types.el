@@ -77,7 +77,520 @@ THEN returns \"issue\"."
   "GIVEN unknown subject type
 WHEN mapping to internal type
 THEN returns nil."
-  (should-not (shipit--notification-type-from-subject "Release")))
+  (should-not (shipit--notification-type-from-subject "NoSuchThing")))
+
+(ert-deftest test-shipit--notification-type-from-subject-release ()
+  "GIVEN Release subject type
+WHEN mapping to internal type
+THEN returns \"release\"."
+  (should (equal "release" (shipit--notification-type-from-subject "Release"))))
+
+(ert-deftest test-shipit--notification-type-from-subject-checksuite ()
+  "GIVEN CheckSuite subject type
+WHEN mapping to internal type
+THEN returns \"check\"."
+  (should (equal "check" (shipit--notification-type-from-subject "CheckSuite"))))
+
+(ert-deftest test-shipit--notification-type-from-subject-commit ()
+  "GIVEN Commit subject type
+WHEN mapping to internal type
+THEN returns \"commit\"."
+  (should (equal "commit" (shipit--notification-type-from-subject "Commit"))))
+
+(ert-deftest test-shipit--extract-notification-number-release ()
+  "GIVEN a Release subject URL
+WHEN extracting number
+THEN returns the numeric release id."
+  (should (= 12345678 (shipit--extract-notification-number
+                       "https://api.github.com/repos/owner/repo/releases/12345678"
+                       "Release"))))
+
+(ert-deftest test-shipit--extract-notification-number-commit ()
+  "GIVEN a Commit subject URL
+WHEN extracting number
+THEN returns nil because commits have SHAs, not numbers.
+The caller will fall back to the thread id to build a unique
+activity key."
+  (should-not (shipit--extract-notification-number
+               "https://api.github.com/repos/owner/repo/commits/abcdef0123"
+               "Commit")))
+
+(ert-deftest test-process-notifications-release-included ()
+  "GIVEN a Release notification from the GitHub API
+WHEN processed
+THEN it ends up in the activities hash with type \"release\",
+a numeric id, a derived browse-url, and the repo html url."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit--mention-prs '())
+        (shipit--mention-count 0)
+        (shipit--last-notification-count 0)
+        (shipit--locally-marked-read-notifications (make-hash-table :test 'equal))
+        (shipit-notification-alert-backend nil)
+        (shipit-notifications-enabled t)
+        (shipit-notifications-visual-indicator 'modeline)
+        (notifications
+         (list
+          `((id . "notif-release-1")
+            (subject . ((type . "Release")
+                        (title . "v1.2.3")
+                        (url . "https://api.github.com/repos/owner/repo/releases/99")))
+            (reason . "subscribed")
+            (unread . t)
+            (repository . ((full_name . "owner/repo")
+                           (html_url . "https://github.com/owner/repo")))
+            (updated_at . "2026-04-24T08:00:00Z")))))
+    (shipit--process-notifications notifications)
+    (should (= 1 (hash-table-count shipit--notification-pr-activities)))
+    (let ((activity (gethash "owner/repo:release:99"
+                             shipit--notification-pr-activities)))
+      (should activity)
+      (should (equal "release" (cdr (assq 'type activity))))
+      (should (equal "v1.2.3" (cdr (assq 'subject activity))))
+      (should (equal "https://github.com/owner/repo/releases"
+                     (cdr (assq 'browse-url activity)))))))
+
+(ert-deftest test-notifications-buffer-renders-release ()
+  "GIVEN a release activity in the notifications table
+WHEN the buffer is rendered
+THEN a line is produced with the repo and subject (it must not be
+silently dropped like before)."
+  (require 'shipit-notifications-buffer)
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "owner/repo:release:99"
+             '((repo . "owner/repo")
+               (number . 99)
+               (type . "release")
+               (subject . "v1.2.3")
+               (reason . "subscribed")
+               (browse-url . "https://github.com/owner/repo/releases")
+               (updated-at . "2026-04-24T08:00:00Z"))
+             shipit--notification-pr-activities)
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (progn
+            (shipit-notifications-buffer--rerender)
+            (with-current-buffer buf
+              (goto-char (point-min))
+              (should (search-forward "owner/repo" nil t))
+              (goto-char (point-min))
+              (should (search-forward "v1.2.3" nil t))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-notifications-buffer-open-release-uses-browse-url ()
+  "GIVEN a release notification at point
+WHEN `shipit-notifications-buffer-open' is invoked
+THEN browse-url is called with the activity's browse-url so the
+user lands on the repo releases page instead of getting
+\"Unknown notification type\"."
+  (require 'shipit-notifications-buffer)
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "owner/repo:release:99"
+             '((repo . "owner/repo")
+               (number . 99)
+               (type . "release")
+               (subject . "v1.2.3")
+               (reason . "subscribed")
+               (browse-url . "https://github.com/owner/repo/releases")
+               (updated-at . "2026-04-24T08:00:00Z"))
+             shipit--notification-pr-activities)
+    (let ((buf (shipit-notifications-buffer-create))
+          (opened-url nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'browse-url)
+                     (lambda (url &rest _) (setq opened-url url))))
+            (shipit-notifications-buffer--rerender)
+            (with-current-buffer buf
+              (goto-char (point-min))
+              (search-forward "v1.2.3")
+              (shipit-notifications-buffer-open)
+              (should (equal "https://github.com/owner/repo/releases"
+                             opened-url))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-notifications-buffer-icon-type-for-deployment ()
+  "GIVEN a workflow activity with reason `approval_requested`
+WHEN picking its icon-type
+THEN it is \"deployment\" (rocket icon), matching GitHub's UI for
+deployment review requests — not \"workflow\" (gear)."
+  (require 'shipit-notifications-buffer)
+  (should (equal "deployment"
+                 (shipit-notifications-buffer--icon-type-for
+                  "workflow" nil nil "approval_requested"))))
+
+(ert-deftest test-notifications-buffer-icon-type-for-ordinary-workflow ()
+  "GIVEN a workflow activity without `approval_requested` reason
+WHEN picking its icon-type
+THEN it falls through to plain \"workflow\" (gear)."
+  (require 'shipit-notifications-buffer)
+  (should (equal "workflow"
+                 (shipit-notifications-buffer--icon-type-for
+                  "workflow" nil nil "ci_activity"))))
+
+(ert-deftest test-notifications-buffer-icon-type-for-pr-draft ()
+  "GIVEN a draft PR activity
+WHEN picking its icon-type
+THEN it is \"pr-draft\" — the existing behaviour must be preserved."
+  (require 'shipit-notifications-buffer)
+  (should (equal "pr-draft"
+                 (shipit-notifications-buffer--icon-type-for
+                  "pr" t nil "review_requested"))))
+
+(ert-deftest test-notifications-buffer-icon-type-for-closed-draft-uses-closed ()
+  "GIVEN a PR that was originally a draft and is now closed
+\(`isDraft' from GitHub stays t even after closing\)
+WHEN picking its icon-type
+THEN return `pr-closed' — terminal state wins over draft history,
+so users see the red closed-PR icon instead of the grey draft icon."
+  (require 'shipit-notifications-buffer)
+  (should (equal "pr-closed"
+                 (shipit-notifications-buffer--icon-type-for
+                  "pr" t "closed" "review_requested"))))
+
+(ert-deftest test-notifications-buffer-icon-type-for-merged-draft-uses-merged ()
+  "GIVEN a PR with the draft flag set whose state is merged
+WHEN picking its icon-type
+THEN return `pr-merged' — terminal state wins over draft history."
+  (require 'shipit-notifications-buffer)
+  (should (equal "pr-merged"
+                 (shipit-notifications-buffer--icon-type-for
+                  "pr" t "merged" "mention"))))
+
+(ert-deftest test-notifications-buffer-icon-type-for-open-draft-uses-draft ()
+  "GIVEN a draft PR that is still open
+WHEN picking its icon-type
+THEN return `pr-draft' — the draft icon still applies while the PR
+is open, only terminal states (merged/closed) override."
+  (require 'shipit-notifications-buffer)
+  (should (equal "pr-draft"
+                 (shipit-notifications-buffer--icon-type-for
+                  "pr" t "open" "review_requested"))))
+
+
+(ert-deftest test-notifications-buffer-open-workflow-browses-url ()
+  "GIVEN a workflow notification at point whose activity has a
+browse-url
+WHEN `shipit-notifications-buffer-open' is invoked
+THEN `browse-url' is called with that URL.
+
+Note: for approval_requested workflow-run notifications, GitHub's
+REST API does not expose the specific run id (subject.url is nil),
+so the stored URL is the repo's /actions page.  GitHub's web UI
+highlights pending approvals at the top of that page."
+  (require 'shipit-notifications-buffer)
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "zivid/zivid-sdk:workflow:23639728638"
+             '((repo . "zivid/zivid-sdk")
+               (number . 23639728638)
+               (type . "workflow")
+               (subject . "Deploy to prod")
+               (reason . "approval_requested")
+               (browse-url . "https://github.com/zivid/zivid-sdk/actions")
+               (updated-at . "2026-04-22T09:28:41Z"))
+             shipit--notification-pr-activities)
+    (let ((buf (shipit-notifications-buffer-create))
+          (opened-url nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'browse-url)
+                     (lambda (url &rest _) (setq opened-url url))))
+            (shipit-notifications-buffer--rerender)
+            (with-current-buffer buf
+              (goto-char (point-min))
+              (search-forward "Deploy to prod")
+              (shipit-notifications-buffer-open)
+              (should (equal "https://github.com/zivid/zivid-sdk/actions"
+                             opened-url))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-process-notifications-workflow-browse-url-points-at-run ()
+  "GIVEN a WorkflowRun notification whose subject URL is
+/repos/OWNER/REPO/actions/runs/24770889847
+WHEN processed
+THEN the derived browse-url points at the specific run
+(https://github.com/OWNER/REPO/actions/runs/24770889847), matching
+the link GitHub's web UI opens when clicking the notification —
+not the repo-wide /actions page."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit--mention-prs '())
+        (shipit--mention-count 0)
+        (shipit--last-notification-count 0)
+        (shipit--locally-marked-read-notifications (make-hash-table :test 'equal))
+        (shipit-notification-alert-backend nil)
+        (shipit-notifications-enabled t)
+        (shipit-notifications-visual-indicator 'modeline)
+        (notifications
+         (list
+          `((id . "notif-wf-1")
+            (subject . ((type . "WorkflowRun")
+                        (title . "Deploy to prod")
+                        (url . "https://api.github.com/repos/zivid/zivid-sdk/actions/runs/24770889847")))
+            (reason . "approval_requested")
+            (unread . t)
+            (repository . ((full_name . "zivid/zivid-sdk")
+                           (html_url . "https://github.com/zivid/zivid-sdk")))
+            (updated_at . "2026-04-22T11:28:00Z")))))
+    (shipit--process-notifications notifications)
+    (let ((activity (gethash "zivid/zivid-sdk:workflow:24770889847"
+                             shipit--notification-pr-activities)))
+      (should activity)
+      (should (equal "https://github.com/zivid/zivid-sdk/actions/runs/24770889847"
+                     (cdr (assq 'browse-url activity)))))))
+
+(ert-deftest test-shipit--closest-run-by-time ()
+  "GIVEN runs with different updated_at
+WHEN picking the closest to a target timestamp
+THEN the nearest one wins (either side)."
+  (let ((runs '(((id . 1) (updated_at . "2026-04-22T10:00:00Z"))
+                ((id . 2) (updated_at . "2026-04-22T11:30:00Z"))
+                ((id . 3) (updated_at . "2026-04-22T13:00:00Z")))))
+    (should (equal 2 (cdr (assq 'id (shipit--closest-run-by-time
+                                     runs "2026-04-22T11:28:00Z")))))
+    (should (equal 1 (cdr (assq 'id (shipit--closest-run-by-time
+                                     runs "2026-04-22T09:00:00Z")))))
+    (should (equal 3 (cdr (assq 'id (shipit--closest-run-by-time
+                                     runs "2026-04-22T14:00:00Z")))))))
+
+(ert-deftest test-enrich-workflow-one-repo-updates-url-when-waiting ()
+  "GIVEN an activity for approval-requested with a non-specific browse-url,
+and a waiting run whose updated_at matches the notification
+WHEN shipit--enrich-workflow-one-repo runs
+THEN the activity's browse-url is updated to the waiting run's html_url."
+  (let* ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+         (activity '((repo . "owner/repo")
+                     (number . 42)
+                     (type . "workflow")
+                     (reason . "approval_requested")
+                     (updated-at . "2026-04-22T09:28:00Z")
+                     (browse-url . "https://github.com/owner/repo/actions")
+                     (notification . ((id . "42")))))
+         (key "owner/repo:workflow:42"))
+    (puthash key activity shipit--notification-pr-activities)
+    (shipit--enrich-workflow-one-repo
+     "owner/repo" (list (cons key activity))
+     '(((id . 99)
+        (updated_at . "2026-04-22T09:28:10Z")
+        (html_url . "https://github.com/owner/repo/actions/runs/99"))))
+    (should (equal "https://github.com/owner/repo/actions/runs/99"
+                   (cdr (assq 'browse-url activity))))))
+
+(ert-deftest test-enrich-workflow-one-repo-opt-in-marks-read ()
+  "GIVEN an activity for approval-requested but no waiting runs in the repo,
+and `shipit-notifications-auto-mark-resolved-approvals' is enabled
+WHEN shipit--enrich-workflow-one-repo runs
+THEN the notification is marked read (side-effected via backend) and the
+entry is removed from the activities hash."
+  (let* ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+         (shipit-notifications-auto-mark-resolved-approvals t)
+         (marked nil)
+         (activity '((repo . "owner/repo")
+                     (number . 42)
+                     (type . "workflow")
+                     (reason . "approval_requested")
+                     (notification . ((id . "42")))))
+         (key "owner/repo:workflow:42"))
+    (puthash key activity shipit--notification-pr-activities)
+    (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)
+               (lambda (_config id) (setq marked id))))
+      (shipit--enrich-workflow-one-repo "owner/repo"
+                                        (list (cons key activity))
+                                        nil))
+    (should (equal "42" marked))
+    (should-not (gethash key shipit--notification-pr-activities))))
+
+(ert-deftest test-enrich-workflow-one-repo-opt-out-keeps-notification ()
+  "GIVEN no waiting runs and the defcustom disabled
+WHEN enrichment runs
+THEN the notification stays in the hash and no mark-read is called —
+the opt-in gate must be respected."
+  (let* ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+         (shipit-notifications-auto-mark-resolved-approvals nil)
+         (marked nil)
+         (activity '((repo . "owner/repo")
+                     (number . 42)
+                     (type . "workflow")
+                     (reason . "approval_requested")
+                     (notification . ((id . "42")))))
+         (key "owner/repo:workflow:42"))
+    (puthash key activity shipit--notification-pr-activities)
+    (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)
+               (lambda (_config id) (setq marked id))))
+      (shipit--enrich-workflow-one-repo "owner/repo"
+                                        (list (cons key activity))
+                                        nil))
+    (should-not marked)
+    (should (gethash key shipit--notification-pr-activities))))
+
+(ert-deftest test-notifications-buffer-type-filter-restricts-pool ()
+  "GIVEN activities of two types
+WHEN `shipit-notifications-buffer--type-filter' is set to one of them
+THEN the buffer only renders that type."
+  (require 'shipit-notifications-buffer)
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "owner/repo:pr:1"
+             '((repo . "owner/repo") (number . 1) (type . "pr")
+               (subject . "PR one") (reason . "review_requested")
+               (updated-at . "2026-04-24T08:00:00Z"))
+             shipit--notification-pr-activities)
+    (puthash "owner/repo:workflow:2"
+             '((repo . "owner/repo") (number . 2) (type . "workflow")
+               (subject . "Deploy two") (reason . "approval_requested")
+               (updated-at . "2026-04-24T08:00:00Z"))
+             shipit--notification-pr-activities)
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local shipit-notifications-buffer--type-filter "workflow")
+            (shipit-notifications-buffer--rerender)
+            (goto-char (point-min))
+            (should (search-forward "Deploy two" nil t))
+            (goto-char (point-min))
+            (should-not (search-forward "PR one" nil t)))
+        (kill-buffer buf)))))
+
+(ert-deftest test-notifications-buffer-candidate-types-from-hash ()
+  "GIVEN activities of types pr + workflow
+WHEN gathering type-filter candidates
+THEN the sorted distinct type list is returned."
+  (require 'shipit-notifications-buffer)
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "owner/repo:pr:1"
+             '((repo . "owner/repo") (number . 1) (type . "pr"))
+             shipit--notification-pr-activities)
+    (puthash "owner/repo:workflow:2"
+             '((repo . "owner/repo") (number . 2) (type . "workflow"))
+             shipit--notification-pr-activities)
+    (puthash "owner/repo:pr:3"
+             '((repo . "owner/repo") (number . 3) (type . "pr"))
+             shipit--notification-pr-activities)
+    (should (equal '("pr" "workflow")
+                   (shipit-notifications-buffer--candidate-types)))))
+
+(ert-deftest test-notifications-buffer-M-n-bound-to-load-more ()
+  "GIVEN the notifications buffer
+WHEN looking up M-n in its mode map
+THEN it runs `shipit-notifications-buffer-load-more'."
+  (require 'shipit-notifications-buffer)
+  (should (eq 'shipit-notifications-buffer-load-more
+              (lookup-key shipit-notifications-buffer-mode-map (kbd "M-n")))))
+
+(ert-deftest test-notifications-buffer-M-p-bound-to-page-back ()
+  "GIVEN the notifications buffer
+WHEN looking up M-p in its mode map
+THEN it runs `shipit-notifications-buffer-page-back'."
+  (require 'shipit-notifications-buffer)
+  (should (eq 'shipit-notifications-buffer-page-back
+              (lookup-key shipit-notifications-buffer-mode-map (kbd "M-p")))))
+
+(ert-deftest test-notifications-buffer-page-back-refuses-at-page-1 ()
+  "GIVEN page-limit=1 in all scope
+WHEN invoking `shipit-notifications-buffer-page-back'
+THEN a user-error is signalled — there is nothing to drop."
+  (require 'shipit-notifications-buffer)
+  (let ((buf (shipit-notifications-buffer-create)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local shipit-notifications-buffer--display-scope 'all)
+          (setq-local shipit-notifications-buffer--page-limit 1)
+          (should-error (shipit-notifications-buffer-page-back)
+                        :type 'user-error))
+      (kill-buffer buf))))
+
+(ert-deftest test-notifications-buffer-first-page-resets-current ()
+  "GIVEN a buffer in all scope at page 5
+WHEN `shipit-notifications-buffer-first-page' is invoked
+THEN current-page becomes 1 and a refresh is triggered."
+  (require 'shipit-notifications-buffer)
+  (cl-letf* ((refreshed nil)
+             ((symbol-function 'shipit-notifications-buffer-refresh)
+              (lambda (&rest _) (setq refreshed t))))
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local shipit-notifications-buffer--display-scope 'all)
+            (setq-local shipit-notifications-buffer--current-page 5)
+            (shipit-notifications-buffer-first-page)
+            (should (= 1 shipit-notifications-buffer--current-page))
+            (should refreshed))
+        (kill-buffer buf)))))
+
+(ert-deftest test-notifications-buffer-last-page-uses-total-count ()
+  "GIVEN total-count=250 (=> 3 pages) in all scope at page 1
+WHEN `shipit-notifications-buffer-last-page' is invoked
+THEN current-page becomes 3."
+  (require 'shipit-notifications-buffer)
+  (cl-letf* ((refreshed nil)
+             ((symbol-function 'shipit-notifications-buffer-refresh)
+              (lambda (&rest _) (setq refreshed t))))
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq-local shipit-notifications-buffer--display-scope 'all)
+            (setq-local shipit-notifications-buffer--current-page 1)
+            (setq-local shipit-notifications-buffer--total-count 250)
+            (shipit-notifications-buffer-last-page)
+            (should (= 3 shipit-notifications-buffer--current-page))
+            (should refreshed))
+        (kill-buffer buf)))))
+
+(ert-deftest test-notifications-buffer-last-page-refuses-without-total ()
+  "GIVEN total-count is nil (probe not returned yet)
+WHEN `shipit-notifications-buffer-last-page' is invoked
+THEN it signals a user-error instead of guessing."
+  (require 'shipit-notifications-buffer)
+  (let ((buf (shipit-notifications-buffer-create)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local shipit-notifications-buffer--display-scope 'all)
+          (setq-local shipit-notifications-buffer--total-count nil)
+          (should-error (shipit-notifications-buffer-last-page)
+                        :type 'user-error))
+      (kill-buffer buf))))
+
+(ert-deftest test-notifications-buffer-goto-page-validates-bounds ()
+  "GIVEN total-count=250 (=> 3 pages) and scope=all
+WHEN `shipit-notifications-buffer-goto-page' is called with 5
+THEN it signals a user-error (page exceeds last)."
+  (require 'shipit-notifications-buffer)
+  (let ((buf (shipit-notifications-buffer-create)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local shipit-notifications-buffer--display-scope 'all)
+          (setq-local shipit-notifications-buffer--total-count 250)
+          (should-error (shipit-notifications-buffer-goto-page 5)
+                        :type 'user-error))
+      (kill-buffer buf))))
+
+(ert-deftest test-process-notifications-commit-falls-back-to-thread-id ()
+  "GIVEN a Commit notification whose subject URL has a SHA, not a number
+WHEN processed
+THEN the activity key uses the thread id as a numeric fallback so that
+every notification is unique — no silent drops."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit--mention-prs '())
+        (shipit--mention-count 0)
+        (shipit--last-notification-count 0)
+        (shipit--locally-marked-read-notifications (make-hash-table :test 'equal))
+        (shipit-notification-alert-backend nil)
+        (shipit-notifications-enabled t)
+        (shipit-notifications-visual-indicator 'modeline)
+        (notifications
+         (list
+          `((id . "555")
+            (subject . ((type . "Commit")
+                        (title . "Add feature foo")
+                        (url . "https://api.github.com/repos/owner/repo/commits/abcdef0123")))
+            (reason . "ci_activity")
+            (unread . t)
+            (repository . ((full_name . "owner/repo")
+                           (html_url . "https://github.com/owner/repo")))
+            (updated_at . "2026-04-24T08:00:00Z")))))
+    (shipit--process-notifications notifications)
+    (should (= 1 (hash-table-count shipit--notification-pr-activities)))
+    (let ((activity (gethash "owner/repo:commit:555"
+                             shipit--notification-pr-activities)))
+      (should activity)
+      (should (equal "commit" (cdr (assq 'type activity))))
+      (should (equal "https://github.com/owner/repo/commit/abcdef0123"
+                     (cdr (assq 'browse-url activity)))))))
 
 ;;; Mixed PR + Issue Processing Tests
 
@@ -211,6 +724,52 @@ THEN type is \"issue\"."
                 (should (equal "issue" (cdr (assq 'type activity)))))))
         (kill-buffer buf)))))
 
+(ert-deftest test-shipit--notification-actions-includes-auto-mark-shortcut-pr ()
+  "GIVEN a PR activity
+WHEN `shipit--notification-actions' is invoked
+THEN the action choices offered to the user contain
+`Manage auto-mark rules…' so the dwim menu has a discoverable
+shortcut into the rules transient."
+  (let ((captured-actions nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq captured-actions collection)
+                 ;; Pick a benign action so dispatch does nothing destructive.
+                 "Mark as read"))
+              ((symbol-function 'shipit--mark-notification-read)
+               (lambda (&rest _) nil)))
+      (shipit--notification-actions
+       '((repo . "owner/repo") (number . 1) (type . "pr")))
+      (should (member "Manage auto-mark rules…" captured-actions)))))
+
+(ert-deftest test-shipit--notification-actions-includes-auto-mark-shortcut-issue ()
+  "GIVEN an Issue activity
+WHEN `shipit--notification-actions' is invoked
+THEN the action choices contain `Manage auto-mark rules…'."
+  (let ((captured-actions nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq captured-actions collection)
+                 "Mark as read"))
+              ((symbol-function 'shipit--mark-notification-read)
+               (lambda (&rest _) nil)))
+      (shipit--notification-actions
+       '((repo . "owner/repo") (number . 2) (type . "issue")))
+      (should (member "Manage auto-mark rules…" captured-actions)))))
+
+(ert-deftest test-shipit--notification-actions-dispatches-auto-mark-shortcut ()
+  "GIVEN the user picks `Manage auto-mark rules…' from the dwim menu
+WHEN dispatch runs
+THEN `shipit-notifications-buffer-auto-mark-menu' is invoked."
+  (let ((called 0))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) "Manage auto-mark rules…"))
+              ((symbol-function 'shipit-notifications-buffer-auto-mark-menu)
+               (lambda (&rest _) (cl-incf called))))
+      (shipit--notification-actions
+       '((repo . "owner/repo") (number . 1) (type . "pr")))
+      (should (= called 1)))))
+
 (ert-deftest test-notification-buffer-stores-backend-text-properties ()
   "GIVEN a Jira notification with backend-id and backend-config
 WHEN rendered in the buffer
@@ -275,6 +834,50 @@ THEN includes project filter and updated clause."
       (should (string-match-p "TEAM" jql))
       (should (string-match-p "updated >=" jql))
       (should (string-match-p "2025-01-29 10:00" jql)))))
+
+(ert-deftest test-jira-fetch-notifications-async-callback ()
+  "GIVEN the Jira async fetch helper, mocking the underlying API
+WHEN `shipit-issue-jira--fetch-notifications-async' runs
+THEN the user-supplied callback is invoked with normalized
+activity alists derived from the fake JSON."
+  (require 'shipit-issue-jira)
+  (let ((received nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-async)
+               (lambda (_config _path callback)
+                 (funcall callback
+                          '((issues . (((key . "PRJ-1")
+                                        (fields . ((summary . "First")
+                                                   (updated . "2026-04-25T10:00:00.000+0000"))))
+                                       ((key . "PRJ-2")
+                                        (fields . ((summary . "Second")
+                                                   (updated . "2026-04-25T11:00:00.000+0000")))))))))))
+      (shipit-issue-jira--fetch-notifications-async
+       '(:base-url "https://x" :project-keys ("PRJ") :display-name "MyJira")
+       nil
+       (lambda (activities) (setq received activities))))
+    (should (= 2 (length received)))
+    (should (equal "PRJ-1" (cdr (assq 'number (car received)))))
+    (should (equal "First" (cdr (assq 'subject (car received)))))))
+
+(ert-deftest test-poll-one-backend-prefers-async ()
+  "GIVEN a backend with both :notifications and :notifications-async
+WHEN polling
+THEN the async function is used and the sync function is not called."
+  (let ((sync-called nil)
+        (async-called nil)
+        (entry '("repo" :backend test-backend))
+        (shipit-issue-backends nil)
+        (shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (push (cons 'test-backend
+                (list :name "Test"
+                      :notifications (lambda (_c _s) (setq sync-called t) nil)
+                      :notifications-async (lambda (_c _s cb)
+                                             (setq async-called t)
+                                             (when cb (funcall cb nil)))))
+          shipit-issue-backends)
+    (shipit--poll-one-backend entry nil)
+    (should async-called)
+    (should-not sync-called)))
 
 (ert-deftest test-jira-issue-to-activity ()
   "GIVEN a raw Jira issue response
@@ -627,6 +1230,169 @@ WHEN extracting the count
 THEN it returns 0."
   (should (= 0 (shipit--notifications-count-from-response nil nil)))
   (should (= 0 (shipit--notifications-count-from-response '() '()))))
+
+;;; Auto-mark-read rules
+
+(ert-deftest test-shipit--auto-mark-rule-empty-rule-matches-anything ()
+  "GIVEN an empty plist rule
+WHEN matched against any activity
+THEN the rule matches (no conditions to fail)."
+  (should (shipit--auto-mark-rule-matches-activity-p
+           '() '((type . "pr") (pr-state . "open")))))
+
+(ert-deftest test-shipit--auto-mark-rule-state-merged-matches ()
+  "GIVEN rule (:state merged)
+WHEN matched against PR activities of various states
+THEN only merged PRs match; closed/open do not; non-PR activities
+without `pr-state' do not match."
+  (let ((rule '(:state merged)))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((type . "pr") (pr-state . "merged"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr") (pr-state . "closed"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr") (pr-state . "open"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "issue") (number . 1))))))
+
+(ert-deftest test-shipit--auto-mark-rule-state-accepts-symbol-or-string ()
+  "GIVEN rule with :state as symbol vs string
+WHEN matched
+THEN both forms work identically."
+  (should (shipit--auto-mark-rule-matches-activity-p
+           '(:state merged) '((type . "pr") (pr-state . "merged"))))
+  (should (shipit--auto-mark-rule-matches-activity-p
+           '(:state "merged") '((type . "pr") (pr-state . "merged")))))
+
+(ert-deftest test-shipit--auto-mark-rule-state-draft-requires-open-and-draft ()
+  "GIVEN rule (:state draft)
+WHEN matched
+THEN only PRs with `pr-state' = `open' AND `draft' = t match."
+  (let ((rule '(:state draft)))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((type . "pr") (pr-state . "open") (draft . t))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr") (pr-state . "open"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr") (pr-state . "merged") (draft . t))))))
+
+(ert-deftest test-shipit--auto-mark-rule-state-open-excludes-drafts ()
+  "GIVEN rule (:state open)
+WHEN matched
+THEN open non-draft PRs match; open-draft PRs do not — `open'
+in the rule mirrors the icon-picker semantics."
+  (let ((rule '(:state open)))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((type . "pr") (pr-state . "open"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr") (pr-state . "open") (draft . t))))))
+
+(ert-deftest test-shipit--auto-mark-rule-type-condition ()
+  "GIVEN a :type rule
+WHEN matched
+THEN only activities with that internal type match."
+  (let ((rule '(:type "workflow")))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((type . "workflow"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr"))))))
+
+(ert-deftest test-shipit--auto-mark-rule-reason-condition ()
+  "GIVEN a :reason rule
+WHEN matched
+THEN only activities with that GitHub reason string match."
+  (let ((rule '(:reason "subscribed")))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((reason . "subscribed"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((reason . "mention"))))))
+
+(ert-deftest test-shipit--auto-mark-rule-title-regex ()
+  "GIVEN rule (:title REGEX)
+WHEN matched
+THEN the regex is applied to the activity's `subject' field."
+  (let ((rule '(:title "^chore: bump")))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((subject . "chore: bump foo from 1.0 to 1.1"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((subject . "fix: critical bug"))))
+    ;; Missing subject shouldn't crash, just fail to match.
+    (should-not (shipit--auto-mark-rule-matches-activity-p rule '()))))
+
+(ert-deftest test-shipit--auto-mark-rule-repo-case-insensitive ()
+  "GIVEN a :repo rule with mixed-case slug
+WHEN matched
+THEN repo comparison is case-insensitive (GitHub slugs are)."
+  (let ((rule '(:repo "Owner/Foo")))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((repo . "owner/foo"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((repo . "owner/bar"))))))
+
+(ert-deftest test-shipit--auto-mark-rule-conditions-and-together ()
+  "GIVEN rule with multiple conditions
+WHEN matched
+THEN the activity must satisfy ALL conditions for the rule to fire."
+  (let ((rule '(:repo "owner/foo" :type "workflow")))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((repo . "owner/foo") (type . "workflow"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((repo . "owner/foo") (type . "pr"))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((repo . "owner/bar") (type . "workflow"))))))
+
+(ert-deftest test-shipit--auto-mark-rules-apply-marks-matching ()
+  "GIVEN a state rule and a title-regex rule
+and 4 activities (merged PR, open PR, bump PR, issue)
+WHEN `shipit--auto-mark-rules-apply' runs
+THEN merged PR and bump PR are marked; open PR and issue are not;
+return value equals 2."
+  (let ((marked '())
+        (shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications-auto-mark-read-rules
+         '((:state merged) (:title "^chore: bump"))))
+    (cl-letf (((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked))))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Big feature") (pr-state . "open"))
+               shipit--notification-pr-activities)
+      (puthash "owner/foo:pr:2"
+               '((repo . "owner/foo") (number . 2) (type . "pr")
+                 (subject . "Old work") (pr-state . "merged"))
+               shipit--notification-pr-activities)
+      (puthash "owner/foo:pr:3"
+               '((repo . "owner/foo") (number . 3) (type . "pr")
+                 (subject . "chore: bump dep from 1 to 2")
+                 (pr-state . "open"))
+               shipit--notification-pr-activities)
+      (puthash "owner/foo:issue:4"
+               '((repo . "owner/foo") (number . 4) (type . "issue")
+                 (subject . "Something wrong"))
+               shipit--notification-pr-activities)
+      (let ((count (shipit--auto-mark-rules-apply)))
+        (should (= count 2))
+        (should (member '(2 "owner/foo" "pr") marked))
+        (should (member '(3 "owner/foo" "pr") marked))
+        (should-not (member '(1 "owner/foo" "pr") marked))
+        (should-not (member '(4 "owner/foo" "issue") marked))))))
+
+(ert-deftest test-shipit--auto-mark-rules-apply-no-rules-is-noop ()
+  "GIVEN empty rules list and a populated hash
+WHEN apply runs
+THEN it returns 0 and never calls `shipit--mark-notification-read'."
+  (let ((called nil)
+        (shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications-auto-mark-read-rules nil))
+    (cl-letf (((symbol-function 'shipit--mark-notification-read)
+               (lambda (&rest _) (setq called t))))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (pr-state . "merged"))
+               shipit--notification-pr-activities)
+      (should (= 0 (shipit--auto-mark-rules-apply)))
+      (should-not called))))
 
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

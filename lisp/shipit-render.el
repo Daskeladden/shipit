@@ -1309,10 +1309,260 @@ Returns symbol like `png', `jpeg', `gif', `webp', or nil if unknown."
 (defvar shipit--image-base-repo nil
   "Repo name for resolving relative image URLs during rendering.")
 
+(defcustom shipit-render-videos t
+  "Whether to render inline video links (.mp4 / .webm / .mov / .avi).
+When non-nil and ffmpeg is available, video URLs in body text are
+replaced with a still thumbnail plus a clickable `▶ Play Video'
+button that opens the video via `shipit-video-player-command'.
+Without ffmpeg the button is shown without a thumbnail."
+  :type 'boolean
+  :group 'shipit)
+
+(defcustom shipit-video-player-command '("mpv" "--autofit-larger=960x540")
+  "Command used to play video URLs invoked from the buffer.
+A list of strings — the URL is appended as the final argument.
+Defaults to mpv capped at 960x540 (mpv keeps aspect ratio and only
+shrinks down to that size, never up).  Switch to a percentage like
+`--autofit=50%' if you prefer screen-relative sizing — be aware it
+sums multi-monitor area on some setups.  When the configured program
+is not on `exec-path', `browse-url' is used as a fallback."
+  :type '(repeat string)
+  :group 'shipit)
+
+(defcustom shipit-video-embed-in-frame t
+  "When non-nil, embed mpv into an Emacs child frame instead of its own window.
+Requires an X11 build of mpv (`--wid' support) and an X11 Emacs frame.
+The child frame is centered over the current frame, sized to
+`shipit-video-embed-frame-size', and deleted automatically when mpv
+exits.  If the window-id can't be obtained the call falls back to the
+standalone mpv launch — set to nil to skip the child-frame attempt
+entirely (e.g. on Wayland without XWayland)."
+  :type 'boolean
+  :group 'shipit)
+
+(defcustom shipit-video-embed-frame-size '(960 . 540)
+  "(WIDTH . HEIGHT) in pixels for the embedded video child frame."
+  :type '(cons integer integer)
+  :group 'shipit)
+
+(defconst shipit--video-url-regexp
+  "\\bhttps?://[^][ \t\n<>\"'`)]+\\.\\(?:mp4\\|webm\\|mov\\|avi\\)\\b"
+  "Regexp matching bare video URLs in body text.")
+
+(defun shipit--ffmpeg-thumbnail-for-url (url)
+  "Extract a single-frame thumbnail for URL via ffmpeg.
+Caches the result alongside images.  Returns the cached file path
+or nil when ffmpeg is unavailable, fails, or `display-images-p' is
+nil.  Uses an early seek (-ss 1) to skip black intro frames."
+  (when (and (display-images-p) (executable-find "ffmpeg"))
+    (let* ((cache-dir (expand-file-name "shipit-images"
+                                        temporary-file-directory))
+           (url-hash (secure-hash 'md5 url))
+           (cache-file (expand-file-name (concat url-hash "-thumb.png")
+                                         cache-dir)))
+      (unless (file-directory-p cache-dir)
+        (make-directory cache-dir t))
+      (unless (file-exists-p cache-file)
+        (condition-case err
+            (call-process "ffmpeg" nil nil nil
+                          "-y" "-loglevel" "error"
+                          "-ss" "1" "-i" url
+                          "-frames:v" "1"
+                          "-vf" "scale=600:-2"
+                          cache-file)
+          (error
+           (when (fboundp 'shipit--debug-log)
+             (shipit--debug-log "VIDEO-THUMB: ffmpeg failed for %s: %s"
+                                url err)))))
+      (and (file-exists-p cache-file)
+           (> (file-attribute-size (file-attributes cache-file)) 0)
+           cache-file))))
+
+(defvar shipit--video-active-frame nil
+  "Child frame currently hosting an embedded mpv instance, if any.")
+
+(defvar shipit--video-active-process nil
+  "mpv process currently rendering into `shipit--video-active-frame'.")
+
+(defun shipit--video-cleanup-active ()
+  "Tear down any existing embedded mpv frame and process."
+  (when (and shipit--video-active-process
+             (process-live-p shipit--video-active-process))
+    (set-process-sentinel shipit--video-active-process #'ignore)
+    (delete-process shipit--video-active-process))
+  (setq shipit--video-active-process nil)
+  (when (and shipit--video-active-frame
+             (frame-live-p shipit--video-active-frame))
+    (delete-frame shipit--video-active-frame))
+  (setq shipit--video-active-frame nil))
+
+(defun shipit-video-stop ()
+  "Tear down the currently embedded mpv child frame, if any."
+  (interactive)
+  (shipit--video-cleanup-active))
+
+(defun shipit--play-video-in-child-frame (url)
+  "Embed mpv into an X11 child frame and play URL.
+Returns t when the embed was launched, nil if the frame couldn't
+expose an `outer-window-id' and the caller should fall back to a
+standalone window.  Tears down any previously-embedded session
+before creating a new one so retries don't accumulate frames."
+  (shipit--video-cleanup-active)
+  (let* ((parent (selected-frame))
+         (size shipit-video-embed-frame-size)
+         (target-w (car size))
+         (target-h (cdr size))
+         (parent-w (frame-pixel-width parent))
+         (parent-h (frame-pixel-height parent))
+         (child (make-frame
+                 `((parent-frame . ,parent)
+                   (no-accept-focus . nil)
+                   (minibuffer . nil)
+                   (undecorated . t)
+                   (internal-border-width . 0)
+                   (vertical-scroll-bars . nil)
+                   (horizontal-scroll-bars . nil)
+                   (background-color . "black")
+                   (left . ,(max 0 (/ (- parent-w target-w) 2)))
+                   (top . ,(max 0 (/ (- parent-h target-h) 2)))))))
+    (set-frame-size child target-w target-h t)
+    (make-frame-visible child)
+    (redisplay t)
+    (let ((wid (frame-parameter child 'outer-window-id)))
+      (cond
+       ((not wid)
+        (delete-frame child)
+        nil)
+       (t
+        (let* ((bufname "*shipit-mpv*")
+               (buf (get-buffer-create bufname))
+               (proc (apply #'start-process "shipit-mpv" buf
+                            "mpv" (concat "--wid=" wid) "--vo=x11" "--no-osc"
+                            (list url))))
+          (with-current-buffer buf
+            (let ((inhibit-read-only t)) (erase-buffer)))
+          (setq shipit--video-active-frame child)
+          (setq shipit--video-active-process proc)
+          (set-process-sentinel
+           proc
+           (lambda (p event)
+             (let ((status (process-exit-status p)))
+               (when (string-match-p "exited abnormally" event)
+                 (message "mpv exited (code %s) — see %s for output"
+                          status bufname)))
+             (when (frame-live-p child)
+               (delete-frame child))
+             (setq shipit--video-active-frame nil)
+             (setq shipit--video-active-process nil)))
+          t))))))
+
+(defun shipit--play-video-url (url)
+  "Play video URL in a child frame or external player.
+When `shipit-video-embed-in-frame' is non-nil, embed mpv in a child
+frame; otherwise launch `shipit-video-player-command' as its own
+window.  Falls back to `browse-url' if neither works."
+  (interactive
+   (list (or (get-text-property (point) 'shipit-video-url)
+             (read-string "Video URL: "))))
+  (let* ((cmd shipit-video-player-command)
+         (program (car cmd)))
+    (cond
+     ((and shipit-video-embed-in-frame
+           (executable-find "mpv")
+           (shipit--play-video-in-child-frame url))
+      (message "Playing %s in child frame" url))
+     ((and program (executable-find program))
+      (apply #'call-process program nil 0 nil
+             (append (cdr cmd) (list url)))
+      (message "Playing: %s" url))
+     (t (browse-url url)))))
+
+(defun shipit--video-button-keymap (url)
+  "Return a keymap for the `▶ Play Video' button, bound to play URL.
+Binds both \\`(kbd \"RET\")' (TTY/control-M) and `[return]' (GUI
+function key) — without the function-key form, hitting Enter in a
+GUI frame falls through to the major mode's `<return>' binding."
+  (let ((play (lambda (&rest _) (interactive)
+                (shipit--play-video-url url))))
+    (let ((map (make-sparse-keymap)))
+      (define-key map (kbd "RET") play)
+      (define-key map [return] play)
+      (define-key map (kbd "<RET>") play)
+      (define-key map [mouse-1] play)
+      (define-key map [mouse-2] play)
+      map)))
+
+(defun shipit--render-video-link (url)
+  "Return a string representation of video URL with a clickable play button.
+The label is propertized so that RET / mouse-1 invokes
+`shipit--play-video-url' on the URL.  When ffmpeg is available a
+still thumbnail is included beneath the button."
+  (let* ((thumb (and shipit-render-videos
+                     (shipit--ffmpeg-thumbnail-for-url url)))
+         (icon (shipit--get-pr-field-icon "video" ">"))
+         (label-text (format "[%s Play Video]" icon))
+         (label (propertize label-text
+                            'face 'link
+                            'mouse-face 'highlight
+                            'help-echo (format "RET / mouse-1 to play %s" url)
+                            'shipit-video-url url
+                            'keymap (shipit--video-button-keymap url)))
+         (image-string
+          (and thumb
+               (condition-case err
+                   (let* ((image (create-image thumb 'png nil
+                                               :max-width (or shipit-image-max-width
+                                                              (window-body-width nil t))
+                                               :max-height (or shipit-image-max-height
+                                                               (window-body-height nil t))))
+                          (s (propertize " "
+                                         'display image
+                                         'rear-nonsticky '(display)
+                                         'shipit-video-url url
+                                         'keymap (shipit--video-button-keymap url)
+                                         'mouse-face 'highlight
+                                         'help-echo (format "RET / mouse-1 to play %s" url))))
+                     s)
+                 (error
+                  (when (fboundp 'shipit--debug-log)
+                    (shipit--debug-log "VIDEO-DISPLAY: image creation failed: %s" err))
+                  nil)))))
+    (if image-string
+        (concat "\n" label "\n" image-string "\n")
+      (concat "\n" label "\n"))))
+
+(defun shipit--process-inline-videos (text)
+  "Replace bare video URLs in TEXT with thumbnail/labeled-link displays.
+Inverse of `shipit--process-inline-images' for video formats —
+matches `shipit--video-url-regexp' and feeds each URL through
+`shipit--render-video-link'.  When `shipit-render-videos' is nil
+TEXT is returned unchanged.
+
+`save-match-data' wraps the per-match callback because
+`shipit--render-video-link' (via image-type detection, ffmpeg
+file-name regex, etc.) clobbers global match-data; without this
+guard `replace-regexp-in-string' calls `replace-match' afterwards
+with the wrong region and only replaces a few characters of the
+URL, leaving the surrounding fragments visible in the buffer."
+  (if (not shipit-render-videos)
+      text
+    (replace-regexp-in-string
+     shipit--video-url-regexp
+     (lambda (url) (save-match-data (shipit--render-video-link url)))
+     text nil t)))
+
 (defun shipit--create-image-display (url alt-text)
   "Create an image display for URL with ALT-TEXT."
   ;; Strip markdown backslash escapes (e.g. \_ → _) from URLs
   (setq url (replace-regexp-in-string "\\\\\\([_*()~>#+.!|-]\\)" "\\1" url))
+  ;; GitHub `/blob/' URLs return HTML — rewrite to raw.githubusercontent.com.
+  (when (string-match
+         "\\`https?://github\\.com/\\([^/]+\\)/\\([^/]+\\)/blob/\\(.*\\)\\'"
+         url)
+    (setq url (format "https://raw.githubusercontent.com/%s/%s/%s"
+                      (match-string 1 url)
+                      (match-string 2 url)
+                      (match-string 3 url))))
   ;; Resolve relative URLs against repo raw content URL
   (when (and (not (string-match-p "\\`https?://" url))
              (boundp 'shipit--image-base-repo)
@@ -3894,7 +4144,13 @@ active (e.g. a magit-section buffer)."
                   (erase-buffer)
                   (insert collapsed)))
               (shipit--face-to-font-lock-face (point-min) (point-max))
-              (buffer-string))
+              (let* ((fontified (buffer-string))
+                     (with-images (if (fboundp 'shipit--process-inline-images)
+                                      (shipit--process-inline-images fontified)
+                                    fontified)))
+                (if (fboundp 'shipit--process-inline-videos)
+                    (shipit--process-inline-videos with-images)
+                  with-images)))
           text))
     (error
      (when (fboundp 'shipit--debug-log)
@@ -4754,6 +5010,7 @@ Returns (octicon . color) or nil."
     ("star" '("star-fill" . "#e3b341"))                              ; Yellow - Starred
     ("pin" '("pin" . "#0366d6"))                                     ; Blue - Pinned comment
     ("linked-issue" '("link" . "#8250df"))                           ; Purple - PR to tracker issue link
+    ("video" '("play" . "#0366d6"))                                  ; Blue - Video play button
     (_ nil)))
 
 (defun shipit--get-pr-field-icon (field-type emoji-fallback)

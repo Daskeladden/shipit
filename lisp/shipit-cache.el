@@ -247,6 +247,12 @@ This function should be called before accessing any cache to prevent nil errors.
   (when (boundp 'shipit--completion-cache)
     (setq shipit--completion-cache nil)
     (message "Cleared PR completion cache"))
+  (when (boundp 'shipit--markdown-render-cache)
+    (clrhash shipit--markdown-render-cache)
+    (message "Cleared markdown render cache"))
+  (when (boundp 'shipit--org-render-cache)
+    (clrhash shipit--org-render-cache)
+    (message "Cleared org render cache"))
   (message "All shipit caches cleared globally"))
 
 (defun shipit--debug-reaction-cache ()

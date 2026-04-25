@@ -68,7 +68,7 @@ or `all' (include read notifications, paginated on demand via
 toggling in the buffer does not affect the background poll's
 `shipit-notifications-scope' setting.")
 
-(defvar-local shipit-notifications-buffer--page-limit 1
+(defvar-local shipit-notifications-buffer--current-page 1
   "Number of pages currently loaded into the notifications buffer.
 Meaningful mainly when `shipit-notifications-buffer--display-scope'
 is `all'; incremented by `shipit-notifications-buffer-load-more'.
@@ -86,6 +86,26 @@ Nil means all repos; a `OWNER/REPO' string targets that repo's
 per-repo notifications endpoint on the backend.  Unlike the
 text filter (client-side only), this makes both the main fetch
 and the total-count probe exact for the selected repo.")
+
+(defvar-local shipit-notifications-buffer--type-filter nil
+  "Buffer-local client-side type filter for the notifications buffer.
+Nil means all types; a type string like \"pr\" or \"workflow\"
+restricts the view to activities with that internal type.
+Combines with the repo filter and the text filter.")
+
+(defvar-local shipit-notifications-buffer--before-filter nil
+  "Buffer-local server-side `before' timestamp filter.
+Nil means no time filter (GitHub's default of ~last 2 weeks applies).
+When set to an ISO-8601 timestamp string, it is passed as GitHub's
+`before' query parameter so only notifications updated before that
+moment are returned.  Used to time-travel back past GitHub's default
+2-week window.")
+
+(defvar-local shipit-notifications-buffer--since-filter nil
+  "Buffer-local server-side `since' timestamp filter.
+Nil means no time filter.  When set, passed as GitHub's `since'
+query parameter so only notifications updated after that moment
+are returned.  Pairs with `--before-filter' to form a time window.")
 
 (defvar shipit-notifications-buffer--watched-repos-cache nil
   "Session cache of subscribed/watched repos for the repo-filter picker.
@@ -123,6 +143,11 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "M") #'shipit-notifications-buffer-mark-all-read)
     (define-key map (kbd "n") #'magit-section-forward)
     (define-key map (kbd "p") #'magit-section-backward)
+    (define-key map (kbd "M-n") #'shipit-notifications-buffer-load-more)
+    (define-key map (kbd "M-p") #'shipit-notifications-buffer-page-back)
+    (define-key map (kbd "M-<") #'shipit-notifications-buffer-first-page)
+    (define-key map (kbd "M->") #'shipit-notifications-buffer-last-page)
+    (define-key map (kbd "P") #'shipit-notifications-buffer-goto-page)
     (define-key map (kbd "L") #'shipit-toggle-timestamp-format)
     (define-key map (kbd "M-w") #'shipit-notifications-buffer-copy-url)
     (define-key map (kbd "w") #'shipit-notifications-buffer-watch)
@@ -154,23 +179,26 @@ GraphQL round-trip only happens once per session.  Cleared by
 
 (defun shipit-notifications-buffer-refresh (&optional _ignore-auto _noconfirm)
   "Refresh the notifications buffer content.
-Fetches fresh data from the API before re-rendering using the
-buffer-local `shipit-notifications-buffer--display-scope',
-`shipit-notifications-buffer--page-limit', and
-`shipit-notifications-buffer--repo-filter'.
-Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
+Uses ETag conditional GETs by default so an unchanged response
+comes back as 304 + cached data instantly.  Pass a prefix arg to
+bypass the ETag cache (force-fresh).  Re-renders using the buffer
+local display scope, current page, and filters.  IGNORE-AUTO and
+NOCONFIRM are for compatibility with `revert-buffer'."
   (interactive)
-  (message "Fetching notifications...")
-  ;; Invalidate the cached total immediately so the header doesn't
-  ;; keep showing a stale repo-specific total after e.g. the repo
-  ;; filter was cleared.  The async probe below refreshes it.
-  (setq shipit-notifications-buffer--total-count nil)
-  (let ((scope shipit-notifications-buffer--display-scope)
-        (pages shipit-notifications-buffer--page-limit)
+  (let ((force-fresh (and (called-interactively-p 'any)
+                          current-prefix-arg))
+        (scope shipit-notifications-buffer--display-scope)
+        (page shipit-notifications-buffer--current-page)
         (repo shipit-notifications-buffer--repo-filter)
+        (before shipit-notifications-buffer--before-filter)
+        (since shipit-notifications-buffer--since-filter)
         (buf (current-buffer)))
+    (message "Fetching notifications%s..." (if force-fresh " (forced)" ""))
+    ;; Invalidate the cached total so the header doesn't keep showing a
+    ;; stale repo-specific total after e.g. the repo filter was cleared.
+    (setq shipit-notifications-buffer--total-count nil)
     (when (fboundp 'shipit--check-notifications-background)
-      (shipit--check-notifications-background t scope pages repo))
+      (shipit--check-notifications-background force-fresh scope 1 repo page before since))
     (when (fboundp 'shipit--fetch-notifications-total-count-async)
       (shipit--fetch-notifications-total-count-async
        scope
@@ -179,7 +207,7 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
            (with-current-buffer buf
              (setq shipit-notifications-buffer--total-count count)
              (shipit-notifications-buffer--rerender))))
-       repo)))
+       repo before since)))
   (shipit-notifications-buffer--rerender)
   (message "Notifications refreshed"))
 
@@ -198,10 +226,12 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
 (defun shipit-notifications-buffer--render ()
   "Render the notifications buffer content.
 Bind `shipit-notifications-buffer--render-pool' once per render so
-the three callers that need the repo-filtered activity pool share
-a single hash walk + filter."
+the callers that need the structurally-filtered activity pool
+share a single hash walk + filter."
   (let ((shipit-notifications-buffer--render-pool
-         (seq-filter #'shipit-notifications-buffer--matches-repo-filter-p
+         (seq-filter (lambda (a)
+                       (and (shipit-notifications-buffer--matches-repo-filter-p a)
+                            (shipit-notifications-buffer--matches-type-filter-p a)))
                      (shipit-notifications-buffer--all-activities))))
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
@@ -232,13 +262,22 @@ case-insensitive because GitHub repo names are case-insensitive."
           (and (stringp repo)
                (string-equal-ignore-case repo filter))))))
 
+(defun shipit-notifications-buffer--matches-type-filter-p (activity)
+  "Return non-nil if ACTIVITY passes the buffer-local type filter.
+When no type filter is set, always returns t."
+  (let ((filter shipit-notifications-buffer--type-filter))
+    (or (null filter)
+        (equal (cdr (assq 'type activity)) filter))))
+
 (defun shipit-notifications-buffer--repo-filtered-activities ()
-  "Activities after the server-side repo filter (still all text-filter states).
+  "Activities after the structural (repo + type) filters.
 Reuses `shipit-notifications-buffer--render-pool' when set so the
-hash walk + repo filter happen once per render instead of three
-times (header shown-count, header loaded-count, list renderer)."
+hash walk + filters happen once per render instead of three times
+(header shown-count, header loaded-count, list renderer)."
   (or shipit-notifications-buffer--render-pool
-      (seq-filter #'shipit-notifications-buffer--matches-repo-filter-p
+      (seq-filter (lambda (a)
+                    (and (shipit-notifications-buffer--matches-repo-filter-p a)
+                         (shipit-notifications-buffer--matches-type-filter-p a)))
                   (shipit-notifications-buffer--all-activities))))
 
 (defun shipit-notifications-buffer--loaded-count ()
@@ -262,6 +301,35 @@ the number of activities loaded in the buffer (so the user sees how
 many local items match); otherwise the denominator is the
 probe-derived server total for the current scope, when known."
   (insert (propertize "Notifications" 'font-lock-face 'bold))
+  (shipit-notifications-buffer--insert-meta-bracket)
+  (shipit-notifications-buffer--insert-filter-bracket
+   "repo" shipit-notifications-buffer--repo-filter nil)
+  (shipit-notifications-buffer--insert-filter-bracket
+   "type" shipit-notifications-buffer--type-filter nil)
+  (shipit-notifications-buffer--insert-filter-bracket
+   "before" shipit-notifications-buffer--before-filter 'shipit-timestamp-face)
+  (shipit-notifications-buffer--insert-filter-bracket
+   "since" shipit-notifications-buffer--since-filter 'shipit-timestamp-face)
+  (unless (string-empty-p shipit-notifications-buffer--filter-text)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "filter" shipit-notifications-buffer--filter-text nil))
+  (insert "\n\n"))
+
+(defun shipit-notifications-buffer--insert-filter-bracket (label value face)
+  "Insert a `  [LABEL: VALUE]' bracket when VALUE is non-nil/non-empty.
+LABEL and brackets render in `font-lock-comment-face'; VALUE
+renders in FACE if non-nil, else also in `font-lock-comment-face'."
+  (when (and value (not (and (stringp value) (string-empty-p value))))
+    (insert (propertize (format "  [%s: " label)
+                        'font-lock-face 'font-lock-comment-face))
+    (insert (propertize (format "%s" value)
+                        'font-lock-face (or face 'font-lock-comment-face)))
+    (insert (propertize "]" 'font-lock-face 'font-lock-comment-face))))
+
+(defun shipit-notifications-buffer--insert-meta-bracket ()
+  "Insert the `  [scope, page: X/Y, shown/total]' header bracket.
+Page numbers render in `font-lock-constant-face'; the rest stays
+in `font-lock-comment-face' so only the active value pops."
   (let* ((shown (shipit-notifications-buffer--shown-count))
          (loaded (shipit-notifications-buffer--loaded-count))
          (total shipit-notifications-buffer--total-count)
@@ -278,23 +346,23 @@ probe-derived server total for the current scope, when known."
                       (filter-active (format ", %d/%d" shown loaded))
                       (total (format ", %d/%d" shown total))
                       (t (format ", %d shown" shown))))
-         (pages-part (if (eq shipit-notifications-buffer--display-scope 'all)
-                         (format ", pages: %d"
-                                 shipit-notifications-buffer--page-limit)
-                       "")))
-    (insert (propertize
-             (format "  [%s%s%s]"
-                     (symbol-name shipit-notifications-buffer--display-scope)
-                     pages-part count-part)
-             'font-lock-face 'font-lock-comment-face)))
-  (when shipit-notifications-buffer--repo-filter
-    (insert (propertize
-             (format "  [repo: %s]" shipit-notifications-buffer--repo-filter)
-             'font-lock-face 'font-lock-comment-face)))
-  (when (not (string-empty-p shipit-notifications-buffer--filter-text))
-    (insert (propertize (format "  [filter: %s]" shipit-notifications-buffer--filter-text)
-                        'font-lock-face 'font-lock-comment-face)))
-  (insert "\n\n"))
+         (per-page 100)
+         (total-pages (when total (max 1 (ceiling (/ (float total) per-page)))))
+         (cmt 'font-lock-comment-face))
+    (insert (propertize "  [" 'font-lock-face cmt))
+    (insert (propertize (symbol-name shipit-notifications-buffer--display-scope)
+                        'font-lock-face cmt))
+    (when (eq shipit-notifications-buffer--display-scope 'all)
+      (insert (propertize ", page: " 'font-lock-face cmt))
+      (insert (propertize
+               (if total-pages
+                   (format "%d/%d"
+                           shipit-notifications-buffer--current-page
+                           total-pages)
+                 (format "%d" shipit-notifications-buffer--current-page))
+               'font-lock-face 'font-lock-constant-face)))
+    (insert (propertize count-part 'font-lock-face cmt))
+    (insert (propertize "]" 'font-lock-face cmt))))
 
 (defun shipit-notifications-buffer--insert-notifications ()
   "Insert all notification entries as magit sections.
@@ -354,6 +422,20 @@ helpers as the header counts so the two stay in sync."
                              shipit-notification ,notification)))
     (magit-section-hide sect)))
 
+(defun shipit-notifications-buffer--icon-type-for (type is-draft pr-state reason)
+  "Return the icon-type key to use for a notification heading.
+TYPE is the internal type string.  IS-DRAFT, PR-STATE and REASON
+are extracted from the activity alist.  WorkflowRuns with
+REASON=\"approval_requested\" map to \"deployment\" so the rocket
+icon matches GitHub's web UI for deployment review requests."
+  (cond
+   ((and (string= type "pr") is-draft) "pr-draft")
+   ((and (string= type "pr") (equal pr-state "merged")) "pr-merged")
+   ((and (string= type "pr") (equal pr-state "closed")) "pr-closed")
+   ((and (string= type "workflow") (equal reason "approval_requested"))
+    "deployment")
+   (t type)))
+
 (defun shipit-notifications-buffer--format-heading (activity)
   "Format the heading line for notification ACTIVITY."
   (let* ((repo (cdr (assq 'repo activity)))
@@ -368,11 +450,8 @@ helpers as the header counts so the two stay in sync."
          (source-icon (shipit--get-notification-source-icon source))
          (is-draft (cdr (assq 'draft activity)))
          (pr-state (cdr (assq 'pr-state activity)))
-         (icon-type (cond
-                     ((and (string= type "pr") is-draft) "pr-draft")
-                     ((and (string= type "pr") (equal pr-state "merged")) "pr-merged")
-                     ((and (string= type "pr") (equal pr-state "closed")) "pr-closed")
-                     (t type)))
+         (icon-type (shipit-notifications-buffer--icon-type-for
+                     type is-draft pr-state reason))
          (type-icon (shipit--get-notification-type-icon
                      icon-type (pcase icon-type
                                  ("pr" "PR")
@@ -382,6 +461,13 @@ helpers as the header counts so the two stay in sync."
                                  ("issue" "IS")
                                  ("discussion" "💬")
                                  ("rss" "RS")
+                                 ("release" "🚀")
+                                 ("deployment" "🚀")
+                                 ("check" "CS")
+                                 ("commit" "CM")
+                                 ("workflow" "WF")
+                                 ("alert" "AL")
+                                 ("invitation" "IN")
                                  (_ "??"))))
          (repo-width (or (cdr (assq 'repo shipit-notifications-column-widths)) 30))
          (pr-width (or (cdr (assq 'pr shipit-notifications-column-widths)) 5))
@@ -390,7 +476,9 @@ helpers as the header counts so the two stay in sync."
          (spacing (or (bound-and-true-p shipit-notifications-column-spacing) 2))
          (spacer (make-string spacing ?\s))
          (number-str (cond
-                      ((string= type "rss") "")
+                      ((member type '("rss" "release" "check" "commit"
+                                      "workflow" "alert" "invitation"))
+                       "")
                       ((integerp number) (format "#%d" number))
                       (t (format "%s" number))))
          (pr-str (truncate-string-to-width number-str (1+ pr-width) nil ?\s))
@@ -435,10 +523,22 @@ helpers as the header counts so the two stay in sync."
                        ("pr" "Pull Request")
                        ("issue" "Issue")
                        ("discussion" "Discussion")
+                       ("release" "Release")
+                       ("check" "Check Suite")
+                       ("commit" "Commit")
+                       ("workflow" "Workflow Run")
+                       ("alert" "Security Alert")
+                       ("invitation" "Repository Invitation")
                        (_ type)))
-         (number-str (if (integerp number) (format "#%d" number) (format "%s" number))))
+         (hide-number-p (member type '("release" "check" "commit" "workflow"
+                                       "alert" "invitation" "rss")))
+         (number-str (cond
+                      (hide-number-p "")
+                      ((integerp number) (format "#%d" number))
+                      (t (format "%s" number)))))
     (insert "    " (propertize type-label 'font-lock-face 'bold)
-            " " number-str " in " repo "\n")
+            (if (string-empty-p number-str) "" (concat " " number-str))
+            " in " repo "\n")
     (insert "    " subject "\n")
     (when (and reason (not (string-empty-p reason)))
       (insert "    Reason: " (propertize reason 'font-lock-face 'font-lock-keyword-face) "\n"))
@@ -840,9 +940,20 @@ With prefix arg (C-u), show action menu instead."
                  (shipit-notifications-buffer--schedule-activity-nav
                   buffer activity-props))))
             ("discussion" (shipit--open-notification-discussion number repo))
+            ("workflow"
+             (if-let* ((url (cdr (assq 'browse-url activity))))
+                 (browse-url url)
+               (message "No browse URL for workflow run")))
+            ("check"
+             (if-let* ((url (cdr (assq 'browse-url activity))))
+                 (browse-url url)
+               (message "No browse URL for check suite")))
             ("rss" (when-let* ((url (cdr (assq 'browse-url activity))))
                      (browse-url url)))
-            (_ (message "Unknown notification type: %s" type))))))))
+            (_
+             (if-let* ((url (cdr (assq 'browse-url activity))))
+                 (browse-url url)
+               (message "No browse URL for notification type: %s" type)))))))))
 
 (defun shipit-notifications-buffer-action ()
   "Show action menu for notification at point.
@@ -982,27 +1093,102 @@ For RSS entries, opens the link in browser directly."
 
 (defun shipit-notifications-buffer-toggle-scope ()
   "Flip between `unread' and `all' display scopes.
-Resets `shipit-notifications-buffer--page-limit' to 1 so that
+Resets `shipit-notifications-buffer--current-page' to 1 so that
 switching views never silently fans out 10 pages of API requests,
 then refreshes."
   (interactive)
   (setq shipit-notifications-buffer--display-scope
         (if (eq shipit-notifications-buffer--display-scope 'all) 'unread 'all))
-  (setq shipit-notifications-buffer--page-limit 1)
+  (setq shipit-notifications-buffer--current-page 1)
   (message "Notifications scope: %s"
            shipit-notifications-buffer--display-scope)
   (shipit-notifications-buffer-refresh))
 
 (defun shipit-notifications-buffer-load-more ()
-  "Fetch one more page of notifications in `all' scope.
-Refuses in `unread' scope, where GitHub's own feed is already
-scoped to what's unread and pagination is rarely meaningful."
+  "Advance to the next page of notifications in `all' scope.
+Windowed: the buffer replaces the current view with only page N+1,
+it does not accumulate.  Refuses in `unread' scope where GitHub's
+own feed is already scoped to what's unread."
   (interactive)
   (unless (eq shipit-notifications-buffer--display-scope 'all)
-    (user-error "Load-more only applies in 'all' scope (current: %s)"
+    (user-error "Next-page only applies in 'all' scope (current: %s)"
                 shipit-notifications-buffer--display-scope))
-  (cl-incf shipit-notifications-buffer--page-limit)
-  (message "Loading page %d..." shipit-notifications-buffer--page-limit)
+  (cl-incf shipit-notifications-buffer--current-page)
+  (message "Loading page %d..." shipit-notifications-buffer--current-page)
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer-page-back ()
+  "Go back one page in the notifications buffer.
+Windowed: replaces the current view with only page N-1, does not
+keep the dropped page's entries.  Only meaningful in `all' scope.
+Refuses when already at page 1."
+  (interactive)
+  (unless (eq shipit-notifications-buffer--display-scope 'all)
+    (user-error "Prev-page only applies in 'all' scope (current: %s)"
+                shipit-notifications-buffer--display-scope))
+  (when (<= shipit-notifications-buffer--current-page 1)
+    (user-error "Already at page 1"))
+  (cl-decf shipit-notifications-buffer--current-page)
+  (message "Going back to page %d..." shipit-notifications-buffer--current-page)
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer--max-page ()
+  "Return the known last page number, or nil if the total probe has not returned."
+  (let ((total shipit-notifications-buffer--total-count))
+    (when (and total (> total 0))
+      (max 1 (ceiling (/ (float total) 100))))))
+
+(defun shipit-notifications-buffer-first-page ()
+  "Jump to page 1 in `all' scope."
+  (interactive)
+  (unless (eq shipit-notifications-buffer--display-scope 'all)
+    (user-error "Page navigation only applies in 'all' scope (current: %s)"
+                shipit-notifications-buffer--display-scope))
+  (when (= shipit-notifications-buffer--current-page 1)
+    (user-error "Already at page 1"))
+  (setq shipit-notifications-buffer--current-page 1)
+  (message "Going to page 1...")
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer-last-page ()
+  "Jump to the last page in `all' scope.
+Requires the total-count probe to have returned so we know the last
+page number.  Until then, refuses with a hint that the probe is
+still in flight."
+  (interactive)
+  (unless (eq shipit-notifications-buffer--display-scope 'all)
+    (user-error "Page navigation only applies in 'all' scope (current: %s)"
+                shipit-notifications-buffer--display-scope))
+  (let ((last (shipit-notifications-buffer--max-page)))
+    (unless last
+      (user-error "Total-count probe has not returned yet; try again after refresh"))
+    (when (= shipit-notifications-buffer--current-page last)
+      (user-error "Already at the last page (%d)" last))
+    (setq shipit-notifications-buffer--current-page last)
+    (message "Going to last page %d..." last)
+    (shipit-notifications-buffer-refresh)))
+
+(defun shipit-notifications-buffer-goto-page (page)
+  "Jump to a specific PAGE (1..N) in `all' scope.
+When the total-count probe has returned, the prompt shows the
+maximum page so you can enter any value in [1, last]; invalid
+numbers signal a user-error."
+  (interactive
+   (list (read-number
+          (let ((last (shipit-notifications-buffer--max-page)))
+            (if last
+                (format "Page (1-%d): " last)
+              "Page: ")))))
+  (unless (eq shipit-notifications-buffer--display-scope 'all)
+    (user-error "Page navigation only applies in 'all' scope (current: %s)"
+                shipit-notifications-buffer--display-scope))
+  (unless (and (integerp page) (>= page 1))
+    (user-error "Page must be a positive integer (got %S)" page))
+  (let ((last (shipit-notifications-buffer--max-page)))
+    (when (and last (> page last))
+      (user-error "Page %d exceeds last page %d" page last)))
+  (setq shipit-notifications-buffer--current-page page)
+  (message "Going to page %d..." page)
   (shipit-notifications-buffer-refresh))
 
 (defun shipit-notifications-buffer-clear-filter ()
@@ -1067,7 +1253,7 @@ fetch and the total-count probe hit the per-repo endpoint."
                                       clear-label))))
     (setq shipit-notifications-buffer--repo-filter
           (if (string= choice clear-label) nil choice))
-    (setq shipit-notifications-buffer--page-limit 1)
+    (setq shipit-notifications-buffer--current-page 1)
     (message "Repo filter: %s"
              (or shipit-notifications-buffer--repo-filter "all repos"))
     (shipit-notifications-buffer-refresh)))
@@ -1076,8 +1262,113 @@ fetch and the total-count probe hit the per-repo endpoint."
   "Clear the server-side repo filter and refresh."
   (interactive)
   (setq shipit-notifications-buffer--repo-filter nil)
-  (setq shipit-notifications-buffer--page-limit 1)
+  (setq shipit-notifications-buffer--current-page 1)
   (message "Repo filter cleared")
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer--candidate-types ()
+  "Return the sorted list of types currently present in the hash.
+Used as completion candidates for the type-filter picker so the
+user only sees types that would actually return matches."
+  (let ((seen (make-hash-table :test 'equal)))
+    (dolist (a (shipit-notifications-buffer--all-activities))
+      (let ((ty (cdr (assq 'type a))))
+        (when (and ty (stringp ty) (> (length ty) 0))
+          (puthash ty t seen))))
+    (sort (hash-table-keys seen) #'string<)))
+
+(defun shipit-notifications-buffer-set-type-filter ()
+  "Prompt for a type to restrict the notifications buffer client-side.
+Candidates come from the types currently visible in the hash.
+Picking the clear-label entry unscopes the filter.  Unlike the
+repo filter this does not trigger a refresh — we already have
+all data locally, we just re-render."
+  (interactive)
+  (let* ((clear-label "<all types>")
+         (candidates (cons clear-label
+                           (shipit-notifications-buffer--candidate-types)))
+         (choice (completing-read
+                  "Type: " candidates nil t nil nil
+                  (or shipit-notifications-buffer--type-filter clear-label))))
+    (setq shipit-notifications-buffer--type-filter
+          (if (string= choice clear-label) nil choice))
+    (message "Type filter: %s"
+             (or shipit-notifications-buffer--type-filter "all types"))
+    (shipit-notifications-buffer--rerender)))
+
+(defun shipit-notifications-buffer-clear-type-filter ()
+  "Clear the type filter and re-render."
+  (interactive)
+  (setq shipit-notifications-buffer--type-filter nil)
+  (message "Type filter cleared")
+  (shipit-notifications-buffer--rerender))
+
+(defun shipit-notifications-buffer--read-iso-timestamp (prompt)
+  "Prompt for a date/time and return an ISO-8601 timestamp string.
+Uses `org-read-date' when available (accepts inputs like
+-1m or 2026-01-15); falls back to plain read-string.
+Suppresses Org calendar popup so the diary subsystem is not
+loaded — many users do not have a diary file configured."
+  (if (fboundp 'org-read-date)
+      (let ((org-read-date-popup-calendar nil)
+            (org-read-date-prefer-future nil))
+        (format-time-string "%Y-%m-%dT%H:%M:%SZ"
+                            (org-read-date t t nil prompt) t))
+    (read-string prompt)))
+
+(defun shipit-notifications-buffer-set-before-filter ()
+  "Prompt for a timestamp and set the server-side `before' filter.
+Accepts org-read-date-style inputs (e.g. -1m, 2026-01-15).
+Resets current-page to 1 so navigation restarts in the new window,
+then refreshes."
+  (interactive)
+  (let ((ts (shipit-notifications-buffer--read-iso-timestamp
+             "Show notifications updated before: ")))
+    (setq shipit-notifications-buffer--before-filter ts)
+    (setq shipit-notifications-buffer--current-page 1)
+    (message "Before filter: %s" ts)
+    (shipit-notifications-buffer-refresh)))
+
+(defun shipit-notifications-buffer-clear-before-filter ()
+  "Clear the `before' filter and refresh."
+  (interactive)
+  (setq shipit-notifications-buffer--before-filter nil)
+  (setq shipit-notifications-buffer--current-page 1)
+  (message "Before filter cleared")
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer-set-since-filter ()
+  "Prompt for a timestamp and set the server-side `since' filter.
+Resets current-page to 1, then refreshes."
+  (interactive)
+  (let ((ts (shipit-notifications-buffer--read-iso-timestamp
+             "Show notifications updated since: ")))
+    (setq shipit-notifications-buffer--since-filter ts)
+    (setq shipit-notifications-buffer--current-page 1)
+    (message "Since filter: %s" ts)
+    (shipit-notifications-buffer-refresh)))
+
+(defun shipit-notifications-buffer-clear-since-filter ()
+  "Clear the `since' filter and refresh."
+  (interactive)
+  (setq shipit-notifications-buffer--since-filter nil)
+  (setq shipit-notifications-buffer--current-page 1)
+  (message "Since filter cleared")
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer-clear-all-filters ()
+  "Clear every filter (text, repo, type, before, since) and refresh.
+Resets `current-page' to 1 since the visible window changes, then
+issues a single refresh so the server-side repo/before/since
+clearing takes effect alongside the client-side text/type reset."
+  (interactive)
+  (setq shipit-notifications-buffer--filter-text ""
+        shipit-notifications-buffer--repo-filter nil
+        shipit-notifications-buffer--type-filter nil
+        shipit-notifications-buffer--before-filter nil
+        shipit-notifications-buffer--since-filter nil
+        shipit-notifications-buffer--current-page 1)
+  (message "All filters cleared")
   (shipit-notifications-buffer-refresh))
 
 (defun shipit-notifications-buffer-refresh-watched-repos-cache ()
@@ -1094,11 +1385,11 @@ fetch and the total-count probe hit the per-repo endpoint."
           shipit-notifications-buffer--display-scope))
 
 (defun shipit-notifications-buffer--load-more-description ()
-  "Describe the load-more action for the transient."
+  "Describe the next-page action for the transient."
   (if (eq shipit-notifications-buffer--display-scope 'all)
-      (format "Load more (next page: %d)"
-              (1+ shipit-notifications-buffer--page-limit))
-    "Load more (unavailable in 'unread' scope)"))
+      (format "Next page (goto %d)"
+              (1+ shipit-notifications-buffer--current-page))
+    "Next page (unavailable in 'unread' scope)"))
 
 (defun shipit-notifications-buffer--text-filter-description ()
   "Describe the text-filter action for the transient."
@@ -1112,25 +1403,56 @@ fetch and the total-count probe hit the per-repo endpoint."
       (format "Repo: %s" shipit-notifications-buffer--repo-filter)
     "Repo: <all repos>"))
 
+(defun shipit-notifications-buffer--type-filter-description ()
+  "Describe the type-filter action for the transient."
+  (if shipit-notifications-buffer--type-filter
+      (format "Type: %s" shipit-notifications-buffer--type-filter)
+    "Type: <all types>"))
+
+(defun shipit-notifications-buffer--before-filter-description ()
+  "Describe the before-filter action for the transient."
+  (if shipit-notifications-buffer--before-filter
+      (format "Before: %s" shipit-notifications-buffer--before-filter)
+    "Before: <none>"))
+
+(defun shipit-notifications-buffer--since-filter-description ()
+  "Describe the since-filter action for the transient."
+  (if shipit-notifications-buffer--since-filter
+      (format "Since: %s" shipit-notifications-buffer--since-filter)
+    "Since: <none>"))
+
 ;;;###autoload (autoload 'shipit-notifications-buffer-filter-menu "shipit-notifications-buffer" nil t)
 (transient-define-prefix shipit-notifications-buffer-filter-menu ()
   "Filter and scope controls for the notifications buffer."
   [["Scope"
     ("s" shipit-notifications-buffer-toggle-scope
-     :description shipit-notifications-buffer--scope-description)
-    ("m" shipit-notifications-buffer-load-more
-     :description shipit-notifications-buffer--load-more-description
-     :transient t)]
+     :description shipit-notifications-buffer--scope-description)]
+   ["Pages (all scope)"
+    ("<" "First page" shipit-notifications-buffer-first-page)
+    (">" "Last page" shipit-notifications-buffer-last-page)
+    ("P" "Go to page…" shipit-notifications-buffer-goto-page)]
    ["Server-side"
     ("r" shipit-notifications-buffer-set-repo-filter
      :description shipit-notifications-buffer--repo-filter-description)
     ("R" "Clear repo filter" shipit-notifications-buffer-clear-repo-filter)]
+   ["Type filter"
+    ("y" shipit-notifications-buffer-set-type-filter
+     :description shipit-notifications-buffer--type-filter-description)
+    ("Y" "Clear type filter" shipit-notifications-buffer-clear-type-filter)]
+   ["Time window"
+    ("b" shipit-notifications-buffer-set-before-filter
+     :description shipit-notifications-buffer--before-filter-description)
+    ("B" "Clear before filter" shipit-notifications-buffer-clear-before-filter)
+    ("a" shipit-notifications-buffer-set-since-filter
+     :description shipit-notifications-buffer--since-filter-description)
+    ("A" "Clear since filter" shipit-notifications-buffer-clear-since-filter)]
    ["Text filter"
     ("t" shipit-notifications-buffer-set-filter
      :description shipit-notifications-buffer--text-filter-description)
     ("c" "Clear text filter" shipit-notifications-buffer-clear-filter)]
    ["Refresh"
     ("g" "Refresh now" shipit-notifications-buffer-refresh)
+    ("x" "Clear all filters" shipit-notifications-buffer-clear-all-filters)
     ("q" "Quit" transient-quit-one)]])
 
 (defcustom shipit-notifications-filter-live-delay 0.25

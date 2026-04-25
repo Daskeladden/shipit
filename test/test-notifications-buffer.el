@@ -108,11 +108,11 @@ THEN `shipit-notifications-buffer--display-scope' should be `unread'."
 (ert-deftest test-shipit-notifications-buffer-page-limit-default-1 ()
   "Test that the buffer-local page limit defaults to 1.
 GIVEN a fresh notifications buffer
-THEN `shipit-notifications-buffer--page-limit' should be 1."
+THEN `shipit-notifications-buffer--current-page' should be 1."
   (let ((buf (shipit-notifications-buffer-create)))
     (unwind-protect
         (with-current-buffer buf
-          (should (= shipit-notifications-buffer--page-limit 1)))
+          (should (= shipit-notifications-buffer--current-page 1)))
       (kill-buffer buf))))
 
 (ert-deftest test-shipit-notifications-buffer-toggle-scope-flips ()
@@ -128,13 +128,13 @@ THEN scope flips back to `unread'."
       (unwind-protect
           (with-current-buffer buf
             (setq shipit-notifications-buffer--display-scope 'unread
-                  shipit-notifications-buffer--page-limit 3)
+                  shipit-notifications-buffer--current-page 3)
             (shipit-notifications-buffer-toggle-scope)
             (should (eq shipit-notifications-buffer--display-scope 'all))
-            (should (= shipit-notifications-buffer--page-limit 1))
+            (should (= shipit-notifications-buffer--current-page 1))
             (shipit-notifications-buffer-toggle-scope)
             (should (eq shipit-notifications-buffer--display-scope 'unread))
-            (should (= shipit-notifications-buffer--page-limit 1)))
+            (should (= shipit-notifications-buffer--current-page 1)))
         (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-load-more-increments ()
@@ -148,11 +148,11 @@ THEN page-limit becomes 2."
       (unwind-protect
           (with-current-buffer buf
             (setq shipit-notifications-buffer--display-scope 'all
-                  shipit-notifications-buffer--page-limit 1)
+                  shipit-notifications-buffer--current-page 1)
             (shipit-notifications-buffer-load-more)
-            (should (= shipit-notifications-buffer--page-limit 2))
+            (should (= shipit-notifications-buffer--current-page 2))
             (shipit-notifications-buffer-load-more)
-            (should (= shipit-notifications-buffer--page-limit 3)))
+            (should (= shipit-notifications-buffer--current-page 3)))
         (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-load-more-noop-in-unread ()
@@ -164,10 +164,10 @@ THEN page-limit stays at 1 and user-error is signalled."
     (unwind-protect
         (with-current-buffer buf
           (setq shipit-notifications-buffer--display-scope 'unread
-                shipit-notifications-buffer--page-limit 1)
+                shipit-notifications-buffer--current-page 1)
           (should-error (shipit-notifications-buffer-load-more)
                         :type 'user-error)
-          (should (= shipit-notifications-buffer--page-limit 1)))
+          (should (= shipit-notifications-buffer--current-page 1)))
       (kill-buffer buf))))
 
 (ert-deftest test-shipit-notifications-buffer-total-count-default-nil ()
@@ -178,6 +178,93 @@ THEN the buffer-local total-count is nil (unknown until probed)."
         (with-current-buffer buf
           (should (null shipit-notifications-buffer--total-count)))
       (kill-buffer buf))))
+
+(ert-deftest test-shipit-notifications-buffer-header-shows-page-of-total-pages ()
+  "GIVEN total-count=250 in all scope at page 2
+WHEN the buffer is rendered
+THEN the header shows `page: 2/3' (250/100 per-page = 3 pages total)."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--display-scope 'all
+                  shipit-notifications-buffer--current-page 2
+                  shipit-notifications-buffer--total-count 250)
+            (shipit-notifications-buffer--rerender)
+            (let ((header (buffer-substring-no-properties
+                           (point-min)
+                           (min (point-max) 200))))
+              (should (string-match-p "page: 2/3" header))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-header-page-uses-constant-face ()
+  "GIVEN buffer in `all' scope at page 2 of 3
+WHEN the header is rendered
+THEN the `2/3' page number is propertized with
+`font-lock-constant-face' (and not `font-lock-comment-face')."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--display-scope 'all
+                  shipit-notifications-buffer--current-page 2
+                  shipit-notifications-buffer--total-count 250)
+            (shipit-notifications-buffer--rerender)
+            (goto-char (point-min))
+            (should (search-forward "2/3" nil t))
+            (should (eq (get-text-property (1- (point)) 'font-lock-face)
+                        'font-lock-constant-face)))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-header-before-uses-timestamp-face ()
+  "GIVEN buffer with a `before' timestamp filter set
+WHEN the header is rendered
+THEN the timestamp value is propertized with `shipit-timestamp-face'."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--before-filter
+                  "2026-01-15T00:00:00Z")
+            (shipit-notifications-buffer--rerender)
+            (goto-char (point-min))
+            (should (search-forward "2026-01-15T00:00:00Z" nil t))
+            (should (eq (get-text-property (1- (point)) 'font-lock-face)
+                        'shipit-timestamp-face)))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-header-since-uses-timestamp-face ()
+  "GIVEN buffer with a `since' timestamp filter set
+WHEN the header is rendered
+THEN the timestamp value is propertized with `shipit-timestamp-face'."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--since-filter
+                  "2025-12-01T00:00:00Z")
+            (shipit-notifications-buffer--rerender)
+            (goto-char (point-min))
+            (should (search-forward "2025-12-01T00:00:00Z" nil t))
+            (should (eq (get-text-property (1- (point)) 'font-lock-face)
+                        'shipit-timestamp-face)))
+        (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-header-shows-shown-over-total ()
   "GIVEN a buffer with total-count=666 and 2 activities in the hash
@@ -202,7 +289,7 @@ THEN the header shows `2/666' (shown / total)."
       (unwind-protect
           (with-current-buffer buf
             (setq shipit-notifications-buffer--display-scope 'all
-                  shipit-notifications-buffer--page-limit 1
+                  shipit-notifications-buffer--current-page 1
                   shipit-notifications-buffer--total-count 666)
             (shipit-notifications-buffer--rerender)
             (let ((header (buffer-substring-no-properties
@@ -237,7 +324,7 @@ THEN the header shows `1/2' — matches over loaded — not
       (unwind-protect
           (with-current-buffer buf
             (setq shipit-notifications-buffer--display-scope 'all
-                  shipit-notifications-buffer--page-limit 1
+                  shipit-notifications-buffer--current-page 1
                   shipit-notifications-buffer--total-count 666
                   shipit-notifications-buffer--filter-text "match-repo")
             (shipit-notifications-buffer--rerender)
@@ -290,6 +377,36 @@ THEN the filter is cleared to nil."
             (shipit-notifications-buffer-clear-repo-filter)
             (should (null shipit-notifications-buffer--repo-filter)))
         (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-clear-all-filters ()
+  "GIVEN a buffer with text, repo, type, before, and since filters set
+WHEN `shipit-notifications-buffer-clear-all-filters' is invoked
+THEN every filter is cleared, current-page resets to 1, and a refresh
+is triggered."
+  (let ((refresh-calls 0))
+    (cl-letf (((symbol-function 'shipit-notifications-buffer-refresh)
+               (lambda (&rest _args) (cl-incf refresh-calls))))
+      (let ((buf (shipit-notifications-buffer-create)))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq shipit-notifications-buffer--filter-text "needle")
+              (setq shipit-notifications-buffer--repo-filter "owner/foo")
+              (setq shipit-notifications-buffer--type-filter "pr")
+              (setq shipit-notifications-buffer--before-filter
+                    "2026-01-01T00:00:00Z")
+              (setq shipit-notifications-buffer--since-filter
+                    "2025-12-01T00:00:00Z")
+              (setq shipit-notifications-buffer--current-page 5)
+              (shipit-notifications-buffer-clear-all-filters)
+              (should (string-empty-p
+                       shipit-notifications-buffer--filter-text))
+              (should (null shipit-notifications-buffer--repo-filter))
+              (should (null shipit-notifications-buffer--type-filter))
+              (should (null shipit-notifications-buffer--before-filter))
+              (should (null shipit-notifications-buffer--since-filter))
+              (should (= shipit-notifications-buffer--current-page 1))
+              (should (= refresh-calls 1)))
+          (kill-buffer buf))))))
 
 (ert-deftest test-shipit-notifications-buffer-repo-filter-drops-other-repos ()
   "GIVEN 2 GitHub activities in `owner/foo' and 3 Jira activities in `BAR'
@@ -361,12 +478,12 @@ THEN the header mentions `all' and `page 2'."
       (unwind-protect
           (with-current-buffer buf
             (setq shipit-notifications-buffer--display-scope 'all
-                  shipit-notifications-buffer--page-limit 2)
+                  shipit-notifications-buffer--current-page 2)
             (shipit-notifications-buffer--rerender)
             (goto-char (point-min))
             (let ((header (buffer-substring-no-properties
                            (point-min)
                            (min (point-max) 200))))
               (should (string-match-p "all" header))
-              (should (string-match-p "page 2\\|pages 2\\|2 pages\\|pages: 2" header))))
+              (should (string-match-p "page 2\\|pages 2\\|2 pages\\|page: 2" header))))
         (kill-buffer buf)))))

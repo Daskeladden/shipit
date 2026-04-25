@@ -920,4 +920,552 @@ THEN the variable is set to nil and customize-save-variable was called."
       (should (null shipit-notifications-auto-mark-read-rules))
       (should (null saved-val)))))
 
+;;; Actionable-only toggle
+
+(ert-deftest test-shipit-notifications-buffer--matches-actionable-filter-p-off ()
+  "GIVEN actionable-only is OFF (default)
+WHEN the predicate runs against any activity
+THEN it always returns t."
+  (let ((shipit-notifications-buffer--actionable-only nil))
+    (should (shipit-notifications-buffer--matches-actionable-filter-p
+             '((reason . "subscribed"))))
+    (should (shipit-notifications-buffer--matches-actionable-filter-p
+             '((reason . "ci_activity"))))))
+
+(ert-deftest test-shipit-notifications-buffer--matches-actionable-filter-p-on ()
+  "GIVEN actionable-only is ON with the default reason set
+WHEN the predicate runs
+THEN actionable reasons (mention, team_mention, review_requested,
+assign, security_alert) pass and the rest are dropped."
+  (let ((shipit-notifications-buffer--actionable-only t)
+        (shipit-notifications-actionable-reasons
+         '("mention" "team_mention" "review_requested" "assign"
+           "security_alert")))
+    (should (shipit-notifications-buffer--matches-actionable-filter-p
+             '((reason . "mention"))))
+    (should (shipit-notifications-buffer--matches-actionable-filter-p
+             '((reason . "review_requested"))))
+    (should-not (shipit-notifications-buffer--matches-actionable-filter-p
+                 '((reason . "subscribed"))))
+    (should-not (shipit-notifications-buffer--matches-actionable-filter-p
+                 '((reason . "ci_activity"))))
+    (should-not (shipit-notifications-buffer--matches-actionable-filter-p
+                 '((reason . nil))))))
+
+(ert-deftest test-shipit-notifications-buffer-toggle-actionable-only-flips ()
+  "GIVEN actionable-only is OFF
+WHEN the toggle command runs
+THEN the flag flips to t and a re-render happens.
+A second invocation flips it back to nil."
+  (let ((rerendered 0))
+    (cl-letf (((symbol-function 'shipit-notifications-buffer--rerender)
+               (lambda (&rest _) (cl-incf rerendered))))
+      (let ((buf (shipit-notifications-buffer-create)))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq shipit-notifications-buffer--actionable-only nil)
+              (shipit-notifications-buffer-toggle-actionable-only)
+              (should shipit-notifications-buffer--actionable-only)
+              (shipit-notifications-buffer-toggle-actionable-only)
+              (should-not shipit-notifications-buffer--actionable-only)
+              (should (= 2 rerendered)))
+          (kill-buffer buf))))))
+
+(ert-deftest test-shipit-notifications-buffer-actionable-only-drops-noise ()
+  "GIVEN 1 mention-reason PR and 1 subscribed-reason PR
+WHEN actionable-only is on and the buffer is rendered
+THEN only the mention PR appears."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Mention PR") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (puthash "owner/foo:pr:2"
+               '((repo . "owner/foo") (number . 2) (type . "pr")
+                 (subject . "Noise PR") (reason . "subscribed")
+                 (pr-state . "open") (updated-at . "2026-01-02T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--actionable-only t)
+            (shipit-notifications-buffer--rerender)
+            (let ((body (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p "Mention PR" body))
+              (should-not (string-match-p "Noise PR" body))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-clear-all-resets-actionable-only ()
+  "GIVEN clear-all-filters runs while actionable-only is ON
+WHEN it returns
+THEN actionable-only flips to nil along with every other filter."
+  (cl-letf (((symbol-function 'shipit-notifications-buffer-refresh)
+             (lambda (&rest _args) nil)))
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--actionable-only t)
+            (shipit-notifications-buffer-clear-all-filters)
+            (should-not shipit-notifications-buffer--actionable-only))
+        (kill-buffer buf)))))
+
+;;; Reason filter
+
+(ert-deftest test-shipit-notifications-buffer--matches-reason-filter-p ()
+  "GIVEN a reason filter set to a specific reason
+WHEN the predicate runs
+THEN only activities with that reason pass; nil filter passes all."
+  (let ((shipit-notifications-buffer--reason-filter nil))
+    (should (shipit-notifications-buffer--matches-reason-filter-p
+             '((reason . "subscribed"))))
+    (should (shipit-notifications-buffer--matches-reason-filter-p
+             '((reason . "mention")))))
+  (let ((shipit-notifications-buffer--reason-filter "mention"))
+    (should (shipit-notifications-buffer--matches-reason-filter-p
+             '((reason . "mention"))))
+    (should-not (shipit-notifications-buffer--matches-reason-filter-p
+                 '((reason . "subscribed"))))
+    (should-not (shipit-notifications-buffer--matches-reason-filter-p
+                 '()))))
+
+(ert-deftest test-shipit-notifications-buffer-clear-reason-filter ()
+  "GIVEN buffer with a reason filter set
+WHEN clear-reason-filter is invoked
+THEN the filter is cleared to nil."
+  (cl-letf (((symbol-function 'shipit-notifications-buffer--rerender)
+             (lambda (&rest _) nil)))
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--reason-filter "mention")
+            (shipit-notifications-buffer-clear-reason-filter)
+            (should (null shipit-notifications-buffer--reason-filter)))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-reason-filter-drops-other-reasons ()
+  "GIVEN 1 mention, 1 subscribed, 1 review_requested PR
+WHEN reason-filter set to `mention' and the buffer rendered
+THEN only the mention PR appears."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Mentioned") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (puthash "owner/foo:pr:2"
+               '((repo . "owner/foo") (number . 2) (type . "pr")
+                 (subject . "Subbed") (reason . "subscribed")
+                 (pr-state . "open") (updated-at . "2026-01-02T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (puthash "owner/foo:pr:3"
+               '((repo . "owner/foo") (number . 3) (type . "pr")
+                 (subject . "Reviewing") (reason . "review_requested")
+                 (pr-state . "open") (updated-at . "2026-01-03T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--reason-filter "mention")
+            (shipit-notifications-buffer--rerender)
+            (let ((body (buffer-substring-no-properties
+                         (point-min) (point-max))))
+              (should (string-match-p "Mentioned" body))
+              (should-not (string-match-p "Subbed" body))
+              (should-not (string-match-p "Reviewing" body))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-clear-all-resets-reason-filter ()
+  "GIVEN clear-all-filters runs while reason-filter is set
+WHEN it returns
+THEN reason-filter is reset to nil."
+  (cl-letf (((symbol-function 'shipit-notifications-buffer-refresh)
+             (lambda (&rest _args) nil)))
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--reason-filter "mention")
+            (shipit-notifications-buffer-clear-all-filters)
+            (should (null shipit-notifications-buffer--reason-filter)))
+        (kill-buffer buf)))))
+
+;;; GroupBy repository
+
+(ert-deftest test-shipit-notifications-buffer-toggle-group-by-repo-flips ()
+  "GIVEN group-by-repo is OFF
+WHEN the toggle command runs
+THEN the flag flips to t and a re-render happens.
+A second invocation flips it back."
+  (let ((rerendered 0))
+    (cl-letf (((symbol-function 'shipit-notifications-buffer--rerender)
+               (lambda (&rest _) (cl-incf rerendered))))
+      (let ((buf (shipit-notifications-buffer-create)))
+        (unwind-protect
+            (with-current-buffer buf
+              (setq shipit-notifications-buffer--group-by-repo nil)
+              (shipit-notifications-buffer-toggle-group-by-repo)
+              (should shipit-notifications-buffer--group-by-repo)
+              (shipit-notifications-buffer-toggle-group-by-repo)
+              (should-not shipit-notifications-buffer--group-by-repo)
+              (should (= 2 rerendered)))
+          (kill-buffer buf))))))
+
+(ert-deftest test-shipit-notifications-buffer-group-by-repo-creates-repo-sections ()
+  "GIVEN 2 PRs in `owner/foo' and 1 PR in `owner/bar'
+WHEN group-by-repo is on and the buffer rendered
+THEN the root section has exactly 2 child notification-repo
+sections (one per repo); each repo section has the right number
+of child notification-entry sections; repos are sorted by their
+newest activity's updated-at descending."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Foo old") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (puthash "owner/foo:pr:2"
+               '((repo . "owner/foo") (number . 2) (type . "pr")
+                 (subject . "Foo new") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-05T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (puthash "owner/bar:pr:9"
+               '((repo . "owner/bar") (number . 9) (type . "pr")
+                 (subject . "Bar latest") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-10T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--group-by-repo t)
+            (shipit-notifications-buffer--rerender)
+            (let* ((root magit-root-section)
+                   (repo-sections
+                    (seq-filter (lambda (c)
+                                  (eq (oref c type) 'notification-repo))
+                                (oref root children))))
+              (should (= 2 (length repo-sections)))
+              ;; First repo (newest activity) should be owner/bar
+              ;; (2026-01-10 > 2026-01-05).
+              (should (equal "owner/bar" (oref (car repo-sections) value)))
+              (should (equal "owner/foo" (oref (cadr repo-sections) value)))
+              ;; Bar has 1 entry, foo has 2 entries.
+              (let* ((bar-entries
+                      (seq-filter (lambda (c)
+                                    (eq (oref c type) 'notification-entry))
+                                  (oref (car repo-sections) children)))
+                     (foo-entries
+                      (seq-filter (lambda (c)
+                                    (eq (oref c type) 'notification-entry))
+                                  (oref (cadr repo-sections) children))))
+                (should (= 1 (length bar-entries)))
+                (should (= 2 (length foo-entries))))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-group-by-repo-off-stays-flat ()
+  "GIVEN group-by-repo is OFF (default)
+WHEN the buffer renders 2 PRs in different repos
+THEN the root section has 2 notification-entry children directly
+(no notification-repo wrappers)."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Foo") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (puthash "owner/bar:pr:2"
+               '((repo . "owner/bar") (number . 2) (type . "pr")
+                 (subject . "Bar") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-02T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--group-by-repo nil)
+            (shipit-notifications-buffer--rerender)
+            (let* ((root magit-root-section)
+                   (children (oref root children)))
+              (should-not (seq-find (lambda (c)
+                                      (eq (oref c type) 'notification-repo))
+                                    children))
+              (should (= 2 (seq-count
+                            (lambda (c)
+                              (eq (oref c type) 'notification-entry))
+                            children)))))
+        (kill-buffer buf)))))
+
+;;; Parent-end propagation when expanding nested entries
+
+(ert-deftest test-shipit-notifications-buffer-insert-content-extends-parent-end ()
+  "GIVEN a grouped buffer (entry nested under a notification-repo wrapper)
+WHEN content is inserted into the entry section
+THEN the wrapper's `end\=' marker is extended past the new entry end —
+otherwise collapsing the wrapper would leave the expanded entry body
+visible (a boundary leak)."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Foo") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--group-by-repo t)
+            (shipit-notifications-buffer--rerender)
+            (let* ((wrapper (car (oref magit-root-section children)))
+                   (entry (car (oref wrapper children)))
+                   (wrapper-end-before (marker-position (oref wrapper end))))
+              (shipit-notifications-buffer--insert-content-into-section
+               entry
+               (lambda ()
+                 (insert "EXPANDED LINE 1
+")
+                 (insert "EXPANDED LINE 2
+")
+                 (insert "EXPANDED LINE 3
+")))
+              ;; Entry end advanced past where wrapper used to end.
+              (should (> (marker-position (oref entry end))
+                         wrapper-end-before))
+              ;; Wrapper end must now match (or exceed) entry end so
+              ;; collapsing the wrapper hides the expanded body.
+              (should (>= (marker-position (oref wrapper end))
+                          (marker-position (oref entry end))))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-late-async-extends-parent-overlay ()
+  "GIVEN a grouped buffer where an entry has been expanded and then
+the wrapper collapsed
+WHEN late-arriving async content is APPENDED at the entry's end
+(matching how `shipit--update-pr-details' and the timeline-events
+callback fire — both goto the section end and insert)
+THEN the wrapper's invisibility overlay is extended so the new
+content stays hidden under the collapsed wrapper.
+
+The user-visible bug: with default `make-overlay' rear-advance,
+appending at an overlay's end does NOT auto-extend the overlay,
+so the late content leaks past the collapsed wrapper unless
+`--extend-parent-ends' explicitly moves the overlay."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Foo") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--group-by-repo t)
+            (shipit-notifications-buffer--rerender)
+            (let* ((wrapper (car (oref magit-root-section children)))
+                   (entry (car (oref wrapper children))))
+              (shipit-notifications-buffer--insert-content-into-section
+               entry (lambda () (insert "INITIAL EXPANDED\n")))
+              (magit-section-hide wrapper)
+              (let ((wrapper-end-after-collapse
+                     (marker-position (oref wrapper end))))
+                (let ((inhibit-read-only t))
+                  (save-excursion
+                    (goto-char (marker-position (oref entry end)))
+                    (insert "LATE APPEND LINE 1\nLATE APPEND LINE 2\n")
+                    (oset entry end (point-marker))
+                    (shipit-notifications-buffer--extend-parent-ends
+                     entry (point))))
+                (should (> (marker-position (oref wrapper end))
+                           wrapper-end-after-collapse))
+                (let* ((cstart (marker-position (oref wrapper content)))
+                       (invisible-overlays
+                        (seq-filter (lambda (ov)
+                                      (eq (overlay-get ov 'invisible) t))
+                                    (overlays-at cstart))))
+                  (should invisible-overlays)
+                  (should (>= (overlay-end (car invisible-overlays))
+                              (marker-position (oref wrapper end))))))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-collapse-overrides-display-spec ()
+  "GIVEN a grouped buffer with entries containing text-property
+`display' specs (SVG icons in interactive use)
+WHEN the wrapper is collapsed via `--toggle-section'
+THEN the resulting invisibility overlay has `display' set to
+the empty string so any inner `display' image specs are forcibly
+overridden — without this, Emacs renders display specs even when
+their underlying text has `invisible' set, leaking the icon
+visually below the collapsed wrapper heading."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Foo") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--group-by-repo t)
+            (shipit-notifications-buffer--rerender)
+            (let ((wrapper (car (oref magit-root-section children))))
+              ;; Move point onto the wrapper heading and toggle via the
+              ;; same dispatcher the keymap uses.
+              (goto-char (oref wrapper start))
+              (shipit-notifications-buffer-toggle-section)
+              (should (slot-value wrapper 'hidden))
+              (let ((overrode-display nil))
+                (dolist (ov (overlays-in (marker-position (oref wrapper content))
+                                          (marker-position (oref wrapper end))))
+                  (when (and (eq (overlay-get ov 'invisible) t)
+                             (equal (overlay-get ov 'display) ""))
+                    (setq overrode-display t)))
+                (should overrode-display))))
+        (kill-buffer buf)))))
+
+;;; mark-all-read scoping when grouped
+
+(ert-deftest test-shipit-notifications-buffer-mark-all-read-grouped-marks-all ()
+  "GIVEN a grouped buffer with entries in 2 repos and point not on any group
+WHEN `mark-all-read' runs
+THEN every entry across every repo is marked (recursive walk)."
+  (let ((marked '()))
+    (cl-letf (((symbol-function 'shipit--check-notifications-background)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'shipit--check-notifications-background-async)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked)))
+              ((symbol-function 'shipit-notifications-buffer-refresh)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'yes-or-no-p) (lambda (_p) t)))
+      (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+            (buf (shipit-notifications-buffer-create)))
+        (puthash "owner/foo:pr:1"
+                 '((repo . "owner/foo") (number . 1) (type . "pr")
+                   (subject . "Foo") (reason . "mention")
+                   (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+                 shipit--notification-pr-activities)
+        (puthash "owner/bar:pr:9"
+                 '((repo . "owner/bar") (number . 9) (type . "pr")
+                   (subject . "Bar") (reason . "mention")
+                   (pr-state . "open") (updated-at . "2026-01-10T00:00:00Z"))
+                 shipit--notification-pr-activities)
+        (unwind-protect
+            (with-current-buffer buf
+              (setq shipit-notifications-buffer--group-by-repo t)
+              (shipit-notifications-buffer--rerender)
+              (goto-char (point-min))
+              (shipit-notifications-buffer-mark-all-read)
+              (should (= 2 (length marked)))
+              (should (member '(1 "owner/foo" "pr") marked))
+              (should (member '(9 "owner/bar" "pr") marked)))
+          (kill-buffer buf))))))
+
+(ert-deftest test-shipit-notifications-buffer-mark-all-read-grouped-scopes-to-repo ()
+  "GIVEN a grouped buffer with entries in 2 repos and point on one wrapper
+WHEN `mark-all-read' runs
+THEN only the entries under that wrapper are marked."
+  (let ((marked '()))
+    (cl-letf (((symbol-function 'shipit--check-notifications-background)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'shipit--check-notifications-background-async)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked)))
+              ((symbol-function 'shipit-notifications-buffer-refresh)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'yes-or-no-p) (lambda (_p) t)))
+      (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+            (buf (shipit-notifications-buffer-create)))
+        (puthash "owner/foo:pr:1"
+                 '((repo . "owner/foo") (number . 1) (type . "pr")
+                   (subject . "Foo") (reason . "mention")
+                   (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+                 shipit--notification-pr-activities)
+        (puthash "owner/foo:pr:2"
+                 '((repo . "owner/foo") (number . 2) (type . "pr")
+                   (subject . "Foo2") (reason . "mention")
+                   (pr-state . "open") (updated-at . "2026-01-02T00:00:00Z"))
+                 shipit--notification-pr-activities)
+        (puthash "owner/bar:pr:9"
+                 '((repo . "owner/bar") (number . 9) (type . "pr")
+                   (subject . "Bar") (reason . "mention")
+                   (pr-state . "open") (updated-at . "2026-01-10T00:00:00Z"))
+                 shipit--notification-pr-activities)
+        (unwind-protect
+            (with-current-buffer buf
+              (setq shipit-notifications-buffer--group-by-repo t)
+              (shipit-notifications-buffer--rerender)
+              ;; Point on the owner/foo wrapper specifically.
+              (goto-char (point-min))
+              (search-forward "owner/foo")
+              (shipit-notifications-buffer-mark-all-read)
+              (should (= 2 (length marked)))
+              (should (member '(1 "owner/foo" "pr") marked))
+              (should (member '(2 "owner/foo" "pr") marked))
+              (should-not (member '(9 "owner/bar" "pr") marked)))
+          (kill-buffer buf))))))
+
+(ert-deftest test-shipit-notifications-buffer-mark-all-read-flat-still-works ()
+  "GIVEN a flat (non-grouped) buffer
+WHEN `mark-all-read' runs
+THEN it marks every entry — the recursive walk also handles the
+old root-children-are-entries case."
+  (let ((marked '()))
+    (cl-letf (((symbol-function 'shipit--check-notifications-background)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'shipit--check-notifications-background-async)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked)))
+              ((symbol-function 'shipit-notifications-buffer-refresh)
+               (lambda (&rest _args) nil))
+              ((symbol-function 'yes-or-no-p) (lambda (_p) t)))
+      (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+            (buf (shipit-notifications-buffer-create)))
+        (puthash "owner/foo:pr:1"
+                 '((repo . "owner/foo") (number . 1) (type . "pr")
+                   (subject . "Foo") (reason . "mention")
+                   (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+                 shipit--notification-pr-activities)
+        (puthash "owner/bar:pr:9"
+                 '((repo . "owner/bar") (number . 9) (type . "pr")
+                   (subject . "Bar") (reason . "mention")
+                   (pr-state . "open") (updated-at . "2026-01-02T00:00:00Z"))
+                 shipit--notification-pr-activities)
+        (unwind-protect
+            (with-current-buffer buf
+              (setq shipit-notifications-buffer--group-by-repo nil)
+              (shipit-notifications-buffer--rerender)
+              (shipit-notifications-buffer-mark-all-read)
+              (should (= 2 (length marked))))
+          (kill-buffer buf))))))
+
 (provide 'test-notifications-buffer)

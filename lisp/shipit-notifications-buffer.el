@@ -93,6 +93,35 @@ Nil means all types; a type string like \"pr\" or \"workflow\"
 restricts the view to activities with that internal type.
 Combines with the repo filter and the text filter.")
 
+(defcustom shipit-notifications-actionable-reasons
+  '("mention" "team_mention" "review_requested" "assign"
+    "security_alert")
+  "Reason strings treated as `actionable\=' for the buffer toggle.
+When `shipit-notifications-buffer--actionable-only\=' is non-nil,
+the buffer hides every activity whose `reason\=' is not a member
+of this list — distilling the inbox to items that arguably need
+the user's attention.  Customize freely if your team uses other
+reasons (e.g. \"ci_activity\" for required CI signal)."
+  :type '(repeat string)
+  :group 'shipit)
+
+(defvar-local shipit-notifications-buffer--actionable-only nil
+  "When non-nil, restrict the notifications buffer to actionable rows.
+See `shipit-notifications-actionable-reasons\=' for the set.")
+
+(defvar-local shipit-notifications-buffer--group-by-repo nil
+  "When non-nil, render notifications nested under per-repo sections.
+Each repo becomes a collapsible `notification-repo' magit-section
+whose children are the usual `notification-entry' rows.  Repos are
+ordered by the `updated-at' of their newest entry, so the most
+recently active repo is at the top.")
+
+(defvar-local shipit-notifications-buffer--reason-filter nil
+  "Buffer-local client-side reason filter for the notifications buffer.
+Nil means all reasons; a string like \"mention\" or \"review_requested\"
+narrows to that specific GitHub reason.  Combines with every other
+filter (the actionable-only toggle is the broader preset of this).")
+
 (defvar-local shipit-notifications-buffer--state-filter nil
   "Buffer-local client-side PR-state filter for the notifications buffer.
 Nil means no filtering.  Set to one of `open'/`closed'/`merged'/`draft'
@@ -127,6 +156,11 @@ GraphQL round-trip only happens once per session.  Cleared by
 (defun notification-entry (&rest _args)
   "Magit section identifier for notification entries.")
 (put 'notification-entry 'magit-section t)
+
+(defun notification-repo (&rest _args)
+  "Magit section identifier for the per-repo wrapper used when
+`shipit-notifications-buffer--group-by-repo' is non-nil.")
+(put 'notification-repo 'magit-section t)
 
 (defun notification-activity (&rest _args)
   "Magit section identifier for notification activity timeline.")
@@ -241,7 +275,9 @@ share a single hash walk + filter."
          (seq-filter (lambda (a)
                        (and (shipit-notifications-buffer--matches-repo-filter-p a)
                             (shipit-notifications-buffer--matches-type-filter-p a)
-                            (shipit-notifications-buffer--matches-state-filter-p a)))
+                            (shipit-notifications-buffer--matches-state-filter-p a)
+                            (shipit-notifications-buffer--matches-reason-filter-p a)
+                            (shipit-notifications-buffer--matches-actionable-filter-p a)))
                      (shipit-notifications-buffer--all-activities))))
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
@@ -279,6 +315,23 @@ When no type filter is set, always returns t."
     (or (null filter)
         (equal (cdr (assq 'type activity)) filter))))
 
+(defun shipit-notifications-buffer--matches-reason-filter-p (activity)
+  "Return non-nil if ACTIVITY passes the buffer-local reason filter.
+When no reason filter is set, always returns t."
+  (let ((filter shipit-notifications-buffer--reason-filter))
+    (or (null filter)
+        (equal (cdr (assq 'reason activity)) filter))))
+
+(defun shipit-notifications-buffer--matches-actionable-filter-p (activity)
+  "Return non-nil if ACTIVITY passes the actionable-only toggle.
+When the toggle is off, always returns t.  When on, returns t
+only if the activity's `reason\=' is a member of
+`shipit-notifications-actionable-reasons\='."
+  (or (null shipit-notifications-buffer--actionable-only)
+      (let ((r (cdr (assq 'reason activity))))
+        (and (stringp r)
+             (member r shipit-notifications-actionable-reasons)))))
+
 (defun shipit-notifications-buffer--matches-state-filter-p (activity)
   "Return non-nil if ACTIVITY passes the buffer-local state filter.
 When the filter is nil, always returns t.  When set, only PRs with
@@ -306,7 +359,9 @@ hash walk + filters happen once per render instead of three times
       (seq-filter (lambda (a)
                     (and (shipit-notifications-buffer--matches-repo-filter-p a)
                          (shipit-notifications-buffer--matches-type-filter-p a)
-                         (shipit-notifications-buffer--matches-state-filter-p a)))
+                         (shipit-notifications-buffer--matches-state-filter-p a)
+                         (shipit-notifications-buffer--matches-reason-filter-p a)
+                         (shipit-notifications-buffer--matches-actionable-filter-p a)))
                   (shipit-notifications-buffer--all-activities))))
 
 (defun shipit-notifications-buffer--loaded-count ()
@@ -336,7 +391,12 @@ probe-derived server total for the current scope, when known."
   (shipit-notifications-buffer--insert-filter-bracket
    "type" shipit-notifications-buffer--type-filter nil)
   (shipit-notifications-buffer--insert-filter-bracket
+   "reason" shipit-notifications-buffer--reason-filter 'font-lock-keyword-face)
+  (shipit-notifications-buffer--insert-filter-bracket
    "state" shipit-notifications-buffer--state-filter 'font-lock-keyword-face)
+  (when shipit-notifications-buffer--actionable-only
+    (shipit-notifications-buffer--insert-filter-bracket
+     "actionable" "on" 'font-lock-keyword-face))
   (shipit-notifications-buffer--insert-filter-bracket
    "before" shipit-notifications-buffer--before-filter 'shipit-timestamp-face)
   (shipit-notifications-buffer--insert-filter-bracket
@@ -398,7 +458,9 @@ in `font-lock-comment-face' so only the active value pops."
 (defun shipit-notifications-buffer--insert-notifications ()
   "Insert all notification entries as magit sections.
 Applies the repo filter and then the text filter, using the same
-helpers as the header counts so the two stay in sync."
+helpers as the header counts so the two stay in sync.  Honors
+`shipit-notifications-buffer--group-by-repo': when on, entries are
+nested under per-repo wrapper sections."
   (require 'shipit-notifications)
   (let ((activities (shipit-notifications-buffer--repo-filtered-activities)))
     (setq activities (sort activities
@@ -409,10 +471,55 @@ helpers as the header counts so the two stay in sync."
       (setq activities (seq-filter
                         #'shipit-notifications-buffer--matches-filter-p
                         activities)))
-    (if activities
-        (dolist (activity activities)
-          (shipit-notifications-buffer--insert-notification activity))
-      (insert (propertize "  No notifications\n" 'font-lock-face 'font-lock-comment-face)))))
+    (cond
+     ((null activities)
+      (insert (propertize "  No notifications\n"
+                          'font-lock-face 'font-lock-comment-face)))
+     (shipit-notifications-buffer--group-by-repo
+      (shipit-notifications-buffer--insert-grouped-by-repo activities))
+     (t
+      (dolist (activity activities)
+        (shipit-notifications-buffer--insert-notification activity))))))
+
+(defun shipit-notifications-buffer--group-activities-by-repo (activities)
+  "Group ACTIVITIES into a list of (REPO . ACTIVITIES) cons cells.
+Repos are ordered by the `updated-at' of their newest activity
+descending, so the most recently active repo lands first.
+ACTIVITIES are assumed to be pre-sorted by updated-at desc, so
+within each group the order is preserved."
+  (let ((by-repo (make-hash-table :test 'equal))
+        (repo-order '()))
+    (dolist (a activities)
+      (let* ((repo (or (cdr (assq 'repo a)) "<unknown>")))
+        (unless (gethash repo by-repo)
+          (push repo repo-order))
+        (push a (gethash repo by-repo))))
+    ;; Reverse each bucket since we pushed in reverse.
+    (mapcar (lambda (repo)
+              (cons repo (nreverse (gethash repo by-repo))))
+            ;; Repos are walked in order of first appearance in the
+            ;; pre-sorted ACTIVITIES list, which equals
+            ;; "newest-activity-first" — so just reverse the push
+            ;; order.
+            (nreverse repo-order))))
+
+(defun shipit-notifications-buffer--insert-grouped-by-repo (activities)
+  "Render ACTIVITIES nested under per-repo magit-sections.
+Each `notification-repo' wrapper carries the repo string as its
+section value so callers can identify it later."
+  (dolist (cell (shipit-notifications-buffer--group-activities-by-repo
+                 activities))
+    (let* ((repo (car cell))
+           (entries (cdr cell))
+           (count (length entries))
+           (heading (format "%s  (%d)"
+                            (propertize repo 'font-lock-face
+                                        'font-lock-constant-face)
+                            count)))
+      (magit-insert-section (notification-repo repo)
+        (magit-insert-heading heading)
+        (dolist (a entries)
+          (shipit-notifications-buffer--insert-notification a))))))
 
 (defun shipit-notifications-buffer--matches-filter-p (activity)
   "Check if ACTIVITY matches the current filter."
@@ -624,6 +731,36 @@ Strips HTML tags and renders as plain text."
 
 ;;; Section toggle with lazy loading
 
+(defun shipit-notifications-buffer--reinforce-invisibility-overlays (section)
+  "Add a `display' override to SECTION's invisibility overlays.
+Text with the `display' text property (e.g. SVG icons rendered via
+`(propertize \" \" \='display IMAGE)\=') is shown by Emacs even when
+the underlying text has `invisible' set — the display spec wins.
+That makes per-entry icons leak through a hidden parent (visible
+as a single leftover icon at the start of where the row used to be).
+
+Walk overlays inside SECTION and, on each `magit-section\='
+invisibility overlay, set `display \"\"\=' so the overlay\='s display
+spec wins over any text-property image specs.  Also set a high
+`priority' so the overlay decisively wins against competing
+overlays."
+  (let ((beg (oref section content))
+        (end (oref section end)))
+    (when (and beg end (markerp beg) (markerp end))
+      (dolist (ov (overlays-in (marker-position beg) (marker-position end)))
+        (when (eq (overlay-get ov 'invisible) t)
+          (overlay-put ov 'display "")
+          (overlay-put ov 'priority 200))))))
+
+(defun shipit-notifications-buffer--toggle-with-icon-fix (section)
+  "Toggle SECTION via `magit-section-toggle' and reinforce overlays.
+After collapsing, we override any text-property `display' specs
+inside the body (SVG icons) so they do not leak past the
+invisibility overlay."
+  (magit-section-toggle section)
+  (when (slot-value section 'hidden)
+    (shipit-notifications-buffer--reinforce-invisibility-overlays section)))
+
 (defun shipit-notifications-buffer-toggle-section ()
   "Toggle notification section, lazy-loading details on first expand."
   (interactive)
@@ -636,9 +773,13 @@ Strips HTML tags and renders as plain text."
      ;; Notification entry — lazy-load on first expand
      ((and section (eq (oref section type) 'notification-entry))
       (if (shipit-notifications-buffer--section-has-content-p section)
-          (magit-section-toggle section)
+          (shipit-notifications-buffer--toggle-with-icon-fix section)
         (let ((activity (oref section value)))
           (shipit-notifications-buffer--load-section-content section activity))))
+     ;; Repo wrapper (group-by-repo) — toggle and reinforce so icons in
+     ;; entry rows don't leak through invisibility.
+     ((and section (eq (oref section type) 'notification-repo))
+      (shipit-notifications-buffer--toggle-with-icon-fix section))
      ;; Other sections — default toggle (but not root)
      (t (when (and section (oref section parent))
           (magit-section-toggle section))))))
@@ -664,8 +805,43 @@ Strips HTML tags and renders as plain text."
       ;; PR/Issue/Discussion — fetch details async then render
       (shipit-notifications-buffer--fetch-and-insert-details section activity))))
 
+(defun shipit-notifications-buffer--extend-parent-ends (section new-pos)
+  "Walk parent chain from SECTION and extend each parent's end to NEW-POS.
+Needed when SECTION is nested (e.g., grouped-by-repo) and we just
+inserted body content past the parent's existing end marker.
+
+Two cases are handled:
+
+1. Parent is shown — extending the end marker is enough; a future
+   collapse will create a fresh invisibility overlay covering the
+   updated range.
+
+2. Parent is *already collapsed* when the new content arrives (typical
+   for async paths: user expands an entry, collapses the wrapper, then
+   the timeline-events callback fires).  The existing invisibility
+   overlay was created with the old end position, so without
+   extending it the new content would visually leak past the wrapper.
+   Walk overlays at the parent's `content' position, find the
+   `magit-section' invisibility overlay, and move its end to NEW-POS."
+  (let ((parent (oref section parent)))
+    (while parent
+      (let ((pend (oref parent end)))
+        (when (and pend (markerp pend)
+                   (< (marker-position pend) new-pos))
+          (oset parent end (copy-marker new-pos))
+          (when (slot-value parent 'hidden)
+            (let ((cstart (oref parent content)))
+              (when (and cstart (markerp cstart))
+                (dolist (ov (overlays-at (marker-position cstart)))
+                  (when (eq (overlay-get ov 'invisible) t)
+                    (move-overlay ov (overlay-start ov) new-pos))))))))
+      (setq parent (oref parent parent)))))
+
 (defun shipit-notifications-buffer--insert-content-into-section (section insert-fn)
-  "Insert content into SECTION by calling INSERT-FN, then show it."
+  "Insert content into SECTION by calling INSERT-FN, then show it.
+Also extends ancestor sections' end markers when the new content
+runs past them, so collapsing a parent (e.g., a notification-repo
+wrapper when group-by-repo is on) properly hides the expanded body."
   (let* ((inhibit-read-only t)
          (saved-pos (point))
          (content-pos (oref section content))
@@ -675,7 +851,8 @@ Strips HTML tags and renders as plain text."
         (goto-char content-pos)
         (let ((magit-insert-section--parent section))
           (funcall insert-fn))
-        (oset section end (point-marker)))
+        (oset section end (point-marker))
+        (shipit-notifications-buffer--extend-parent-ends section (point)))
       (oset section hidden nil)
       (goto-char saved-pos))))
 
@@ -723,7 +900,9 @@ Strips HTML tags and renders as plain text."
                        (let ((magit-insert-section--parent sect))
                          (shipit-notifications-buffer--insert-activity-section
                           events updated-at repo number))
-                       (oset sect end (point-marker)))))))))
+                       (oset sect end (point-marker))
+                       (shipit-notifications-buffer--extend-parent-ends
+                        sect (point)))))))))
         (error
          (shipit--debug-log "Failed to fetch timeline events: %s"
                             (error-message-string err)))))))
@@ -789,7 +968,8 @@ Strips HTML tags and renders as plain text."
                                              'font-lock-face 'magit-tag-face))
                                labels ", ")
                     "\n")))
-        (oset section end (point-marker))))))
+        (oset section end (point-marker))
+        (shipit-notifications-buffer--extend-parent-ends section (point))))))
 
 ;;; Activity timeline
 
@@ -1101,27 +1281,64 @@ For RSS entries, opens the link in browser directly."
         (message "Marked %d notifications as read" count)
         (shipit-notifications-buffer--rerender)))))
 
+(defun shipit-notifications-buffer--collect-entries-under (section)
+  "Walk SECTION's tree and return (NUMBER REPO TYPE) for every entry.
+Recursive so it works whether entries are direct children of the
+root (flat list) or nested under `notification-repo' wrappers
+(group-by-repo)."
+  (let ((acc '()))
+    (cl-labels
+        ((walk (s)
+           (cond
+            ((eq (oref s type) 'notification-entry)
+             (let ((a (oref s value)))
+               (push (list (or (cdr (assq 'number a))
+                               (cdr (assq 'pr-number a)))
+                           (cdr (assq 'repo a))
+                           (or (cdr (assq 'type a)) "pr"))
+                     acc)))
+            (t
+             (dolist (c (oref s children))
+               (walk c))))))
+      (walk section))
+    (nreverse acc)))
+
+(defun shipit-notifications-buffer--containing-repo-section ()
+  "Return the `notification-repo' wrapper containing point, or nil."
+  (let ((s (magit-current-section)))
+    (while (and s (not (eq (oref s type) 'notification-repo)))
+      (setq s (oref s parent)))
+    s))
+
 (defun shipit-notifications-buffer-mark-all-read ()
-  "Mark all visible notifications as read."
+  "Mark visible notifications as read.
+When point sits inside a `notification-repo' wrapper (only present
+in group-by-repo mode), the action scopes to that repo only.
+Otherwise it marks every entry in the buffer."
   (interactive)
-  (let ((notifications '()))
-    (when (bound-and-true-p magit-root-section)
-      (dolist (child (oref magit-root-section children))
-        (when (eq (oref child type) 'notification-entry)
-          (let ((activity (oref child value)))
-            (push (list (or (cdr (assq 'number activity))
-                            (cdr (assq 'pr-number activity)))
-                        (cdr (assq 'repo activity))
-                        (or (cdr (assq 'type activity)) "pr"))
-                  notifications)))))
+  (let* ((scope (or (shipit-notifications-buffer--containing-repo-section)
+                    (and (bound-and-true-p magit-root-section)
+                         magit-root-section)))
+         (notifications (and scope
+                             (shipit-notifications-buffer--collect-entries-under
+                              scope)))
+         (scope-suffix (cond
+                        ((null scope) "")
+                        ((eq scope magit-root-section) "")
+                        (t (format " in %s" (oref scope value))))))
     (if notifications
-        (when (yes-or-no-p (format "Mark %d notification%s as read? "
+        (when (yes-or-no-p (format "Mark %d notification%s%s as read? "
                                    (length notifications)
-                                   (if (= 1 (length notifications)) "" "s")))
+                                   (if (= 1 (length notifications)) "" "s")
+                                   scope-suffix))
           (dolist (notif notifications)
             (when (fboundp 'shipit--mark-notification-read)
-              (shipit--mark-notification-read (car notif) (cadr notif) t (caddr notif))))
-          (message "Marked %d notifications as read" (length notifications))
+              (shipit--mark-notification-read
+               (car notif) (cadr notif) t (caddr notif))))
+          (message "Marked %d notification%s%s as read"
+                   (length notifications)
+                   (if (= 1 (length notifications)) "" "s")
+                   scope-suffix)
           (shipit-notifications-buffer-refresh))
       (message "No notifications to mark as read"))))
 
@@ -1695,6 +1912,65 @@ data is already enriched locally."
   (message "State filter cleared")
   (shipit-notifications-buffer--rerender))
 
+(defun shipit-notifications-buffer-set-reason-filter ()
+  "Prompt for a reason to restrict the notifications buffer client-side.
+Candidates come from the reasons currently visible in the hash."
+  (interactive)
+  (let* ((clear-label "<all reasons>")
+         (candidates (cons clear-label
+                           (shipit-notifications-buffer--candidate-reasons)))
+         (choice (completing-read
+                  "Reason: " candidates nil t nil nil
+                  (or shipit-notifications-buffer--reason-filter clear-label))))
+    (setq shipit-notifications-buffer--reason-filter
+          (if (string= choice clear-label) nil choice))
+    (message "Reason filter: %s"
+             (or shipit-notifications-buffer--reason-filter "all reasons"))
+    (shipit-notifications-buffer--rerender)))
+
+(defun shipit-notifications-buffer-clear-reason-filter ()
+  "Clear the reason filter and re-render."
+  (interactive)
+  (setq shipit-notifications-buffer--reason-filter nil)
+  (message "Reason filter cleared")
+  (shipit-notifications-buffer--rerender))
+
+(defun shipit-notifications-buffer--reason-filter-description ()
+  "Describe the reason-filter action for the transient."
+  (if shipit-notifications-buffer--reason-filter
+      (format "Reason: %s" shipit-notifications-buffer--reason-filter)
+    "Reason: <all reasons>"))
+
+(defun shipit-notifications-buffer-toggle-actionable-only ()
+  "Toggle the actionable-only filter and re-render.
+When on, hides every row whose `reason\=' is not a member of
+`shipit-notifications-actionable-reasons\='."
+  (interactive)
+  (setq shipit-notifications-buffer--actionable-only
+        (not shipit-notifications-buffer--actionable-only))
+  (message "Actionable-only: %s"
+           (if shipit-notifications-buffer--actionable-only "on" "off"))
+  (shipit-notifications-buffer--rerender))
+
+(defun shipit-notifications-buffer--actionable-only-description ()
+  "Describe the actionable-only toggle for the transient."
+  (format "Actionable only: %s"
+          (if shipit-notifications-buffer--actionable-only "on" "off")))
+
+(defun shipit-notifications-buffer-toggle-group-by-repo ()
+  "Toggle whether notifications are nested under per-repo sections."
+  (interactive)
+  (setq shipit-notifications-buffer--group-by-repo
+        (not shipit-notifications-buffer--group-by-repo))
+  (message "Group by repo: %s"
+           (if shipit-notifications-buffer--group-by-repo "on" "off"))
+  (shipit-notifications-buffer--rerender))
+
+(defun shipit-notifications-buffer--group-by-repo-description ()
+  "Describe the group-by-repo toggle for the transient."
+  (format "Group by repo: %s"
+          (if shipit-notifications-buffer--group-by-repo "on" "off")))
+
 (defun shipit-notifications-buffer--read-iso-timestamp (prompt)
   "Prompt for a date/time and return an ISO-8601 timestamp string.
 Uses `org-read-date' when available (accepts inputs like
@@ -1749,15 +2025,17 @@ Resets current-page to 1, then refreshes."
   (shipit-notifications-buffer-refresh))
 
 (defun shipit-notifications-buffer-clear-all-filters ()
-  "Clear every filter (text, repo, type, state, before, since) and refresh.
-Resets `current-page' to 1 since the visible window changes, then
-issues a single refresh so the server-side repo/before/since
-clearing takes effect alongside the client-side text/type/state reset."
+  "Clear every filter (text, repo, type, state, actionable, before, since).
+Resets `current-page\=' to 1 since the visible window changes,
+then issues a single refresh so the server-side repo/before/since
+clearing takes effect alongside the client-side resets."
   (interactive)
   (setq shipit-notifications-buffer--filter-text ""
         shipit-notifications-buffer--repo-filter nil
         shipit-notifications-buffer--type-filter nil
         shipit-notifications-buffer--state-filter nil
+        shipit-notifications-buffer--reason-filter nil
+        shipit-notifications-buffer--actionable-only nil
         shipit-notifications-buffer--before-filter nil
         shipit-notifications-buffer--since-filter nil
         shipit-notifications-buffer--current-page 1)
@@ -1841,24 +2119,34 @@ clearing takes effect alongside the client-side text/type/state reset."
     ("a" shipit-notifications-buffer-set-since-filter
      :description shipit-notifications-buffer--since-filter-description)
     ("A" "Clear since filter" shipit-notifications-buffer-clear-since-filter)]]
-  [["Type filter"
+  [["Type / State"
     ("y" shipit-notifications-buffer-set-type-filter
      :description shipit-notifications-buffer--type-filter-description)
-    ("Y" "Clear type filter" shipit-notifications-buffer-clear-type-filter)]
-   ["State filter"
+    ("Y" "Clear type filter" shipit-notifications-buffer-clear-type-filter)
     ("e" shipit-notifications-buffer-set-state-filter
      :description shipit-notifications-buffer--state-filter-description)
     ("E" "Clear state filter" shipit-notifications-buffer-clear-state-filter)]
-   ["Text filter"
+   ["Reason"
+    ("n" shipit-notifications-buffer-set-reason-filter
+     :description shipit-notifications-buffer--reason-filter-description)
+    ("N" "Clear reason filter" shipit-notifications-buffer-clear-reason-filter)]
+   ["Text"
     ("t" shipit-notifications-buffer-set-filter
      :description shipit-notifications-buffer--text-filter-description)
     ("c" "Clear text filter" shipit-notifications-buffer-clear-filter)]
-   ["Bulk / auto-mark"
+   ["Quick toggles"
+    ("!" shipit-notifications-buffer-toggle-actionable-only
+     :description shipit-notifications-buffer--actionable-only-description
+     :transient t)
+    ("G" shipit-notifications-buffer-toggle-group-by-repo
+     :description shipit-notifications-buffer--group-by-repo-description
+     :transient t)]]
+  [["Bulk / auto-mark"
     ("Z" "Mark merged/closed as read"
      shipit-notifications-buffer-mark-resolved-read)
     ("M" "Manage auto-mark rules…"
-     shipit-notifications-buffer-auto-mark-menu)]]
-  [["Refresh"
+     shipit-notifications-buffer-auto-mark-menu)]
+   ["Refresh"
     ("g" "Refresh now" shipit-notifications-buffer-refresh)
     ("x" "Clear all filters" shipit-notifications-buffer-clear-all-filters)
     ("q" "Quit" transient-quit-one)]])

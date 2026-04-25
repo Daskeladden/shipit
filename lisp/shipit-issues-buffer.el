@@ -34,6 +34,7 @@
 (declare-function shipit-issues--fetch-comments "shipit-issues")
 (declare-function shipit-issues--fetch-comments-async "shipit-issues")
 (declare-function shipit--render-markdown "shipit-render")
+(declare-function shipit--render-body "shipit-render")
 (declare-function shipit--wrap-text "shipit-render")
 (declare-function shipit--create-pr-reference-overlays "shipit-render")
 (declare-function shipit--create-commit-sha-overlays "shipit-render")
@@ -622,8 +623,8 @@ buffer-local overrides so the issue fetches use the correct backend
             (if (string-match-p "<details>" clean-body)
                 (shipit--insert-body-with-details clean-body 3)
               (let* ((rendered (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
-                                       (fboundp 'shipit--render-markdown))
-                                  (shipit--render-markdown clean-body)
+                                       (fboundp 'shipit--render-body))
+                                  (shipit--render-body clean-body)
                                 clean-body))
                      (wrapped (if (fboundp 'shipit--wrap-text)
                                   (shipit--wrap-text rendered 80 0)
@@ -713,8 +714,8 @@ is set and the display is graphical."
                         (propertize timestamp 'font-lock-face 'shipit-timestamp-face)))
         ;; Truncated preview with wrapping
         (let* ((rendered (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
-                                  (fboundp 'shipit--render-markdown))
-                             (shipit--render-markdown body)
+                                  (fboundp 'shipit--render-body))
+                             (shipit--render-body body)
                            body))
                (wrapped (shipit--wrap-text rendered wrap-width indent-level))
                (lines (split-string wrapped "\n"))

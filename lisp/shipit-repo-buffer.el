@@ -29,6 +29,10 @@
 
 ;; Forward declarations
 (declare-function shipit--render-markdown "shipit-render")
+(declare-function shipit--render-body "shipit-render")
+(declare-function shipit--format-for-readme-filename "shipit-render")
+(declare-function shipit--strip-face-on-whitespace "shipit-render")
+(declare-function shipit--detect-body-format "shipit-render")
 (declare-function shipit--wrap-text "shipit-core")
 (declare-function shipit--create-generic-url-overlays "shipit-render")
 (declare-function shipit--apply-code-block-backgrounds-in-region "shipit-render")
@@ -184,6 +188,8 @@ An alist from the API, nil for participating, or symbol
     (define-key map [return] #'shipit-repo-buffer--ret-action)
     ;; Subscription
     (define-key map (kbd "w") #'shipit-repo-subscription)
+    ;; Copy URL on header / region elsewhere
+    (define-key map [remap kill-ring-save] #'shipit-repo-buffer--kill-ring-save)
     ;; DWIM
     (define-key map (kbd "SPC") #'shipit-repo-buffer-dwim)
     (define-key map (kbd "M-;") #'shipit-repo-buffer-dwim)
@@ -195,6 +201,8 @@ An alist from the API, nil for participating, or symbol
 (define-key shipit-repo-mode-map (kbd "f") #'shipit-repo-buffer-filter)
 (define-key shipit-repo-mode-map (kbd "RET") #'shipit-repo-buffer--ret-action)
 (define-key shipit-repo-mode-map [return] #'shipit-repo-buffer--ret-action)
+(define-key shipit-repo-mode-map [remap kill-ring-save] #'shipit-repo-buffer--kill-ring-save)
+(define-key shipit-repo-mode-map (kbd "M-w") #'shipit-repo-buffer--kill-ring-save)
 
 (defun shipit-repo-buffer--section-visibility (section)
   "Return initial visibility for SECTION in repo buffers.
@@ -513,35 +521,63 @@ LANG-PCTS is a list of (NAME . PERCENT) pairs."
                                     'font-lock-face 'font-lock-comment-face))))
       (insert "\n"))))
 
-(defun shipit-repo-buffer--insert-readme-section (readme-text)
-  "Insert README section with README-TEXT content."
+(defun shipit-repo-buffer--readme-text (readme)
+  "Extract README content string from README (plist or bare string)."
+  (cond
+   ((null readme) nil)
+   ((stringp readme) readme)
+   ((plist-get readme :content))))
+
+(defun shipit-repo-buffer--readme-format (readme)
+  "Determine renderer format for README (plist or bare string).
+Prefers the filename on the README plist; falls back to content
+detection (so a bare-string README from an old/stale fetch backend
+still picks org when the body has org markers like `#+TITLE:')."
+  (let* ((filename (when (and readme (not (stringp readme)))
+                     (plist-get readme :filename)))
+         (text (shipit-repo-buffer--readme-text readme))
+         (by-filename (when (and filename
+                                 (fboundp 'shipit--format-for-readme-filename))
+                        (shipit--format-for-readme-filename filename))))
+    (cond
+     ((eq by-filename 'org) 'org)
+     ((and text (fboundp 'shipit--detect-body-format))
+      (shipit--detect-body-format text))
+     (t (or by-filename 'markdown)))))
+
+(defun shipit-repo-buffer--insert-readme-section (readme)
+  "Insert README section.
+README is either nil, a plain string of README content, or a plist
+with :filename and :content keys (the format returned by backend
+:fetch-readme functions)."
   (magit-insert-section (repo-readme nil nil)
     (magit-insert-heading
       (format "%s %s"
               (shipit--get-pr-field-icon "description" "\U0001f4c4")
               (propertize "README" 'font-lock-face 'magit-section-heading)))
     (magit-insert-section-body
-      (if (not readme-text)
-          (insert (propertize "   No README found\n" 'font-lock-face 'italic))
-        (let* ((shipit--image-base-repo shipit-repo-buffer-repo)
-               (readme-start (point)))
-          (if (string-match-p "<details>" readme-text)
-              (shipit--insert-body-with-details readme-text 3)
-            (let* ((rendered (if (and (boundp 'shipit-render-markdown)
-                                      shipit-render-markdown
-                                      (fboundp 'shipit--render-markdown))
-                                 (shipit--render-markdown readme-text)
-                               readme-text))
-                   (wrapped (if (fboundp 'shipit--wrap-text)
-                                (shipit--wrap-text rendered 80 0)
-                              rendered)))
-              (insert (concat "   "
-                              (replace-regexp-in-string "\n" "\n   " wrapped)
-                              "\n"))))
-          (when (fboundp 'shipit--create-generic-url-overlays)
-            (shipit--create-generic-url-overlays readme-start (point)))
-          (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
-            (shipit--apply-code-block-backgrounds-in-region readme-start (point)))))
+      (let ((readme-text (shipit-repo-buffer--readme-text readme)))
+        (if (not readme-text)
+            (insert (propertize "   No README found\n" 'font-lock-face 'italic))
+          (let* ((shipit--image-base-repo shipit-repo-buffer-repo)
+                 (format (shipit-repo-buffer--readme-format readme))
+                 (readme-start (point)))
+            (if (and (eq format 'markdown)
+                     (string-match-p "<details>" readme-text))
+                (shipit--insert-body-with-details readme-text 3)
+              (let* ((rendered (if (fboundp 'shipit--render-body)
+                                   (shipit--render-body readme-text format)
+                                 readme-text))
+                     (wrapped (if (fboundp 'shipit--wrap-text)
+                                  (shipit--strip-face-on-whitespace (shipit--wrap-text rendered 80 0))
+                                rendered)))
+                (insert (concat "   "
+                                (replace-regexp-in-string "\n" "\n   " wrapped)
+                                "\n"))))
+            (when (fboundp 'shipit--create-generic-url-overlays)
+              (shipit--create-generic-url-overlays readme-start (point)))
+            (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
+              (shipit--apply-code-block-backgrounds-in-region readme-start (point))))))
       (insert "\n"))))
 
 (defun shipit-repo-buffer--pr-type-label ()
@@ -869,8 +905,12 @@ Always rebuilds the full parent section to keep sibling markers consistent."
 
 (defun shipit-repo-buffer--link-at-point ()
   "Return link info at point as plist, or nil.
-Checks URL overlays, markdown link text properties, and buffer text.
-Returns (:type url :url URL) or (:type file :path PATH :url URL)."
+Checks URL overlays, markdown/org link text properties, and buffer text.
+Returns one of:
+  (:type url :url URL)
+  (:type file :path PATH :url URL)
+  (:type org-heading :target HEADING)
+  (:type org-anchor :target ANCHOR)"
   (let ((result nil))
     ;; Check URL overlays (from shipit--create-generic-url-overlays)
     (dolist (ov (overlays-at (point)))
@@ -878,12 +918,28 @@ Returns (:type url :url URL) or (:type file :path PATH :url URL)."
         (when (and (not result) (stringp help)
                    (string-match "\\`\\(https?://[^ ]+\\) (RET:" help))
           (setq result (list :type 'url :url (match-string 1 help))))))
-    ;; Check markdown link text property (rendered markdown links)
+    ;; Check markdown/org link text property (rendered descriptions)
     (unless result
       (when-let ((help (get-text-property (point) 'help-echo)))
         (when (stringp help)
-          (if (string-match-p "\\`https?://" help)
-              (setq result (list :type 'url :url help))
+          (cond
+           ;; org renders link descriptions with help-echo "LINK: <target>"
+           ((string-match "\\`LINK: \\(.+\\)\\'" help)
+            (let ((target (match-string 1 help)))
+              (cond
+               ((string-match-p "\\`https?://" target)
+                (setq result (list :type 'url :url target)))
+               ((string-prefix-p "*" target)
+                (setq result (list :type 'org-heading
+                                   :target (substring target 1))))
+               ((string-prefix-p "#" target)
+                (setq result (list :type 'org-anchor
+                                   :target (substring target 1))))
+               (t
+                (setq result (list :type 'org-heading :target target))))))
+           ((string-match-p "\\`https?://" help)
+            (setq result (list :type 'url :url help)))
+           (t
             ;; Relative path — check local file first
             (let ((local-file (when shipit-repo-buffer-local-root
                                 (expand-file-name help shipit-repo-buffer-local-root))))
@@ -891,12 +947,63 @@ Returns (:type url :url URL) or (:type file :path PATH :url URL)."
                   (setq result (list :type 'file :path local-file
                                      :url (shipit-repo-buffer--resolve-relative-url help)))
                 (when-let ((url (shipit-repo-buffer--resolve-relative-url help)))
-                  (setq result (list :type 'url :url url)))))))))
+                  (setq result (list :type 'url :url url))))))))))
     ;; Fall back to Emacs built-in URL detection
     (unless result
       (when-let ((url (thing-at-point 'url)))
         (setq result (list :type 'url :url url))))
     result))
+
+(defun shipit-repo-buffer--normalize-anchor (s)
+  "Normalize S into the slug form used by org TOC anchors.
+Lowercases, replaces every run of non-alphanumeric characters with
+a single dash, and trims leading/trailing dashes.  Both an org
+heading line and an anchor target normalize to the same string when
+they refer to the same heading."
+  (let* ((lower (downcase (or s "")))
+         (slug (replace-regexp-in-string "[^a-z0-9]+" "-" lower))
+         (trimmed (replace-regexp-in-string "\\`-+\\|-+\\'" "" slug)))
+    trimmed))
+
+(defun shipit-repo-buffer--find-org-heading (heading-text)
+  "Return buffer position of an org heading matching HEADING-TEXT, or nil.
+Walks the buffer for runs of `font-lock-face' matching `org-level-N'
+and matches a heading whose line text equals HEADING-TEXT under
+slug-normalization (so anchors like `other-llm-backends' match a
+heading like `* Other LLM backends')."
+  (let ((target (shipit-repo-buffer--normalize-anchor heading-text))
+        found pos)
+    (when (not (string-empty-p target))
+      (save-excursion
+        (setq pos (point-min))
+        (while (and (not found) (< pos (point-max)))
+          (let* ((flf (get-text-property pos 'font-lock-face))
+                 (sym (cond ((symbolp flf) flf)
+                            ((and (listp flf)
+                                  (cl-find-if (lambda (s)
+                                                (and (symbolp s)
+                                                     (string-prefix-p
+                                                      "org-level-"
+                                                      (symbol-name s))))
+                                              flf)))))
+                 (is-heading (and sym (symbolp sym)
+                                  (string-prefix-p "org-level-"
+                                                   (symbol-name sym)))))
+            (when is-heading
+              (goto-char pos)
+              (let* ((line (buffer-substring-no-properties
+                            (line-beginning-position) (line-end-position)))
+                     (clean (replace-regexp-in-string "\\`[ \t*]+" "" line))
+                     (heading-slug (shipit-repo-buffer--normalize-anchor clean)))
+                (when (or (equal target heading-slug)
+                          (string-prefix-p (concat target "-") heading-slug)
+                          (string-suffix-p (concat "-" target) heading-slug)
+                          (string-match-p (concat "\\`" (regexp-quote target) "\\'")
+                                          heading-slug))
+                  (setq found (line-beginning-position)))))
+            (setq pos (or (next-single-property-change pos 'font-lock-face)
+                          (point-max)))))))
+    found))
 
 (defun shipit-repo-buffer--ret-action ()
   "Handle RET in repo buffer.
@@ -938,6 +1045,8 @@ Otherwise, delegate to `magit-section-toggle'."
       (if link
           (pcase (plist-get link :type)
             ('file (find-file (plist-get link :path)))
+            ('org-heading (shipit-repo-buffer--goto-org-heading (plist-get link :target)))
+            ('org-anchor (shipit-repo-buffer--goto-org-heading (plist-get link :target)))
             ('url (let* ((url (plist-get link :url))
                          (classified (shipit--classify-url url)))
                     (if current-prefix-arg
@@ -960,6 +1069,20 @@ Otherwise, delegate to `magit-section-toggle'."
     (if url
         (browse-url url)
       (message "No URL available"))))
+
+(defun shipit-repo-buffer--kill-ring-save ()
+  "Like `kill-ring-save', but copy the repo URL when on the header.
+With no active region and a `shipit-repo-url' text property at point,
+copy that URL into the kill ring.  Otherwise delegate to
+`kill-ring-save' (which copies the active region)."
+  (interactive)
+  (let ((url (and (not (use-region-p))
+                  (get-text-property (point) 'shipit-repo-url))))
+    (if url
+        (progn
+          (kill-new url)
+          (message "Copied %s" url))
+      (call-interactively #'kill-ring-save))))
 
 ;;; Item filtering
 
@@ -1571,6 +1694,22 @@ not update local state or print a misleading success message."
     (shipit-repo-subscription))
    (t
     (shipit-repo-buffer--ret-action))))
+
+(defun shipit-repo-buffer--goto-org-heading (target)
+  "Move point to the rendered org heading matching TARGET, if any.
+Pushes the previous point onto the mark ring (and the global mark
+ring) before moving so navigation back via `pop-mark', `consult-mark',
+or \\[set-mark-command] with prefix arg works.  Echoes a message
+when no matching heading is found in the buffer."
+  (let ((pos (and target (shipit-repo-buffer--find-org-heading target))))
+    (if pos
+        (progn
+          (push-mark nil t)
+          (when (fboundp 'xref-push-marker-stack)
+            (xref-push-marker-stack))
+          (goto-char pos)
+          (when (get-buffer-window (current-buffer)) (recenter 0)))
+      (message "Heading %S not found in buffer" target))))
 
 (provide 'shipit-repo-buffer)
 ;;; shipit-repo-buffer.el ends here

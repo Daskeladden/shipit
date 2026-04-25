@@ -1604,7 +1604,8 @@ Normalizes GitLab fields to match the expected format."
 
 (defun shipit-pr-gitlab--fetch-readme (config)
   "Fetch repository README using CONFIG.
-Uses the repository tree to find the README filename, then fetches raw content."
+Uses the repository tree to find the README filename, then fetches raw content.
+Returns a plist (:filename FILENAME :content TEXT), or nil if not found."
   (let* ((project (shipit-gitlab--project-path config))
          (tree-path (format "/projects/%s/repository/tree?per_page=100" project))
          (tree (shipit-gitlab--api-request config tree-path))
@@ -1629,7 +1630,9 @@ Uses the repository tree to find the README filename, then fetches raw content."
             (let ((exit-code (apply #'call-process "curl" nil buf nil args)))
               (when (eq exit-code 0)
                 (with-current-buffer buf
-                  (buffer-substring-no-properties (point-min) (point-max)))))
+                  (list :filename filename
+                        :content (buffer-substring-no-properties
+                                  (point-min) (point-max))))))
           (kill-buffer buf))))))
 (defun shipit-pr-gitlab--fetch-languages (config)
   "Fetch repository languages using CONFIG.

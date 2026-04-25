@@ -1143,18 +1143,20 @@ Returns list of normalized repo alists with subscription and star status."
 (defun shipit-pr-github--fetch-readme (config)
   "Fetch repository README using CONFIG.
 Calls GET /repos/{owner}/{repo}/readme, decodes base64 content.
-Returns the README text as a string, or nil if not found."
+Returns a plist (:filename FILENAME :content TEXT), or nil if not found."
   (let* ((repo (plist-get config :repo))
          (endpoint (format "/repos/%s/readme" repo)))
     (shipit--debug-log "GitHub PR backend: fetching README for %s" repo)
     (let ((response (shipit--api-request endpoint)))
       (when response
-        (let ((content-b64 (cdr (assq 'content response))))
+        (let ((content-b64 (cdr (assq 'content response)))
+              (filename (cdr (assq 'name response))))
           (when content-b64
-            (decode-coding-string
-             (base64-decode-string
-              (replace-regexp-in-string "\n" "" content-b64))
-             'utf-8)))))))
+            (list :filename filename
+                  :content (decode-coding-string
+                            (base64-decode-string
+                             (replace-regexp-in-string "\n" "" content-b64))
+                            'utf-8))))))))
 
 ;;; Language operations
 

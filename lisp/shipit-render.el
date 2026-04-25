@@ -681,7 +681,7 @@ Does NOT insert into buffer - caller is responsible for insertion and text prope
          (comment-type (cdr (assq 'shipit-comment-type comment)))
          (review-state (cdr (assq 'review-state comment)))
          (rendered-body (if shipit-render-markdown
-                            (shipit--render-markdown body)
+                            (shipit--render-body body)
                           body))
          (final-body (cond
                       ((and shipit-show-empty-review-messages
@@ -842,7 +842,7 @@ If SKIP-REACTIONS is non-nil, reactions are not rendered (caller will handle the
          (comment-type (cdr (assq 'shipit-comment-type comment)))
          (review-state (cdr (assq 'review-state comment)))
          (rendered-body (if shipit-render-markdown
-                            (shipit--render-markdown tables-converted)
+                            (shipit--render-body tables-converted)
                           tables-converted))
          ;; Provide default message for empty review states (if enabled)
          (final-body (cond
@@ -3440,8 +3440,8 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
           (insert "  Description:\n")
           (let* ((description-start (point))
                  (rendered-body (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
-                                         (fboundp 'shipit--render-markdown))
-                                    (shipit--render-markdown clean-body)
+                                         (fboundp 'shipit--render-body))
+                                    (shipit--render-body clean-body)
                                   clean-body))
                  (wrapped-description (if (fboundp 'shipit--wrap-text)
                                          (shipit--wrap-text rendered-body 70)
@@ -3666,8 +3666,8 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
           (insert "  Description:\n")
           (let* ((description-start (point))
                  (rendered-body (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
-                                         (fboundp 'shipit--render-markdown))
-                                    (shipit--render-markdown clean-body)
+                                         (fboundp 'shipit--render-body))
+                                    (shipit--render-body clean-body)
                                   clean-body))
                  (wrapped (if (fboundp 'shipit--wrap-text)
                              (shipit--wrap-text rendered-body 70)
@@ -3807,6 +3807,157 @@ Cache size is bounded by `shipit-markdown-render-cache-size'."
               (clrhash shipit--markdown-render-cache))
             (puthash cache-key result shipit--markdown-render-cache)
             result)))))
+
+(defvar shipit--org-render-cache (make-hash-table :test 'equal :size 256)
+  "Cache of rendered org-mode content keyed by md5 hash of the input text.
+Value is the propertized rendered string.  Size capped by
+`shipit-markdown-render-cache-size'.")
+
+(defun shipit--face-to-font-lock-face (start end)
+  "Move the `face' text property to `font-lock-face' between START and END.
+Magit-section buffers apply a `font-lock-face' overlay for the
+current section highlight; using `font-lock-face' on inserted text
+ensures the foreground and weight set by org/markdown rendering are
+not stripped or shadowed by font-lock activity in the destination
+buffer."
+  (let ((pos start))
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'face nil end))
+            (face (get-text-property pos 'face)))
+        (when face
+          (put-text-property pos next 'font-lock-face face)
+          (remove-text-properties pos next '(face nil)))
+        (setq pos next)))))
+
+(defun shipit--strip-face-on-whitespace (text)
+  "Return TEXT with `face'/`font-lock-face' stripped from line-edge whitespace.
+Specifically strips:
+  - leading whitespace at the start of each line, and
+  - trailing whitespace plus the line-terminating newline.
+
+Inter-word whitespace within a line is left alone, so faces with
+`:underline' (notably `org-link') stay visually continuous across
+words.  Without this, `fill-region' propagates the link face into
+the inserted newlines and the underline paints through line breaks
+and through the indentation of continuation lines."
+  (if (or (null text) (string-empty-p text))
+      text
+    (with-temp-buffer
+      (insert text)
+      ;; Trailing whitespace + newline
+      (goto-char (point-min))
+      (while (re-search-forward "[ \t]*\n" nil t)
+        (remove-text-properties (match-beginning 0) (match-end 0)
+                                '(face nil font-lock-face nil)))
+      ;; Leading whitespace at start of each line
+      (goto-char (point-min))
+      (while (re-search-forward "^[ \t]+" nil t)
+        (remove-text-properties (match-beginning 0) (match-end 0)
+                                '(face nil font-lock-face nil)))
+      (buffer-string))))
+
+(defun shipit--org-cache-clear ()
+  "Clear the org render cache."
+  (interactive)
+  (clrhash shipit--org-render-cache))
+
+(defun shipit--render-org-uncached (text)
+  "Render org-mode TEXT without consulting the cache.
+This is the actual rendering implementation; callers should use
+`shipit--render-org' which adds caching.
+
+Mirrors `org-fontify-like-in-org-mode': activates `org-mode' fully
+(not via `delay-mode-hooks') so all setup needed for font-lock runs,
+then converts the resulting `face' text properties to `font-lock-face'
+so they survive insertion into a buffer where `font-lock-mode' is
+active (e.g. a magit-section buffer)."
+  (condition-case err
+      (with-temp-buffer
+        (unless (featurep 'org)
+          (require 'org nil t))
+        (if (featurep 'org)
+            (progn
+              (insert (replace-regexp-in-string "\r" "" text))
+              (defvar org-mode-hook)
+              (defvar org-startup-folded)
+              (defvar org-startup-indented)
+              (let ((org-mode-hook nil)
+                    (org-startup-folded nil)
+                    (org-startup-indented nil)
+                    (inhibit-message t))
+                (org-mode))
+              (font-lock-ensure)
+              (when (and (boundp 'org-link-descriptive)
+                         org-link-descriptive
+                         (fboundp 'org-link-display-format))
+                (let ((collapsed (org-link-display-format (buffer-string))))
+                  (erase-buffer)
+                  (insert collapsed)))
+              (shipit--face-to-font-lock-face (point-min) (point-max))
+              (buffer-string))
+          text))
+    (error
+     (when (fboundp 'shipit--debug-log)
+       (shipit--debug-log "Org rendering failed: %s" err))
+     text)))
+
+(defun shipit--render-org (text)
+  "Apply org-mode rendering to TEXT using org-mode's font-lock system.
+Caches the result keyed by md5 hash of TEXT.  Cache size is bounded
+by `shipit-markdown-render-cache-size' (shared with markdown cache)."
+  (if (not text)
+      ""
+    (let* ((cache-key (md5 text))
+           (cached (gethash cache-key shipit--org-render-cache)))
+      (or cached
+          (let ((result (shipit--render-org-uncached text)))
+            (when (>= (hash-table-count shipit--org-render-cache)
+                      shipit-markdown-render-cache-size)
+              (clrhash shipit--org-render-cache))
+            (puthash cache-key result shipit--org-render-cache)
+            result)))))
+
+(defconst shipit--org-document-keyword-regexp
+  "^[ \t]*#\\+\\(?:TITLE\\|AUTHOR\\|OPTIONS\\|DATE\\|STARTUP\\|EMAIL\\|LANGUAGE\\|SETUPFILE\\|FILETAGS\\|CATEGORY\\|PROPERTY\\|TODO\\|TAGS\\|LINK\\|MACRO\\|DESCRIPTION\\|KEYWORDS\\|SUBTITLE\\|LATEX_HEADER\\|HTML_HEAD\\)[ \t]*:"
+  "Regexp matching org document-level keywords.
+These keywords do not appear in markdown, so a match is a strong
+signal that the content is org-mode.  Match is case-insensitive at
+the use site.")
+
+(defun shipit--detect-body-format (text)
+  "Detect whether TEXT is org-mode or markdown content.
+Returns the symbol `org' if strong org-mode signals are present,
+otherwise returns `markdown' (the default).
+
+Strong org signals: document-level keywords like #+TITLE: or
+#+AUTHOR: matched by `shipit--org-document-keyword-regexp', and
+property drawers (lines that look like :PROPERTIES:).  Embedded
+#+BEGIN_SRC blocks alone are NOT enough since markdown bodies in
+PRs/issues sometimes include them."
+  (cond
+   ((or (null text) (string-empty-p text)) 'markdown)
+   ((let ((case-fold-search t))
+      (or (string-match-p shipit--org-document-keyword-regexp text)
+          (string-match-p "^[ \t]*:PROPERTIES:[ \t]*$" text)))
+    'org)
+   (t 'markdown)))
+
+(defun shipit--render-body (text &optional format)
+  "Render TEXT according to FORMAT (`org' or `markdown').
+If FORMAT is nil, auto-detect via `shipit--detect-body-format'.
+Returns the propertized rendered string."
+  (let ((fmt (or format (shipit--detect-body-format text))))
+    (if (eq fmt 'org)
+        (shipit--render-org text)
+      (shipit--render-markdown text))))
+
+(defun shipit--format-for-readme-filename (filename)
+  "Return `org' if FILENAME has a `.org' extension, else `markdown'.
+Used when fetching repository READMEs to choose the renderer."
+  (if (and filename
+           (string-match-p "\\.org\\'" filename))
+      'org
+    'markdown))
 
 (defun shipit--find-matching-details-close (text start-pos)
   "Find the position of the closing </details> that matches the <details> at START-POS.
@@ -3950,7 +4101,7 @@ Recursively handles nested details blocks with proper indentation."
            ;; Only render if there's actual content (not just whitespace)
            (unless (string-empty-p trimmed)
              (let* ((rendered (if shipit-render-markdown
-                                (shipit--render-markdown trimmed)
+                                (shipit--render-body trimmed)
                               trimmed))
                     ;; Wrap long prose lines to fit the configured wrap
                     ;; column minus the current indent so paragraphs do
@@ -4014,7 +4165,7 @@ Recursively handles nested details blocks with proper indentation."
   (let* ((raw-body (cdr (assq 'body comment)))
          (body (shipit--clean-comment-text raw-body))
          (rendered-body (if shipit-render-markdown
-                            (shipit--render-markdown body)
+                            (shipit--render-body body)
                           body))
          (expanded-body (if shipit-expand-code-urls
                             (shipit--expand-code-urls rendered-body)
@@ -4050,7 +4201,7 @@ Recursively handles nested details blocks with proper indentation."
                       (cdr (assq 'updated_at comment))))
          (formatted-timestamp (if created (shipit--format-timestamp created) "unknown time"))
          (rendered-body (if shipit-render-markdown
-                            (shipit--render-markdown tables-converted)
+                            (shipit--render-body tables-converted)
                           tables-converted))
          (comment-type (cdr (assq 'shipit-comment-type comment)))
          (review-state (cdr (assq 'review-state comment)))

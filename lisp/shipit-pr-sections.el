@@ -2530,8 +2530,8 @@ The :raw-date contains the ISO timestamp for property storage."
                   (magit-insert-heading (format "           %s Full message" (shipit--get-comment-type-icon "review" "📝")))
                   (magit-insert-section-body
                     (let ((rendered-message (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
-                                                       (fboundp 'shipit--render-markdown))
-                                                 (shipit--render-markdown message)
+                                                       (fboundp 'shipit--render-body))
+                                                 (shipit--render-body message)
                                                message)))
                       (let ((message-lines (split-string rendered-message "\n")))
                         (dolist (line message-lines)

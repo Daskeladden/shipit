@@ -637,5 +637,169 @@ THEN no syntax highlighting is applied."
       ;; Code text should have no face properties since highlighting was skipped
       (should-not (get-text-property 5 'face)))))
 
+;;; Org rendering tests
+
+(ert-deftest test-shipit-detect-body-format-empty ()
+  "GIVEN empty or nil text
+WHEN detecting body format
+THEN markdown is returned (the default)."
+  (should (eq 'markdown (shipit--detect-body-format nil)))
+  (should (eq 'markdown (shipit--detect-body-format ""))))
+
+(ert-deftest test-shipit-detect-body-format-plain-markdown ()
+  "GIVEN plain markdown text without org markers
+WHEN detecting body format
+THEN markdown is returned."
+  (should (eq 'markdown
+              (shipit--detect-body-format "# Heading\n\nSome **bold** text."))))
+
+(ert-deftest test-shipit-detect-body-format-org-title ()
+  "GIVEN text starting with #+TITLE: keyword
+WHEN detecting body format
+THEN org is returned."
+  (should (eq 'org
+              (shipit--detect-body-format "#+TITLE: My Project\n\nContent."))))
+
+(ert-deftest test-shipit-detect-body-format-org-options ()
+  "GIVEN text containing #+OPTIONS: keyword
+WHEN detecting body format
+THEN org is returned."
+  (should (eq 'org
+              (shipit--detect-body-format
+               "Some intro\n#+OPTIONS: toc:nil\n\nBody text"))))
+
+(ert-deftest test-shipit-detect-body-format-org-properties-drawer ()
+  "GIVEN text containing a :PROPERTIES: drawer
+WHEN detecting body format
+THEN org is returned."
+  (should (eq 'org
+              (shipit--detect-body-format
+               "* Heading\n:PROPERTIES:\n:ID: abc\n:END:\n"))))
+
+(ert-deftest test-shipit-detect-body-format-org-keywords-case-insensitive ()
+  "GIVEN org keywords in lowercase form (#+title:)
+WHEN detecting body format
+THEN org is returned (case-insensitive match)."
+  (should (eq 'org
+              (shipit--detect-body-format "#+title: lower\n\nbody"))))
+
+(ert-deftest test-shipit-detect-body-format-embedded-src-block-stays-markdown ()
+  "GIVEN markdown text that happens to embed an org src block
+WHEN detecting body format
+THEN markdown is returned (org src blocks alone are not enough)."
+  (should (eq 'markdown
+              (shipit--detect-body-format
+               "# Markdown heading\n\nSome example:\n\n#+BEGIN_SRC python\nprint(1)\n#+END_SRC\n"))))
+
+(ert-deftest test-shipit-format-for-readme-filename-org ()
+  "GIVEN a README filename ending in .org
+WHEN selecting renderer format
+THEN org is returned."
+  (should (eq 'org (shipit--format-for-readme-filename "README.org")))
+  (should (eq 'org (shipit--format-for-readme-filename "readme.org"))))
+
+(ert-deftest test-shipit-format-for-readme-filename-markdown ()
+  "GIVEN a README filename without .org extension or no filename
+WHEN selecting renderer format
+THEN markdown is returned (the default)."
+  (should (eq 'markdown (shipit--format-for-readme-filename "README.md")))
+  (should (eq 'markdown (shipit--format-for-readme-filename "README")))
+  (should (eq 'markdown (shipit--format-for-readme-filename nil))))
+
+(ert-deftest test-shipit-render-org-empty ()
+  "GIVEN nil or empty input
+WHEN calling shipit--render-org
+THEN empty string is returned (matches markdown renderer behavior)."
+  (should (string= "" (shipit--render-org nil))))
+
+(ert-deftest test-shipit-render-org-preserves-content ()
+  "GIVEN simple org content
+WHEN rendering with shipit--render-org
+THEN the rendered string contains the original text."
+  (let ((result (shipit--render-org "* Heading\nBody text")))
+    (should (stringp result))
+    (should (string-match-p "Heading" result))
+    (should (string-match-p "Body text" result))))
+
+(ert-deftest test-shipit-render-org-uses-cache ()
+  "GIVEN identical input rendered twice
+WHEN calling shipit--render-org
+THEN the second call returns the same cached propertized string."
+  (shipit--org-cache-clear)
+  (let* ((text "* Heading\nBody")
+         (first (shipit--render-org text))
+         (second (shipit--render-org text)))
+    (should (eq first second))))
+
+(ert-deftest test-shipit-render-body-dispatches-to-org-on-detection ()
+  "GIVEN text that contains org document keywords
+WHEN calling shipit--render-body without explicit format
+THEN org renderer is invoked."
+  (let ((called-with nil))
+    (cl-letf (((symbol-function 'shipit--render-org)
+               (lambda (text) (setq called-with (list 'org text)) text))
+              ((symbol-function 'shipit--render-markdown)
+               (lambda (text) (setq called-with (list 'markdown text)) text)))
+      (shipit--render-body "#+TITLE: hi\nbody")
+      (should (eq (car called-with) 'org)))))
+
+(ert-deftest test-shipit-render-body-dispatches-to-markdown-on-plain ()
+  "GIVEN plain text without org markers
+WHEN calling shipit--render-body without explicit format
+THEN markdown renderer is invoked."
+  (let ((called-with nil))
+    (cl-letf (((symbol-function 'shipit--render-org)
+               (lambda (text) (setq called-with (list 'org text)) text))
+              ((symbol-function 'shipit--render-markdown)
+               (lambda (text) (setq called-with (list 'markdown text)) text)))
+      (shipit--render-body "# Markdown\n\nbody")
+      (should (eq (car called-with) 'markdown)))))
+
+(ert-deftest test-shipit-render-body-respects-explicit-format ()
+  "GIVEN explicit format argument
+WHEN calling shipit--render-body
+THEN that format wins over content detection."
+  (let ((called-with nil))
+    (cl-letf (((symbol-function 'shipit--render-org)
+               (lambda (text) (setq called-with (list 'org text)) text))
+              ((symbol-function 'shipit--render-markdown)
+               (lambda (text) (setq called-with (list 'markdown text)) text)))
+      (shipit--render-body "# Markdown\n\nbody" 'org)
+      (should (eq (car called-with) 'org))
+      (setq called-with nil)
+      (shipit--render-body "#+TITLE: hi\nbody" 'markdown)
+      (should (eq (car called-with) 'markdown)))))
+
+(ert-deftest test-shipit-strip-face-on-whitespace-keeps-inter-word ()
+  "Inter-word whitespace on a single line keeps its `font-lock-face'
+so underlined runs (org-link) stay visually continuous across spaces."
+  (let* ((s (propertize "I want the cursor" 'font-lock-face 'org-link))
+         (cleaned (shipit--strip-face-on-whitespace s)))
+    ;; Spaces inside the run still have face
+    (should (eq 'org-link (get-text-property 1 'font-lock-face cleaned)))
+    (should (eq 'org-link (get-text-property 7 'font-lock-face cleaned)))))
+
+(ert-deftest test-shipit-strip-face-on-whitespace-line-edges ()
+  "Trailing whitespace + newline and leading whitespace lose face."
+  (let* ((s (concat (propertize "abc " 'font-lock-face 'org-link)
+                    (propertize "\n   " 'font-lock-face 'org-link)
+                    (propertize "def" 'font-lock-face 'org-link)))
+         (cleaned (shipit--strip-face-on-whitespace s)))
+    ;; "abc" keeps face
+    (should (eq 'org-link (get-text-property 0 'font-lock-face cleaned)))
+    ;; trailing space before newline loses face
+    (should (eq nil (get-text-property 3 'font-lock-face cleaned)))
+    ;; newline loses face
+    (should (eq nil (get-text-property 4 'font-lock-face cleaned)))
+    ;; leading whitespace loses face
+    (should (eq nil (get-text-property 5 'font-lock-face cleaned)))
+    ;; word after leading whitespace keeps face
+    (should (eq 'org-link (get-text-property 8 'font-lock-face cleaned)))))
+
+(ert-deftest test-shipit-strip-face-on-whitespace-handles-empty ()
+  "Empty/nil inputs are returned unchanged."
+  (should (string= "" (shipit--strip-face-on-whitespace "")))
+  (should (null (shipit--strip-face-on-whitespace nil))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

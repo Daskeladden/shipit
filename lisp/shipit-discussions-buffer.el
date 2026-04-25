@@ -27,6 +27,7 @@
 
 ;; Forward declarations
 (declare-function shipit--render-markdown "shipit-render")
+(declare-function shipit--render-body "shipit-render")
 (declare-function shipit--wrap-text "shipit-render")
 (declare-function shipit--create-pr-reference-overlays "shipit-render")
 (declare-function shipit--create-commit-sha-overlays "shipit-render")
@@ -408,8 +409,8 @@ Provides a read-only interface for viewing GitHub Discussions.
               (insert (propertize "   No description provided\n" 'font-lock-face 'italic))
             (let* ((rendered (if (and (boundp 'shipit-render-markdown)
                                       shipit-render-markdown
-                                      (fboundp 'shipit--render-markdown))
-                                 (shipit--render-markdown clean-body)
+                                      (fboundp 'shipit--render-body))
+                                 (shipit--render-body clean-body)
                                clean-body))
                    (wrapped (if (fboundp 'shipit--wrap-text)
                                 (shipit--wrap-text rendered 80 0)
@@ -497,8 +498,8 @@ Provides a read-only interface for viewing GitHub Discussions.
                (clean (shipit--clean-text body))
                (rendered (if (and (boundp 'shipit-render-markdown)
                                   shipit-render-markdown
-                                  (fboundp 'shipit--render-markdown))
-                             (shipit--render-markdown clean)
+                                  (fboundp 'shipit--render-body))
+                             (shipit--render-body clean)
                            clean))
                (wrapped (if (fboundp 'shipit--wrap-text)
                             (shipit--wrap-text rendered 74 0)
@@ -576,8 +577,8 @@ Provides a read-only interface for viewing GitHub Discussions.
                (clean (shipit--clean-text body))
                (rendered (if (and (boundp 'shipit-render-markdown)
                                   shipit-render-markdown
-                                  (fboundp 'shipit--render-markdown))
-                             (shipit--render-markdown clean)
+                                  (fboundp 'shipit--render-body))
+                             (shipit--render-body clean)
                            clean))
                (wrapped (if (fboundp 'shipit--wrap-text)
                             (shipit--wrap-text rendered 68 0)

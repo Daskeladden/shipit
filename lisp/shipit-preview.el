@@ -528,8 +528,8 @@ Open diff for files."
                (not (string-empty-p shipit-preview--description)))
           (let ((rendered (if (and (boundp 'shipit-render-markdown)
                                    shipit-render-markdown
-                                   (fboundp 'shipit--render-markdown))
-                              (shipit--render-markdown shipit-preview--description)
+                                   (fboundp 'shipit--render-body))
+                              (shipit--render-body shipit-preview--description)
                             shipit-preview--description)))
             (dolist (line (split-string rendered "\n"))
               (insert (format "   %s\n" line))))

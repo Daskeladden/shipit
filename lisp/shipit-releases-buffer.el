@@ -29,6 +29,7 @@
 
 ;; Forward declarations
 (declare-function shipit--render-markdown "shipit-render")
+(declare-function shipit--render-body "shipit-render")
 (declare-function shipit--format-timestamp "shipit-core")
 (declare-function shipit-pr--resolve-for-repo "shipit-pr-backends")
 
@@ -217,8 +218,8 @@ SCROLL-TO, if `tags', scrolls to the Tags section."
   "Insert BODY text, rendering markdown if available."
   (let* ((rendered (if (and (boundp 'shipit-render-markdown)
                             shipit-render-markdown
-                            (fboundp 'shipit--render-markdown))
-                       (shipit--render-markdown body)
+                            (fboundp 'shipit--render-body))
+                       (shipit--render-body body)
                      body))
          (lines (split-string rendered "\n")))
     (dolist (line lines)

@@ -72,6 +72,7 @@
 (declare-function shipit--try-overlay-action-at-point "shipit-render")
 (declare-function shipit--format-comment-reactions "shipit-http")
 (declare-function shipit--render-markdown "shipit-render")
+(declare-function shipit--render-body "shipit-render")
 (declare-function shipit--expand-code-urls "shipit-core")
 (declare-function shipit--wrap-comment-text "shipit-http")
 (declare-function shipit--indent-comment-body "shipit-http")
@@ -1123,7 +1124,7 @@ If IS-INLINE is non-nil, treats comment as an inline comment for proper reaction
          (comment-body (shipit--clean-text raw-comment-body))
          (comment-user (cdr (assq 'login (cdr (assq 'user comment)))))
          (rendered-body (if shipit-render-markdown
-                            (shipit--render-markdown comment-body)
+                            (shipit--render-body comment-body)
                           comment-body))
          (expanded-body (if shipit-expand-code-urls
                             (condition-case err

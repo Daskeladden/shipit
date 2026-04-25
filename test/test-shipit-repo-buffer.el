@@ -59,7 +59,7 @@ THEN it returns the repo info alist."
 (ert-deftest test-repo-buffer-fetch-readme-decodes-base64 ()
   "GIVEN a GitHub backend with :fetch-readme registered
 WHEN calling the operation
-THEN it decodes the base64 content and returns the README text."
+THEN it returns a plist with :filename and decoded :content."
   (let* ((shipit-pr-backend 'github)
          (shipit-pr-backend-config nil)
          (resolved (shipit-pr--resolve-for-repo "octocat/hello-world"))
@@ -70,8 +70,9 @@ THEN it decodes the base64 content and returns the README text."
     (cl-letf (((symbol-function 'shipit--api-request)
                #'test-repo-buffer--mock-api-request))
       (let ((result (funcall fetch-fn config)))
-        (should (stringp result))
-        (should (string-match-p "Hello World" result))))))
+        (should (listp result))
+        (should (equal "README.md" (plist-get result :filename)))
+        (should (string-match-p "Hello World" (plist-get result :content)))))))
 
 (ert-deftest test-repo-buffer-fetch-readme-returns-nil-on-missing ()
   "GIVEN a repo with no README
@@ -170,6 +171,60 @@ THEN the buffer shows a 'No README found' message."
       (shipit-repo-buffer--insert-readme-section nil)
       (let ((content (buffer-string)))
         (should (string-match-p "No README found" content))))))
+
+(ert-deftest test-repo-buffer-readme-renders-plist-with-content ()
+  "GIVEN a README plist (:filename ... :content ...) with a .md filename
+WHEN inserting the readme section
+THEN the buffer contains the rendered README content."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (let ((inhibit-read-only t))
+      (shipit-repo-buffer--insert-readme-section
+       (list :filename "README.md"
+             :content "# Hello World\n\nSome content."))
+      (let ((content (buffer-string)))
+        (should (string-match-p "README" content))
+        (should (string-match-p "Hello World" content))))))
+
+(ert-deftest test-repo-buffer-readme-org-uses-org-renderer ()
+  "GIVEN a README plist with a .org filename
+WHEN inserting the readme section
+THEN shipit--render-body is called with format=org."
+  (require 'shipit-repo-buffer)
+  (require 'shipit-render)
+  (let ((render-args nil))
+    (cl-letf (((symbol-function 'shipit--render-body)
+               (lambda (text &optional format)
+                 (setq render-args (list text format))
+                 text)))
+      (with-temp-buffer
+        (let ((inhibit-read-only t)
+              (shipit-render-markdown t))
+          (shipit-repo-buffer--insert-readme-section
+           (list :filename "README.org"
+                 :content "* Heading\n\nOrg body"))
+          (should render-args)
+          (should (eq (cadr render-args) 'org)))))))
+
+(ert-deftest test-repo-buffer-readme-md-uses-markdown-renderer ()
+  "GIVEN a README plist with a .md filename
+WHEN inserting the readme section
+THEN shipit--render-body is called with format=markdown."
+  (require 'shipit-repo-buffer)
+  (require 'shipit-render)
+  (let ((render-args nil))
+    (cl-letf (((symbol-function 'shipit--render-body)
+               (lambda (text &optional format)
+                 (setq render-args (list text format))
+                 text)))
+      (with-temp-buffer
+        (let ((inhibit-read-only t)
+              (shipit-render-markdown t))
+          (shipit-repo-buffer--insert-readme-section
+           (list :filename "README.md"
+                 :content "# Heading\n\nbody"))
+          (should render-args)
+          (should (eq (cadr render-args) 'markdown)))))))
 
 (ert-deftest test-repo-buffer-backend-without-fetch-repo-info-signals-error ()
   "GIVEN a backend without :fetch-repo-info
@@ -1400,6 +1455,165 @@ THEN re-inserted item lines still have the magit-section text property
         (let ((prop-after (get-text-property (point) 'magit-section)))
           ;; THEN item lines still have magit-section property
           (should prop-after))))))
+
+(ert-deftest test-repo-buffer-kill-ring-save-copies-url-on-header ()
+  "GIVEN point sits on text carrying a `shipit-repo-url' text property
+WHEN invoking `shipit-repo-buffer--kill-ring-save'
+THEN the URL is pushed onto the kill ring instead of the line content."
+  (require 'shipit-repo-buffer)
+  (let ((kill-ring nil)
+        (kill-ring-yank-pointer nil))
+    (with-temp-buffer
+      (insert (propertize "octocat/hello-world\n" 'shipit-repo-url
+                          "https://github.com/octocat/hello-world"))
+      (goto-char (point-min))
+      (deactivate-mark)
+      (shipit-repo-buffer--kill-ring-save)
+      (should (equal (car kill-ring)
+                     "https://github.com/octocat/hello-world")))))
+
+(ert-deftest test-repo-buffer-kill-ring-save-falls-back-to-region ()
+  "GIVEN no `shipit-repo-url' text property at point but an active region
+WHEN invoking `shipit-repo-buffer--kill-ring-save'
+THEN the region's text is copied (default `kill-ring-save' behavior)."
+  (require 'shipit-repo-buffer)
+  (let ((kill-ring nil)
+        (kill-ring-yank-pointer nil))
+    (with-temp-buffer
+      (insert "hello world")
+      (set-mark (point-min))
+      (goto-char (point-max))
+      (activate-mark)
+      (shipit-repo-buffer--kill-ring-save)
+      (should (equal (car kill-ring) "hello world")))))
+
+(ert-deftest test-repo-buffer-readme-org-applies-font-lock-face-in-buffer ()
+  "GIVEN a README.org with org markup
+WHEN inserting the README section into a buffer
+THEN the buffer contains text with `font-lock-face' properties from
+     org-mode (so styles survive insertion under font-lock-mode)."
+  (require 'shipit-repo-buffer)
+  (require 'shipit-render)
+  (with-temp-buffer
+    (let ((inhibit-read-only t))
+      (shipit-repo-buffer--insert-readme-section
+       (list :filename "README.org"
+             :content "#+TITLE: Demo\n\n* Heading\n\n*bold* /italic/"))
+      (let ((found-flf nil))
+        (goto-char (point-min))
+        (while (and (not found-flf) (< (point) (point-max)))
+          (let ((flf (get-text-property (point) 'font-lock-face)))
+            (when (and flf
+                       (or (eq flf 'org-document-info-keyword)
+                           (eq flf 'org-document-title)
+                           (eq flf 'org-level-1)
+                           (and (listp flf) (memq 'bold flf))
+                           (and (listp flf) (memq 'italic flf))))
+              (setq found-flf t)))
+          (forward-char 1))
+        (should found-flf)))))
+
+(ert-deftest test-repo-buffer-readme-format-detects-org-from-content ()
+  "GIVEN a bare-string README (no plist/filename) whose content has org markers
+WHEN computing the README format via `shipit-repo-buffer--readme-format'
+THEN it falls back to content detection and returns `org'."
+  (require 'shipit-repo-buffer)
+  (let ((readme "#+TITLE: Demo\n\n* Heading\n\nBody text"))
+    (should (eq 'org (shipit-repo-buffer--readme-format readme)))))
+
+(ert-deftest test-repo-buffer-link-at-point-org-heading ()
+  "GIVEN point sits on text with help-echo \"LINK: *Heading\"
+WHEN calling shipit-repo-buffer--link-at-point
+THEN it returns (:type org-heading :target ...)."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (insert (propertize "go to Usage" 'help-echo "LINK: *Usage"))
+    (goto-char (point-min))
+    (let ((link (shipit-repo-buffer--link-at-point)))
+      (should link)
+      (should (eq 'org-heading (plist-get link :type)))
+      (should (equal "Usage" (plist-get link :target))))))
+
+(ert-deftest test-repo-buffer-link-at-point-org-anchor ()
+  "GIVEN point sits on text with help-echo \"LINK: #anchor\"
+WHEN calling shipit-repo-buffer--link-at-point
+THEN it returns (:type org-anchor :target ...)."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (insert (propertize "Section" 'help-echo "LINK: #section-id"))
+    (goto-char (point-min))
+    (let ((link (shipit-repo-buffer--link-at-point)))
+      (should link)
+      (should (eq 'org-anchor (plist-get link :type)))
+      (should (equal "section-id" (plist-get link :target))))))
+
+(ert-deftest test-repo-buffer-link-at-point-org-external-url ()
+  "GIVEN point sits on text with help-echo \"LINK: https://...\"
+WHEN calling shipit-repo-buffer--link-at-point
+THEN it returns (:type url :url ...)."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (insert (propertize "example" 'help-echo "LINK: https://example.com"))
+    (goto-char (point-min))
+    (let ((link (shipit-repo-buffer--link-at-point)))
+      (should link)
+      (should (eq 'url (plist-get link :type)))
+      (should (equal "https://example.com" (plist-get link :url))))))
+
+(ert-deftest test-repo-buffer-find-org-heading ()
+  "GIVEN a buffer with rendered org headings (org-level-N font-lock-face)
+WHEN searching for a known heading text
+THEN the position of the heading line is returned."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (insert (propertize "* Usage\n" 'font-lock-face 'org-level-1))
+    (insert "Plain text\n")
+    (insert (propertize "** Setup\n" 'font-lock-face 'org-level-2))
+    (let ((pos (shipit-repo-buffer--find-org-heading "Setup")))
+      (should pos)
+      (goto-char pos)
+      (should (looking-at-p "\\*\\* Setup")))))
+
+(ert-deftest test-repo-buffer-find-org-heading-slugified ()
+  "GIVEN an org TOC anchor (slug form like `other-llm-backends')
+WHEN the corresponding heading uses spaces and mixed case (`Other LLM backends')
+THEN the heading is found via slug normalization."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (insert (propertize "*** Other LLM backends\n" 'font-lock-face 'org-level-3))
+    (let ((pos (shipit-repo-buffer--find-org-heading "other-llm-backends")))
+      (should pos)
+      (goto-char pos)
+      (should (looking-at-p "\\*\\*\\* Other LLM backends")))))
+
+(ert-deftest test-repo-buffer-normalize-anchor ()
+  "Normalization lowercases and replaces non-alnum runs with a single dash."
+  (should (equal "other-llm-backends"
+                 (shipit-repo-buffer--normalize-anchor "Other LLM backends")))
+  (should (equal "other-llm-backends"
+                 (shipit-repo-buffer--normalize-anchor "*** Other LLM backends")))
+  (should (equal "other-llm-backends"
+                 (shipit-repo-buffer--normalize-anchor "other-llm-backends")))
+  (should (equal "kagi-fastgpt-summarizer"
+                 (shipit-repo-buffer--normalize-anchor "Kagi (FastGPT & Summarizer)"))))
+
+(ert-deftest test-repo-buffer-goto-org-heading-pushes-mark ()
+  "GIVEN point at some position with an org heading further down the buffer
+WHEN goto-org-heading jumps to that heading
+THEN the previous point is recorded as the mark, so `consult-mark' /
+     \\[set-mark-command] with prefix arg can navigate back."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (insert "Some prose at the top.\n\n")
+    (insert (propertize "* Usage\n" 'font-lock-face 'org-level-1))
+    (goto-char (point-min))
+    (let ((origin (point)))
+      (shipit-repo-buffer--goto-org-heading "Usage")
+      ;; Point moved.
+      (should (/= origin (point)))
+      ;; Mark records the origin position so the user can pop back to it.
+      (should (mark t))
+      (should (= origin (marker-position (mark-marker)))))))
 
 (provide 'test-shipit-repo-buffer)
 ;;; test-shipit-repo-buffer.el ends here

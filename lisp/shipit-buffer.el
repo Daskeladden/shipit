@@ -134,6 +134,7 @@ Each function is called with SECTION. Return non-nil if handled.")
 (declare-function shipit--clean-text "shipit-core")
 (declare-function shipit--check-for-new-general-comments "shipit-core")
 (declare-function shipit--render-markdown "shipit-render")
+(declare-function shipit--render-body "shipit-render")
 (declare-function shipit--get-pr-actual-state "shipit-http")
 (declare-function shipit--colorize-pr-state "shipit-http")
 
@@ -860,8 +861,8 @@ REPO is the repository name (owner/repo format)."
             ;; For normal descriptions without details, use simple rendering
             (let* ((rendered-body (if clean-body
                                       (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
-                                               (fboundp 'shipit--render-markdown))
-                                          (shipit--render-markdown clean-body)
+                                               (fboundp 'shipit--render-body))
+                                          (shipit--render-body clean-body)
                                         clean-body)
                                     "No description provided"))
                    (wrapped-description (if (fboundp 'shipit--wrap-text)

@@ -114,8 +114,11 @@ backend produces."
   :group 'shipit)
 
 (defvar-local shipit-notifications-buffer--actionable-only nil
-  "When non-nil, restrict the notifications buffer to actionable rows.
-See `shipit-notifications-actionable-reasons\=' for the set.")
+  "Tri-state actionable filter for the notifications buffer.
+nil — show all notifications.
+t   — show only actionable rows (reason is in
+        `shipit-notifications-actionable-reasons').
+`non-actionable' — show only non-actionable rows (the inverse).")
 
 (defvar-local shipit-notifications-buffer--group-by-repo nil
   "When non-nil, render notifications nested under per-repo sections.
@@ -349,14 +352,20 @@ When no reason filter is set, always returns t."
         (equal (cdr (assq 'reason activity)) filter))))
 
 (defun shipit-notifications-buffer--matches-actionable-filter-p (activity)
-  "Return non-nil if ACTIVITY passes the actionable-only toggle.
-When the toggle is off, always returns t.  When on, returns t
-only if the activity's `reason\=' is a member of
-`shipit-notifications-actionable-reasons\='."
-  (or (null shipit-notifications-buffer--actionable-only)
-      (let ((r (cdr (assq 'reason activity))))
-        (and (stringp r)
-             (member r shipit-notifications-actionable-reasons)))))
+  "Return non-nil if ACTIVITY passes the actionable filter.
+Mode is read from `shipit-notifications-buffer--actionable-only':
+nil = pass everything, t = pass only actionable, `non-actionable' =
+pass only non-actionable rows."
+  (let ((mode shipit-notifications-buffer--actionable-only))
+    (cond
+     ((null mode) t)
+     (t
+      (let* ((r (cdr (assq 'reason activity)))
+             (actionable (and (stringp r)
+                              (member r shipit-notifications-actionable-reasons))))
+        (if (eq mode 'non-actionable)
+            (not actionable)
+          actionable))))))
 
 (defun shipit-notifications-buffer--matches-state-filter-p (activity)
   "Return non-nil if ACTIVITY passes the buffer-local state filter.
@@ -432,7 +441,11 @@ probe-derived server total for the current scope, when known."
    "state" shipit-notifications-buffer--state-filter 'font-lock-keyword-face)
   (when shipit-notifications-buffer--actionable-only
     (shipit-notifications-buffer--insert-filter-bracket
-     "actionable" "on" 'font-lock-keyword-face))
+     "actionable"
+     (if (eq shipit-notifications-buffer--actionable-only 'non-actionable)
+         "inverse"
+       "on")
+     'font-lock-keyword-face))
   (shipit-notifications-buffer--insert-filter-bracket
    "before" shipit-notifications-buffer--before-filter 'shipit-timestamp-face)
   (shipit-notifications-buffer--insert-filter-bracket
@@ -2129,21 +2142,36 @@ Candidates come from the reasons currently visible in the hash."
       (format "Reason: %s" shipit-notifications-buffer--reason-filter)
     "Reason: <all reasons>"))
 
-(defun shipit-notifications-buffer-toggle-actionable-only ()
+(defun shipit-notifications-buffer-toggle-actionable-only (&optional inverse)
   "Toggle the actionable-only filter and re-render.
-When on, hides every row whose `reason\=' is not a member of
-`shipit-notifications-actionable-reasons\='."
-  (interactive)
+Without prefix: cycle nil → t (only actionable).
+With prefix arg INVERSE: cycle nil → `non-actionable' (only the
+opposite — useful when you want to see only the noisy rows the
+actionable filter would hide).  Calling again with the same
+arg flips back off."
+  (interactive "P")
   (setq shipit-notifications-buffer--actionable-only
-        (not shipit-notifications-buffer--actionable-only))
-  (message "Actionable-only: %s"
-           (if shipit-notifications-buffer--actionable-only "on" "off"))
+        (cond
+         (inverse
+          (if (eq shipit-notifications-buffer--actionable-only 'non-actionable)
+              nil
+            'non-actionable))
+         (t
+          (if (eq shipit-notifications-buffer--actionable-only t) nil t))))
+  (message "Actionable filter: %s"
+           (pcase shipit-notifications-buffer--actionable-only
+             ('nil "off")
+             ('t "actionable only")
+             ('non-actionable "non-actionable only")))
   (shipit-notifications-buffer--rerender))
 
 (defun shipit-notifications-buffer--actionable-only-description ()
   "Describe the actionable-only toggle for the transient."
-  (format "Actionable only: %s"
-          (if shipit-notifications-buffer--actionable-only "on" "off")))
+  (format "Actionable: %s"
+          (pcase shipit-notifications-buffer--actionable-only
+            ('nil "off")
+            ('t "only")
+            ('non-actionable "inverse"))))
 
 (defun shipit-notifications-buffer-toggle-group-by-repo ()
   "Toggle whether notifications are nested under per-repo sections."

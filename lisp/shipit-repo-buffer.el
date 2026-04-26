@@ -570,6 +570,13 @@ with :filename and :content keys (the format returned by backend
         (if (not readme-text)
             (insert (propertize "   No README found\n" 'font-lock-face 'italic))
           (let* ((shipit--image-base-repo shipit-repo-buffer-repo)
+                 ;; Measure the wrap-column pixel width in THIS buffer's
+                 ;; face so the gif resizer doesn't fall back to the temp
+                 ;; render buffer's face (which may be narrower).
+                 (shipit--image-target-width
+                  (if (fboundp 'string-pixel-width)
+                      (string-pixel-width (make-string 80 ?M))
+                    (* 80 (frame-char-width))))
                  (format (shipit-repo-buffer--readme-format readme))
                  (readme-start (point)))
             (if (and (eq format 'markdown)
@@ -593,7 +600,9 @@ with :filename and :content keys (the format returned by backend
             (when (fboundp 'shipit--create-generic-url-overlays)
               (shipit--create-generic-url-overlays readme-start (point)))
             (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
-              (shipit--apply-code-block-backgrounds-in-region readme-start (point))))))
+              (shipit--apply-code-block-backgrounds-in-region readme-start (point)))
+            (when (fboundp 'shipit--animate-images-in-region)
+              (shipit--animate-images-in-region readme-start (point))))))
       (insert "\n"))))
 
 (defun shipit-repo-buffer--pr-type-label ()

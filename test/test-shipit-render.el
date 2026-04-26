@@ -801,6 +801,37 @@ so underlined runs (org-link) stay visually continuous across spaces."
   (should (string= "" (shipit--strip-face-on-whitespace "")))
   (should (null (shipit--strip-face-on-whitespace nil))))
 
+(ert-deftest test-shipit-gif-pixel-dimensions-parses-header ()
+  "GIVEN a fake GIF89a file with width=300, height=200
+WHEN parsing the header
+THEN returns (300 . 200)."
+  (let ((tmp (make-temp-file "shipit-gif-test" nil ".gif")))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'no-conversion))
+            (with-temp-file tmp
+              (set-buffer-multibyte nil)
+              (insert (concat "GIF89a"
+                              (string (mod 300 256) (/ 300 256)
+                                      (mod 200 256) (/ 200 256))))))
+          (let ((dim (shipit--gif-pixel-dimensions tmp)))
+            (should (equal '(300 . 200) dim))))
+      (delete-file tmp))))
+
+(ert-deftest test-shipit-gif-pixel-dimensions-rejects-non-gif ()
+  "GIVEN a non-GIF file
+WHEN parsing as GIF dimensions
+THEN returns nil."
+  (let ((tmp (make-temp-file "shipit-not-gif" nil ".bin")))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'no-conversion))
+            (with-temp-file tmp
+              (set-buffer-multibyte nil)
+              (insert "PNG\x89\x00\x00\x00")))
+          (should-not (shipit--gif-pixel-dimensions tmp)))
+      (delete-file tmp))))
+
 (ert-deftest test-shipit-resolve-reference-style-images-shorthand ()
   "GIVEN markdown with shorthand reference image and matching definition
 WHEN resolving reference-style images

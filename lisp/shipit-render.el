@@ -1276,6 +1276,80 @@ SIZE defaults to 20 pixels."
             "👤"))
       "👤")))
 
+(defvar shipit--image-target-width nil
+  "Pixel width caller wants images (especially animated GIFs) sized to.
+Bound dynamically by callers that have a live buffer context — e.g.,
+the README inserter measures `string-pixel-width' for an 80-char string
+in the destination buffer's face and binds this.  Inside the markdown
+render path the current buffer is a `with-temp-buffer', so measurements
+taken there use the temp buffer's face which may differ from the
+destination.  When unbound the renderer falls back to its own
+heuristics.")
+
+(defun shipit--animate-images-in-region (start end)
+  "Animate any multi-frame images displayed via text properties in START..END.
+The render pipeline creates images inside `with-temp-buffer', so calling
+`image-animate' there would bind the timer to a buffer that dies as soon
+as the temp buffer is unwound.  Callers run this helper after inserting
+the rendered text into the destination buffer; the timer then captures
+that live buffer and the animation actually plays."
+  (save-excursion
+    (let ((pos start))
+      (while (and pos (< pos end))
+        (let ((display (get-text-property pos 'display)))
+          (when (and (consp display)
+                     (eq (car display) 'image)
+                     (fboundp 'image-multi-frame-p)
+                     (image-multi-frame-p display))
+            (image-animate display 0 t)))
+        (setq pos (next-single-property-change pos 'display nil end))))))
+
+(defun shipit--prepare-gif-for-display (file target-width)
+  "Return a path to a GIF FILE suitable for display, pre-resized if needed.
+Animated GIFs scaled at display time often hit Emacs's tardiness limit
+(2s cumulative) and the animation aborts.  When `gifsicle' is available
+and FILE's natural width exceeds TARGET-WIDTH, this resizes the file
+once to a sibling cache path and returns that.  Otherwise returns FILE
+unchanged.  Failures fall back to the original file."
+  (let ((dim (shipit--gif-pixel-dimensions file)))
+    (cond
+     ((not (and dim (car dim) (> (car dim) target-width)))
+      file)
+     ((not (executable-find "gifsicle"))
+      file)
+     (t
+      (let ((dest (concat (file-name-sans-extension file)
+                          (format "-w%d.gif" target-width))))
+        (unless (file-exists-p dest)
+          (when (fboundp 'shipit--debug-log)
+            (shipit--debug-log "GIF-RESIZE: %s w=%d -> %s w=%d"
+                               file (car dim) dest target-width))
+          (condition-case err
+              (call-process "gifsicle" nil nil nil
+                            (format "--resize-width=%d" target-width)
+                            file "-o" dest)
+            (error
+             (when (fboundp 'shipit--debug-log)
+               (shipit--debug-log "GIF-RESIZE failed: %s" err)))))
+        (if (file-exists-p dest) dest file))))))
+
+(defun shipit--gif-pixel-dimensions (file)
+  "Return (WIDTH . HEIGHT) of GIF FILE in pixels by parsing its header.
+GIF89a / GIF87a store the canvas size as two little-endian 16-bit
+values at byte offsets 6 (width) and 8 (height).  Returns nil if FILE
+isn't a GIF or the header can't be read."
+  (condition-case nil
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert-file-contents-literally file nil 0 10)
+        (let ((bytes (buffer-string)))
+          (when (and (>= (length bytes) 10)
+                     (or (equal (substring bytes 0 6) "GIF87a")
+                         (equal (substring bytes 0 6) "GIF89a")))
+            (cons (+ (aref bytes 6) (* 256 (aref bytes 7)))
+                  (+ (aref bytes 8) (* 256 (aref bytes 9)))))))
+    (error nil)))
+
 (defun shipit--detect-image-type-from-content (file)
   "Detect image type from FILE content by reading magic bytes.
 Returns symbol like `png', `jpeg', `gif', `webp', `svg', or nil if unknown."
@@ -1575,9 +1649,6 @@ URL, leaving the surrounding fragments visible in the buffer."
     (setq url (format "https://raw.githubusercontent.com/%s/HEAD/%s"
                       shipit--image-base-repo url)))
   (let ((cached-file (shipit--download-and-cache-image url)))
-    (when (fboundp 'shipit--debug-log)
-      (shipit--debug-log "IMAGE-DISPLAY: url=%s cached-file=%s display-images-p=%s"
-                         url cached-file (display-images-p)))
     (if cached-file
         (condition-case err
             ;; Detect image type from content, not filename
@@ -1591,33 +1662,80 @@ URL, leaving the surrounding fragments visible in the buffer."
                               (window-body-width nil t)))
                    (max-h (or shipit-image-max-height
                               (window-body-height nil t)))
-                   (image (create-image cached-file image-type nil
-                                        :max-width max-w
-                                        :max-height max-h)))
-              (when (fboundp 'shipit--debug-log)
-                (shipit--debug-log "IMAGE-DISPLAY: Created image type=%s" image-type))
-              ;; Animate GIFs.  Without this call `create-image' yields a
-              ;; static first-frame image; the README demo gif looks frozen.
-              (when (and image (eq image-type 'gif)
-                         (fboundp 'image-multi-frame-p)
-                         (image-multi-frame-p image))
-                (image-animate image 0 t))
+                   ;; GIFs: pre-resize the file with `gifsicle' so each
+                   ;; frame is already at the target size.  Asking Emacs to
+                   ;; scale every frame at display time was hitting the 2s
+                   ;; tardiness cap and aborting animation on the 414-frame
+                   ;; demo gif.  Pre-resized files decode fast enough to keep
+                   ;; up.  If gifsicle isn't installed we fall back to
+                   ;; in-Emacs `:scale'.
+                   ;; Width resolution order:
+                   ;; 1. `shipit--image-target-width' bound by the caller.
+                   ;;    The caller knows the destination buffer's face and
+                   ;;    has already measured the wrap-column width — we
+                   ;;    trust it directly without applying the defcustom
+                   ;;    cap, since the cap is a fallback heuristic.
+                   ;; 2. Otherwise, `string-pixel-width' (or
+                   ;;    `frame-char-width') in the current buffer, capped
+                   ;;    by `shipit-animated-gif-max-width' if set.
+                   (gif-target-w
+                    (or (and (boundp 'shipit--image-target-width)
+                             shipit--image-target-width)
+                        (let ((natural
+                               (cond
+                                ((fboundp 'string-pixel-width)
+                                 (string-pixel-width (make-string 80 ?M)))
+                                (t (* 80 (frame-char-width))))))
+                          (if shipit-animated-gif-max-width
+                              (min natural shipit-animated-gif-max-width)
+                            natural))))
+                   (gif-file (when (eq image-type 'gif)
+                               (shipit--prepare-gif-for-display
+                                cached-file gif-target-w)))
+                   (gif-dim (when (eq image-type 'gif)
+                              (shipit--gif-pixel-dimensions
+                               (or gif-file cached-file))))
+                   (gif-scale (when (and gif-dim (car gif-dim)
+                                         (> (car gif-dim) gif-target-w))
+                                (/ (float gif-target-w) (car gif-dim))))
+                   (image (cond
+                           ((and (eq image-type 'gif) gif-scale)
+                            (create-image (or gif-file cached-file)
+                                          image-type nil
+                                          :scale gif-scale
+                                          :transform-smoothing nil))
+                           ((eq image-type 'gif)
+                            (create-image (or gif-file cached-file)
+                                          image-type nil
+                                          :transform-smoothing nil))
+                           (t
+                            (create-image cached-file image-type nil
+                                          :max-width max-w
+                                          :max-height max-h)))))
+              ;; Note: do NOT call `image-animate' here.  This function
+              ;; runs inside `with-temp-buffer' (the markdown render path),
+              ;; so `(current-buffer)' is a temp buffer that gets killed as
+              ;; soon as we return.  `image-animate' captures it as the
+              ;; image's `:animate-buffer' and cancels the timer the first
+              ;; time it fires (the buffer is dead).  Animation is started
+              ;; later by `shipit--animate-images-in-region', which the
+              ;; caller invokes after the rendered text is inserted into
+              ;; the real destination buffer.
               (if (display-images-p)
                   (let ((image-string (propertize " " 'display image 'rear-nonsticky '(display))))
-                    (when (fboundp 'shipit--debug-log)
-                      (shipit--debug-log "IMAGE-DISPLAY: Returning image with display property"))
-                    (concat "\n[Image: " alt-text "]\n" image-string "\n"))
-                (progn
-                  (when (fboundp 'shipit--debug-log)
-                    (shipit--debug-log "IMAGE-DISPLAY: display-images-p is nil, showing URL"))
-                  (format "\n[Image: %s - %s]\n" alt-text url))))
+                    ;; Inline placement: just the propertized space carrying
+                    ;; the image.  No surrounding newlines and no `[Image:
+                    ;; ALT]' label — the image is visible, and the label was
+                    ;; forcing each badge onto its own line.
+                    image-string)
+                (format "[Image: %s - %s]" alt-text url)))
           (error
            (when (fboundp 'shipit--debug-log)
              (shipit--debug-log "IMAGE-DISPLAY: Error loading image: %S" err))
-           (format "\n[Image: %s - Error loading: %s]\n" alt-text (error-message-string err))))
+           (format "[Image: %s - Error loading: %s]" alt-text (error-message-string err))))
       (when (fboundp 'shipit--debug-log)
         (shipit--debug-log "IMAGE-DISPLAY: Download failed for %s" url))
-      (format "\n[Image: %s - Download failed]\n" alt-text))))
+      (format "[Image: %s - Download failed]" alt-text))))
 
 (defun shipit--strip-inline-html-tags (text)
   "Strip safe inline HTML tags from TEXT, preserving their content.

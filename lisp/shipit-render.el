@@ -3275,6 +3275,24 @@ For bare URLs, returns the URL range from the current match data."
     ;; Bare URL — overlay the URL itself
     (cons (match-beginning 0) (match-end 0))))
 
+(defun shipit--create-link-overlays-by-line (start end configure-fn)
+  "Create one overlay per visible line span between START and END.
+Skips leading whitespace on each line so an underline face does not
+paint across the continuation indent of a wrapped link.  CONFIGURE-FN
+is called with each freshly-created overlay to set its properties
+(face, keymap, help-echo, etc.)."
+  (save-excursion
+    (let ((seg-start start))
+      (while (< seg-start end)
+        (goto-char seg-start)
+        (skip-chars-forward " \t" end)
+        (let* ((visible-start (point))
+               (seg-end (min (line-end-position) end)))
+          (when (< visible-start seg-end)
+            (let ((ov (make-overlay visible-start seg-end)))
+              (funcall configure-fn ov)))
+          (setq seg-start (min (1+ seg-end) end)))))))
+
 (defun shipit--create-generic-url-overlays (&optional body-start body-end)
   "Create overlays for any remaining URLs not already handled by specific passes.
 For markdown links [text](url), the overlay covers the visible link text.
@@ -3305,8 +3323,7 @@ BODY-START and BODY-END define the region to search."
               (forward-char)))
           (when (and (not already-handled)
                      (= (mod backtick-count 2) 0))
-            (let ((ov (make-overlay ov-start ov-end))
-                  (keymap (make-sparse-keymap))
+            (let ((keymap (make-sparse-keymap))
                   (url-copy url))
               (set-keymap-parent keymap (current-local-map))
               (define-key keymap [return]
@@ -3317,11 +3334,14 @@ BODY-START and BODY-END define the region to search."
                 (lambda ()
                   (interactive)
                   (shipit--generic-url-action-menu url-copy current-prefix-arg)))
-              (overlay-put ov 'face 'markdown-plain-url-face)
-              (overlay-put ov 'keymap keymap)
-              (overlay-put ov 'priority 100)
-              (overlay-put ov 'evaporate t)
-              (overlay-put ov 'help-echo (format "%s (RET: actions)" url)))))))))
+              (shipit--create-link-overlays-by-line
+               ov-start ov-end
+               (lambda (ov)
+                 (overlay-put ov 'face 'markdown-plain-url-face)
+                 (overlay-put ov 'keymap keymap)
+                 (overlay-put ov 'priority 100)
+                 (overlay-put ov 'evaporate t)
+                 (overlay-put ov 'help-echo (format "%s (RET: actions)" url)))))))))))
 
 (defun shipit--show-pr-summary-at-cursor ()
   "Show PR summary in echo area if cursor is on a PR reference overlay."

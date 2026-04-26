@@ -801,5 +801,29 @@ so underlined runs (org-link) stay visually continuous across spaces."
   (should (string= "" (shipit--strip-face-on-whitespace "")))
   (should (null (shipit--strip-face-on-whitespace nil))))
 
+(ert-deftest test-shipit-create-link-overlays-by-line-splits-at-newline ()
+  "GIVEN a wrapped link spanning two lines with continuation indent
+WHEN creating link overlays via shipit--create-link-overlays-by-line
+THEN one overlay covers the visible chars on each line, skipping the
+     leading whitespace of the continuation line — so the configured
+     face (underline) does not paint across the indent."
+  (with-temp-buffer
+    (insert "Privacy\n     Policy.")
+    (let* ((start (point-min))
+           (end (1- (point-max)))
+           (created '()))
+      (shipit--create-link-overlays-by-line
+       start end
+       (lambda (ov)
+         (push (cons (overlay-start ov) (overlay-end ov)) created)))
+      (should (= 2 (length created)))
+      (let* ((sorted (sort created #'car-less-than-car))
+             (l1 (nth 0 sorted))
+             (l2 (nth 1 sorted)))
+        (should (= 1 (car l1)))
+        (should (= 8 (cdr l1)))
+        (should (= 14 (car l2)))
+        (should (= end (cdr l2)))))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

@@ -832,6 +832,42 @@ THEN returns nil."
           (should-not (shipit--gif-pixel-dimensions tmp)))
       (delete-file tmp))))
 
+(ert-deftest test-shipit-org-image-links-wrapped-link ()
+  "GIVEN org `[[LINK][file:IMG]]' wrapper around a badge image
+WHEN converting org image links to HTML
+THEN result is `<img src=\"IMG\" />' (the wrapping link is dropped)."
+  (let ((out (shipit--org-image-links-to-html
+              "[[https://elpa.nongnu.org/p.html][file:https://example.com/badge.svg]]")))
+    (should (string-match-p "<img src=\"https://example\\.com/badge\\.svg\" />" out))
+    (should-not (string-match-p "\\[\\[" out))))
+
+(ert-deftest test-shipit-org-image-links-bare-file-link ()
+  "GIVEN bare org `[[file:IMG]]' image link
+WHEN converting org image links to HTML
+THEN result is `<img src=\"IMG\" alt=\"\" />'."
+  (let ((out (shipit--org-image-links-to-html "[[file:foo.png]]")))
+    (should (string-match-p "<img src=\"foo\\.png\" alt=\"\" />" out))))
+
+(ert-deftest test-shipit-org-image-links-with-alt ()
+  "GIVEN org `[[file:IMG][ALT]]' with alt text
+WHEN converting org image links to HTML
+THEN result is `<img src=\"IMG\" alt=\"ALT\" />'."
+  (let ((out (shipit--org-image-links-to-html "[[file:bar.svg][BarAlt]]")))
+    (should (string-match-p "<img src=\"bar\\.svg\" alt=\"BarAlt\" />" out))))
+
+(ert-deftest test-shipit-org-image-links-merges-consecutive-lines ()
+  "GIVEN org image links on consecutive lines (one per badge)
+WHEN converting org image links to HTML
+THEN consecutive image-only lines collapse to a single line so badges
+     render side-by-side."
+  (let* ((src (concat "[[https://a.example/p][file:https://a.example/badge.svg]]\n"
+                      "[[https://b.example/p][file:https://b.example/badge.svg]]\n"))
+         (out (shipit--org-image-links-to-html src)))
+    ;; No newline survives between the two img tags.
+    (should (string-match-p "<img src=\"https://a\\.example/badge\\.svg\" /> <img src=\"https://b\\.example/badge\\.svg\" />"
+                            out))
+    (should-not (string-match-p "/>\\s-*\\n\\s-*<img" out))))
+
 (ert-deftest test-shipit-resolve-reference-style-images-shorthand ()
   "GIVEN markdown with shorthand reference image and matching definition
 WHEN resolving reference-style images

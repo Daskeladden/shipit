@@ -4315,6 +4315,49 @@ and through the indentation of continuation lines."
   (interactive)
   (clrhash shipit--org-render-cache))
 
+(defun shipit--org-image-links-to-html (text)
+  "Convert org image links in TEXT to HTML <img> tags.
+Org embeds images via:
+  [[LINK-URL][file:IMAGE-URL]]   — wrapped link with badge image
+  [[file:IMAGE-URL]]             — bare image link
+  [[file:IMAGE-URL][ALT]]        — image link with alt text
+Rewriting them to inline `<img>' lets the same inline image processor
+used for markdown handle them, so badges render as images instead of
+as `file:...' text links."
+  (let ((result text))
+    (setq result
+          (replace-regexp-in-string
+           "\\[\\[\\([^]]+\\)\\]\\[file:\\([^]]+\\)\\]\\]"
+           (lambda (m)
+             (save-match-data
+               (string-match
+                "\\[\\[\\([^]]+\\)\\]\\[file:\\([^]]+\\)\\]\\]" m)
+               (format "<img src=\"%s\" />" (match-string 2 m))))
+           result nil t))
+    (setq result
+          (replace-regexp-in-string
+           "\\[\\[file:\\([^]]+\\)\\]\\(?:\\[\\([^]]*\\)\\]\\)?\\]"
+           (lambda (m)
+             (save-match-data
+               (string-match
+                "\\[\\[file:\\([^]]+\\)\\]\\(?:\\[\\([^]]*\\)\\]\\)?\\]" m)
+               (format "<img src=\"%s\" alt=\"%s\" />"
+                       (match-string 1 m)
+                       (or (match-string 2 m) ""))))
+           result nil t))
+    ;; Merge consecutive image-only lines into a single line so badges
+    ;; that the org source put on separate lines (one per badge) render
+    ;; side-by-side, matching how github.com lays them out.
+    (let ((prev nil))
+      (while (not (equal prev result))
+        (setq prev result)
+        (setq result
+              (replace-regexp-in-string
+               "\\(<img [^>]+/>\\)[ \t]*\n[ \t]*\\(<img \\)"
+               "\\1 \\2"
+               result t))))
+    result))
+
 (defun shipit--render-org-uncached (text)
   "Render org-mode TEXT without consulting the cache.
 This is the actual rendering implementation; callers should use
@@ -4331,7 +4374,8 @@ active (e.g. a magit-section buffer)."
           (require 'org nil t))
         (if (featurep 'org)
             (progn
-              (insert (replace-regexp-in-string "\r" "" text))
+              (insert (shipit--org-image-links-to-html
+                       (replace-regexp-in-string "\r" "" text)))
               (defvar org-mode-hook)
               (defvar org-startup-folded)
               (defvar org-startup-indented)

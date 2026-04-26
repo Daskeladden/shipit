@@ -266,10 +266,11 @@ THEN the timestamp value is propertized with `shipit-timestamp-face'."
                         'shipit-timestamp-face)))
         (kill-buffer buf)))))
 
-(ert-deftest test-shipit-notifications-buffer-header-shows-shown-over-total ()
-  "GIVEN a buffer with total-count=666 and 2 activities in the hash
+(ert-deftest test-shipit-notifications-buffer-header-shows-server-range-in-all-scope ()
+  "GIVEN a buffer in `all' scope on page 1 with total-count=666 and 2 activities
 WHEN the buffer is rendered
-THEN the header shows `2/666' (shown / total)."
+THEN the header shows the absolute server-side range `[1-2]/666'
+     (page-start through page-start+shown-1 over total)."
   (cl-letf (((symbol-function 'shipit--check-notifications-background)
              (lambda (&rest _args) nil))
             ((symbol-function 'shipit--check-notifications-background-async)
@@ -295,7 +296,7 @@ THEN the header shows `2/666' (shown / total)."
             (let ((header (buffer-substring-no-properties
                            (point-min)
                            (min (point-max) 200))))
-              (should (string-match-p "2/666" header))))
+              (should (string-match-p "\\[1-2\\]/666" header))))
         (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-header-filter-changes-denominator ()

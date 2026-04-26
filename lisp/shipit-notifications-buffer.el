@@ -476,7 +476,26 @@ in `font-lock-comment-face' so only the active value pops."
          (total shipit-notifications-buffer--total-count)
          (filter-active (not (string-empty-p
                               shipit-notifications-buffer--filter-text)))
+         (per-page 100)
+         (total-pages (when total (max 1 (ceiling (/ (float total) per-page)))))
+         ;; In `all' scope, show the absolute server-side range of items
+         ;; we're viewing (e.g. `[2201-2250]/2819') instead of the bare
+         ;; shown count, so the user can tell at a glance where the
+         ;; current page sits in the full feed.
+         (range-part
+          ;; Filter-active state still uses the matches/loaded format
+          ;; below — the range-of-the-page concept doesn't map onto a
+          ;; client-side filter that may pick items from anywhere.
+          (when (and total
+                     (not filter-active)
+                     (eq shipit-notifications-buffer--display-scope 'all)
+                     (> shown 0))
+            (let* ((page-start (1+ (* per-page
+                                      (1- shipit-notifications-buffer--current-page))))
+                   (page-end (min total (+ page-start shown -1))))
+              (format ", [%d-%d]/%d" page-start page-end total))))
          (count-part (cond
+                      (range-part range-part)
                       ;; Filter is client-side, so the true matches-on-server
                       ;; count is unknowable without pulling every page.
                       ;; Show matches/loaded, plus the server total in parens
@@ -487,8 +506,6 @@ in `font-lock-comment-face' so only the active value pops."
                       (filter-active (format ", %d/%d" shown loaded))
                       (total (format ", %d/%d" shown total))
                       (t (format ", %d shown" shown))))
-         (per-page 100)
-         (total-pages (when total (max 1 (ceiling (/ (float total) per-page)))))
          (cmt 'font-lock-comment-face))
     (insert (propertize "  [" 'font-lock-face cmt))
     (insert (propertize (symbol-name shipit-notifications-buffer--display-scope)

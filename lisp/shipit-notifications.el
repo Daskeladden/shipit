@@ -1004,7 +1004,7 @@ the user to press `g'."
              (unread (cdr (assq 'unread notification))))
 
         ;; Skip notifications that we've locally marked as read
-        (if (gethash notification-id shipit--locally-marked-read-notifications)
+        (if (and unread (gethash notification-id shipit--locally-marked-read-notifications))
             (progn
               (shipit--debug-log "Skipping locally-marked-read notification: %s" notification-id)
               (setq skipped-locally-read (1+ skipped-locally-read)))
@@ -1241,12 +1241,17 @@ as a kill-switch when scoped behind another condition."
            always (shipit--auto-mark-condition-matches-p key val activity)))
 
 (defun shipit--auto-mark-rules-apply ()
-  "Mark every activity matching any auto-mark rule as read.
+  "Mark every UNREAD activity matching any auto-mark rule as read.
 Walks `shipit--notification-pr-activities', collects activities
 that match any rule in `shipit-notifications-auto-mark-read-rules',
 then marks each via `shipit--mark-notification-read'.  Returns the
-number of activities marked.  No-op when the rules list is empty
-so adding the hook has zero cost for users who do not configure it."
+number of activities marked.
+
+Already-read items are skipped — re-marking them would be a no-op
+on the server but their cache entry would still be removed, which
+would hide them from the `all' scope view.  No-op when the rules
+list is empty so adding the hook has zero cost for users who do
+not configure it."
   (let ((rules shipit-notifications-auto-mark-read-rules)
         (count 0))
     (when (and rules
@@ -1255,11 +1260,14 @@ so adding the hook has zero cost for users who do not configure it."
       (let ((to-mark '()))
         (maphash
          (lambda (_k activity)
-           (when (cl-some (lambda (rule)
-                            (shipit--auto-mark-rule-matches-activity-p
-                             rule activity))
-                          rules)
-             (push activity to-mark)))
+           (let* ((notification (cdr (assq 'notification activity)))
+                  (unread (cdr (assq 'unread notification))))
+             (when (and unread
+                        (cl-some (lambda (rule)
+                                   (shipit--auto-mark-rule-matches-activity-p
+                                    rule activity))
+                                 rules))
+               (push activity to-mark))))
          shipit--notification-pr-activities)
         (dolist (a to-mark)
           (let ((number (or (cdr (assq 'number a))
@@ -2027,23 +2035,39 @@ TYPE is \"pr\" or \"issue\" (defaults to \"pr\" for backward compatibility)."
 ;; ASYNC NOTIFICATION POLLING FUNCTIONS
 ;; These functions replace the synchronous versions to prevent Emacs stuttering
 
+(defun shipit--notifications-buffer-in-all-scope-p ()
+  "Return non-nil when any visible notifications buffer is in `all' scope.
+The background poll fetches the global `unread' scope and `merges'
+the result into the activity cache by replacing every GitHub entry —
+which would wipe out read items the user is currently viewing in the
+`all' scope.  Callers should skip the poll when this returns non-nil."
+  (and (get-buffer "*shipit-notifications*")
+       (with-current-buffer "*shipit-notifications*"
+         (and (boundp 'shipit-notifications-buffer--display-scope)
+              (eq shipit-notifications-buffer--display-scope 'all)))))
+
 (defun shipit--check-notifications-background-async (&optional force-fresh)
   "Check GitHub notifications asynchronously to prevent Emacs stuttering.
 If FORCE-FRESH is non-nil, bypasses ETag cache to get fresh data."
-  (condition-case err
-      (let* ((params (shipit--notification-params-for-scope shipit-notifications-scope)))
-        ;; Fetch first page asynchronously
-        (shipit--fetch-all-notifications-async
-         params
-         nil
-         force-fresh
-         (lambda (all-notifications)
-           (shipit--process-notifications all-notifications)
-           ;; Poll backend notifications if backends are configured
-           (when (featurep 'shipit-issue-backends)
-             (shipit--poll-backend-notifications)))))
-    (error
-     (shipit--debug-log "Async background notifications check failed: %s" (error-message-string err)))))
+  (cond
+   ((shipit--notifications-buffer-in-all-scope-p)
+    (shipit--debug-log
+     "Skipping background poll: notifications buffer is in `all' scope"))
+   (t
+    (condition-case err
+        (let* ((params (shipit--notification-params-for-scope shipit-notifications-scope)))
+          ;; Fetch first page asynchronously
+          (shipit--fetch-all-notifications-async
+           params
+           nil
+           force-fresh
+           (lambda (all-notifications)
+             (shipit--process-notifications all-notifications)
+             ;; Poll backend notifications if backends are configured
+             (when (featurep 'shipit-issue-backends)
+               (shipit--poll-backend-notifications)))))
+      (error
+       (shipit--debug-log "Async background notifications check failed: %s" (error-message-string err)))))))
 
 (defun shipit--fetch-all-notifications-async (params &optional since-watermark force-fresh callback)
   "Fetch notifications asynchronously with pagination.

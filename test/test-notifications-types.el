@@ -1356,20 +1356,24 @@ return value equals 2."
                  (push (list number repo type) marked))))
       (puthash "owner/foo:pr:1"
                '((repo . "owner/foo") (number . 1) (type . "pr")
-                 (subject . "Big feature") (pr-state . "open"))
+                 (subject . "Big feature") (pr-state . "open")
+                 (notification . ((unread . t))))
                shipit--notification-pr-activities)
       (puthash "owner/foo:pr:2"
                '((repo . "owner/foo") (number . 2) (type . "pr")
-                 (subject . "Old work") (pr-state . "merged"))
+                 (subject . "Old work") (pr-state . "merged")
+                 (notification . ((unread . t))))
                shipit--notification-pr-activities)
       (puthash "owner/foo:pr:3"
                '((repo . "owner/foo") (number . 3) (type . "pr")
                  (subject . "chore: bump dep from 1 to 2")
-                 (pr-state . "open"))
+                 (pr-state . "open")
+                 (notification . ((unread . t))))
                shipit--notification-pr-activities)
       (puthash "owner/foo:issue:4"
                '((repo . "owner/foo") (number . 4) (type . "issue")
-                 (subject . "Something wrong"))
+                 (subject . "Something wrong")
+                 (notification . ((unread . t))))
                shipit--notification-pr-activities)
       (let ((count (shipit--auto-mark-rules-apply)))
         (should (= count 2))
@@ -1457,6 +1461,26 @@ THEN the rule matches; otherwise it does not."
                  '(:state merged :not (:title "mythos")) merged-with-mythos))
     (should-not (shipit--auto-mark-rule-matches-activity-p
                  '(:state merged :not (:title "mythos")) open-no-mythos))))
+
+(ert-deftest test-shipit--auto-mark-rules-apply-skips-read-items ()
+  "GIVEN an activity that matches a rule but is already read on the server
+WHEN `shipit--auto-mark-rules-apply' runs
+THEN the item is NOT marked again — re-marking would remove the cache
+     entry and hide it from the `all' scope view."
+  (let ((marked '())
+        (shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications-auto-mark-read-rules '((:state merged))))
+    (cl-letf (((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked))))
+      (puthash "owner/foo:pr:5"
+               '((repo . "owner/foo") (number . 5) (type . "pr")
+                 (pr-state . "merged")
+                 (notification . ((unread))))
+               shipit--notification-pr-activities)
+      (let ((count (shipit--auto-mark-rules-apply)))
+        (should (= count 0))
+        (should-not marked)))))
 
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

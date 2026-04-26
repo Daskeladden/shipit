@@ -4685,12 +4685,31 @@ behavior when switching between multiple PR buffers."
        (concat (shipit--get-comment-type-icon "comment" "💬") " ")))
     (_ (concat (shipit--get-comment-type-icon "comment" "💬") " "))))
 
+(defvar shipit--svg-lib-icon-cache (make-hash-table :test 'equal :size 256)
+  "Cache for `shipit--svg-lib-icon-with-bg' results.
+Key is `(NAME FACE-OR-NIL BG ARGS)'.  Each call to `svg-lib-icon'
+parses XML files and allocates significant memory; with notifications
+re-rendering 50+ items per refresh that becomes the dominant CPU cost
+in profiles.  Cache hits return the previously-built image object.")
+
+(defun shipit--svg-lib-icon-cache-clear ()
+  "Clear `shipit--svg-lib-icon-cache' (e.g. after theme/font changes)."
+  (interactive)
+  (clrhash shipit--svg-lib-icon-cache))
+
 (defun shipit--svg-lib-icon-with-bg (name face-or-nil &rest args)
   "Call svg-lib-icon with NAME, FACE-OR-NIL and ARGS, adding theme-aware background.
-Automatically sets :background to the default face background if not specified."
-  (let ((bg (face-background 'default nil 'default)))
-    (apply #'svg-lib-icon name face-or-nil
-           (append args (list :background bg)))))
+Automatically sets :background to the default face background if not specified.
+Memoized via `shipit--svg-lib-icon-cache' so repeated renders of the
+same icon do not re-parse the SVG XML each time."
+  (let* ((bg (face-background 'default nil 'default))
+         (key (list name face-or-nil bg args))
+         (cached (gethash key shipit--svg-lib-icon-cache)))
+    (or cached
+        (let ((icon (apply #'svg-lib-icon name face-or-nil
+                           (append args (list :background bg)))))
+          (puthash key icon shipit--svg-lib-icon-cache)
+          icon))))
 
 (defun shipit--get-reactions-placeholder-icon ()
   "Get reactions placeholder icon - octicon smiley from svglib if enabled and available, grey emoji fallback.

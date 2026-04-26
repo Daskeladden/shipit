@@ -388,14 +388,13 @@ Applies both the repo filter and the text filter."
 
 (defun shipit-notifications-buffer--pending-mark-count ()
   "Return the count of notifications locally marked but not yet on the server.
-The server reports `shipit-notifications-buffer--total-count' for the
-current scope.  Local auto-mark-read removes entries from the activity
-cache, so the gap between that total and the loaded activity count is
-the number of marks that haven't propagated yet (they'll vanish on the
-next refresh)."
-  (let ((total shipit-notifications-buffer--total-count)
-        (loaded (length (shipit-notifications-buffer--all-activities))))
-    (if (and total (> total loaded)) (- total loaded) 0)))
+Only meaningful for the `unread' scope where the local cache holds the
+entire unread set — for the paginated `all' scope, total > loaded just
+means there are more pages, not that anything is pending sync."
+  (when (eq shipit-notifications-buffer--display-scope 'unread)
+    (let ((total shipit-notifications-buffer--total-count)
+          (loaded (length (shipit-notifications-buffer--all-activities))))
+      (if (and total (> total loaded)) (- total loaded) 0))))
 
 (defun shipit-notifications-buffer--insert-header ()
   "Insert the buffer header, including scope, page info, and count.
@@ -473,7 +472,7 @@ in `font-lock-comment-face' so only the active value pops."
                'font-lock-face 'font-lock-constant-face)))
     (let ((pending (shipit-notifications-buffer--pending-mark-count)))
       (insert (propertize count-part 'font-lock-face cmt))
-      (when (> pending 0)
+      (when (and pending (> pending 0))
         (insert (propertize (format ", %d pending refresh" pending)
                             'font-lock-face cmt))))
     (insert (propertize "]" 'font-lock-face cmt))))
@@ -2347,6 +2346,131 @@ the cached last-rendered value so unchanged input is a no-op."
                                      shipit-notifications-buffer--filter-text)))
         (setq shipit-notifications-buffer--filter-text new-filter)
         (shipit-notifications-buffer--rerender)))))
+
+;;; Debug / perf monitoring helpers
+
+(defvar shipit-notifications-buffer--render-times nil
+  "Recent render durations (seconds), most-recent first.
+Populated when `shipit-notifications-buffer-debug-monitor' is on; the
+last 20 entries are kept.")
+
+(defvar shipit-notifications-buffer--render-monitor-active nil
+  "Non-nil when render-time monitoring is enabled.")
+
+(defun shipit-notifications-buffer--monitor-render-advice (orig-fn &rest args)
+  "Record wall-clock time of a single render call."
+  (let ((t0 (current-time)))
+    (unwind-protect
+        (apply orig-fn args)
+      (push (float-time (time-since t0))
+            shipit-notifications-buffer--render-times)
+      (when (> (length shipit-notifications-buffer--render-times) 20)
+        (setq shipit-notifications-buffer--render-times
+              (cl-subseq shipit-notifications-buffer--render-times 0 20))))))
+
+(defun shipit-notifications-buffer-debug-monitor (&optional disable)
+  "Toggle render-time monitoring on/off.
+With prefix arg, force DISABLE.  When on, every full render of the
+notifications buffer records its wall-clock time; recent samples
+show up in `shipit-notifications-buffer-debug-stats'."
+  (interactive "P")
+  (cond
+   ((or disable shipit-notifications-buffer--render-monitor-active)
+    (advice-remove 'shipit-notifications-buffer--render
+                   #'shipit-notifications-buffer--monitor-render-advice)
+    (setq shipit-notifications-buffer--render-monitor-active nil)
+    (message "shipit notifications: render monitor OFF"))
+   (t
+    (advice-add 'shipit-notifications-buffer--render :around
+                #'shipit-notifications-buffer--monitor-render-advice)
+    (setq shipit-notifications-buffer--render-monitor-active t)
+    (setq shipit-notifications-buffer--render-times nil)
+    (message "shipit notifications: render monitor ON"))))
+
+(defun shipit-notifications-buffer-debug-stats ()
+  "Show a snapshot of state likely to explain notifications-buffer slowness.
+Reports: scope/page, activity-cache size, total-count, queue depths,
+recent render durations, GC metrics, and notifications-buffer
+overlay/section/byte counts (regardless of which buffer is current
+when invoked)."
+  (interactive)
+  (let* ((nbuf (get-buffer "*shipit-notifications*"))
+         (scope (when nbuf
+                  (buffer-local-value
+                   'shipit-notifications-buffer--display-scope nbuf)))
+         (page (when nbuf
+                 (buffer-local-value
+                  'shipit-notifications-buffer--current-page nbuf)))
+         (total (when nbuf
+                  (buffer-local-value
+                   'shipit-notifications-buffer--total-count nbuf)))
+         (loaded (length (shipit-notifications-buffer--all-activities)))
+         (buf-size (when nbuf (with-current-buffer nbuf (buffer-size))))
+         (overlays (when nbuf
+                     (with-current-buffer nbuf
+                       (length (overlays-in (point-min) (point-max))))))
+         (sections (when nbuf
+                     (with-current-buffer nbuf
+                       (let ((c 0) (pos (point-min)))
+                         (while (< pos (point-max))
+                           (when (get-text-property pos 'magit-section)
+                             (cl-incf c))
+                           (setq pos (or (next-single-property-change
+                                          pos 'magit-section nil (point-max))
+                                         (point-max))))
+                         c))))
+         (url-queue-len (length (and (boundp 'url-queue) url-queue)))
+         (etag-cache-size (and (boundp 'shipit-gh-etag--persistent-cache)
+                               (hash-table-p shipit-gh-etag--persistent-cache)
+                               (hash-table-count shipit-gh-etag--persistent-cache)))
+         (locally-marked (and (boundp 'shipit--locally-marked-read-notifications)
+                              (hash-table-p shipit--locally-marked-read-notifications)
+                              (hash-table-count shipit--locally-marked-read-notifications)))
+         (render-times shipit-notifications-buffer--render-times)
+         (gc-elapsed gc-elapsed)
+         (gcs-done gcs-done))
+    (with-help-window "*shipit-notifications-debug*"
+      (with-current-buffer "*shipit-notifications-debug*"
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (propertize "shipit notifications debug stats\n"
+                              'face 'bold))
+          (insert (format "%s\n\n" (format-time-string "%FT%T")))
+          (insert (format "Scope:           %S\n" scope))
+          (insert (format "Page:            %S\n" page))
+          (insert (format "Server total:    %S\n" total))
+          (insert (format "Loaded in cache: %d\n" loaded))
+          (insert (format "Section count:   %S (in *shipit-notifications*)\n" sections))
+          (insert (format "Overlay count:   %S (in *shipit-notifications*)\n" overlays))
+          (insert (format "Buffer size:     %S bytes\n" buf-size))
+          (insert (format "url-queue depth: %d\n" url-queue-len))
+          (insert (format "ETag cache size: %S entries\n" etag-cache-size))
+          (insert (format "Locally-marked:  %S ids\n" locally-marked))
+          (insert "\n")
+          (insert (propertize "Recent render times (sec, newest first):\n"
+                              'face 'bold))
+          (cond
+           ((not shipit-notifications-buffer--render-monitor-active)
+            (insert "  (monitor off — run M-x shipit-notifications-buffer-debug-monitor)\n"))
+           ((null render-times)
+            (insert "  (no samples yet)\n"))
+           (t
+            (dolist (s render-times)
+              (insert (format "  %.3f\n" s)))
+            (insert (format "  avg: %.3f, max: %.3f, min: %.3f, n=%d\n"
+                            (/ (apply #'+ render-times) (length render-times))
+                            (apply #'max render-times)
+                            (apply #'min render-times)
+                            (length render-times)))))
+          (insert "\n")
+          (insert (propertize "GC since Emacs start:\n" 'face 'bold))
+          (insert (format "  gc-elapsed: %.2f s\n" gc-elapsed))
+          (insert (format "  gcs-done:   %d\n" gcs-done))
+          (insert (format "  gc-cons-threshold: %s\n" gc-cons-threshold)))))))
+
+;; The general-purpose profiler lives in `shipit-debug.el' as
+;; `shipit-debug-profile' (also bound under R in `shipit-debug-menu').
+;; The notifications-specific debug-monitor and debug-stats stay here.
 
 (provide 'shipit-notifications-buffer)
 ;;; shipit-notifications-buffer.el ends here

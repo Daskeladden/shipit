@@ -557,7 +557,9 @@ Only outputs if debug logging is enabled via transient or variable."
    [("s" "Scan all comments" shipit-debug-scan-all-comments)
     ("i" "Comment insertion analysis" shipit-debug-comment-insertion-analysis)
     ("S" "System state" shipit-debug-system-state)]
-   [("P" "PR data analysis" shipit-debug-pr-data-analysis)]]
+   [("P" "PR data analysis" shipit-debug-pr-data-analysis)
+    ("R" "Profile Emacs (write report)" shipit-debug-profile)
+    ("L" "List shipit timers" shipit-debug-list-timers)]]
   ["Log Management"
    [("v" "View debug log" shipit-debug-view-log)
     ("c" "Clear debug log" shipit-debug-clear-log)
@@ -866,6 +868,101 @@ Shows type, value, hidden state, start/end positions, and nesting depth."
       (shipit--debug-log "%s  heading: %s" indent (string-trim heading-text)))
     (dolist (child children)
       (shipit--debug-dump-section child (1+ depth)))))
+
+(defcustom shipit-debug-profile-file
+  "/tmp/shipit-debug-profile.txt"
+  "Path written by `shipit-debug-profile' alongside the popup report."
+  :type 'string :group 'shipit)
+
+(defcustom shipit-debug-profile-mode 'cpu
+  "Default profiler mode used by `shipit-debug-profile'.
+One of `cpu', `mem', or `cpu+mem'.  CPU is the most useful for
+diagnosing wall-clock slowness."
+  :type '(choice (const cpu) (const mem) (const cpu+mem))
+  :group 'shipit)
+
+;;;###autoload
+(defun shipit-debug-profile (seconds)
+  "Profile Emacs for SECONDS, then pop AND save a fully-expanded report.
+Mode is `shipit-debug-profile-mode' (default `cpu').  The report
+buffer is also written to `shipit-debug-profile-file' so it can be
+shared with someone debugging via tooling that can only read files
+(e.g. an AI assistant).  Every node in the saved tree is expanded."
+  (interactive (list (read-number "Profile for seconds: " 5)))
+  (require 'profiler)
+  (profiler-reset)
+  (profiler-start shipit-debug-profile-mode)
+  (let ((path shipit-debug-profile-file))
+    (run-with-timer
+     seconds nil
+     (lambda ()
+       (profiler-stop)
+       (profiler-report)
+       (condition-case err
+           (let ((buf (cl-find-if
+                       (lambda (b)
+                         (string-match-p "Profiler-Report"
+                                         (buffer-name b)))
+                       (buffer-list))))
+             (cond
+              ((not buf)
+               (message "Profile: no report buffer found"))
+              (t
+               (with-current-buffer buf
+                 (goto-char (point-min))
+                 (forward-line 1)
+                 (let ((iters 0))
+                   (while (and (< iters 50)
+                               (save-excursion
+                                 (goto-char (point-min))
+                                 (re-search-forward
+                                  "^ *[0-9.,]+ +[0-9]+%[ ]*[+]" nil t)))
+                     (cl-incf iters)
+                     (goto-char (point-min))
+                     (while (re-search-forward
+                             "^ *[0-9.,]+ +[0-9]+%[ ]*[+]" nil t)
+                       (ignore-errors (profiler-report-toggle-entry))
+                       (forward-line 1))))
+                 (goto-char (point-min))
+                 (write-region (point-min) (point-max) path nil 'silent))
+               (message "Profile complete (%ds): wrote %s (%d bytes) from %s"
+                        seconds path
+                        (or (file-attribute-size (file-attributes path)) -1)
+                        (buffer-name buf)))))
+         (error
+          (message "Profile write failed: %s" (error-message-string err)))))))
+  (message "Profiling for %d s — do the slow thing now…" seconds))
+
+;;;###autoload
+(defun shipit-debug-list-timers ()
+  "List active timers whose payload references shipit.
+Useful when most CPU samples land in `timer-event-handler' and you
+need to know which timer is firing."
+  (interactive)
+  (require 'timer)
+  (let* ((all (append timer-list timer-idle-list))
+         (matches (cl-remove-if-not
+                   (lambda (tm)
+                     (let* ((fn (timer--function tm))
+                            (name (cond
+                                   ((symbolp fn) (symbol-name fn))
+                                   ((byte-code-function-p fn) "<bytecode>")
+                                   (t (format "%S" fn)))))
+                       (and name (string-match-p "shipit" name))))
+                   all)))
+    (with-help-window "*shipit-timers*"
+      (with-current-buffer "*shipit-timers*"
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (format "Active shipit timers: %d (of %d total)\n\n"
+                          (length matches) (length all)))
+          (dolist (tm matches)
+            (insert (format "  next=%s repeat=%s idle=%s fn=%S\n"
+                            (format-time-string "%H:%M:%S"
+                                                (timer--time tm))
+                            (timer--repeat-delay tm)
+                            (timer--idle-delay tm)
+                            (timer--function tm)))))))))
 
 (provide 'shipit-debug)
 ;;; shipit-debug.el ends here

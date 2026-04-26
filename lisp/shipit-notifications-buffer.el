@@ -1911,11 +1911,16 @@ then refreshes."
   "Advance to the next page of notifications in `all' scope.
 Windowed: the buffer replaces the current view with only page N+1,
 it does not accumulate.  Refuses in `unread' scope where GitHub's
-own feed is already scoped to what's unread."
+own feed is already scoped to what's unread, and refuses past the
+last page when the total count is known."
   (interactive)
   (unless (eq shipit-notifications-buffer--display-scope 'all)
     (user-error "Next-page only applies in 'all' scope (current: %s)"
                 shipit-notifications-buffer--display-scope))
+  (let ((max-page (shipit-notifications-buffer--max-page)))
+    (when (and max-page
+               (>= shipit-notifications-buffer--current-page max-page))
+      (user-error "Already on the last page (%d)" max-page)))
   (cl-incf shipit-notifications-buffer--current-page)
   (message "Loading page %d..." shipit-notifications-buffer--current-page)
   (shipit-notifications-buffer-refresh))

@@ -957,17 +957,47 @@ Returns plist with :json, :status, :headers."
        (shipit--debug-log "Notifications fetch error: %s" (error-message-string err))
        nil))))
 
+(defvar shipit--rerender-in-progress nil
+  "Set non-nil while a notifications-buffer rerender is running.
+Prevents async callbacks (PR/workflow/backend enrichment) from
+re-entering the renderer mid-render.  Profilers caught O(N)
+recursion: every per-notification `magit-section-hide' yielded
+to `accept-process-output', a queued enrichment callback fired,
+called `--rerender-notifications-buffer-if-visible', which
+re-rendered the entire buffer mid-render.")
+
+(defvar-local shipit--rerender-pending nil
+  "Non-nil when a rerender was requested while one was in progress.
+Drained at the end of the active rerender; coalesces a burst of
+async callbacks into a single follow-up redraw.")
+
 (defun shipit--rerender-notifications-buffer-if-visible ()
   "Re-render the shipit notifications buffer if it exists.
 Used by deferred enrichment paths to surface freshly-resolved
 draft/state/author icons and workflow run URLs without forcing
-the user to press `g'."
+the user to press `g'.
+
+Re-entry guard: if a rerender is already in progress (e.g. an
+async enrichment callback fires while the buffer is rendering),
+just mark the buffer as needing another render and return.  The
+outer rerender drains the flag and runs once more — a single
+follow-up regardless of how many callbacks landed."
   (let ((buf (and (boundp 'shipit-notifications-buffer-name)
                   (get-buffer shipit-notifications-buffer-name))))
     (when (and buf (buffer-live-p buf))
       (with-current-buffer buf
-        (when (fboundp 'shipit-notifications-buffer--rerender)
-          (shipit-notifications-buffer--rerender))))))
+        (cond
+         (shipit--rerender-in-progress
+          (setq shipit--rerender-pending t))
+         (t
+          (let ((shipit--rerender-in-progress t))
+            (setq shipit--rerender-pending nil)
+            (when (fboundp 'shipit-notifications-buffer--rerender)
+              (shipit-notifications-buffer--rerender))
+            (when shipit--rerender-pending
+              (setq shipit--rerender-pending nil)
+              (when (fboundp 'shipit-notifications-buffer--rerender)
+                (shipit-notifications-buffer--rerender))))))))))
 
 (defun shipit--process-notifications (notifications)
   "Process notifications and extract PR and Issue activity."

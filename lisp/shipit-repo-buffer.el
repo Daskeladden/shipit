@@ -571,11 +571,15 @@ with :filename and :content keys (the format returned by backend
                      (wrapped (if (fboundp 'shipit--wrap-text)
                                   (shipit--strip-face-on-whitespace (shipit--wrap-text rendered 80 0))
                                 rendered)))
-                (if (eq format 'org)
-                    (shipit-repo-buffer--insert-org-as-sections wrapped 3)
+                (cond
+                 ((eq format 'org)
+                  (shipit-repo-buffer--insert-org-as-sections wrapped 3))
+                 ((eq format 'markdown)
+                  (shipit-repo-buffer--insert-markdown-as-sections wrapped 3))
+                 (t
                   (insert (concat "   "
                                   (replace-regexp-in-string "\n" "\n   " wrapped)
-                                  "\n")))))
+                                  "\n"))))))
             (when (fboundp 'shipit--create-generic-url-overlays)
               (shipit--create-generic-url-overlays readme-start (point)))
             (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
@@ -1755,7 +1759,7 @@ is <= START-LEVEL.  Returns the position just before that heading, or
             (forward-line 1))))
       (or found (point-max)))))
 
-(defun shipit-repo-buffer--detect-line-level (text pos)
+(defun shipit-repo-buffer--detect-org-line-level (text pos)
   "Return the org heading level for the line at POS in TEXT, or nil.
 A heading line starts with one or more asterisks followed by
 whitespace.  Detection runs on text, not text properties, so it
@@ -1775,13 +1779,34 @@ behind."
       (setq s (match-string 1 s)))
     (string-trim-right s)))
 
+(defun shipit-repo-buffer--detect-markdown-line-level (text pos)
+  "Return the markdown ATX heading level for the line at POS in TEXT, or nil.
+A heading line starts with one to six `#' characters followed by whitespace
+(`# ' through `###### ').  Setext-style underlines are not recognized."
+  (let* ((nl (or (string-match "\n" text pos) (length text)))
+         (line (substring-no-properties text pos nl)))
+    (when (string-match "\\`\\(#\\{1,6\\}\\)[ \t]+" line)
+      (length (match-string 1 line)))))
+
+(defun shipit-repo-buffer--strip-markdown-heading-markup (line)
+  "Return LINE with the leading `# ' markup and any trailing `#'s stripped.
+Trailing `#'s on ATX headings are part of the syntax (`# Title #') and not
+part of the title text."
+  (let ((s line))
+    (when (string-match "\\`[ \t]*#\\{1,6\\}[ \t]+\\(.*\\)\\'" s)
+      (setq s (match-string 1 s)))
+    (when (string-match "\\`\\(.*?\\)[ \t]+#+[ \t]*\\'" s)
+      (setq s (match-string 1 s)))
+    (string-trim-right s)))
+
 (defun shipit-repo-buffer--line-end-after (text pos)
   "Return the position just AFTER the newline ending the line at POS in TEXT."
   (let ((nl (string-match "\n" text pos)))
     (if nl (1+ nl) (length text))))
 
-(defun shipit-repo-buffer--next-heading-pos (text start max-level)
+(defun shipit-repo-buffer--next-heading-pos (text start max-level detect-fn)
   "Return position of next heading at or after START in TEXT.
+DETECT-FN takes (TEXT POS) and returns the heading level or nil.
 If MAX-LEVEL is non-nil, only headings at level <= MAX-LEVEL count.
 If MAX-LEVEL is nil, any heading line counts.
 Returns the length of TEXT when no matching heading is found."
@@ -1789,7 +1814,7 @@ Returns the length of TEXT when no matching heading is found."
         (text-len (length text))
         found)
     (while (and (not found) (< pos text-len))
-      (let ((level (shipit-repo-buffer--detect-line-level text pos)))
+      (let ((level (funcall detect-fn text pos)))
         (if (and level (or (null max-level) (<= level max-level)))
             (setq found pos)
           (setq pos (shipit-repo-buffer--line-end-after text pos)))))
@@ -1808,40 +1833,19 @@ absorb the next section's heading column."
       (insert indented)
       (unless (bolp) (insert "\n")))))
 
-(defun shipit-repo-buffer--insert-one-org-section (heading-line body indent level)
-  "Insert one org section as a magit section.
-HEADING-LINE is the heading text (no trailing newline).
-BODY is the section body (may contain sub-headings).
-INDENT is the column for indentation.  LEVEL is the heading level.
+(defun shipit-repo-buffer--insert-as-sections (text indent section-type detect-fn strip-fn)
+  "Insert TEXT into the current buffer as nested magit sections.
+Heading lines split TEXT into sections at the level of the first heading
+found.  Deeper headings inside a section's body are processed by a
+recursive call.
 
-Strips the leading `*+ ' org markup from the displayed heading so the
-section looks like a native magit section."
-  (let ((title (shipit-repo-buffer--strip-org-heading-markup heading-line)))
-    (magit-insert-section (org-heading nil)
-      (magit-insert-heading
-        (concat (make-string indent ?\s)
-                (propertize title 'font-lock-face 'magit-section-heading)))
-      (magit-insert-section-body
-        (when (> (length body) 0)
-          (shipit-repo-buffer--insert-org-as-sections body (+ indent 2)))
-        (unless (and (> (point) 1) (eq (char-before) ?\n))
-          (insert "\n"))))))
-
-(defun shipit-repo-buffer--insert-org-as-sections (text indent)
-  "Insert TEXT in the current buffer as nested magit sections.
-Heading lines (`^\\*+\\s-') split TEXT into sections at the level of
-the first heading found.  Deeper headings inside a section's body are
-processed by a recursive call; shallower headings would close the
-current section but the substring passed to the recursion never
-contains them.
-
-Each heading becomes a `magit-insert-section' of type `org-heading'.
-Text before the first heading is inserted as plain content."
+SECTION-TYPE is the symbol to pass to `magit-insert-section'.
+DETECT-FN takes (TEXT POS) → heading level or nil.
+STRIP-FN takes a heading line → cleaned title text."
   (let* ((text-len (length text))
-         (first-pos (shipit-repo-buffer--next-heading-pos text 0 nil))
+         (first-pos (shipit-repo-buffer--next-heading-pos text 0 nil detect-fn))
          (section-level (and (< first-pos text-len)
-                             (shipit-repo-buffer--detect-line-level
-                              text first-pos))))
+                             (funcall detect-fn text first-pos))))
     (cond
      ((not section-level)
       (when (> (length text) 0)
@@ -1853,16 +1857,45 @@ Text before the first heading is inserted as plain content."
             (shipit-repo-buffer--insert-content-with-indent preamble indent))))
       (let ((pos first-pos))
         (while (< pos text-len)
-          (let* ((level (shipit-repo-buffer--detect-line-level text pos))
-                 (line-end (or (string-match "\n" text pos) text-len))
+          (let* ((line-end (or (string-match "\n" text pos) text-len))
                  (next-line (shipit-repo-buffer--line-end-after text pos))
                  (heading-line (substring text pos line-end))
                  (section-end (shipit-repo-buffer--next-heading-pos
-                               text next-line section-level))
-                 (body (substring text next-line section-end)))
-            (shipit-repo-buffer--insert-one-org-section
-             heading-line body indent level)
+                               text next-line section-level detect-fn))
+                 (body (substring text next-line section-end))
+                 (title (funcall strip-fn heading-line)))
+            (magit-insert-section ((eval section-type) nil)
+              (magit-insert-heading
+                (concat (make-string indent ?\s)
+                        (propertize title 'font-lock-face 'magit-section-heading)))
+              (magit-insert-section-body
+                (when (> (length body) 0)
+                  (shipit-repo-buffer--insert-as-sections
+                   body (+ indent 2) section-type detect-fn strip-fn))
+                (unless (and (> (point) 1) (eq (char-before) ?\n))
+                  (insert "\n"))))
             (setq pos section-end))))))))
+
+(defun shipit-repo-buffer--insert-org-as-sections (text indent)
+  "Insert TEXT into the current buffer as nested magit sections of type
+`org-heading'.  Each `* heading' line opens a section whose body and
+sub-headings are nested inside.  Text before the first heading is
+inserted as plain content."
+  (shipit-repo-buffer--insert-as-sections
+   text indent 'org-heading
+   #'shipit-repo-buffer--detect-org-line-level
+   #'shipit-repo-buffer--strip-org-heading-markup))
+
+(defun shipit-repo-buffer--insert-markdown-as-sections (text indent)
+  "Insert TEXT into the current buffer as nested magit sections of type
+`markdown-heading'.  Each `# heading' line opens a section whose body
+and sub-headings are nested inside.  Text before the first heading is
+inserted as plain content.  Only ATX-style headings (`# ' through
+`###### ') are recognized; setext-style underlines are treated as body."
+  (shipit-repo-buffer--insert-as-sections
+   text indent 'markdown-heading
+   #'shipit-repo-buffer--detect-markdown-line-level
+   #'shipit-repo-buffer--strip-markdown-heading-markup))
 
 (provide 'shipit-repo-buffer)
 ;;; shipit-repo-buffer.el ends here

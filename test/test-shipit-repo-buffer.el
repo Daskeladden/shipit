@@ -1694,5 +1694,75 @@ THEN child sections of type `org-heading' are added to the wrapping section."
         (should level2)
         (should (eq 'org-heading (oref level2 type)))))))
 
+(ert-deftest test-repo-buffer-detect-markdown-line-level ()
+  "Detection returns the heading level for #-prefixed ATX lines, nil otherwise."
+  (require 'shipit-repo-buffer)
+  (should (= 1 (shipit-repo-buffer--detect-markdown-line-level "# H1\n" 0)))
+  (should (= 2 (shipit-repo-buffer--detect-markdown-line-level "## H2\n" 0)))
+  (should (= 6 (shipit-repo-buffer--detect-markdown-line-level "###### H6\n" 0)))
+  (should-not (shipit-repo-buffer--detect-markdown-line-level "####### too deep\n" 0))
+  (should-not (shipit-repo-buffer--detect-markdown-line-level "plain line\n" 0))
+  (should-not (shipit-repo-buffer--detect-markdown-line-level "#no-space\n" 0)))
+
+(ert-deftest test-repo-buffer-strip-markdown-heading-markup ()
+  "Strip leading hash markers and any closing hashes from an ATX heading line."
+  (require 'shipit-repo-buffer)
+  (should (equal "Title"
+                 (shipit-repo-buffer--strip-markdown-heading-markup "# Title")))
+  (should (equal "Title"
+                 (shipit-repo-buffer--strip-markdown-heading-markup "### Title")))
+  (should (equal "Title"
+                 (shipit-repo-buffer--strip-markdown-heading-markup "## Title ##")))
+  (should (equal "Title with spaces"
+                 (shipit-repo-buffer--strip-markdown-heading-markup "## Title with spaces"))))
+
+(ert-deftest test-repo-buffer-insert-markdown-as-sections-creates-magit-sections ()
+  "GIVEN rendered markdown with two top-level (\"# \") headings
+WHEN inserting via shipit-repo-buffer--insert-markdown-as-sections
+THEN child sections of type `markdown-heading' are added to the wrapping section."
+  (require 'shipit-repo-buffer)
+  (require 'magit-section)
+  (with-temp-buffer
+    (let ((inhibit-read-only t)
+          (text "# Usage\nbody line one\nbody line two\n# Setup\nsetup body\n")
+          root)
+      (magit-insert-section (test-root)
+        (setq root magit-insert-section--current)
+        (shipit-repo-buffer--insert-markdown-as-sections text 0))
+      (let ((types (mapcar (lambda (c) (oref c type)) (oref root children))))
+        (should (= 2 (cl-count 'markdown-heading types)))))))
+
+(ert-deftest test-repo-buffer-insert-markdown-as-sections-nests-children ()
+  "Sub-headings (level > parent) become nested child sections."
+  (require 'shipit-repo-buffer)
+  (require 'magit-section)
+  (with-temp-buffer
+    (let ((inhibit-read-only t)
+          (text "# Outer\nouter body\n## Inner\ninner body\n")
+          root)
+      (magit-insert-section (test-root)
+        (setq root magit-insert-section--current)
+        (shipit-repo-buffer--insert-markdown-as-sections text 0))
+      (let* ((level1 (car (oref root children)))
+             (level2 (and level1 (car (oref level1 children)))))
+        (should level1)
+        (should (eq 'markdown-heading (oref level1 type)))
+        (should level2)
+        (should (eq 'markdown-heading (oref level2 type)))))))
+
+(ert-deftest test-repo-buffer-insert-markdown-as-sections-strips-markup ()
+  "Heading display strips the leading hash markers so it renders as a plain title."
+  (require 'shipit-repo-buffer)
+  (require 'magit-section)
+  (with-temp-buffer
+    (let ((inhibit-read-only t)
+          (text "## Installation\nsteps here\n"))
+      (magit-insert-section (test-root)
+        (shipit-repo-buffer--insert-markdown-as-sections text 0)))
+    (goto-char (point-min))
+    (should (re-search-forward "^Installation$" nil t))
+    (goto-char (point-min))
+    (should-not (re-search-forward "^## " nil t))))
+
 (provide 'test-shipit-repo-buffer)
 ;;; test-shipit-repo-buffer.el ends here

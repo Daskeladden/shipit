@@ -1927,6 +1927,32 @@ Handles nested lists by tracking indent levels independently."
           (push line result)))
       (mapconcat #'identity (nreverse result) "\n"))))
 
+(defun shipit--rewrite-relative-markdown-links (text)
+  "Rewrite relative URLs in markdown `[text](url)' links to absolute paths.
+When `shipit--image-base-repo' is bound (READMEs and bodies rendered
+with a repo context), relative URLs become
+`https://github.com/<repo>/blob/HEAD/<path>' so the existing URL
+overlay handler (`shipit--create-generic-url-overlays') makes them
+clickable.  Already-absolute URLs, in-document anchors (`#section'),
+mailto: links, and image links (`![text](url)') are left untouched."
+  (if (not (and (boundp 'shipit--image-base-repo) shipit--image-base-repo))
+      text
+    (let ((repo shipit--image-base-repo))
+      (replace-regexp-in-string
+       "\\(\\(?:\\`\\|[^!]\\)\\)\\[\\([^]\n]+\\)\\](\\([^)\n]+\\))"
+       (lambda (m)
+         (save-match-data
+           (string-match
+            "\\(\\(?:\\`\\|[^!]\\)\\)\\[\\([^]\n]+\\)\\](\\([^)\n]+\\))" m)
+           (let ((prefix (match-string 1 m))
+                 (link-text (match-string 2 m))
+                 (url (match-string 3 m)))
+             (if (string-match-p "\\`\\(?:https?://\\|#\\|mailto:\\)" url)
+                 m
+               (format "%s[%s](https://github.com/%s/blob/HEAD/%s)"
+                       prefix link-text repo url)))))
+       text nil t))))
+
 (defun shipit--resolve-reference-style-images (text)
   "Resolve markdown reference-style images in TEXT to inline form.
 Reference-style images use a separate definition line and two main
@@ -4252,7 +4278,8 @@ This is the actual rendering implementation; callers should use
               ;; Note: Don't process images yet - they'll be done after markdown rendering
               (let* ((normalized (replace-regexp-in-string "\r" "" text))
                      (refs-resolved (shipit--resolve-reference-style-images normalized))
-                     (html-stripped (shipit--strip-inline-html-tags refs-resolved))
+                     (links-resolved (shipit--rewrite-relative-markdown-links refs-resolved))
+                     (html-stripped (shipit--strip-inline-html-tags links-resolved))
                      (html-converted (shipit--convert-inline-html html-stripped))
                      (aligned (shipit--align-markdown-tables-with-pandoc html-converted))
                      (escaped (shipit--escape-mid-word-underscores aligned))

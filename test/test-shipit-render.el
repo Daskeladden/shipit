@@ -855,6 +855,34 @@ THEN result is `<img src=\"IMG\" alt=\"ALT\" />'."
   (let ((out (shipit--org-image-links-to-html "[[file:bar.svg][BarAlt]]")))
     (should (string-match-p "<img src=\"bar\\.svg\" alt=\"BarAlt\" />" out))))
 
+(ert-deftest test-shipit-rewrite-relative-markdown-links-converts-paths ()
+  "GIVEN a relative markdown link `[SDK](sdk/README.md)' inside a repo
+WHEN rewriting relative links
+THEN the URL becomes the absolute github.com/<repo>/blob/HEAD/<path> form."
+  (let ((shipit--image-base-repo "owner/repo"))
+    (let ((out (shipit--rewrite-relative-markdown-links "- [SDK](sdk/README.md)\n")))
+      (should (string-match-p "\\[SDK\\](https://github\\.com/owner/repo/blob/HEAD/sdk/README\\.md)"
+                              out)))))
+
+(ert-deftest test-shipit-rewrite-relative-markdown-links-leaves-absolute-alone ()
+  "GIVEN already-absolute markdown links
+WHEN rewriting relative links
+THEN https URLs, anchors, and mailto links are not modified."
+  (let ((shipit--image-base-repo "owner/repo"))
+    (dolist (input '("[X](https://example.com/y)"
+                     "[Anchor](#section)"
+                     "[Email](mailto:foo@example.com)"))
+      (should (string= input (shipit--rewrite-relative-markdown-links input))))))
+
+(ert-deftest test-shipit-rewrite-relative-markdown-links-skips-images ()
+  "GIVEN an image link `![alt](path/to.png)'
+WHEN rewriting relative links
+THEN the image link is not rewritten (image processor handles those)."
+  (let ((shipit--image-base-repo "owner/repo"))
+    (let ((out (shipit--rewrite-relative-markdown-links "![alt](path/to.png)\n")))
+      (should (string-match-p "!\\[alt\\](path/to\\.png)" out))
+      (should-not (string-match-p "github\\.com" out)))))
+
 (ert-deftest test-shipit-org-image-links-merges-consecutive-lines ()
   "GIVEN org image links on consecutive lines (one per badge)
 WHEN converting org image links to HTML

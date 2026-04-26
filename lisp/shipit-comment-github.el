@@ -183,11 +183,17 @@ when all pages are fetched."
        (puthash cache-key '() shipit--reaction-cache))
      (puthash comment-id t results))))
 
-(defun shipit-comment-github--fetch-reactions-batch (config comments is-inline)
+(defun shipit-comment-github--fetch-reactions-batch (config comments is-inline &optional done-callback)
   "Fetch reactions for COMMENTS in parallel and cache them.
 CONFIG provides :repo.  IS-INLINE selects the reaction endpoint type.
 Uses `url-retrieve' with ETag caching for fast parallel fetching.
-Skips review comments (they use GraphQL)."
+Skips review comments (they use GraphQL).
+
+When DONE-CALLBACK is nil, blocks until all responses arrive (10s
+timeout), preserving existing behavior for callers that render
+immediately afterwards.  When DONE-CALLBACK is non-nil, dispatches
+all requests and returns immediately; DONE-CALLBACK is invoked once
+all responses have arrived (no UI thread blocking)."
   (let* ((repo (plist-get config :repo))
          (start-time (float-time))
          (pending-requests nil)
@@ -201,7 +207,9 @@ Skips review comments (they use GraphQL)."
          (url-automatic-caching t)
          (url-cache-directory (expand-file-name "url/cache" user-emacs-directory)))
 
-    (shipit--debug-log "[reactions-batch] Launching %d parallel requests" (length comments))
+    (shipit--debug-log "[reactions-batch] Launching %d parallel requests%s"
+                       (length comments)
+                       (if done-callback " (async)" ""))
 
     (dolist (comment comments)
       (let* ((comment-id (cdr (assq 'id comment)))
@@ -222,18 +230,39 @@ Skips review comments (they use GraphQL)."
                   t t))
            pending-requests))))
 
-    ;; Wait for all requests to complete (10s timeout).
-    ;; Use accept-process-output with a timeout instead of sleep-for so we
-    ;; wake up immediately when any response arrives, bounded only by actual
-    ;; HTTP latency rather than a fixed 50ms polling interval.
-    (let ((wait-start (float-time)))
-      (while (and (< (- (float-time) wait-start) 10.0)
-                  (< (hash-table-count results) (length pending-requests)))
-        (accept-process-output nil 0.1)))
-
-    (shipit--debug-log "[reactions-batch] Completed %d/%d in %.3fs"
-                       (hash-table-count results) (length pending-requests)
-                       (- (float-time) start-time))))
+    (cond
+     (done-callback
+      ;; Async path: schedule a poll-timer that fires DONE-CALLBACK once
+      ;; results matches dispatched count (or after 10s safety timeout).
+      ;; Polling via run-at-time avoids blocking the UI thread.
+      (let* ((expected (length pending-requests))
+             (deadline (+ (float-time) 10.0))
+             (poll-fn (make-symbol "shipit-reactions-batch-poll")))
+        (fset poll-fn
+              (lambda ()
+                (cond
+                 ((>= (hash-table-count results) expected)
+                  (shipit--debug-log "[reactions-batch] async complete %d/%d in %.3fs"
+                                     (hash-table-count results) expected
+                                     (- (float-time) start-time))
+                  (funcall done-callback))
+                 ((>= (float-time) deadline)
+                  (shipit--debug-log "[reactions-batch] async timed out %d/%d after %.3fs"
+                                     (hash-table-count results) expected
+                                     (- (float-time) start-time))
+                  (funcall done-callback))
+                 (t
+                  (run-at-time 0.1 nil poll-fn)))))
+        (run-at-time 0.1 nil poll-fn)))
+     (t
+      ;; Sync path: block until all responses arrive (10s timeout).
+      (let ((wait-start (float-time)))
+        (while (and (< (- (float-time) wait-start) 10.0)
+                    (< (hash-table-count results) (length pending-requests)))
+          (accept-process-output nil 0.1)))
+      (shipit--debug-log "[reactions-batch] Completed %d/%d in %.3fs"
+                         (hash-table-count results) (length pending-requests)
+                         (- (float-time) start-time))))))
 
 ;;; Optional operations
 

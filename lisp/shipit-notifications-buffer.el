@@ -52,6 +52,7 @@
 (declare-function shipit--browse-issue-url "shipit-notifications")
 (declare-function shipit--open-notification-pr "shipit-notifications")
 (declare-function shipit-pr--dispatch-activity-navigation "shipit-pr-actions")
+(declare-function shipit-buffer--on-section-ready "shipit-buffer")
 (declare-function shipit--open-notification-issue "shipit-notifications")
 (declare-function shipit--open-notification-discussion "shipit-notifications")
 
@@ -1156,28 +1157,50 @@ plist has the keys consumed by `shipit-pr--dispatch-activity-navigation'."
           :crossref-title (get-text-property (point) 'shipit-crossref-title)
           :inline-comment-path (get-text-property (point) 'shipit-inline-comment-path))))
 
+(defun shipit-notifications-buffer--required-pr-section (event-type review-state)
+  "Return the PR-buffer section that must be rendered to navigate to an activity.
+EVENT-TYPE and REVIEW-STATE are the activity props.  Returns nil for events
+that don't depend on a single async section (cross-references etc.)."
+  (cond
+   ((and (string= event-type "reviewed") (string= review-state "approved"))
+    'approval)
+   ((string= event-type "reviewed") 'activity)
+   ((string= event-type "commented") 'general-comments)
+   ((string= event-type "line-commented") 'files)
+   ((string= event-type "committed") 'commits)
+   (t nil)))
+
 (defun shipit-notifications-buffer--schedule-activity-nav (buffer props)
   "In BUFFER, dispatch activity navigation using PROPS once the buffer is ready.
-Waits on `shipit-buffer-ready-hook' for shipit PR buffers with pending
-async sections; on `shipit-issue-buffer-ready-hook' for issue buffers
-whose comments are still loading; otherwise dispatches immediately.
-The hook handler is one-shot and buffer-local."
+Waits on the specific PR section that holds the target activity (general
+comments, files, activity timeline, commits, approval) so navigation
+lands the moment that section finishes rendering — not after every async
+section has settled.  Falls back to `shipit-issue-buffer-ready-hook' for
+issue buffers whose comments are still loading.  Dispatches immediately
+when nothing relevant is pending."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (let* ((pr-pending (and (boundp 'shipit-buffer--pending-async-sections)
-                              shipit-buffer--pending-async-sections))
+      (let* ((event-type (plist-get props :event-type))
+             (review-state (plist-get props :review-state))
+             (pr-section (and (boundp 'shipit-buffer--pending-async-sections)
+                              (shipit-notifications-buffer--required-pr-section
+                               event-type review-state)))
              (issue-pending (and (derived-mode-p 'shipit-issue-mode)
-                                 (boundp 'shipit-issue-buffer-ready-hook)))
-             (hook-var (cond (pr-pending 'shipit-buffer-ready-hook)
-                             (issue-pending 'shipit-issue-buffer-ready-hook))))
-        (if hook-var
-            (let ((fn-sym (make-symbol "shipit-nav-on-ready")))
-              (fset fn-sym
-                    (lambda ()
-                      (remove-hook hook-var fn-sym t)
-                      (shipit-pr--dispatch-activity-navigation props)))
-              (add-hook hook-var fn-sym nil t))
-          (shipit-pr--dispatch-activity-navigation props))))))
+                                 (boundp 'shipit-issue-buffer-ready-hook))))
+        (cond
+         (pr-section
+          (shipit-buffer--on-section-ready
+           pr-section
+           (lambda () (shipit-pr--dispatch-activity-navigation props))))
+         (issue-pending
+          (let ((fn-sym (make-symbol "shipit-nav-on-ready")))
+            (fset fn-sym
+                  (lambda ()
+                    (remove-hook 'shipit-issue-buffer-ready-hook fn-sym t)
+                    (shipit-pr--dispatch-activity-navigation props)))
+            (add-hook 'shipit-issue-buffer-ready-hook fn-sym nil t)))
+         (t
+          (shipit-pr--dispatch-activity-navigation props)))))))
 
 
 (defun shipit-notifications-buffer-open ()

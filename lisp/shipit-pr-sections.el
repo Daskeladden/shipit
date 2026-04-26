@@ -1590,22 +1590,30 @@ REPO is the repository, PR-NUMBER is the PR number, COMMENTS is the list of comm
 
 (defun shipit--fetch-file-viewed-states-async (repo pr-number buffer)
   "Fetch file viewed states asynchronously for PR-NUMBER in REPO.
-Stores results in BUFFER's local `shipit--file-viewed-states'."
+Stores results in BUFFER's local `shipit--file-viewed-states'.
+Backend may use a true async path (callback-based) or fall back to
+deferring a sync call via timer when the backend has no async support."
   (let* ((resolved (condition-case nil (shipit-pr--resolve-for-repo repo) (error nil)))
          (backend (car resolved))
          (config (cdr resolved))
          (fn (plist-get backend :fetch-file-viewed-states)))
     (when fn
       (shipit--debug-log "ASYNC: Starting viewed-states fetch for PR %s" pr-number)
-      (run-at-time 0 nil
-                   (lambda ()
-                     (condition-case nil
-                         (let ((states (funcall fn config pr-number)))
-                           (when (and states (buffer-live-p buffer))
-                             (with-current-buffer buffer
-                               (setq-local shipit--file-viewed-states states))
-                             (shipit--debug-log "ASYNC: Viewed states fetched, %d files" (length states))))
-                       (error nil)))))))
+      (let ((handler (lambda (states)
+                       (when (and states (buffer-live-p buffer))
+                         (with-current-buffer buffer
+                           (setq-local shipit--file-viewed-states states))
+                         (shipit--debug-log "ASYNC: Viewed states fetched, %d files" (length states))))))
+        (condition-case err
+            (funcall fn config pr-number handler)
+          (wrong-number-of-arguments
+           ;; Backend doesn't support callback yet — fall back to deferred sync.
+           (shipit--debug-log "ASYNC: backend lacks callback, deferring sync (%s)" err)
+           (run-at-time 0 nil
+                        (lambda ()
+                          (condition-case nil
+                              (funcall handler (funcall fn config pr-number))
+                            (error nil))))))))))
 
 (defun shipit--file-viewed-p (filename)
   "Return non-nil if FILENAME is marked as viewed."

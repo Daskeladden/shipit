@@ -184,18 +184,28 @@ COMMENTS is a list of all comment objects to search through for parent comments.
 
 ;;; Reaction Fetching via Backend Dispatch
 
-(defun shipit-comment--fetch-reactions-batch (comments repo is-inline)
+(defun shipit-comment--fetch-reactions-batch (comments repo is-inline &optional done-callback)
   "Fetch reactions for COMMENTS via backend dispatch and cache them.
 REPO is the repository.  IS-INLINE selects the endpoint type.
 Uses :fetch-reactions-batch if available, otherwise loops :fetch-reactions.
-Skips review comments (they use GraphQL)."
+Skips review comments (they use GraphQL).
+
+When DONE-CALLBACK is non-nil, the backend's batch implementation may
+return immediately and invoke DONE-CALLBACK after all responses arrive
+(non-blocking).  Backends that don't support async fall back to sync
+and DONE-CALLBACK is invoked synchronously after the sync fetch."
   (when comments
     (let* ((resolved (shipit-comment--resolve-for-repo repo))
            (backend (car resolved))
            (config (cdr resolved))
            (batch-fn (plist-get backend :fetch-reactions-batch)))
       (if batch-fn
-          (funcall batch-fn config comments is-inline)
+          (condition-case _err
+              (funcall batch-fn config comments is-inline done-callback)
+            (wrong-number-of-arguments
+             ;; Backend doesn't accept the optional 4th arg yet.
+             (funcall batch-fn config comments is-inline)
+             (when done-callback (funcall done-callback))))
         ;; Fallback: loop :fetch-reactions for each comment
         (let ((fetch-fn (plist-get backend :fetch-reactions)))
           (dolist (comment comments)
@@ -209,7 +219,8 @@ Skips review comments (they use GraphQL)."
                   (error
                    (shipit--debug-log "fetch-reactions fallback failed for %s: %s"
                                       comment-id (error-message-string err))
-                   (puthash cache-key '() shipit--reaction-cache)))))))))))
+                   (puthash cache-key '() shipit--reaction-cache))))))
+          (when done-callback (funcall done-callback)))))))
 
 (defun shipit-comment--fetch-reactions (repo comment-id is-inline)
   "Fetch reactions for single COMMENT-ID via backend dispatch and cache.

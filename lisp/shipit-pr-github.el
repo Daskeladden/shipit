@@ -1493,25 +1493,39 @@ PAGE defaults to 1.  Returns the parsed JSON list."
             (setq shipit-pr-github--pr-node-id-cache id)
             id)))))
 
-(defun shipit-pr-github--fetch-file-viewed-states (config pr-number)
+(defun shipit-pr-github--viewed-states-from-graphql (result)
+  "Extract (path . viewerViewedState) alist from GraphQL RESULT."
+  (when result
+    (let* ((pr (cdr (assq 'pullRequest (cdr (assq 'repository result)))))
+           (files (cdr (assq 'files pr)))
+           (nodes (cdr (assq 'nodes files))))
+      (mapcar (lambda (node)
+                (cons (cdr (assq 'path node))
+                      (cdr (assq 'viewerViewedState node))))
+              (append nodes nil)))))
+
+(defun shipit-pr-github--fetch-file-viewed-states (config pr-number &optional callback)
   "Fetch viewerViewedState for all files in PR-NUMBER using CONFIG.
 Returns an alist of (filename . state) where state is
-\"VIEWED\", \"UNVIEWED\", or \"DISMISSED\"."
+\"VIEWED\", \"UNVIEWED\", or \"DISMISSED\".
+
+When CALLBACK is non-nil, fetch asynchronously and invoke CALLBACK
+with the alist (or nil on error).  Returns nil immediately."
   (let* ((repo (plist-get config :repo))
          (parts (split-string repo "/"))
          (owner (car parts))
          (name (cadr parts))
          (query (format "{ repository(owner: \"%s\", name: \"%s\") { pullRequest(number: %d) { files(first: 100) { nodes { path viewerViewedState } } } } }"
-                        owner name pr-number))
-         (result (shipit--graphql-query query nil)))
-    (when result
-      (let* ((pr (cdr (assq 'pullRequest (cdr (assq 'repository result)))))
-             (files (cdr (assq 'files pr)))
-             (nodes (cdr (assq 'nodes files))))
-        (mapcar (lambda (node)
-                  (cons (cdr (assq 'path node))
-                        (cdr (assq 'viewerViewedState node))))
-                (append nodes nil))))))
+                        owner name pr-number)))
+    (if callback
+        (shipit--graphql-request
+         query nil
+         (lambda (response)
+           (funcall callback
+                    (shipit-pr-github--viewed-states-from-graphql
+                     (cdr (assq 'data response))))))
+      (shipit-pr-github--viewed-states-from-graphql
+       (shipit--graphql-query query nil)))))
 
 (defun shipit-pr-github--mark-file-viewed (config pr-number path)
   "Mark file at PATH as viewed in PR-NUMBER using CONFIG."

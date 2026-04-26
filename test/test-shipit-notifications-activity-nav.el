@@ -64,10 +64,50 @@ THEN the dispatcher runs immediately with the given props."
          (current-buffer) '(:event-type "commented" :comment-id 42))
         (should (equal captured '(:event-type "commented" :comment-id 42)))))))
 
-(ert-deftest test-schedule-activity-nav-registers-hook-when-loading ()
-  "GIVEN a target buffer with pending async sections
+(ert-deftest test-schedule-activity-nav-waits-for-required-section ()
+  "GIVEN a target buffer where the section holding the activity is still pending
 WHEN schedule-activity-nav is called
-THEN a one-shot handler is registered on shipit-buffer-ready-hook."
+THEN dispatch waits for that specific section to be marked ready, not the
+whole buffer-ready hook."
+  (let ((dispatch-calls 0))
+    (cl-letf (((symbol-function 'shipit-pr--dispatch-activity-navigation)
+               (lambda (_p) (cl-incf dispatch-calls))))
+      (with-temp-buffer
+        ;; "commented" needs general-comments rendered.  files is irrelevant.
+        (setq-local shipit-buffer--pending-async-sections '(general-comments files))
+        (shipit-notifications-buffer--schedule-activity-nav
+         (current-buffer) '(:event-type "commented" :comment-id 42))
+        ;; Dispatcher should not have fired yet — general-comments still pending
+        (should (= dispatch-calls 0))
+        ;; Marking an unrelated section ready does NOT trigger dispatch
+        (shipit-buffer--mark-section-ready 'files)
+        (should (= dispatch-calls 0))
+        ;; Marking the required section ready fires the dispatch
+        (shipit-buffer--mark-section-ready 'general-comments)
+        (should (= dispatch-calls 1))
+        ;; Subsequent mark-ready calls do not double-dispatch
+        (shipit-buffer--mark-section-ready 'general-comments)
+        (should (= dispatch-calls 1))))))
+
+(ert-deftest test-schedule-activity-nav-dispatches-when-required-section-ready ()
+  "GIVEN the section holding the activity has already rendered
+WHEN schedule-activity-nav is called
+THEN dispatch runs immediately, even if other sections are still pending."
+  (let ((dispatch-calls 0))
+    (cl-letf (((symbol-function 'shipit-pr--dispatch-activity-navigation)
+               (lambda (_p) (cl-incf dispatch-calls))))
+      (with-temp-buffer
+        ;; general-comments NOT in pending → already rendered.  Other sections
+        ;; still pending — but irrelevant to a "commented" event.
+        (setq-local shipit-buffer--pending-async-sections '(checks files))
+        (shipit-notifications-buffer--schedule-activity-nav
+         (current-buffer) '(:event-type "commented" :comment-id 42))
+        (should (= dispatch-calls 1))))))
+
+(ert-deftest test-schedule-activity-nav-safety-timeout-drains-callbacks ()
+  "GIVEN a callback queued for a section that never reports
+WHEN the safety timeout forces fire-ready-hook
+THEN the queued callback runs anyway (so navigation isn't stranded)."
   (let ((dispatch-calls 0))
     (cl-letf (((symbol-function 'shipit-pr--dispatch-activity-navigation)
                (lambda (_p) (cl-incf dispatch-calls))))
@@ -75,15 +115,9 @@ THEN a one-shot handler is registered on shipit-buffer-ready-hook."
         (setq-local shipit-buffer--pending-async-sections '(general-comments))
         (shipit-notifications-buffer--schedule-activity-nav
          (current-buffer) '(:event-type "commented" :comment-id 42))
-        ;; Dispatcher should not have fired yet
         (should (= dispatch-calls 0))
-        ;; Hook should be populated
-        (should (bound-and-true-p shipit-buffer-ready-hook))
-        ;; Fire the hook manually to simulate buffer settling
-        (run-hooks 'shipit-buffer-ready-hook)
-        (should (= dispatch-calls 1))
-        ;; Firing again should NOT double-dispatch (one-shot semantics)
-        (run-hooks 'shipit-buffer-ready-hook)
+        ;; Simulate safety timeout firing without any mark-ready
+        (shipit-buffer--fire-ready-hook)
         (should (= dispatch-calls 1))))))
 
 (ert-deftest test-schedule-activity-nav-handles-dead-buffer ()

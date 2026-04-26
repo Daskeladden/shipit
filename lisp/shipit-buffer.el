@@ -258,18 +258,43 @@ Cleared by `shipit-buffer--reset-pending-sections'.")
 (defvar-local shipit-buffer--ready-timeout-timer nil
   "Safety timer that fires `shipit-buffer-ready-hook' after a timeout.")
 
+(defvar-local shipit-buffer--section-ready-callbacks nil
+  "Alist of (SECTION . CALLBACKS) waiting for specific sections to render.
+Each entry's CALLBACKS is a list of zero-argument functions invoked when
+SECTION is marked ready (or when the safety timeout fires).")
+
 (defun shipit-buffer--cancel-ready-timeout ()
   "Cancel the buffer-ready safety timer, if any."
   (when (timerp shipit-buffer--ready-timeout-timer)
     (cancel-timer shipit-buffer--ready-timeout-timer))
   (setq shipit-buffer--ready-timeout-timer nil))
 
+(defun shipit-buffer--run-section-callbacks (section)
+  "Pop and invoke all callbacks registered for SECTION."
+  (let ((callbacks (alist-get section shipit-buffer--section-ready-callbacks)))
+    (when callbacks
+      (setf (alist-get section shipit-buffer--section-ready-callbacks nil 'remove) nil)
+      (dolist (cb callbacks)
+        (condition-case err
+            (funcall cb)
+          (error
+           (shipit--debug-log "section-ready callback errored for %s: %s"
+                              section (error-message-string err))))))))
+
 (defun shipit-buffer--fire-ready-hook ()
-  "Run `shipit-buffer-ready-hook' once.  No-op if already fired."
+  "Run `shipit-buffer-ready-hook' once.  No-op if already fired.
+Also drains any remaining per-section callbacks so callers waiting on
+specific sections aren't stranded if the safety timer triggered us."
   (unless shipit-buffer--ready-hook-fired
     (setq shipit-buffer--ready-hook-fired t)
     (setq shipit-buffer--pending-async-sections nil)
     (shipit-buffer--cancel-ready-timeout)
+    ;; Drain any remaining section-specific callbacks.  They get the
+    ;; current state of the buffer — if their section never rendered,
+    ;; they'll fail to find what they want, but at least they won't hang.
+    (let ((sections (mapcar #'car shipit-buffer--section-ready-callbacks)))
+      (dolist (section sections)
+        (shipit-buffer--run-section-callbacks section)))
     (run-hooks 'shipit-buffer-ready-hook)))
 
 (defun shipit-buffer--reset-pending-sections (sections)
@@ -277,6 +302,7 @@ Cleared by `shipit-buffer--reset-pending-sections'.")
 Cancels any prior safety timer and schedules a new one."
   (shipit-buffer--cancel-ready-timeout)
   (setq shipit-buffer--pending-async-sections (copy-sequence sections))
+  (setq shipit-buffer--section-ready-callbacks nil)
   (setq shipit-buffer--ready-hook-fired nil)
   (let ((buf (current-buffer)))
     (setq shipit-buffer--ready-timeout-timer
@@ -288,13 +314,28 @@ Cancels any prior safety timer and schedules a new one."
                  (shipit-buffer--fire-ready-hook))))))))
 
 (defun shipit-buffer--mark-section-ready (section)
-  "Mark SECTION as rendered.  Fires ready hook when set empties.
-Ignores unknown or already-completed sections."
+  "Mark SECTION as rendered.  Fires section-specific callbacks first,
+then the ready hook when the pending set empties.  Ignores unknown or
+already-completed sections."
   (when (memq section shipit-buffer--pending-async-sections)
     (setq shipit-buffer--pending-async-sections
           (delq section shipit-buffer--pending-async-sections))
+    (shipit-buffer--run-section-callbacks section)
     (unless shipit-buffer--pending-async-sections
       (shipit-buffer--fire-ready-hook))))
+
+(defun shipit-buffer--on-section-ready (section callback)
+  "Run CALLBACK when SECTION is rendered in the current buffer.
+If SECTION is not in `shipit-buffer--pending-async-sections' (already
+rendered, or never expected this cycle), invoke CALLBACK immediately.
+Otherwise queue it; `shipit-buffer--mark-section-ready' fires it when
+the section completes (or `shipit-buffer--fire-ready-hook' drains it
+if the safety timeout triggered)."
+  (cond
+   ((memq section shipit-buffer--pending-async-sections)
+    (push callback (alist-get section shipit-buffer--section-ready-callbacks)))
+   (t
+    (funcall callback))))
 
 ;;; Imenu support
 
@@ -1134,11 +1175,17 @@ REPO is the repository, PR-NUMBER is the PR number."
                      (shipit--replace-general-comments-section-with-content
                       repo pr-number comments)
                      (shipit-buffer--mark-section-ready 'general-comments)
-                     ;; Fetch reactions in parallel after rendering (non-blocking)
+                     ;; Dispatch reaction requests truly non-blocking so
+                     ;; buffer-ready callbacks (e.g., activity navigation
+                     ;; scheduled by the notifications buffer) can fire
+                     ;; without waiting on HTTP.  Reactions display on the
+                     ;; next refresh.
                      (when comments
                        (let ((active-comments (cl-remove-if (lambda (c) (cdr (assq 'outdated c))) comments)))
                          (when active-comments
-                           (shipit-comment--fetch-reactions-batch active-comments repo nil)))))))))
+                           (shipit-comment--fetch-reactions-batch
+                            active-comments repo nil
+                            (lambda () nil))))))))))
           ;; Non-GitHub: clear placeholder with empty comments
           (shipit--replace-general-comments-section-with-content repo pr-number nil)
           (shipit-buffer--mark-section-ready 'general-comments))

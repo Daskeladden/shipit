@@ -202,6 +202,24 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "L") #'shipit-toggle-timestamp-format)
     (define-key map (kbd "M-w") #'shipit-notifications-buffer-copy-url)
     (define-key map (kbd "w") #'shipit-notifications-buffer-watch)
+    ;; Direct shortcuts mirroring the filter transient (still accessible via f).
+    (define-key map (kbd "s") #'shipit-notifications-buffer-toggle-scope)
+    (define-key map (kbd "!") #'shipit-notifications-buffer-toggle-actionable-only)
+    (define-key map (kbd "G") #'shipit-notifications-buffer-toggle-group-by-repo)
+    (define-key map (kbd "t") #'shipit-notifications-buffer-set-filter)
+    (define-key map (kbd "c") #'shipit-notifications-buffer-clear-filter)
+    (define-key map (kbd "r") #'shipit-notifications-buffer-set-repo-filter)
+    (define-key map (kbd "R") #'shipit-notifications-buffer-clear-repo-filter)
+    (define-key map (kbd "y") #'shipit-notifications-buffer-set-type-filter)
+    (define-key map (kbd "Y") #'shipit-notifications-buffer-clear-type-filter)
+    (define-key map (kbd "e") #'shipit-notifications-buffer-set-state-filter)
+    (define-key map (kbd "E") #'shipit-notifications-buffer-clear-state-filter)
+    (define-key map (kbd "a") #'shipit-notifications-buffer-set-since-filter)
+    (define-key map (kbd "A") #'shipit-notifications-buffer-clear-since-filter)
+    (define-key map (kbd "b") #'shipit-notifications-buffer-set-before-filter)
+    (define-key map (kbd "B") #'shipit-notifications-buffer-clear-before-filter)
+    (define-key map (kbd "Z") #'shipit-notifications-buffer-mark-resolved-read)
+    (define-key map (kbd "x") #'shipit-notifications-buffer-clear-all-filters)
     map)
   "Keymap for `shipit-notifications-buffer-mode'.")
 
@@ -1793,26 +1811,50 @@ with rule edits made from the transient."
      shipit-notifications-buffer-customize-auto-mark-rules)
     ("q" "Back" transient-quit-one)]])
 
+(defun shipit-notifications-buffer--preview-resolved-rows ()
+  "Add strike-through overlays to notification rows whose PR is resolved.
+Walks the buffer's notification sections and marks the ones whose
+activity has `pr-state' merged or closed.  Reuses the auto-mark
+preview overlay list so a single
+`shipit-notifications-buffer--clear-auto-mark-preview' undoes it."
+  (when (bound-and-true-p magit-root-section)
+    (dolist (child (oref magit-root-section children))
+      (when (eq (oref child type) 'notification-entry)
+        (let* ((activity (oref child value))
+               (state (cdr (assq 'pr-state activity))))
+          (when (member state '("merged" "closed"))
+            (shipit-notifications-buffer--add-preview-row-overlay child)))))))
+
 (defun shipit-notifications-buffer-mark-resolved-read ()
   "Mark all merged and closed PR notifications as read.
 Walks the full activity hash (not just visible rows) so users can
 clean up resolved noise without paging through every entry first.
-Prompts with the count before marking."
+Previews the targets with a strike-through overlay (same visual as
+the auto-mark regex preview) before the y/n prompt; the overlay is
+torn down whether you confirm or abort."
   (interactive)
   (let ((resolved (shipit-notifications-buffer--collect-resolved-prs)))
     (cond
      ((null resolved)
       (message "No resolved PRs to mark as read"))
-     ((yes-or-no-p (format "Mark %d resolved PR%s (merged/closed) as read? "
-                           (length resolved)
-                           (if (= 1 (length resolved)) "" "s")))
-      (dolist (notif resolved)
-        (when (fboundp 'shipit--mark-notification-read)
-          (shipit--mark-notification-read (car notif) (cadr notif) t (caddr notif))))
-      (message "Marked %d resolved PR%s as read"
-               (length resolved)
-               (if (= 1 (length resolved)) "" "s"))
-      (shipit-notifications-buffer-refresh)))))
+     (t
+      (shipit-notifications-buffer--clear-auto-mark-preview)
+      (shipit-notifications-buffer--preview-resolved-rows)
+      (redisplay t)
+      (unwind-protect
+          (when (yes-or-no-p
+                 (format "Mark %d resolved PR%s (merged/closed) as read? "
+                         (length resolved)
+                         (if (= 1 (length resolved)) "" "s")))
+            (dolist (notif resolved)
+              (when (fboundp 'shipit--mark-notification-read)
+                (shipit--mark-notification-read
+                 (car notif) (cadr notif) t (caddr notif))))
+            (message "Marked %d resolved PR%s as read"
+                     (length resolved)
+                     (if (= 1 (length resolved)) "" "s"))
+            (shipit-notifications-buffer-refresh))
+        (shipit-notifications-buffer--clear-auto-mark-preview))))))
 
 ;;; Scope / pagination
 

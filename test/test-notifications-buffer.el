@@ -182,7 +182,7 @@ THEN the buffer-local total-count is nil (unknown until probed)."
 (ert-deftest test-shipit-notifications-buffer-header-shows-page-of-total-pages ()
   "GIVEN total-count=250 in all scope at page 2
 WHEN the buffer is rendered
-THEN the header shows `page: 2/3' (250/100 per-page = 3 pages total)."
+THEN the header shows `page: 2/5' (250/50 per-page = 5 pages total)."
   (cl-letf (((symbol-function 'shipit--check-notifications-background)
              (lambda (&rest _args) nil))
             ((symbol-function 'shipit--check-notifications-background-async)
@@ -198,13 +198,13 @@ THEN the header shows `page: 2/3' (250/100 per-page = 3 pages total)."
             (let ((header (buffer-substring-no-properties
                            (point-min)
                            (min (point-max) 200))))
-              (should (string-match-p "page: 2/3" header))))
+              (should (string-match-p "page: 2/5" header))))
         (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-header-page-uses-constant-face ()
-  "GIVEN buffer in `all' scope at page 2 of 3
+  "GIVEN buffer in `all' scope at page 2 of 5 (250/50 per page)
 WHEN the header is rendered
-THEN the `2/3' page number is propertized with
+THEN the `2/5' page number is propertized with
 `font-lock-constant-face' (and not `font-lock-comment-face')."
   (cl-letf (((symbol-function 'shipit--check-notifications-background)
              (lambda (&rest _args) nil))
@@ -219,7 +219,7 @@ THEN the `2/3' page number is propertized with
                   shipit-notifications-buffer--total-count 250)
             (shipit-notifications-buffer--rerender)
             (goto-char (point-min))
-            (should (search-forward "2/3" nil t))
+            (should (search-forward "2/5" nil t))
             (should (eq (get-text-property (1- (point)) 'font-lock-face)
                         'font-lock-constant-face)))
         (kill-buffer buf)))))

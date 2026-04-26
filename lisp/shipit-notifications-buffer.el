@@ -476,7 +476,10 @@ in `font-lock-comment-face' so only the active value pops."
          (total shipit-notifications-buffer--total-count)
          (filter-active (not (string-empty-p
                               shipit-notifications-buffer--filter-text)))
-         (per-page 100)
+         ;; Matches `per_page' actually returned by GitHub for
+         ;; `/notifications' (capped at 50 server-side regardless of
+         ;; what the client requests).
+         (per-page 50)
          (total-pages (when total (max 1 (ceiling (/ (float total) per-page)))))
          ;; In `all' scope, show the absolute server-side range of items
          ;; we're viewing (e.g. `[2201-2250]/2819') instead of the bare
@@ -1958,10 +1961,12 @@ Refuses when already at page 1."
   (shipit-notifications-buffer-refresh))
 
 (defun shipit-notifications-buffer--max-page ()
-  "Return the known last page number, or nil if the total probe has not returned."
+  "Return the known last page number, or nil if the total probe has not returned.
+Uses 50 per page since GitHub caps `/notifications' at that regardless of
+the requested `per_page'."
   (let ((total shipit-notifications-buffer--total-count))
     (when (and total (> total 0))
-      (max 1 (ceiling (/ (float total) 100))))))
+      (max 1 (ceiling (/ (float total) 50))))))
 
 (defun shipit-notifications-buffer-first-page ()
   "Jump to page 1 in `all' scope."

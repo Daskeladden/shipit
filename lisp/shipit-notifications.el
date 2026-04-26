@@ -745,11 +745,13 @@ Uses nesting depth counter to handle nested pause/resume calls."
 SCOPE is one of `all', `participating', `unread',
 `unread-participating'."
   (pcase scope
-    ('all '((all . "true") (per_page . 100)))
-    ('participating '((participating . "true") (per_page . 100)))
-    ('unread '((per_page . 100)))
-    ('unread-participating '((participating . "true") (per_page . 100)))
-    (_ '((per_page . 100)))))
+    ;; GitHub caps `/notifications' at per_page=50; asking for more is
+    ;; silently truncated server-side and breaks the buffer's page math.
+    ('all '((all . "true") (per_page . 50)))
+    ('participating '((participating . "true") (per_page . 50)))
+    ('unread '((per_page . 50)))
+    ('unread-participating '((participating . "true") (per_page . 50)))
+    (_ '((per_page . 50)))))
 
 (defun shipit--notifications-count-from-response (headers json)
   "Return the total notification count from a per_page=1 probe response.

@@ -513,9 +513,9 @@ THEN current-page becomes 1 and a refresh is triggered."
         (kill-buffer buf)))))
 
 (ert-deftest test-notifications-buffer-last-page-uses-total-count ()
-  "GIVEN total-count=250 (=> 3 pages) in all scope at page 1
+  "GIVEN total-count=250 (=> 5 pages at 50 per page) in all scope at page 1
 WHEN `shipit-notifications-buffer-last-page' is invoked
-THEN current-page becomes 3."
+THEN current-page becomes 5."
   (require 'shipit-notifications-buffer)
   (cl-letf* ((refreshed nil)
              ((symbol-function 'shipit-notifications-buffer-refresh)
@@ -527,7 +527,7 @@ THEN current-page becomes 3."
             (setq-local shipit-notifications-buffer--current-page 1)
             (setq-local shipit-notifications-buffer--total-count 250)
             (shipit-notifications-buffer-last-page)
-            (should (= 3 shipit-notifications-buffer--current-page))
+            (should (= 5 shipit-notifications-buffer--current-page))
             (should refreshed))
         (kill-buffer buf)))))
 
@@ -546,8 +546,8 @@ THEN it signals a user-error instead of guessing."
       (kill-buffer buf))))
 
 (ert-deftest test-notifications-buffer-goto-page-validates-bounds ()
-  "GIVEN total-count=250 (=> 3 pages) and scope=all
-WHEN `shipit-notifications-buffer-goto-page' is called with 5
+  "GIVEN total-count=250 (=> 5 pages at 50 per page) and scope=all
+WHEN `shipit-notifications-buffer-goto-page' is called with 7
 THEN it signals a user-error (page exceeds last)."
   (require 'shipit-notifications-buffer)
   (let ((buf (shipit-notifications-buffer-create)))
@@ -555,7 +555,7 @@ THEN it signals a user-error (page exceeds last)."
         (with-current-buffer buf
           (setq-local shipit-notifications-buffer--display-scope 'all)
           (setq-local shipit-notifications-buffer--total-count 250)
-          (should-error (shipit-notifications-buffer-goto-page 5)
+          (should-error (shipit-notifications-buffer-goto-page 7)
                         :type 'user-error))
       (kill-buffer buf))))
 

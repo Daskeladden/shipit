@@ -478,9 +478,19 @@ as a child languages sub-section."
                         (shipit--get-pr-field-icon "branch" "\U0001f33f")
                         (propertize default-branch 'font-lock-face 'font-lock-constant-face))))
       (when description
-        (insert (format "   %s %s\n"
-                        (shipit--get-pr-field-icon "description" "\U0001f4dd")
-                        description)))
+        ;; Wrap long descriptions to the same 80-col envelope the README
+        ;; renders into.  Continuation lines align under the start of the
+        ;; description text (after the 3-space indent + icon + space).
+        (let* ((cont-indent "      ")
+               (wrap-width (max 20 (- 80 (length cont-indent))))
+               (wrapped (if (fboundp 'shipit--wrap-text)
+                            (shipit--wrap-text description wrap-width 0)
+                          description))
+               (continued (replace-regexp-in-string
+                           "\n" (concat "\n" cont-indent) wrapped)))
+          (insert (format "   %s %s\n"
+                          (shipit--get-pr-field-icon "description" "\U0001f4dd")
+                          continued))))
       (shipit-repo-buffer--insert-subscription-line)
       (when html-url
         (add-text-properties (point-min) (point)

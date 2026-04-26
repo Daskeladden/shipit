@@ -801,6 +801,39 @@ so underlined runs (org-link) stay visually continuous across spaces."
   (should (string= "" (shipit--strip-face-on-whitespace "")))
   (should (null (shipit--strip-face-on-whitespace nil))))
 
+(ert-deftest test-shipit-resolve-reference-style-images-shorthand ()
+  "GIVEN markdown with shorthand reference image and matching definition
+WHEN resolving reference-style images
+THEN the shorthand becomes inline form and the definition is removed."
+  (let* ((src (concat "[![npm]](https://www.npmjs.com/foo)\n"
+                      "\n"
+                      "[npm]: https://example.com/badge.svg\n"
+                      "\n"
+                      "rest.\n"))
+         (out (shipit--resolve-reference-style-images src)))
+    (should (string-match-p
+             "\\[!\\[npm\\](https://example\\.com/badge\\.svg)\\](https://www\\.npmjs\\.com/foo)"
+             out))
+    (should-not (string-match-p "^\\[npm\\]:" out))
+    (should (string-match-p "rest\\." out))))
+
+(ert-deftest test-shipit-resolve-reference-style-images-alt-and-ref ()
+  "GIVEN alt+ref image with a separate definition
+WHEN resolving reference-style images
+THEN the result is inline form."
+  (let* ((src "Badge: ![Node.js][nodejs]\n[nodejs]: https://example.com/n.svg\n")
+         (out (shipit--resolve-reference-style-images src)))
+    (should (string-match-p "!\\[Node\\.js\\](https://example\\.com/n\\.svg)" out))
+    (should-not (string-match-p "^\\[nodejs\\]:" out))))
+
+(ert-deftest test-shipit-resolve-reference-style-images-leaves-unknown-alone ()
+  "GIVEN a reference-style image whose label has no definition
+WHEN resolving reference-style images
+THEN the original text is left unchanged."
+  (let* ((src "![label][missing]\nmore.\n")
+         (out (shipit--resolve-reference-style-images src)))
+    (should (string= src out))))
+
 (ert-deftest test-shipit-create-link-overlays-by-line-splits-at-newline ()
   "GIVEN a wrapped link spanning two lines with continuation indent
 WHEN creating link overlays via shipit--create-link-overlays-by-line

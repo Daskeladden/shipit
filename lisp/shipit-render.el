@@ -1278,11 +1278,11 @@ SIZE defaults to 20 pixels."
 
 (defun shipit--detect-image-type-from-content (file)
   "Detect image type from FILE content by reading magic bytes.
-Returns symbol like `png', `jpeg', `gif', `webp', or nil if unknown."
+Returns symbol like `png', `jpeg', `gif', `webp', `svg', or nil if unknown."
   (condition-case nil
       (with-temp-buffer
         (set-buffer-multibyte nil)
-        (insert-file-contents-literally file nil 0 16)
+        (insert-file-contents-literally file nil 0 256)
         (let ((bytes (buffer-string)))
           (cond
            ;; PNG: 89 50 4E 47 0D 0A 1A 0A
@@ -1303,6 +1303,11 @@ Returns symbol like `png', `jpeg', `gif', `webp', or nil if unknown."
                  (equal (substring bytes 0 4) "RIFF")
                  (equal (substring bytes 8 12) "WEBP"))
             'webp)
+           ;; SVG: starts with `<?xml' or `<svg' (after optional whitespace/BOM).
+           ;; shields.io badges and many README icons are served as SVG with no
+           ;; extension hint in the URL, so content sniffing is the only signal.
+           ((string-match-p "\\`[\t\n\r ]*\\(<\\?xml\\|<svg\\b\\)" bytes)
+            'svg)
            (t nil))))
     (error nil)))
 
@@ -1591,6 +1596,12 @@ URL, leaving the surrounding fragments visible in the buffer."
                                         :max-height max-h)))
               (when (fboundp 'shipit--debug-log)
                 (shipit--debug-log "IMAGE-DISPLAY: Created image type=%s" image-type))
+              ;; Animate GIFs.  Without this call `create-image' yields a
+              ;; static first-frame image; the README demo gif looks frozen.
+              (when (and image (eq image-type 'gif)
+                         (fboundp 'image-multi-frame-p)
+                         (image-multi-frame-p image))
+                (image-animate image 0 t))
               (if (display-images-p)
                   (let ((image-string (propertize " " 'display image 'rear-nonsticky '(display))))
                     (when (fboundp 'shipit--debug-log)
@@ -1773,6 +1784,60 @@ Handles nested lists by tracking indent levels independently."
             (setq counters nil))
           (push line result)))
       (mapconcat #'identity (nreverse result) "\n"))))
+
+(defun shipit--resolve-reference-style-images (text)
+  "Resolve markdown reference-style images in TEXT to inline form.
+Reference-style images use a separate definition line and two main
+reference forms: alt+ref and shorthand (label doubles as alt).  The
+downstream image pipeline expects inline form, so this pass:
+
+  1. Collects every reference definition into a lookup table.
+  2. Substitutes alt+ref forms with inline form for each known label.
+  3. Substitutes the shorthand form when the immediate context shows
+     it isn't already an inline or alt+ref form.
+  4. Strips the now-unused definition lines so they don't render as
+     orphan URLs in the output.
+
+Unknown labels are left alone (markdown-mode renders them as literal
+text)."
+  (let ((refs (make-hash-table :test 'equal))
+        (result text))
+    (let ((pos 0))
+      (while (string-match
+              "^[ \t]*\\[\\([^]\n]+\\)\\][ \t]*:[ \t]*\\(\\S-+\\)[ \t]*$"
+              result pos)
+        (puthash (match-string 1 result) (match-string 2 result) refs)
+        (setq pos (match-end 0))))
+    (when (> (hash-table-count refs) 0)
+      (setq result
+            (replace-regexp-in-string
+             "!\\[\\([^]\n]*\\)\\]\\[\\([^]\n]+\\)\\]"
+             (lambda (match)
+               (save-match-data
+                 (string-match "!\\[\\([^]\n]*\\)\\]\\[\\([^]\n]+\\)\\]" match)
+                 (let* ((alt (match-string 1 match))
+                        (ref (match-string 2 match))
+                        (url (gethash ref refs)))
+                   (if url (format "![%s](%s)" alt url) match))))
+             result nil t))
+      (setq result
+            (replace-regexp-in-string
+             "!\\[\\([^]\n]+\\)\\]\\([^([]\\|\\'\\)"
+             (lambda (match)
+               (save-match-data
+                 (string-match "!\\[\\([^]\n]+\\)\\]\\([^([]\\|\\'\\)" match)
+                 (let* ((ref (match-string 1 match))
+                        (trailing (or (match-string 2 match) ""))
+                        (url (gethash ref refs)))
+                   (if url
+                       (format "![%s](%s)%s" ref url trailing)
+                     match))))
+             result nil t))
+      (setq result
+            (replace-regexp-in-string
+             "^[ \t]*\\[[^]\n]+\\][ \t]*:[ \t]*\\S-+[ \t]*\n?"
+             "" result)))
+    result))
 
 (defun shipit--process-inline-images (text)
   "Process inline images in TEXT and replace them with image displays.
@@ -4038,7 +4103,8 @@ This is the actual rendering implementation; callers should use
               ;; Step 4: Escape mid-word underscores (e.g., file_name.py)
               ;; Note: Don't process images yet - they'll be done after markdown rendering
               (let* ((normalized (replace-regexp-in-string "\r" "" text))
-                     (html-stripped (shipit--strip-inline-html-tags normalized))
+                     (refs-resolved (shipit--resolve-reference-style-images normalized))
+                     (html-stripped (shipit--strip-inline-html-tags refs-resolved))
                      (html-converted (shipit--convert-inline-html html-stripped))
                      (aligned (shipit--align-markdown-tables-with-pandoc html-converted))
                      (escaped (shipit--escape-mid-word-underscores aligned))

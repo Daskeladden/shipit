@@ -271,7 +271,14 @@ NOCONFIRM are for compatibility with `revert-buffer'."
     ;; stale repo-specific total after e.g. the repo filter was cleared.
     (setq shipit-notifications-buffer--total-count nil)
     (when (fboundp 'shipit--check-notifications-background)
-      (shipit--check-notifications-background force-fresh scope 1 repo page before since))
+      ;; In `all' scope we deliberately fetch a single page (windowed
+      ;; pagination — `page-forward'/`page-back' shift the window).
+      ;; In `unread' scope, page math is irrelevant and we want every
+      ;; unread item populated up front so the buffer reflects the same
+      ;; state as the background poll.
+      (let ((max-pages (if (eq scope 'all) 1 10)))
+        (shipit--check-notifications-background
+         force-fresh scope max-pages repo page before since)))
     (when (fboundp 'shipit--fetch-notifications-total-count-async)
       (shipit--fetch-notifications-total-count-async
        scope

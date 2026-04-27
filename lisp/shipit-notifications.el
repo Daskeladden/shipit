@@ -2147,10 +2147,10 @@ TYPE is \"pr\" or \"issue\" (defaults to \"pr\" for backward compatibility)."
                                        (equal (cdr (assq 'number m)) number)))
                                 shipit--mention-prs))
             (setq shipit--mention-count (length shipit--mention-prs)))
-          ;; Update notification count immediately
-          (let ((new-count (hash-table-count shipit--notification-pr-activities)))
+          ;; Update notification count immediately (unread-only) so the
+          ;; modeline bell drops as the user marks things read.
+          (let ((new-count (shipit--count-unread-activities)))
             (setq shipit--last-notification-count new-count)
-            ;; Update visual indicators immediately (modeline only, no expensive refresh)
             (shipit--update-modeline-indicator new-count))
           ;; Only show message and refresh if not in batch mode
           (unless no-refresh
@@ -2581,11 +2581,34 @@ Each activity should be an alist with keys: number, type, subject, reason, repo.
   ;; auto-marked when the next GitHub poll happens to run, leaving them
   ;; visible until the user manually refreshes.
   (shipit--auto-mark-rules-apply)
-  ;; Update indicators
-  (let ((new-count (hash-table-count shipit--notification-pr-activities)))
-    (when (not (eq new-count shipit--last-notification-count))
-      (shipit--handle-new-notifications new-count))
-    (setq shipit--last-notification-count new-count)))
+  ;; Update modeline only with the unread count, and skip the update
+  ;; entirely when an `all'-scope refresh is in flight -- the hash
+  ;; carries read GitHub entries too in that mode and would inflate
+  ;; the bell.
+  (unless (and (boundp 'shipit--processing-all-scope)
+               shipit--processing-all-scope)
+    (let ((new-count (shipit--count-unread-activities)))
+      (when (not (eq new-count shipit--last-notification-count))
+        (shipit--handle-new-notifications new-count))
+      (setq shipit--last-notification-count new-count))))
+
+(defun shipit--count-unread-activities ()
+  "Count activities in the global hash that are still unread.
+GitHub activities whose `notification.unread' is nil or :json-false
+are skipped; backend activities are counted unconditionally
+because they are removed from the hash on mark."
+  (let ((count 0))
+    (when (and (boundp 'shipit--notification-pr-activities)
+               shipit--notification-pr-activities)
+      (maphash
+       (lambda (_k a)
+         (let* ((notif (cdr (assq 'notification a)))
+                (u (and notif (cdr (assq 'unread notif)))))
+           (cond
+            ((null notif) (cl-incf count))
+            ((and u (not (eq u :json-false))) (cl-incf count)))))
+       shipit--notification-pr-activities))
+    count))
 
 (provide 'shipit-notifications)
 ;;; shipit-notifications.el ends here

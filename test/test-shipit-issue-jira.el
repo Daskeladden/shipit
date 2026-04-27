@@ -109,6 +109,46 @@ THEN labels are converted to the expected alist format."
       (should (= 2 (length labels)))
       (should (equal "enhancement" (cdr (assq 'name (car labels))))))))
 
+(ert-deftest test-shipit-issue-jira-normalize-components ()
+  "GIVEN a Jira issue with components
+WHEN normalizing
+THEN components are surfaced as a list of (name . X) alists, just like labels."
+  (let ((jira-data '((key . "PRJ-7")
+                     (fields . ((summary . "Test")
+                                (status . ((name . "In Progress")))
+                                (description . nil)
+                                (reporter . ((displayName . "Alice")
+                                             (name . "alice")))
+                                (assignee . nil)
+                                (created . "2024-01-15T10:30:00.000+0000")
+                                (updated . "2024-01-15T10:30:00.000+0000")
+                                (components . (((name . "SDK"))
+                                               ((name . "Studio"))))
+                                (comment . ((comments . ()))))))))
+    (let* ((normalized (shipit-issue-jira--normalize-issue jira-data))
+           (components (cdr (assq 'components normalized))))
+      (should (= 2 (length components)))
+      (should (equal "SDK" (cdr (assq 'name (car components)))))
+      (should (equal "Studio" (cdr (assq 'name (cadr components))))))))
+
+(ert-deftest test-shipit-issue-jira-normalize-no-components ()
+  "GIVEN a Jira issue without components
+WHEN normalizing
+THEN the components key exists with an empty list (so callers can
+    safely use `(cdr (assq 'components …))' without nil-checking)."
+  (let ((jira-data '((key . "PRJ-8")
+                     (fields . ((summary . "Test")
+                                (status . ((name . "Done")))
+                                (description . nil)
+                                (reporter . ((displayName . "Alice")))
+                                (assignee . nil)
+                                (created . "2024-01-15T10:30:00.000+0000")
+                                (updated . "2024-01-15T10:30:00.000+0000")
+                                (comment . ((comments . ()))))))))
+    (let* ((normalized (shipit-issue-jira--normalize-issue jira-data)))
+      (should (assq 'components normalized))
+      (should (null (cdr (assq 'components normalized)))))))
+
 ;;; Reference Pattern Tests
 
 (ert-deftest test-shipit-issue-jira-reference-patterns-single-key ()

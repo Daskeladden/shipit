@@ -577,6 +577,15 @@ buffer-local overrides so the issue fetches use the correct backend
             (insert (format "   %s Labels:    %s\n"
                             (shipit--get-pr-field-icon "labels" "🏷")
                             (mapconcat #'identity label-strs ", "))))))
+      ;; Components (Jira)
+      (let ((components (cdr (assq 'components issue-data))))
+        (when (and components (> (length components) 0))
+          (let ((names (mapcar (lambda (c) (cdr (assq 'name c))) components)))
+            (insert (format "   %s Component: %s\n"
+                            (shipit--get-pr-field-icon "components" "🧩")
+                            (mapconcat (lambda (n)
+                                         (propertize n 'font-lock-face 'font-lock-constant-face))
+                                       names ", "))))))
       ;; Milestone
       (let ((milestone (cdr (assq 'milestone issue-data))))
         (when milestone

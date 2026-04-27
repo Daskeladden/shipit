@@ -342,6 +342,9 @@ Maps Jira fields to the keys expected by shipit UI:
          (issue-type-obj (cdr (assq 'issuetype fields)))
          (parent-obj (cdr (assq 'parent fields)))
          (labels (append (cdr (assq 'labels fields)) nil))
+         (components-raw (append (cdr (assq 'components fields)) nil))
+         (components (delq nil (mapcar (lambda (c) (cdr (assq 'name c)))
+                                       components-raw)))
          (comments-data (cdr (assq 'comment fields)))
          (comments-list (append (cdr (assq 'comments comments-data)) nil))
          (raw-desc (cdr (assq 'description fields)))
@@ -367,6 +370,7 @@ Maps Jira fields to the keys expected by shipit UI:
         (assignees . ,(when assignee
                         (list `((login . ,(cdr (assq 'displayName assignee)))))))
         (labels . ,(mapcar (lambda (l) `((name . ,l))) labels))
+        (components . ,(mapcar (lambda (c) `((name . ,c))) components))
         (comments . ,(if comments-list (length comments-list) 0))
         (created_at . ,(cdr (assq 'created fields)))
         (updated_at . ,(cdr (assq 'updated fields)))
@@ -803,7 +807,7 @@ Returns normalized issue alist after re-fetching the created issue."
       (shipit-issue-jira--fetch-issue config created-key))))
 
 (defconst shipit-issue-jira--fields
-  "key,summary,status,description,reporter,assignee,labels,created,updated,comment,issuetype,issuelinks,parent"
+  "key,summary,status,description,reporter,assignee,labels,components,created,updated,comment,issuetype,issuelinks,parent"
   "Jira issue fields to request.  Limits response size for faster API calls.")
 
 (defun shipit-issue-jira--enrich-link-assignees (config issue-data)

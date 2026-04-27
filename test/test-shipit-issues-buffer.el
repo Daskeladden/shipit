@@ -706,5 +706,53 @@ THEN the Load more text shows exactly 40 hidden comments."
         (goto-char (point-min))
         (should (search-forward "Load 40 more comments" nil t))))))
 
+(ert-deftest test-shipit-issue-metadata-shows-jira-components ()
+  "GIVEN a Jira-like issue with components
+WHEN rendering the metadata section
+THEN a Component row appears with each component name."
+  (with-temp-buffer
+    (let ((magit-insert-section--parent nil)
+          (issue-data '((id . "PRJ-1")
+                        (number . "PRJ-1")
+                        (title . "T")
+                        (state . "Open")
+                        (issue-type . "Bug")
+                        (user . ((login . "Alice")))
+                        (assignees . nil)
+                        (labels . nil)
+                        (components . (((name . "SDK"))
+                                       ((name . "Firmware"))))
+                        (created_at . "2024-01-15T10:30:00Z")
+                        (updated_at . "2024-01-20T14:00:00Z"))))
+      (cl-letf (((symbol-function 'shipit-pr--resolve-for-repo)
+                 (lambda (_repo) nil)))
+        (magit-insert-section (shipit-issue)
+          (shipit-issue--insert-metadata-section "test/repo" issue-data))
+        (let ((buf-text (buffer-string)))
+          (should (string-match-p "Component:" buf-text))
+          (should (string-match-p "SDK" buf-text))
+          (should (string-match-p "Firmware" buf-text)))))))
+
+(ert-deftest test-shipit-issue-metadata-omits-component-row-when-absent ()
+  "GIVEN an issue with no components key
+WHEN rendering the metadata section
+THEN no Component row is inserted (avoids a blank label for non-Jira issues)."
+  (with-temp-buffer
+    (let ((magit-insert-section--parent nil)
+          (issue-data '((id . 1)
+                        (number . 1)
+                        (title . "T")
+                        (state . "open")
+                        (user . ((login . "alice")))
+                        (assignees . nil)
+                        (labels . nil)
+                        (created_at . "2024-01-15T10:30:00Z")
+                        (updated_at . "2024-01-20T14:00:00Z"))))
+      (cl-letf (((symbol-function 'shipit-pr--resolve-for-repo)
+                 (lambda (_repo) nil)))
+        (magit-insert-section (shipit-issue)
+          (shipit-issue--insert-metadata-section "test/repo" issue-data))
+        (should-not (string-match-p "Component:" (buffer-string)))))))
+
 (provide 'test-shipit-issues-buffer)
 ;;; test-shipit-issues-buffer.el ends here

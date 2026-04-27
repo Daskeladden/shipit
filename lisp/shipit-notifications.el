@@ -1408,12 +1408,16 @@ recover items that an over-broad auto-mark rule swept up."
                    (remhash k shipit--locally-marked-read-notifications)
                    (cl-incf removed)))
                shipit--locally-marked-read-notifications)
-      (message "Cleared %d locally-marked-read entr%s for %s"
+      (when (boundp 'shipit--backend-last-poll-time)
+        (setq shipit--backend-last-poll-time nil))
+      (message "Cleared %d locally-marked-read entr%s for %s (watermark reset)"
                removed (if (= removed 1) "y" "ies") repo)))
    (t
     (let ((n (hash-table-count shipit--locally-marked-read-notifications)))
       (clrhash shipit--locally-marked-read-notifications)
-      (message "Cleared %d locally-marked-read entr%s"
+      (when (boundp 'shipit--backend-last-poll-time)
+        (setq shipit--backend-last-poll-time nil))
+      (message "Cleared %d locally-marked-read entr%s (watermark reset)"
                n (if (= n 1) "y" "ies"))))))
 
 (defun shipit-notifications-apply-auto-mark-rules ()
@@ -2483,14 +2487,28 @@ Replaces existing GitHub entries, preserves non-GitHub backend entries."
 Each activity should be an alist with keys: number, type, subject, reason, repo."
   (unless shipit--notification-pr-activities
     (setq shipit--notification-pr-activities (make-hash-table :test 'equal)))
-  (dolist (activity activities)
-    (let* ((repo (cdr (assq 'repo activity)))
-           (type (or (cdr (assq 'type activity)) "issue"))
-           (number (cdr (assq 'number activity)))
-           (key (shipit--notification-activity-key repo type number)))
-      (if (gethash key shipit--locally-marked-read-notifications)
-          (shipit--debug-log "Skipping locally-marked-read backend notification: %s" key)
-        (puthash key activity shipit--notification-pr-activities))))
+  (let ((received (length (or activities '())))
+        (added 0)
+        (skipped 0))
+    (dolist (activity activities)
+      (let* ((repo (cdr (assq 'repo activity)))
+             (type (or (cdr (assq 'type activity)) "issue"))
+             (number (cdr (assq 'number activity)))
+             (reason (cdr (assq 'reason activity)))
+             (key (shipit--notification-activity-key repo type number)))
+        (if (gethash key shipit--locally-marked-read-notifications)
+            (progn
+              (shipit--debug-log "Backend merge: skipping locally-marked-read %s" key)
+              (cl-incf skipped))
+          (shipit--debug-log "Backend merge: adding %s (reason=%s)" key reason)
+          (puthash key activity shipit--notification-pr-activities)
+          (cl-incf added))))
+    (shipit--debug-log "Backend merge: received=%d added=%d skipped=%d" received added skipped))
+  ;; Apply auto-mark rules so backend activities (Jira, RSS, GitLab todos)
+  ;; honor the rules immediately.  Without this they would only get
+  ;; auto-marked when the next GitHub poll happens to run, leaving them
+  ;; visible until the user manually refreshes.
+  (shipit--auto-mark-rules-apply)
   ;; Update indicators
   (let ((new-count (hash-table-count shipit--notification-pr-activities)))
     (when (not (eq new-count shipit--last-notification-count))

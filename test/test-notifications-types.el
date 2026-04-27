@@ -1576,5 +1576,26 @@ THEN only entries whose key starts with REPO: are removed; others stay."
     (should (= 1 (hash-table-count shipit--locally-marked-read-notifications)))
     (should (gethash "owner/foo:pr:42" shipit--locally-marked-read-notifications))))
 
+(ert-deftest test-shipit--merge-backend-notifications-applies-auto-mark ()
+  "GIVEN a Jira activity that matches an auto-mark rule
+WHEN `shipit--merge-backend-notifications' merges it into the hash
+THEN auto-mark fires immediately and the activity is marked read --
+the user shouldn't have to wait for the next GitHub poll for the
+rule to take effect."
+  (let ((marked '())
+        (shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit--locally-marked-read-notifications (make-hash-table :test 'equal))
+        (shipit--last-notification-count 0)
+        (shipit-notifications-auto-mark-read-rules
+         '((:repo "ZIVID" :reason "updated"))))
+    (cl-letf (((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked))))
+      (shipit--merge-backend-notifications
+       '(((repo . "ZIVID") (number . "ZIVID-1") (type . "issue")
+          (reason . "updated") (subject . "T") (source . jira)
+          (backend-id . jira) (jira-components . ("Other")))))
+      (should (member '("ZIVID-1" "ZIVID" "issue") marked)))))
+
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

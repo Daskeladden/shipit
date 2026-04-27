@@ -301,6 +301,42 @@ highlights pending approvals at the top of that page."
                              opened-url))))
         (kill-buffer buf)))))
 
+(ert-deftest test-notifications-buffer-open-workflow-with-run-id-opens-actions ()
+  "GIVEN a workflow notification whose browse-url carries a /runs/N id
+WHEN `shipit-notifications-buffer-open' is invoked
+THEN it dispatches to `shipit-open-actions-list' with the run-id --
+the user wants to act on the run from Emacs, not bounce to the browser."
+  (require 'shipit-notifications-buffer)
+  ;; Pre-load so the `require' inside the dispatch does not reload the
+  ;; module and clobber our `cl-letf' binding.
+  (require 'shipit-actions-list)
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "zivid/zivid-sdk:workflow:24979004114"
+             '((repo . "zivid/zivid-sdk")
+               (number . 24979004114)
+               (type . "workflow")
+               (subject . "Deploy to prod")
+               (reason . "approval_requested")
+               (browse-url . "https://github.com/zivid/zivid-sdk/actions/runs/24979004114")
+               (updated-at . "2026-04-27T13:52:00Z"))
+             shipit--notification-pr-activities)
+    (let ((buf (shipit-notifications-buffer-create))
+          (called-with nil)
+          (browser-called nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'shipit-open-actions-list)
+                     (lambda (repo run-id) (setq called-with (list repo run-id))))
+                    ((symbol-function 'browse-url)
+                     (lambda (&rest _) (setq browser-called t))))
+            (shipit-notifications-buffer--rerender)
+            (with-current-buffer buf
+              (goto-char (point-min))
+              (search-forward "Deploy to prod")
+              (shipit-notifications-buffer-open)
+              (should (equal '("zivid/zivid-sdk" 24979004114) called-with))
+              (should-not browser-called)))
+        (kill-buffer buf)))))
+
 (ert-deftest test-process-notifications-workflow-browse-url-points-at-run ()
   "GIVEN a WorkflowRun notification whose subject URL is
 /repos/OWNER/REPO/actions/runs/24770889847

@@ -37,6 +37,7 @@
 (declare-function shipit--format-time-ago "shipit-notifications")
 (declare-function shipit--get-notification-type-icon "shipit-render")
 (declare-function shipit--get-notification-source-icon "shipit-render")
+(declare-function shipit-open-actions-list "shipit-actions-list")
 (declare-function shipit--debug-log "shipit-core")
 (declare-function shipit--render-markdown "shipit-render")
 (declare-function shipit--render-body "shipit-render")
@@ -1288,9 +1289,22 @@ With prefix arg (C-u), show action menu instead."
                   buffer activity-props))))
             ("discussion" (shipit--open-notification-discussion number repo))
             ("workflow"
-             (if-let* ((url (cdr (assq 'browse-url activity))))
-                 (browse-url url)
-               (message "No browse URL for workflow run")))
+             ;; Workflow runs (esp. approval_requested) belong in the
+             ;; actions buffer where the user can review/approve from
+             ;; Emacs.  The run-id comes from `browse-url' because
+             ;; `number' falls back to the notification thread-id
+             ;; when GitHub doesn't expose a specific run id, and
+             ;; that thread-id is not a valid run-id.
+             (let* ((url (cdr (assq 'browse-url activity)))
+                    (run-id (and url
+                                 (string-match "/runs/\\([0-9]+\\)" url)
+                                 (string-to-number (match-string 1 url)))))
+               (cond
+                ((and repo run-id)
+                 (require 'shipit-actions-list)
+                 (shipit-open-actions-list repo run-id))
+                (url (browse-url url))
+                (t (message "No browse URL for workflow run")))))
             ("check"
              (if-let* ((url (cdr (assq 'browse-url activity))))
                  (browse-url url)

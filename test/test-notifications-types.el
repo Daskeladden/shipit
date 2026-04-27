@@ -1482,5 +1482,71 @@ THEN the item is NOT marked again — re-marking would remove the cache
         (should (= count 0))
         (should-not marked)))))
 
+(ert-deftest test-shipit--auto-mark-rules-apply-skips-json-false-unread ()
+  "GIVEN a GitHub activity whose notification.unread is :json-false
+WHEN `shipit--auto-mark-rules-apply' runs
+THEN the item is NOT marked — :json-false is non-nil but means read.
+A bare `(when unread …)' would erroneously match it."
+  (let ((marked '())
+        (shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications-auto-mark-read-rules '((:state merged))))
+    (cl-letf (((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked))))
+      (puthash "owner/foo:pr:6"
+               '((repo . "owner/foo") (number . 6) (type . "pr")
+                 (pr-state . "merged")
+                 (notification . ((unread . :json-false))))
+               shipit--notification-pr-activities)
+      (should (= 0 (shipit--auto-mark-rules-apply)))
+      (should-not marked))))
+
+(ert-deftest test-shipit--auto-mark-rules-apply-marks-jira-activity ()
+  "GIVEN a Jira activity (no `notification' sub-alist) matching a rule
+WHEN `shipit--auto-mark-rules-apply' runs
+THEN the activity IS marked — backend activities have no GitHub
+notification thread, so presence in the hash means unread."
+  (let ((marked '())
+        (shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications-auto-mark-read-rules
+         '((:repo "ZIVID" :not (:jira-component "Firmware")))))
+    (cl-letf (((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked))))
+      (puthash "ZIVID:issue:ZIVID-12744"
+               '((repo . "ZIVID") (number . "ZIVID-12744") (type . "issue")
+                 (subject . "do something") (source . jira)
+                 (backend-id . jira) (jira-components . ("SDK")))
+               shipit--notification-pr-activities)
+      (puthash "ZIVID:issue:ZIVID-99999"
+               '((repo . "ZIVID") (number . "ZIVID-99999") (type . "issue")
+                 (subject . "ignore me") (source . jira)
+                 (backend-id . jira) (jira-components . ("Firmware")))
+               shipit--notification-pr-activities)
+      (let ((count (shipit--auto-mark-rules-apply)))
+        (should (= count 1))
+        (should (member '("ZIVID-12744" "ZIVID" "issue") marked))
+        (should-not (member '("ZIVID-99999" "ZIVID" "issue") marked))))))
+
+(ert-deftest test-shipit--auto-mark-rules-apply-jira-with-no-components ()
+  "GIVEN a Jira activity with no components and a rule using `:not :jira-component'
+WHEN `shipit--auto-mark-rules-apply' runs
+THEN the activity matches — `:jira-component' returns nil when components
+are absent, so `:not' flips it to true."
+  (let ((marked '())
+        (shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications-auto-mark-read-rules
+         '((:repo "ZIVID" :not (:jira-component "Firmware")))))
+    (cl-letf (((symbol-function 'shipit--mark-notification-read)
+               (lambda (number repo &optional _no-refresh type)
+                 (push (list number repo type) marked))))
+      (puthash "ZIVID:issue:ZIVID-1"
+               '((repo . "ZIVID") (number . "ZIVID-1") (type . "issue")
+                 (subject . "no components") (source . jira)
+                 (backend-id . jira) (jira-components . nil))
+               shipit--notification-pr-activities)
+      (should (= 1 (shipit--auto-mark-rules-apply)))
+      (should (member '("ZIVID-1" "ZIVID" "issue") marked)))))
+
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

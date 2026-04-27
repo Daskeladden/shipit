@@ -1345,7 +1345,17 @@ not configure it."
         (maphash
          (lambda (_k activity)
            (let* ((notification (cdr (assq 'notification activity)))
-                  (unread (cdr (assq 'unread notification))))
+                  (unread (if notification
+                              ;; GitHub: `unread' is t or :json-false; only
+                              ;; t means unread.
+                              (let ((u (cdr (assq 'unread notification))))
+                                (and u (not (eq u :json-false))))
+                            ;; Backend activity (Jira, RSS, GitLab todos, ...)
+                            ;; has no GitHub notification thread.  Presence
+                            ;; in the hash means unread --
+                            ;; `shipit--mark-notification-read' removes the
+                            ;; entry on mark.
+                            t)))
              (when (and unread
                         (cl-some (lambda (rule)
                                    (shipit--auto-mark-rule-matches-activity-p

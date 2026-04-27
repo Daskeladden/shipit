@@ -1554,5 +1554,27 @@ are absent, so `:not' flips it to true."
       (should (= 1 (shipit--auto-mark-rules-apply)))
       (should (member '("ZIVID-1" "ZIVID" "issue") marked)))))
 
+(ert-deftest test-shipit-notifications-clear-locally-marked-read-all ()
+  "GIVEN entries in the locally-marked-read cache
+WHEN `shipit-notifications-clear-locally-marked-read' runs with no repo
+THEN every entry is removed."
+  (let ((shipit--locally-marked-read-notifications (make-hash-table :test 'equal)))
+    (puthash "ZIVID:issue:ZIVID-1" 1 shipit--locally-marked-read-notifications)
+    (puthash "owner/foo:pr:42" 2 shipit--locally-marked-read-notifications)
+    (shipit-notifications-clear-locally-marked-read)
+    (should (zerop (hash-table-count shipit--locally-marked-read-notifications)))))
+
+(ert-deftest test-shipit-notifications-clear-locally-marked-read-by-repo ()
+  "GIVEN entries from multiple repos in the locally-marked-read cache
+WHEN clearing with a repo argument
+THEN only entries whose key starts with REPO: are removed; others stay."
+  (let ((shipit--locally-marked-read-notifications (make-hash-table :test 'equal)))
+    (puthash "ZIVID:issue:ZIVID-1" 1 shipit--locally-marked-read-notifications)
+    (puthash "ZIVID:issue:ZIVID-2" 2 shipit--locally-marked-read-notifications)
+    (puthash "owner/foo:pr:42" 3 shipit--locally-marked-read-notifications)
+    (shipit-notifications-clear-locally-marked-read "ZIVID")
+    (should (= 1 (hash-table-count shipit--locally-marked-read-notifications)))
+    (should (gethash "owner/foo:pr:42" shipit--locally-marked-read-notifications))))
+
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

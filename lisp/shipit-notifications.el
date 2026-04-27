@@ -1373,6 +1373,49 @@ not configure it."
               (cl-incf count))))))
     count))
 
+(defun shipit-notifications-clear-locally-marked-read (&optional repo)
+  "Forget the session-local mark-read tracking.
+With no argument, clear every entry.  When REPO is supplied
+(interactively, completed from the activity hash), only entries
+whose key starts with REPO are removed.
+
+Backend activities (Jira, RSS, GitLab todos) have no server-side
+read state, so once auto-mark hides one it stays hidden until
+the cache is cleared or Emacs is restarted.  Use this command to
+recover items that an over-broad auto-mark rule swept up."
+  (interactive
+   (list (when current-prefix-arg
+           (let ((cands (let ((seen (make-hash-table :test 'equal)))
+                          (when (and (boundp 'shipit--locally-marked-read-notifications)
+                                     (hash-table-p shipit--locally-marked-read-notifications))
+                            (maphash (lambda (k _v)
+                                       (let ((s (format "%s" k)))
+                                         (when (string-match "^\\([^:]+\\):" s)
+                                           (puthash (match-string 1 s) t seen))))
+                                     shipit--locally-marked-read-notifications))
+                          (hash-table-keys seen))))
+             (when cands
+               (completing-read "Clear marked-read for repo: " cands nil t))))))
+  (cond
+   ((not (and (boundp 'shipit--locally-marked-read-notifications)
+              (hash-table-p shipit--locally-marked-read-notifications)))
+    (message "No locally-marked-read cache to clear"))
+   (repo
+    (let ((removed 0)
+          (prefix (concat repo ":")))
+      (maphash (lambda (k _v)
+                 (when (string-prefix-p prefix (format "%s" k))
+                   (remhash k shipit--locally-marked-read-notifications)
+                   (cl-incf removed)))
+               shipit--locally-marked-read-notifications)
+      (message "Cleared %d locally-marked-read entr%s for %s"
+               removed (if (= removed 1) "y" "ies") repo)))
+   (t
+    (let ((n (hash-table-count shipit--locally-marked-read-notifications)))
+      (clrhash shipit--locally-marked-read-notifications)
+      (message "Cleared %d locally-marked-read entr%s"
+               n (if (= n 1) "y" "ies"))))))
+
 (defun shipit-notifications-apply-auto-mark-rules ()
   "Interactively apply `shipit-notifications-auto-mark-read-rules' now.
 Same logic the post-enrichment hook fires automatically; useful

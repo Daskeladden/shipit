@@ -850,7 +850,9 @@ activity alists derived from the fake JSON."
                                                    (updated . "2026-04-25T10:00:00.000+0000"))))
                                        ((key . "PRJ-2")
                                         (fields . ((summary . "Second")
-                                                   (updated . "2026-04-25T11:00:00.000+0000")))))))))))
+                                                   (updated . "2026-04-25T11:00:00.000+0000"))))))))))
+              ((symbol-function 'shipit-issue-jira--fetch-myself)
+               (lambda (_config) nil)))
       (shipit-issue-jira--fetch-notifications-async
        '(:base-url "https://x" :project-keys ("PRJ") :display-name "MyJira")
        nil
@@ -884,30 +886,34 @@ THEN the async function is used and the sync function is not called."
 WHEN converting to activity alist
 THEN has correct fields."
   (require 'shipit-issue-jira)
-  (let* ((config '(:project-keys ("PRJ") :display-name "MyJira"))
-         (issue '((key . "PRJ-42")
-                  (fields . ((summary . "Fix the bug")
-                             (updated . "2025-01-29T12:00:00.000+0000")))))
-         (activity (shipit-issue-jira--issue-to-activity config issue)))
-    (should (equal "MyJira" (cdr (assq 'repo activity))))
-    (should (equal "PRJ-42" (cdr (assq 'number activity))))
-    (should (equal "issue" (cdr (assq 'type activity))))
-    (should (equal "Fix the bug" (cdr (assq 'subject activity))))
-    (should (equal "updated" (cdr (assq 'reason activity))))))
+  (cl-letf (((symbol-function 'shipit-issue-jira--fetch-myself)
+             (lambda (_config) nil)))
+    (let* ((config '(:project-keys ("PRJ") :display-name "MyJira"))
+           (issue '((key . "PRJ-42")
+                    (fields . ((summary . "Fix the bug")
+                               (updated . "2025-01-29T12:00:00.000+0000")))))
+           (activity (shipit-issue-jira--issue-to-activity config issue)))
+      (should (equal "MyJira" (cdr (assq 'repo activity))))
+      (should (equal "PRJ-42" (cdr (assq 'number activity))))
+      (should (equal "issue" (cdr (assq 'type activity))))
+      (should (equal "Fix the bug" (cdr (assq 'subject activity))))
+      (should (equal "updated" (cdr (assq 'reason activity)))))))
 
 (ert-deftest test-jira-issue-to-activity-includes-backend-info ()
   "GIVEN a raw Jira issue response and config
 WHEN converting to activity alist
 THEN includes backend-id and backend-config for buffer routing."
   (require 'shipit-issue-jira)
-  (let* ((config '(:project-keys ("PRJ") :display-name "MyJira"
-                   :base-url "https://jira.example.com"))
-         (issue '((key . "PRJ-42")
-                  (fields . ((summary . "Fix the bug")
-                             (updated . "2025-01-29T12:00:00.000+0000")))))
-         (activity (shipit-issue-jira--issue-to-activity config issue)))
-    (should (eq 'jira (cdr (assq 'backend-id activity))))
-    (should (equal config (cdr (assq 'backend-config activity))))))
+  (cl-letf (((symbol-function 'shipit-issue-jira--fetch-myself)
+             (lambda (_config) nil)))
+    (let* ((config '(:project-keys ("PRJ") :display-name "MyJira"
+                     :base-url "https://jira.example.com"))
+           (issue '((key . "PRJ-42")
+                    (fields . ((summary . "Fix the bug")
+                               (updated . "2025-01-29T12:00:00.000+0000")))))
+           (activity (shipit-issue-jira--issue-to-activity config issue)))
+      (should (eq 'jira (cdr (assq 'backend-id activity))))
+      (should (equal config (cdr (assq 'backend-config activity)))))))
 
 (ert-deftest test-jira-notifications-since-time ()
   "GIVEN a since timestamp

@@ -131,6 +131,126 @@ THEN components are surfaced as a list of (name . X) alists, just like labels."
       (should (equal "SDK" (cdr (assq 'name (car components)))))
       (should (equal "Studio" (cdr (assq 'name (cadr components))))))))
 
+(ert-deftest test-shipit-issue-jira-fetch-myself-caches-per-base-url ()
+  "GIVEN `shipit-issue-jira--fetch-myself' called twice for the same config
+WHEN the underlying API request is mocked
+THEN the API is hit exactly once -- accountId is stable so the cache
+is canonical for the Emacs session."
+  (let ((api-calls 0)
+        (shipit-issue-jira--myself-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config _path)
+                 (cl-incf api-calls)
+                 '((accountId . "abc-123") (displayName . "Me")))))
+      (let ((config '(:base-url "https://jira.example.com")))
+        (should (equal "abc-123" (shipit-issue-jira--fetch-myself config)))
+        (should (equal "abc-123" (shipit-issue-jira--fetch-myself config)))
+        (should (= 1 api-calls))))))
+
+(ert-deftest test-shipit-issue-jira-fetch-myself-caches-failure ()
+  "GIVEN the /myself endpoint signals an error
+WHEN `shipit-issue-jira--fetch-myself' is called twice
+THEN the failure is cached as nil -- we don't retry on every poll."
+  (let ((api-calls 0)
+        (shipit-issue-jira--myself-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config _path)
+                 (cl-incf api-calls)
+                 (error "boom"))))
+      (let ((config '(:base-url "https://jira.example.com")))
+        (should (null (shipit-issue-jira--fetch-myself config)))
+        (should (null (shipit-issue-jira--fetch-myself config)))
+        (should (= 1 api-calls))))))
+
+(ert-deftest test-shipit-issue-jira-adf-collect-mentions ()
+  "GIVEN an ADF tree with two mention nodes nested in paragraphs
+WHEN collecting mention account-ids
+THEN both ids are returned in document order."
+  (let ((adf '((type . "doc")
+               (content . [((type . "paragraph")
+                            (content . [((type . "text") (text . "hi "))
+                                        ((type . "mention")
+                                         (attrs . ((id . "u1") (text . "@Alice"))))]))
+                           ((type . "paragraph")
+                            (content . [((type . "mention")
+                                         (attrs . ((id . "u2") (text . "@Bob"))))]))]))))
+    (should (equal '("u1" "u2")
+                   (shipit-issue-jira--adf-collect-mentions adf)))))
+
+(ert-deftest test-shipit-issue-jira-compute-reason-mention-in-description ()
+  "GIVEN an issue whose description ADF mentions me
+WHEN computing the involvement reason
+THEN the reason is \"mention\"."
+  (cl-letf (((symbol-function 'shipit-issue-jira--fetch-myself)
+             (lambda (_config) "me-id")))
+    (let* ((issue '((fields . ((description . ((type . "doc")
+                                                (content . [((type . "paragraph")
+                                                             (content . [((type . "mention")
+                                                                          (attrs . ((id . "me-id"))))]))])))
+                               (assignee . nil)
+                               (comment . ((comments . ())))))))
+           (reason (shipit-issue-jira--compute-involvement-reason
+                    '(:base-url "x") issue)))
+      (should (equal "mention" reason)))))
+
+(ert-deftest test-shipit-issue-jira-compute-reason-i-commented ()
+  "GIVEN an issue with a comment authored by me but no mention
+WHEN computing the involvement reason
+THEN the reason is \"comment\"."
+  (cl-letf (((symbol-function 'shipit-issue-jira--fetch-myself)
+             (lambda (_config) "me-id")))
+    (let* ((issue '((fields . ((description . nil)
+                               (assignee . nil)
+                               (comment . ((comments . (((author . ((accountId . "me-id")))
+                                                         (body . "noted"))))))))))
+           (reason (shipit-issue-jira--compute-involvement-reason
+                    '(:base-url "x") issue)))
+      (should (equal "comment" reason)))))
+
+(ert-deftest test-shipit-issue-jira-compute-reason-assigned ()
+  "GIVEN an issue assigned to me with no mention or comment from me
+WHEN computing the involvement reason
+THEN the reason is \"assigned\"."
+  (cl-letf (((symbol-function 'shipit-issue-jira--fetch-myself)
+             (lambda (_config) "me-id")))
+    (let* ((issue '((fields . ((description . nil)
+                               (assignee . ((accountId . "me-id")
+                                            (displayName . "Me")))
+                               (comment . ((comments . ())))))))
+           (reason (shipit-issue-jira--compute-involvement-reason
+                    '(:base-url "x") issue)))
+      (should (equal "assigned" reason)))))
+
+(ert-deftest test-shipit-issue-jira-compute-reason-default-updated ()
+  "GIVEN an issue with no involvement signals
+WHEN computing the involvement reason
+THEN the reason is \"updated\"."
+  (cl-letf (((symbol-function 'shipit-issue-jira--fetch-myself)
+             (lambda (_config) "me-id")))
+    (let* ((issue '((fields . ((description . nil)
+                               (assignee . ((accountId . "someone-else")))
+                               (comment . ((comments . (((author . ((accountId . "stranger")))
+                                                         (body . "not me"))))))))))
+           (reason (shipit-issue-jira--compute-involvement-reason
+                    '(:base-url "x") issue)))
+      (should (equal "updated" reason)))))
+
+(ert-deftest test-shipit-issue-jira-compute-reason-mention-beats-comment ()
+  "GIVEN an issue where I am mentioned AND I have commented
+WHEN computing the involvement reason
+THEN \"mention\" wins (highest priority signal)."
+  (cl-letf (((symbol-function 'shipit-issue-jira--fetch-myself)
+             (lambda (_config) "me-id")))
+    (let* ((issue '((fields . ((description . ((type . "doc")
+                                                (content . [((type . "mention")
+                                                             (attrs . ((id . "me-id"))))])))
+                               (assignee . nil)
+                               (comment . ((comments . (((author . ((accountId . "me-id")))
+                                                         (body . "noted"))))))))))
+           (reason (shipit-issue-jira--compute-involvement-reason
+                    '(:base-url "x") issue)))
+      (should (equal "mention" reason)))))
+
 (ert-deftest test-shipit-issue-jira-normalize-no-components ()
   "GIVEN a Jira issue without components
 WHEN normalizing

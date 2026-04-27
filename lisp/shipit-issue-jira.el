@@ -1145,9 +1145,100 @@ Returns plist (:type issue :number KEY) or nil."
 ;;; Notification Polling
 
 (defconst shipit-issue-jira--notifications-fields
-  "key,summary,status,updated,components"
+  "key,summary,status,updated,components,assignee,comment,description"
   "JQL `fields=' value used by notification polls.
-Components are fetched so the notifications buffer can filter on them.")
+`components' enables component-based filtering; `assignee',
+`comment' and `description' feed involvement detection so each
+activity gets a real reason (mention/comment/assigned/updated).")
+
+(defvar shipit-issue-jira--myself-cache (make-hash-table :test 'equal)
+  "Cache mapping Jira base-url to the current user's account-id.
+Populated on first poll per session — the value is stable so we
+never re-fetch.  Use `shipit-issue-jira-clear-myself-cache' to
+force a refresh after switching accounts.")
+
+(defun shipit-issue-jira-clear-myself-cache ()
+  "Forget cached Jira account-ids — re-fetched on next poll."
+  (interactive)
+  (clrhash shipit-issue-jira--myself-cache))
+
+(defun shipit-issue-jira--fetch-myself (config)
+  "Return the current user's accountId for the Jira instance in CONFIG.
+Cached per base-url for the Emacs session; first call hits
+`/rest/api/3/myself', subsequent calls return the cached value.
+Returns nil and caches nil when the API call fails (missing
+base-url, auth issues, …) so we never re-hit a broken endpoint
+and involvement detection just falls through to the default
+\"updated\" reason."
+  (let* ((base-url (plist-get config :base-url))
+         (cached (gethash base-url shipit-issue-jira--myself-cache 'miss)))
+    (if (not (eq cached 'miss))
+        cached
+      (let ((account-id
+             (condition-case err
+                 (cdr (assq 'accountId
+                            (shipit-issue-jira--api-request
+                             config "/rest/api/3/myself")))
+               (error
+                (shipit--debug-log "Jira myself: fetch failed: %S" err)
+                nil))))
+        (puthash base-url account-id shipit-issue-jira--myself-cache)
+        (shipit--debug-log "Jira myself: cached account-id=%s for %s"
+                           account-id base-url)
+        account-id))))
+
+(defun shipit-issue-jira--adf-collect-mentions (node)
+  "Return a list of mention account-ids in NODE (an ADF tree).
+Walks `content' recursively; ignores text-only leaves."
+  (let ((acc '()))
+    (cl-labels ((walk (n)
+                  (when (and n (listp n) (consp (car-safe n)))
+                    (let ((type (cdr (assq 'type n)))
+                          (attrs (cdr (assq 'attrs n)))
+                          (content (cdr (assq 'content n))))
+                      (when (equal type "mention")
+                        (let ((id (cdr (assq 'id attrs))))
+                          (when (stringp id) (push id acc))))
+                      (when content
+                        (mapc #'walk (append content nil)))))))
+      (walk node)
+      (nreverse acc))))
+
+(defun shipit-issue-jira--compute-involvement-reason (config issue)
+  "Return notification reason for ISSUE based on the user's involvement.
+Priority: \"mention\" > \"comment\" > \"assigned\" > \"updated\".
+Falls back to \"updated\" when account-id is unavailable."
+  (let* ((my-id (shipit-issue-jira--fetch-myself config))
+         (fields (cdr (assq 'fields issue)))
+         (description (cdr (assq 'description fields)))
+         (assignee-id (cdr (assq 'accountId (cdr (assq 'assignee fields)))))
+         (comments-data (cdr (assq 'comment fields)))
+         (comments (append (cdr (assq 'comments comments-data)) nil))
+         (mentioned-in-desc
+          (and my-id description
+               (member my-id
+                       (shipit-issue-jira--adf-collect-mentions description))))
+         (mentioned-in-comments
+          (and my-id
+               (cl-some (lambda (c)
+                          (let ((body (cdr (assq 'body c))))
+                            (and body
+                                 (member my-id
+                                         (shipit-issue-jira--adf-collect-mentions
+                                          body)))))
+                        comments)))
+         (i-commented
+          (and my-id
+               (cl-some (lambda (c)
+                          (equal my-id
+                                 (cdr (assq 'accountId
+                                            (cdr (assq 'author c))))))
+                        comments))))
+    (cond
+     ((or mentioned-in-desc mentioned-in-comments) "mention")
+     (i-commented "comment")
+     ((and my-id assignee-id (equal my-id assignee-id)) "assigned")
+     (t "updated"))))
 
 (defun shipit-issue-jira--fetch-notifications (config &optional since)
   "Fetch recently updated Jira issues as notifications.
@@ -1221,15 +1312,23 @@ CONFIG provides context for display name."
          (components-raw (append (cdr (assq 'components fields)) nil))
          (components (delq nil (mapcar (lambda (c) (cdr (assq 'name c)))
                                        components-raw)))
+         (reason (condition-case err
+                     (shipit-issue-jira--compute-involvement-reason config issue)
+                   (error
+                    (shipit--debug-log
+                     "Jira involvement detection failed for %s: %S" key err)
+                    "updated")))
          (base-url (plist-get config :base-url))
          (display-name (or (plist-get config :display-name)
                            (car (plist-get config :project-keys))
                            "jira")))
+    (shipit--debug-log "Jira activity built: key=%s reason=%s components=%S"
+                       key reason components)
     `((repo . ,display-name)
       (number . ,key)
       (type . "issue")
       (subject . ,(or summary ""))
-      (reason . "updated")
+      (reason . ,reason)
       (source . jira)
       (backend-id . jira)
       (backend-config . ,config)

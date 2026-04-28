@@ -745,7 +745,9 @@ whose key has expired but not yet been pruned are skipped."
     (when rows
       (insert "\n")
       (let ((heading (format "🕓 Snoozed (%d)" (length rows))))
-        (magit-insert-section (notification-snoozed-group nil t)
+        ;; Default expanded so `n' from the heading walks into the
+        ;; child rows; collapsing on demand stays a TAB away.
+        (magit-insert-section (notification-snoozed-group nil nil)
           (magit-insert-heading
             (propertize heading 'font-lock-face 'magit-section-heading))
           (dolist (a rows)
@@ -1181,6 +1183,10 @@ invisibility overlay."
      ;; Repo wrapper (group-by-repo) — toggle and reinforce so icons in
      ;; entry rows don't leak through invisibility.
      ((and section (eq (oref section type) 'notification-repo))
+      (shipit-notifications-buffer--toggle-with-icon-fix section))
+     ;; Snoozed-group footer — same reinforcement so icons inside its
+     ;; entry rows don't leak past the parent's invisibility overlay.
+     ((and section (eq (oref section type) 'notification-snoozed-group))
       (shipit-notifications-buffer--toggle-with-icon-fix section))
      ;; Other sections — default toggle (but not root)
      (t (when (and section (oref section parent))

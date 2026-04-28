@@ -85,14 +85,14 @@ views doesn't silently fan out 10 pages of network requests.")
 Populated asynchronously by `shipit--fetch-notifications-total-count-async'
 after each refresh; nil means the probe has not returned yet (or failed).")
 
-(defvar-local shipit-notifications-buffer--repo-filter nil
+(defvar-local shipit-notifications-buffer--selected-repo nil
   "Buffer-local server-side repo filter for the notifications buffer.
 Nil means all repos; a `OWNER/REPO' string targets that repo's
 per-repo notifications endpoint on the backend.  Unlike the
 text filter (client-side only), this makes both the main fetch
 and the total-count probe exact for the selected repo.")
 
-(defvar-local shipit-notifications-buffer--type-filter nil
+(defvar-local shipit-notifications-buffer--selected-type nil
   "Buffer-local client-side type filter for the notifications buffer.
 Nil means all types; a type string like \"pr\" or \"workflow\"
 restricts the view to activities with that internal type.
@@ -131,13 +131,13 @@ whose children are the usual `notification-entry' rows.  Repos are
 ordered by the `updated-at' of their newest entry, so the most
 recently active repo is at the top.")
 
-(defvar-local shipit-notifications-buffer--reason-filter nil
+(defvar-local shipit-notifications-buffer--selected-reason nil
   "Buffer-local client-side reason filter for the notifications buffer.
 Nil means all reasons; a string like \"mention\" or \"review_requested\"
 narrows to that specific GitHub reason.  Combines with every other
 filter (the actionable-only toggle is the broader preset of this).")
 
-(defvar-local shipit-notifications-buffer--jira-component-filter nil
+(defvar-local shipit-notifications-buffer--selected-jira-component nil
   "Buffer-local Jira component filter for the notifications buffer.
 Nil means no filtering (Jira and non-Jira activities both render).
 A string narrows the view to Jira activities whose `jira-components'
@@ -145,7 +145,7 @@ list (case-insensitive) contains that component, plus non-Jira
 activities — so applying the filter doesn't hide your GitHub
 notifications, only narrows the Jira slice.")
 
-(defvar-local shipit-notifications-buffer--state-filter nil
+(defvar-local shipit-notifications-buffer--selected-state nil
   "Buffer-local client-side PR-state filter for the notifications buffer.
 Nil means no filtering.  Set to one of `open'/`closed'/`merged'/`draft'
 to show only PRs in that state — non-PR activities (issues, workflows,
@@ -226,14 +226,14 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "G") #'shipit-notifications-buffer-toggle-group-by-repo)
     (define-key map (kbd "t") #'shipit-notifications-buffer-set-filter)
     (define-key map (kbd "c") #'shipit-notifications-buffer-clear-filter)
-    (define-key map (kbd "r") #'shipit-notifications-buffer-set-repo-filter)
-    (define-key map (kbd "R") #'shipit-notifications-buffer-clear-repo-filter)
-    (define-key map (kbd "o") #'shipit-notifications-buffer-set-jira-component-filter)
-    (define-key map (kbd "O") #'shipit-notifications-buffer-clear-jira-component-filter)
-    (define-key map (kbd "y") #'shipit-notifications-buffer-set-type-filter)
-    (define-key map (kbd "Y") #'shipit-notifications-buffer-clear-type-filter)
-    (define-key map (kbd "e") #'shipit-notifications-buffer-set-state-filter)
-    (define-key map (kbd "E") #'shipit-notifications-buffer-clear-state-filter)
+    (define-key map (kbd "r") #'shipit-notifications-buffer-set-repo)
+    (define-key map (kbd "R") #'shipit-notifications-buffer-clear-repo)
+    (define-key map (kbd "o") #'shipit-notifications-buffer-set-jira-component)
+    (define-key map (kbd "O") #'shipit-notifications-buffer-clear-jira-component)
+    (define-key map (kbd "y") #'shipit-notifications-buffer-set-type)
+    (define-key map (kbd "Y") #'shipit-notifications-buffer-clear-type)
+    (define-key map (kbd "e") #'shipit-notifications-buffer-set-state)
+    (define-key map (kbd "E") #'shipit-notifications-buffer-clear-state)
     (define-key map (kbd "a") #'shipit-notifications-buffer-set-since-filter)
     (define-key map (kbd "A") #'shipit-notifications-buffer-clear-since-filter)
     (define-key map (kbd "b") #'shipit-notifications-buffer-set-before-filter)
@@ -277,7 +277,7 @@ NOCONFIRM are for compatibility with `revert-buffer'."
                           current-prefix-arg))
         (scope shipit-notifications-buffer--display-scope)
         (page shipit-notifications-buffer--current-page)
-        (repo shipit-notifications-buffer--repo-filter)
+        (repo shipit-notifications-buffer--selected-repo)
         (before shipit-notifications-buffer--before-filter)
         (since shipit-notifications-buffer--since-filter)
         (buf (current-buffer)))
@@ -325,12 +325,12 @@ the callers that need the structurally-filtered activity pool
 share a single hash walk + filter."
   (let ((shipit-notifications-buffer--render-pool
          (seq-filter (lambda (a)
-                       (and (shipit-notifications-buffer--matches-repo-filter-p a)
-                            (shipit-notifications-buffer--matches-type-filter-p a)
-                            (shipit-notifications-buffer--matches-state-filter-p a)
-                            (shipit-notifications-buffer--matches-reason-filter-p a)
+                       (and (shipit-notifications-buffer--matches-repo-p a)
+                            (shipit-notifications-buffer--matches-type-p a)
+                            (shipit-notifications-buffer--matches-state-p a)
+                            (shipit-notifications-buffer--matches-reason-p a)
                             (shipit-notifications-buffer--matches-actionable-filter-p a)
-                            (shipit-notifications-buffer--matches-jira-component-filter-p a)))
+                            (shipit-notifications-buffer--matches-jira-component-p a)))
                      (shipit-notifications-buffer--all-activities))))
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
@@ -351,37 +351,37 @@ repeating it for every count call.  Nil outside the render.")
                shipit--notification-pr-activities))
     all))
 
-(defun shipit-notifications-buffer--matches-repo-filter-p (activity)
+(defun shipit-notifications-buffer--matches-repo-p (activity)
   "Return non-nil if ACTIVITY passes the buffer-local repo filter.
 When no repo filter is set, always returns t.  The comparison is
 case-insensitive because GitHub repo names are case-insensitive."
-  (let ((filter shipit-notifications-buffer--repo-filter))
+  (let ((filter shipit-notifications-buffer--selected-repo))
     (or (null filter)
         (let ((repo (cdr (assq 'repo activity))))
           (and (stringp repo)
                (string-equal-ignore-case repo filter))))))
 
-(defun shipit-notifications-buffer--matches-type-filter-p (activity)
+(defun shipit-notifications-buffer--matches-type-p (activity)
   "Return non-nil if ACTIVITY passes the buffer-local type filter.
 When no type filter is set, always returns t."
-  (let ((filter shipit-notifications-buffer--type-filter))
+  (let ((filter shipit-notifications-buffer--selected-type))
     (or (null filter)
         (equal (cdr (assq 'type activity)) filter))))
 
-(defun shipit-notifications-buffer--matches-reason-filter-p (activity)
+(defun shipit-notifications-buffer--matches-reason-p (activity)
   "Return non-nil if ACTIVITY passes the buffer-local reason filter.
 When no reason filter is set, always returns t."
-  (let ((filter shipit-notifications-buffer--reason-filter))
+  (let ((filter shipit-notifications-buffer--selected-reason))
     (or (null filter)
         (equal (cdr (assq 'reason activity)) filter))))
 
-(defun shipit-notifications-buffer--matches-jira-component-filter-p (activity)
+(defun shipit-notifications-buffer--matches-jira-component-p (activity)
   "Return non-nil if ACTIVITY passes the Jira component filter.
 When the filter is nil, always returns t.  When set to a string,
 non-Jira activities pass through (they don't carry components), and
 Jira activities only pass if their `jira-components' list contains
 the configured component (case-insensitive)."
-  (let ((filter shipit-notifications-buffer--jira-component-filter))
+  (let ((filter shipit-notifications-buffer--selected-jira-component))
     (or (null filter)
         (not (eq (cdr (assq 'source activity)) 'jira))
         (let ((comps (cdr (assq 'jira-components activity))))
@@ -407,13 +407,13 @@ pass only non-actionable rows."
             (not actionable)
           actionable))))))
 
-(defun shipit-notifications-buffer--matches-state-filter-p (activity)
+(defun shipit-notifications-buffer--matches-state-p (activity)
   "Return non-nil if ACTIVITY passes the buffer-local state filter.
 When the filter is nil, always returns t.  When set, only PRs with
 the matching state pass — non-PR activities are hidden so picking
 `draft' shows just drafts.  Filter values: `draft' = open + isDraft;
 `open' = open + not-draft; `merged' / `closed' = direct state match."
-  (let ((filter shipit-notifications-buffer--state-filter))
+  (let ((filter shipit-notifications-buffer--selected-state))
     (or (null filter)
         (and (equal (cdr (assq 'type activity)) "pr")
              (let ((state (cdr (assq 'pr-state activity)))
@@ -425,17 +425,17 @@ the matching state pass — non-PR activities are hidden so picking
                 ((equal filter "open") (and (equal state "open") (not draft)))
                 (t (equal state filter))))))))
 
-(defun shipit-notifications-buffer--repo-filtered-activities ()
+(defun shipit-notifications-buffer--selected-repoed-activities ()
   "Activities after the structural (repo + type + state) filters.
 Reuses `shipit-notifications-buffer--render-pool' when set so the
 hash walk + filters happen once per render instead of three times
 (header shown-count, header loaded-count, list renderer)."
   (or shipit-notifications-buffer--render-pool
       (seq-filter (lambda (a)
-                    (and (shipit-notifications-buffer--matches-repo-filter-p a)
-                         (shipit-notifications-buffer--matches-type-filter-p a)
-                         (shipit-notifications-buffer--matches-state-filter-p a)
-                         (shipit-notifications-buffer--matches-reason-filter-p a)
+                    (and (shipit-notifications-buffer--matches-repo-p a)
+                         (shipit-notifications-buffer--matches-type-p a)
+                         (shipit-notifications-buffer--matches-state-p a)
+                         (shipit-notifications-buffer--matches-reason-p a)
                          (shipit-notifications-buffer--matches-actionable-filter-p a)))
                   (shipit-notifications-buffer--all-activities))))
 
@@ -443,12 +443,12 @@ hash walk + filters happen once per render instead of three times
   "Return the number of activities visible under the repo filter.
 Ignores the text filter — this is the denominator when a text
 filter is active, so the user sees `<matches>/<loaded>'."
-  (length (shipit-notifications-buffer--repo-filtered-activities)))
+  (length (shipit-notifications-buffer--selected-repoed-activities)))
 
 (defun shipit-notifications-buffer--shown-count ()
   "Return the number of activities currently rendered in the buffer.
 Applies both the repo filter and the text filter."
-  (let ((pool (shipit-notifications-buffer--repo-filtered-activities)))
+  (let ((pool (shipit-notifications-buffer--selected-repoed-activities)))
     (if (string-empty-p shipit-notifications-buffer--filter-text)
         (length pool)
       (length (seq-filter #'shipit-notifications-buffer--matches-filter-p pool)))))
@@ -472,15 +472,15 @@ probe-derived server total for the current scope, when known."
   (insert (propertize "Notifications" 'font-lock-face 'bold))
   (shipit-notifications-buffer--insert-meta-bracket)
   (shipit-notifications-buffer--insert-filter-bracket
-   "repo" shipit-notifications-buffer--repo-filter nil)
+   "repo" shipit-notifications-buffer--selected-repo nil)
   (shipit-notifications-buffer--insert-filter-bracket
-   "type" shipit-notifications-buffer--type-filter nil)
+   "type" shipit-notifications-buffer--selected-type nil)
   (shipit-notifications-buffer--insert-filter-bracket
-   "reason" shipit-notifications-buffer--reason-filter 'font-lock-keyword-face)
+   "reason" shipit-notifications-buffer--selected-reason 'font-lock-keyword-face)
   (shipit-notifications-buffer--insert-filter-bracket
-   "component" shipit-notifications-buffer--jira-component-filter 'font-lock-keyword-face)
+   "component" shipit-notifications-buffer--selected-jira-component 'font-lock-keyword-face)
   (shipit-notifications-buffer--insert-filter-bracket
-   "state" shipit-notifications-buffer--state-filter 'font-lock-keyword-face)
+   "state" shipit-notifications-buffer--selected-state 'font-lock-keyword-face)
   (when shipit-notifications-buffer--actionable-only
     (shipit-notifications-buffer--insert-filter-bracket
      "actionable"
@@ -577,7 +577,7 @@ helpers as the header counts so the two stay in sync.  Honors
 `shipit-notifications-buffer--group-by-repo': when on, entries are
 nested under per-repo wrapper sections."
   (require 'shipit-notifications)
-  (let ((activities (shipit-notifications-buffer--repo-filtered-activities)))
+  (let ((activities (shipit-notifications-buffer--selected-repoed-activities)))
     (setq activities (sort activities
                            (lambda (a b)
                              (string> (or (cdr (assq 'updated-at a)) "")
@@ -2522,7 +2522,7 @@ even before the backend fetch returns."
                      (shipit-notifications-buffer--gather-watched-repos))))
       (sort (delete-dups (append watched from-hash)) #'string<))))
 
-(defun shipit-notifications-buffer-set-repo-filter ()
+(defun shipit-notifications-buffer-set-repo ()
   "Prompt for a repo to scope the notifications buffer to server-side.
 Candidates come from the PR backends' `:fetch-watched-repos' plus
 any repos already present in the hash.  Picking the clear-label
@@ -2533,19 +2533,19 @@ fetch and the total-count probe hit the per-repo endpoint."
          (candidates (cons clear-label
                            (shipit-notifications-buffer--candidate-repos)))
          (choice (completing-read "Repo: " candidates nil t nil nil
-                                  (or shipit-notifications-buffer--repo-filter
+                                  (or shipit-notifications-buffer--selected-repo
                                       clear-label))))
-    (setq shipit-notifications-buffer--repo-filter
+    (setq shipit-notifications-buffer--selected-repo
           (if (string= choice clear-label) nil choice))
     (setq shipit-notifications-buffer--current-page 1)
     (message "Repo filter: %s"
-             (or shipit-notifications-buffer--repo-filter "all repos"))
+             (or shipit-notifications-buffer--selected-repo "all repos"))
     (shipit-notifications-buffer-refresh)))
 
-(defun shipit-notifications-buffer-clear-repo-filter ()
+(defun shipit-notifications-buffer-clear-repo ()
   "Clear the server-side repo filter and refresh."
   (interactive)
-  (setq shipit-notifications-buffer--repo-filter nil)
+  (setq shipit-notifications-buffer--selected-repo nil)
   (setq shipit-notifications-buffer--current-page 1)
   (message "Repo filter cleared")
   (shipit-notifications-buffer-refresh))
@@ -2586,7 +2586,7 @@ silently (cached hash candidates remain)."
                                   (error-message-string err))))))))
     (sort (hash-table-keys seen) #'string<)))
 
-(defun shipit-notifications-buffer-set-jira-component-filter ()
+(defun shipit-notifications-buffer-set-jira-component ()
   "Pick a Jira component to narrow the buffer to.
 Candidates come from the components present on Jira activities in the
 hash.  Picking the clear-label entry unscopes the filter.  Non-Jira
@@ -2602,19 +2602,19 @@ so they always pass the filter."
       (let* ((candidates (cons clear-label cands))
              (choice (completing-read
                       "Jira component: " candidates nil t nil nil
-                      (or shipit-notifications-buffer--jira-component-filter
+                      (or shipit-notifications-buffer--selected-jira-component
                           clear-label))))
-        (setq shipit-notifications-buffer--jira-component-filter
+        (setq shipit-notifications-buffer--selected-jira-component
               (if (string= choice clear-label) nil choice))
         (message "Jira component filter: %s"
-                 (or shipit-notifications-buffer--jira-component-filter
+                 (or shipit-notifications-buffer--selected-jira-component
                      "all components"))
         (shipit-notifications-buffer--rerender))))))
 
-(defun shipit-notifications-buffer-clear-jira-component-filter ()
+(defun shipit-notifications-buffer-clear-jira-component ()
   "Clear the Jira component filter."
   (interactive)
-  (setq shipit-notifications-buffer--jira-component-filter nil)
+  (setq shipit-notifications-buffer--selected-jira-component nil)
   (message "Jira component filter cleared")
   (shipit-notifications-buffer--rerender))
 
@@ -2629,7 +2629,7 @@ user only sees types that would actually return matches."
           (puthash ty t seen))))
     (sort (hash-table-keys seen) #'string<)))
 
-(defun shipit-notifications-buffer-set-type-filter ()
+(defun shipit-notifications-buffer-set-type ()
   "Prompt for a type to restrict the notifications buffer client-side.
 Candidates come from the types currently visible in the hash.
 Picking the clear-label entry unscopes the filter.  Unlike the
@@ -2641,17 +2641,17 @@ all data locally, we just re-render."
                            (shipit-notifications-buffer--candidate-types)))
          (choice (completing-read
                   "Type: " candidates nil t nil nil
-                  (or shipit-notifications-buffer--type-filter clear-label))))
-    (setq shipit-notifications-buffer--type-filter
+                  (or shipit-notifications-buffer--selected-type clear-label))))
+    (setq shipit-notifications-buffer--selected-type
           (if (string= choice clear-label) nil choice))
     (message "Type filter: %s"
-             (or shipit-notifications-buffer--type-filter "all types"))
+             (or shipit-notifications-buffer--selected-type "all types"))
     (shipit-notifications-buffer--rerender)))
 
-(defun shipit-notifications-buffer-clear-type-filter ()
+(defun shipit-notifications-buffer-clear-type ()
   "Clear the type filter and re-render."
   (interactive)
-  (setq shipit-notifications-buffer--type-filter nil)
+  (setq shipit-notifications-buffer--selected-type nil)
   (message "Type filter cleared")
   (shipit-notifications-buffer--rerender))
 
@@ -2660,7 +2660,7 @@ all data locally, we just re-render."
 Static set matching the icon-picker: open / merged / closed / draft."
   '("open" "merged" "closed" "draft"))
 
-(defun shipit-notifications-buffer-set-state-filter ()
+(defun shipit-notifications-buffer-set-state ()
   "Prompt for a PR state to restrict the notifications buffer client-side.
 Candidates: open / merged / closed / draft.  Picking the clear-label
 entry unscopes the filter.  Re-renders without refetching since the
@@ -2671,21 +2671,21 @@ data is already enriched locally."
                            (shipit-notifications-buffer--candidate-states)))
          (choice (completing-read
                   "State: " candidates nil t nil nil
-                  (or shipit-notifications-buffer--state-filter clear-label))))
-    (setq shipit-notifications-buffer--state-filter
+                  (or shipit-notifications-buffer--selected-state clear-label))))
+    (setq shipit-notifications-buffer--selected-state
           (if (string= choice clear-label) nil choice))
     (message "State filter: %s"
-             (or shipit-notifications-buffer--state-filter "all states"))
+             (or shipit-notifications-buffer--selected-state "all states"))
     (shipit-notifications-buffer--rerender)))
 
-(defun shipit-notifications-buffer-clear-state-filter ()
+(defun shipit-notifications-buffer-clear-state ()
   "Clear the state filter and re-render."
   (interactive)
-  (setq shipit-notifications-buffer--state-filter nil)
+  (setq shipit-notifications-buffer--selected-state nil)
   (message "State filter cleared")
   (shipit-notifications-buffer--rerender))
 
-(defun shipit-notifications-buffer-set-reason-filter ()
+(defun shipit-notifications-buffer-set-reason ()
   "Prompt for a reason to restrict the notifications buffer client-side.
 Candidates come from the reasons currently visible in the hash."
   (interactive)
@@ -2694,31 +2694,31 @@ Candidates come from the reasons currently visible in the hash."
                            (shipit-notifications-buffer--candidate-reasons)))
          (choice (completing-read
                   "Reason: " candidates nil t nil nil
-                  (or shipit-notifications-buffer--reason-filter clear-label))))
-    (setq shipit-notifications-buffer--reason-filter
+                  (or shipit-notifications-buffer--selected-reason clear-label))))
+    (setq shipit-notifications-buffer--selected-reason
           (if (string= choice clear-label) nil choice))
     (message "Reason filter: %s"
-             (or shipit-notifications-buffer--reason-filter "all reasons"))
+             (or shipit-notifications-buffer--selected-reason "all reasons"))
     (shipit-notifications-buffer--rerender)))
 
-(defun shipit-notifications-buffer-clear-reason-filter ()
+(defun shipit-notifications-buffer-clear-reason ()
   "Clear the reason filter and re-render."
   (interactive)
-  (setq shipit-notifications-buffer--reason-filter nil)
+  (setq shipit-notifications-buffer--selected-reason nil)
   (message "Reason filter cleared")
   (shipit-notifications-buffer--rerender))
 
-(defun shipit-notifications-buffer--reason-filter-description ()
+(defun shipit-notifications-buffer--reason-description ()
   "Describe the reason-filter action for the transient."
-  (if shipit-notifications-buffer--reason-filter
-      (format "Reason: %s" shipit-notifications-buffer--reason-filter)
+  (if shipit-notifications-buffer--selected-reason
+      (format "Reason: %s" shipit-notifications-buffer--selected-reason)
     "Reason: <all reasons>"))
 
-(defun shipit-notifications-buffer--jira-component-filter-description ()
+(defun shipit-notifications-buffer--jira-component-description ()
   "Describe the Jira component filter action for the transient."
-  (if shipit-notifications-buffer--jira-component-filter
+  (if shipit-notifications-buffer--selected-jira-component
       (format "Component: %s"
-              shipit-notifications-buffer--jira-component-filter)
+              shipit-notifications-buffer--selected-jira-component)
     "Component: <all components>"))
 
 (defun shipit-notifications-buffer-toggle-actionable-only (&optional inverse)
@@ -2826,14 +2826,14 @@ then issues a single refresh so the server-side repo/before/since
 clearing takes effect alongside the client-side resets."
   (interactive)
   (setq shipit-notifications-buffer--filter-text ""
-        shipit-notifications-buffer--repo-filter nil
-        shipit-notifications-buffer--type-filter nil
-        shipit-notifications-buffer--state-filter nil
-        shipit-notifications-buffer--reason-filter nil
+        shipit-notifications-buffer--selected-repo nil
+        shipit-notifications-buffer--selected-type nil
+        shipit-notifications-buffer--selected-state nil
+        shipit-notifications-buffer--selected-reason nil
         shipit-notifications-buffer--actionable-only nil
         shipit-notifications-buffer--before-filter nil
         shipit-notifications-buffer--since-filter nil
-        shipit-notifications-buffer--jira-component-filter nil
+        shipit-notifications-buffer--selected-jira-component nil
         shipit-notifications-buffer--current-page 1)
   (message "All filters cleared")
   (shipit-notifications-buffer-refresh))
@@ -2864,22 +2864,22 @@ clearing takes effect alongside the client-side resets."
       "Text filter…"
     (format "Text filter: %s" shipit-notifications-buffer--filter-text)))
 
-(defun shipit-notifications-buffer--repo-filter-description ()
+(defun shipit-notifications-buffer--repo-description ()
   "Describe the repo-filter action for the transient."
-  (if shipit-notifications-buffer--repo-filter
-      (format "Repo: %s" shipit-notifications-buffer--repo-filter)
+  (if shipit-notifications-buffer--selected-repo
+      (format "Repo: %s" shipit-notifications-buffer--selected-repo)
     "Repo: <all repos>"))
 
-(defun shipit-notifications-buffer--type-filter-description ()
+(defun shipit-notifications-buffer--type-description ()
   "Describe the type-filter action for the transient."
-  (if shipit-notifications-buffer--type-filter
-      (format "Type: %s" shipit-notifications-buffer--type-filter)
+  (if shipit-notifications-buffer--selected-type
+      (format "Type: %s" shipit-notifications-buffer--selected-type)
     "Type: <all types>"))
 
-(defun shipit-notifications-buffer--state-filter-description ()
+(defun shipit-notifications-buffer--state-description ()
   "Describe the state-filter action for the transient."
-  (if shipit-notifications-buffer--state-filter
-      (format "State: %s" shipit-notifications-buffer--state-filter)
+  (if shipit-notifications-buffer--selected-state
+      (format "State: %s" shipit-notifications-buffer--selected-state)
     "State: <all states>"))
 
 (defun shipit-notifications-buffer--before-filter-description ()
@@ -2896,51 +2896,53 @@ clearing takes effect alongside the client-side resets."
 
 ;;;###autoload (autoload 'shipit-notifications-buffer-filter-menu "shipit-notifications-buffer" nil t)
 (transient-define-prefix shipit-notifications-buffer-filter-menu ()
-  "Filter and scope controls for the notifications buffer."
-  [["Scope"
+  "View and filter controls for the notifications buffer.
+The two columns mirror the conceptual split: View groups
+adjust how the buffer presents what is loaded (scope, paging,
+grouping), Filter groups narrow the activity set that is shown."
+  [["View / Scope"
     ("s" shipit-notifications-buffer-toggle-scope
-     :description shipit-notifications-buffer--scope-description)]
-   ["Pages (all scope)"
+     :description shipit-notifications-buffer--scope-description)
+    ("G" shipit-notifications-buffer-toggle-group-by-repo
+     :description shipit-notifications-buffer--group-by-repo-description
+     :transient t)]
+   ["View / Pages (all scope)"
     ("<" "First page" shipit-notifications-buffer-first-page)
     (">" "Last page" shipit-notifications-buffer-last-page)
-    ("P" "Go to page…" shipit-notifications-buffer-goto-page)]
-   ["Server-side"
-    ("r" shipit-notifications-buffer-set-repo-filter
-     :description shipit-notifications-buffer--repo-filter-description)
-    ("R" "Clear repo filter" shipit-notifications-buffer-clear-repo-filter)]
-   ["Time window"
+    ("P" "Go to page…" shipit-notifications-buffer-goto-page)]]
+  [["Selector / Repo (server-side)"
+    ("r" shipit-notifications-buffer-set-repo
+     :description shipit-notifications-buffer--repo-description)
+    ("R" "Clear repo selection" shipit-notifications-buffer-clear-repo)]
+   ["Filter / Time window"
     ("b" shipit-notifications-buffer-set-before-filter
      :description shipit-notifications-buffer--before-filter-description)
     ("B" "Clear before filter" shipit-notifications-buffer-clear-before-filter)
     ("a" shipit-notifications-buffer-set-since-filter
      :description shipit-notifications-buffer--since-filter-description)
     ("A" "Clear since filter" shipit-notifications-buffer-clear-since-filter)]]
-  [["Type / State"
-    ("y" shipit-notifications-buffer-set-type-filter
-     :description shipit-notifications-buffer--type-filter-description)
-    ("Y" "Clear type filter" shipit-notifications-buffer-clear-type-filter)
-    ("e" shipit-notifications-buffer-set-state-filter
-     :description shipit-notifications-buffer--state-filter-description)
-    ("E" "Clear state filter" shipit-notifications-buffer-clear-state-filter)]
-   ["Reason"
-    ("n" shipit-notifications-buffer-set-reason-filter
-     :description shipit-notifications-buffer--reason-filter-description)
-    ("N" "Clear reason filter" shipit-notifications-buffer-clear-reason-filter)]
-   ["Jira"
-    ("o" shipit-notifications-buffer-set-jira-component-filter
-     :description shipit-notifications-buffer--jira-component-filter-description)
-    ("O" "Clear component filter"
-     shipit-notifications-buffer-clear-jira-component-filter)]
-   ["Text"
+  [["Selector / Type / State"
+    ("y" shipit-notifications-buffer-set-type
+     :description shipit-notifications-buffer--type-description)
+    ("Y" "Clear type selection" shipit-notifications-buffer-clear-type)
+    ("e" shipit-notifications-buffer-set-state
+     :description shipit-notifications-buffer--state-description)
+    ("E" "Clear state selection" shipit-notifications-buffer-clear-state)]
+   ["Selector / Reason"
+    ("n" shipit-notifications-buffer-set-reason
+     :description shipit-notifications-buffer--reason-description)
+    ("N" "Clear reason selection" shipit-notifications-buffer-clear-reason)]
+   ["Selector / Jira"
+    ("o" shipit-notifications-buffer-set-jira-component
+     :description shipit-notifications-buffer--jira-component-description)
+    ("O" "Clear component selection"
+     shipit-notifications-buffer-clear-jira-component)]
+   ["Filter / Text"
     ("t" shipit-notifications-buffer-set-filter
      :description shipit-notifications-buffer--text-filter-description)
-    ("c" "Clear text filter" shipit-notifications-buffer-clear-filter)]
-   ["Quick toggles"
+    ("c" "Clear text filter" shipit-notifications-buffer-clear-filter)
     ("!" shipit-notifications-buffer-toggle-actionable-only
      :description shipit-notifications-buffer--actionable-only-description
-     :transient t)
-    ("G" shipit-notifications-buffer-toggle-group-by-repo
-     :description shipit-notifications-buffer--group-by-repo-description
      :transient t)]]
   [["Mark / auto-mark"
     ("m" "Mark menu…"

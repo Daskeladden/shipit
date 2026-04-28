@@ -338,15 +338,15 @@ THEN the header shows `1/2' — matches over loaded — not
 
 (ert-deftest test-shipit-notifications-buffer-repo-filter-default-nil ()
   "GIVEN a fresh notifications buffer
-THEN `shipit-notifications-buffer--repo-filter' is nil (no filter)."
+THEN `shipit-notifications-buffer--selected-repo' is nil (no filter)."
   (let ((buf (shipit-notifications-buffer-create)))
     (unwind-protect
         (with-current-buffer buf
-          (should (null shipit-notifications-buffer--repo-filter)))
+          (should (null shipit-notifications-buffer--selected-repo)))
       (kill-buffer buf))))
 
 (ert-deftest test-shipit-notifications-buffer-repo-filter-in-header ()
-  "GIVEN a buffer with `shipit-notifications-buffer--repo-filter' set
+  "GIVEN a buffer with `shipit-notifications-buffer--selected-repo' set
 WHEN the buffer is rendered
 THEN the header includes `[repo: owner/foo]'."
   (cl-letf (((symbol-function 'shipit--check-notifications-background)
@@ -357,7 +357,7 @@ THEN the header includes `[repo: owner/foo]'."
           (buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--repo-filter "owner/foo")
+            (setq shipit-notifications-buffer--selected-repo "owner/foo")
             (shipit-notifications-buffer--rerender)
             (let ((header (buffer-substring-no-properties
                            (point-min)
@@ -365,18 +365,18 @@ THEN the header includes `[repo: owner/foo]'."
               (should (string-match-p "\[repo: owner/foo\]" header))))
         (kill-buffer buf)))))
 
-(ert-deftest test-shipit-notifications-buffer-clear-repo-filter ()
+(ert-deftest test-shipit-notifications-buffer-clear-repo ()
   "GIVEN a buffer with a repo filter set
-WHEN `shipit-notifications-buffer-clear-repo-filter' is invoked
+WHEN `shipit-notifications-buffer-clear-repo' is invoked
 THEN the filter is cleared to nil."
   (cl-letf (((symbol-function 'shipit-notifications-buffer-refresh)
              (lambda (&rest _args) nil)))
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--repo-filter "owner/foo")
-            (shipit-notifications-buffer-clear-repo-filter)
-            (should (null shipit-notifications-buffer--repo-filter)))
+            (setq shipit-notifications-buffer--selected-repo "owner/foo")
+            (shipit-notifications-buffer-clear-repo)
+            (should (null shipit-notifications-buffer--selected-repo)))
         (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-clear-all-filters ()
@@ -391,8 +391,8 @@ is triggered."
         (unwind-protect
             (with-current-buffer buf
               (setq shipit-notifications-buffer--filter-text "needle")
-              (setq shipit-notifications-buffer--repo-filter "owner/foo")
-              (setq shipit-notifications-buffer--type-filter "pr")
+              (setq shipit-notifications-buffer--selected-repo "owner/foo")
+              (setq shipit-notifications-buffer--selected-type "pr")
               (setq shipit-notifications-buffer--before-filter
                     "2026-01-01T00:00:00Z")
               (setq shipit-notifications-buffer--since-filter
@@ -401,8 +401,8 @@ is triggered."
               (shipit-notifications-buffer-clear-all-filters)
               (should (string-empty-p
                        shipit-notifications-buffer--filter-text))
-              (should (null shipit-notifications-buffer--repo-filter))
-              (should (null shipit-notifications-buffer--type-filter))
+              (should (null shipit-notifications-buffer--selected-repo))
+              (should (null shipit-notifications-buffer--selected-type))
               (should (null shipit-notifications-buffer--before-filter))
               (should (null shipit-notifications-buffer--since-filter))
               (should (= shipit-notifications-buffer--current-page 1))
@@ -418,18 +418,18 @@ filter does not silently let stateless rows through."
   (let ((buf (shipit-notifications-buffer-create)))
     (unwind-protect
         (with-current-buffer buf
-          (setq shipit-notifications-buffer--state-filter "open")
-          (should (shipit-notifications-buffer--matches-state-filter-p
+          (setq shipit-notifications-buffer--selected-state "open")
+          (should (shipit-notifications-buffer--matches-state-p
                    '((type . "pr") (pr-state . "open"))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "pr") (pr-state . "open") (draft . t))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "pr") (pr-state . "merged"))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "pr") (pr-state . "closed"))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "issue") (number . 1))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "workflow")))))
       (kill-buffer buf))))
 
@@ -440,12 +440,12 @@ THEN only PRs with `draft' = t and `pr-state' = `open' pass."
   (let ((buf (shipit-notifications-buffer-create)))
     (unwind-protect
         (with-current-buffer buf
-          (setq shipit-notifications-buffer--state-filter "draft")
-          (should (shipit-notifications-buffer--matches-state-filter-p
+          (setq shipit-notifications-buffer--selected-state "draft")
+          (should (shipit-notifications-buffer--matches-state-p
                    '((type . "pr") (pr-state . "open") (draft . t))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "pr") (pr-state . "open"))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "pr") (pr-state . "merged") (draft . t)))))
       (kill-buffer buf))))
 
@@ -456,15 +456,15 @@ THEN only PRs whose `pr-state' equals the filter pass."
   (let ((buf (shipit-notifications-buffer-create)))
     (unwind-protect
         (with-current-buffer buf
-          (setq shipit-notifications-buffer--state-filter "merged")
-          (should (shipit-notifications-buffer--matches-state-filter-p
+          (setq shipit-notifications-buffer--selected-state "merged")
+          (should (shipit-notifications-buffer--matches-state-p
                    '((type . "pr") (pr-state . "merged"))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "pr") (pr-state . "closed"))))
-          (setq shipit-notifications-buffer--state-filter "closed")
-          (should (shipit-notifications-buffer--matches-state-filter-p
+          (setq shipit-notifications-buffer--selected-state "closed")
+          (should (shipit-notifications-buffer--matches-state-p
                    '((type . "pr") (pr-state . "closed"))))
-          (should-not (shipit-notifications-buffer--matches-state-filter-p
+          (should-not (shipit-notifications-buffer--matches-state-p
                        '((type . "pr") (pr-state . "merged")))))
       (kill-buffer buf))))
 
@@ -475,25 +475,25 @@ THEN it always returns non-nil."
   (let ((buf (shipit-notifications-buffer-create)))
     (unwind-protect
         (with-current-buffer buf
-          (setq shipit-notifications-buffer--state-filter nil)
-          (should (shipit-notifications-buffer--matches-state-filter-p
+          (setq shipit-notifications-buffer--selected-state nil)
+          (should (shipit-notifications-buffer--matches-state-p
                    '((type . "pr") (pr-state . "merged"))))
-          (should (shipit-notifications-buffer--matches-state-filter-p
+          (should (shipit-notifications-buffer--matches-state-p
                    '((type . "issue")))))
       (kill-buffer buf))))
 
-(ert-deftest test-shipit-notifications-buffer-clear-state-filter ()
+(ert-deftest test-shipit-notifications-buffer-clear-state ()
   "GIVEN buffer with a state filter set
-WHEN `shipit-notifications-buffer-clear-state-filter' is invoked
+WHEN `shipit-notifications-buffer-clear-state' is invoked
 THEN the filter is cleared to nil."
   (cl-letf (((symbol-function 'shipit-notifications-buffer-refresh)
              (lambda (&rest _args) nil)))
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--state-filter "merged")
-            (shipit-notifications-buffer-clear-state-filter)
-            (should (null shipit-notifications-buffer--state-filter)))
+            (setq shipit-notifications-buffer--selected-state "merged")
+            (shipit-notifications-buffer-clear-state)
+            (should (null shipit-notifications-buffer--selected-state)))
         (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-state-filter-in-clear-all ()
@@ -505,9 +505,9 @@ THEN the state filter is also reset to nil."
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--state-filter "merged")
+            (setq shipit-notifications-buffer--selected-state "merged")
             (shipit-notifications-buffer-clear-all-filters)
-            (should (null shipit-notifications-buffer--state-filter)))
+            (should (null shipit-notifications-buffer--selected-state)))
         (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-header-state-uses-keyword-face ()
@@ -522,7 +522,7 @@ THEN the state value uses `font-lock-keyword-face'."
           (buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--state-filter "merged")
+            (setq shipit-notifications-buffer--selected-state "merged")
             (shipit-notifications-buffer--rerender)
             (goto-char (point-min))
             (should (search-forward "merged" nil t))
@@ -625,7 +625,7 @@ stateless rows do not silently bypass the filter."
                shipit--notification-pr-activities)
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--state-filter "merged")
+            (setq shipit-notifications-buffer--selected-state "merged")
             (shipit-notifications-buffer--rerender)
             (let ((body (buffer-substring-no-properties
                          (point-min) (point-max))))
@@ -636,7 +636,7 @@ stateless rows do not silently bypass the filter."
 
 (ert-deftest test-shipit-notifications-buffer-repo-filter-drops-other-repos ()
   "GIVEN 2 GitHub activities in `owner/foo' and 3 Jira activities in `BAR'
-and `shipit-notifications-buffer--repo-filter' set to `owner/foo'
+and `shipit-notifications-buffer--selected-repo' set to `owner/foo'
 WHEN the buffer is rendered
 THEN both the header count and the rendered listing show 2/2 —
 the 3 off-repo activities are excluded from both."
@@ -666,7 +666,7 @@ the 3 off-repo activities are excluded from both."
                  shipit--notification-pr-activities))
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--repo-filter "owner/foo")
+            (setq shipit-notifications-buffer--selected-repo "owner/foo")
             (should (= 2 (shipit-notifications-buffer--loaded-count)))
             (should (= 2 (shipit-notifications-buffer--shown-count))))
         (kill-buffer buf)))))
@@ -1017,24 +1017,24 @@ THEN actionable-only flips to nil along with every other filter."
 
 ;;; Reason filter
 
-(ert-deftest test-shipit-notifications-buffer--matches-reason-filter-p ()
+(ert-deftest test-shipit-notifications-buffer--matches-reason-p ()
   "GIVEN a reason filter set to a specific reason
 WHEN the predicate runs
 THEN only activities with that reason pass; nil filter passes all."
-  (let ((shipit-notifications-buffer--reason-filter nil))
-    (should (shipit-notifications-buffer--matches-reason-filter-p
+  (let ((shipit-notifications-buffer--selected-reason nil))
+    (should (shipit-notifications-buffer--matches-reason-p
              '((reason . "subscribed"))))
-    (should (shipit-notifications-buffer--matches-reason-filter-p
+    (should (shipit-notifications-buffer--matches-reason-p
              '((reason . "mention")))))
-  (let ((shipit-notifications-buffer--reason-filter "mention"))
-    (should (shipit-notifications-buffer--matches-reason-filter-p
+  (let ((shipit-notifications-buffer--selected-reason "mention"))
+    (should (shipit-notifications-buffer--matches-reason-p
              '((reason . "mention"))))
-    (should-not (shipit-notifications-buffer--matches-reason-filter-p
+    (should-not (shipit-notifications-buffer--matches-reason-p
                  '((reason . "subscribed"))))
-    (should-not (shipit-notifications-buffer--matches-reason-filter-p
+    (should-not (shipit-notifications-buffer--matches-reason-p
                  '()))))
 
-(ert-deftest test-shipit-notifications-buffer-clear-reason-filter ()
+(ert-deftest test-shipit-notifications-buffer-clear-reason ()
   "GIVEN buffer with a reason filter set
 WHEN clear-reason-filter is invoked
 THEN the filter is cleared to nil."
@@ -1043,9 +1043,9 @@ THEN the filter is cleared to nil."
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--reason-filter "mention")
-            (shipit-notifications-buffer-clear-reason-filter)
-            (should (null shipit-notifications-buffer--reason-filter)))
+            (setq shipit-notifications-buffer--selected-reason "mention")
+            (shipit-notifications-buffer-clear-reason)
+            (should (null shipit-notifications-buffer--selected-reason)))
         (kill-buffer buf)))))
 
 (ert-deftest test-shipit-notifications-buffer-reason-filter-drops-other-reasons ()
@@ -1075,7 +1075,7 @@ THEN only the mention PR appears."
                shipit--notification-pr-activities)
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--reason-filter "mention")
+            (setq shipit-notifications-buffer--selected-reason "mention")
             (shipit-notifications-buffer--rerender)
             (let ((body (buffer-substring-no-properties
                          (point-min) (point-max))))
@@ -1093,9 +1093,9 @@ THEN reason-filter is reset to nil."
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq shipit-notifications-buffer--reason-filter "mention")
+            (setq shipit-notifications-buffer--selected-reason "mention")
             (shipit-notifications-buffer-clear-all-filters)
-            (should (null shipit-notifications-buffer--reason-filter)))
+            (should (null shipit-notifications-buffer--selected-reason)))
         (kill-buffer buf)))))
 
 ;;; GroupBy repository

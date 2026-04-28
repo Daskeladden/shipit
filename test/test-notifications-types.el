@@ -457,7 +457,7 @@ the opt-in gate must be respected."
 
 (ert-deftest test-notifications-buffer-type-filter-restricts-pool ()
   "GIVEN activities of two types
-WHEN `shipit-notifications-buffer--type-filter' is set to one of them
+WHEN `shipit-notifications-buffer--selected-type' is set to one of them
 THEN the buffer only renders that type."
   (require 'shipit-notifications-buffer)
   (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
@@ -474,7 +474,7 @@ THEN the buffer only renders that type."
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq-local shipit-notifications-buffer--type-filter "workflow")
+            (setq-local shipit-notifications-buffer--selected-type "workflow")
             (shipit-notifications-buffer--rerender)
             (goto-char (point-min))
             (should (search-forward "Deploy two" nil t))

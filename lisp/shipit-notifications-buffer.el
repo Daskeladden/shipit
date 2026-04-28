@@ -759,7 +759,50 @@ whose key has expired but not yet been pruned are skipped."
           (magit-insert-heading
             (propertize heading 'font-lock-face 'magit-section-heading))
           (dolist (a rows)
-            (shipit-notifications-buffer--insert-notification a)))))))
+            (shipit-notifications-buffer--insert-notification a)
+            (shipit-notifications-buffer--annotate-row-with-snooze a live)))))))
+
+(defun shipit-notifications-buffer--annotate-row-with-snooze (activity live)
+  "Insert `Nh Mm left' before the trailing timestamp on the just-inserted ACTIVITY row.
+LIVE is the current snooze alist (already pruned).  Total line
+width is preserved -- equivalent whitespace is consumed from the
+padding before the timestamp, so the row never extends past the
+existing right-edge.  No-op when the row's key has no active snooze."
+  (let* ((repo (cdr (assq 'repo activity)))
+         (type (or (cdr (assq 'type activity)) "pr"))
+         (number (or (cdr (assq 'number activity))
+                     (cdr (assq 'pr-number activity))))
+         (key (and repo number
+                   (format "%s:%s:%s" repo type number)))
+         (cell (and key (assoc key live)))
+         (annotation (and cell
+                          (shipit-notifications-buffer--format-snooze-remaining
+                           (cdr cell)))))
+    (when annotation
+      (let* ((permanent (string= annotation "permanent"))
+             (label (if permanent "permanent  "
+                      (format "%s left  " annotation))))
+        (save-excursion
+          (forward-line -1)
+          ;; Find the start of the trailing 16-char timestamp field.
+          ;; The timestamp is right-aligned at the line end; walk back
+          ;; until we hit whitespace, then we are at its start.
+          (end-of-line)
+          (let ((line-end (point))
+                (label-len (length label)))
+            (skip-chars-backward "^ \t" (line-beginning-position))
+            (let ((ts-start (point)))
+              ;; Insert the label at the timestamp column boundary,
+              ;; shifting the timestamp right.
+              (insert (propertize label 'font-lock-face 'shipit-timestamp-face))
+              ;; Reclaim the same number of characters from the run
+              ;; of whitespace immediately preceding the label so the
+              ;; total line width is unchanged.
+              (goto-char ts-start)
+              (let ((take (min label-len
+                               (- ts-start (line-beginning-position)))))
+                (when (> take 0)
+                  (delete-region (- ts-start take) ts-start))))))))))
 
 (defun shipit-notifications-buffer--group-activities-by-repo (activities)
   "Group ACTIVITIES into a list of (REPO . ACTIVITIES) cons cells.
@@ -3222,7 +3265,7 @@ literal string `permanent'."
     ("8" "8 hours" shipit-notifications-buffer-snooze-8h)
     ("d" "1 day" shipit-notifications-buffer-snooze-24h)
     ("c" "Custom hours..." shipit-notifications-buffer-snooze-custom)
-    ("P" "Permanent" shipit-notifications-buffer-snooze-permanent)]
+    ("p" "Permanent" shipit-notifications-buffer-snooze-permanent)]
    ["Manage"
     ("l" "List / unsnooze" shipit-notifications-buffer-clear-snoozes)
     ("C" "Clear all" (lambda () (interactive)

@@ -1877,13 +1877,22 @@ root (flat list) or nested under `notification-repo' wrappers
       (setq s (oref s parent)))
     s))
 
+(defun shipit-notifications-buffer--containing-snoozed-group ()
+  "Return the `notification-snoozed-group' section containing point, or nil."
+  (let ((s (magit-current-section)))
+    (while (and s (not (eq (oref s type) 'notification-snoozed-group)))
+      (setq s (oref s parent)))
+    s))
+
 (defun shipit-notifications-buffer-mark-all-read ()
   "Mark visible notifications as read.
-When point sits inside a `notification-repo' wrapper (only present
-in group-by-repo mode), the action scopes to that repo only.
-Otherwise it marks every entry in the buffer."
+When point sits inside a `notification-repo' wrapper (group-by-repo
+mode), the action scopes to that repo.  When point sits inside the
+`🕓 Snoozed' group footer, the action scopes to just the snoozed
+rows.  Otherwise it marks every entry in the buffer."
   (interactive)
-  (let* ((scope (or (shipit-notifications-buffer--containing-repo-section)
+  (let* ((scope (or (shipit-notifications-buffer--containing-snoozed-group)
+                    (shipit-notifications-buffer--containing-repo-section)
                     (and (bound-and-true-p magit-root-section)
                          magit-root-section)))
          (notifications (and scope
@@ -1892,6 +1901,8 @@ Otherwise it marks every entry in the buffer."
          (scope-suffix (cond
                         ((null scope) "")
                         ((eq scope magit-root-section) "")
+                        ((eq (oref scope type) 'notification-snoozed-group)
+                         " in Snoozed")
                         (t (format " in %s" (oref scope value))))))
     (if notifications
         (progn

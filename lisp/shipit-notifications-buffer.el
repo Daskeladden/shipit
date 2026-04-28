@@ -2319,22 +2319,44 @@ overlay list so a single
                (walk c))))))
       (walk magit-root-section))))
 
+(defun shipit-notifications-buffer--activity-key-tuple (a)
+  "Return (NUMBER REPO TYPE) for activity A."
+  (list (or (cdr (assq 'number a))
+            (cdr (assq 'pr-number a)))
+        (cdr (assq 'repo a))
+        (or (cdr (assq 'type a)) "pr")))
+
 (defun shipit-notifications-buffer--collect-by-predicate (predicate)
   "Walk the global activity hash and return (NUMBER REPO TYPE) for each
-ACTIVITY that PREDICATE returns non-nil for."
+ACTIVITY that PREDICATE returns non-nil for.  Use this when the
+intent is a cross-repo cleanup (e.g. mark every resolved PR);
+for a `mark-what-I-can-see' action use
+`--collect-visible-by-predicate' instead."
   (let ((acc '()))
     (when (and (boundp 'shipit--notification-pr-activities)
                shipit--notification-pr-activities)
       (maphash
        (lambda (_k a)
          (when (funcall predicate a)
-           (push (list (or (cdr (assq 'number a))
-                           (cdr (assq 'pr-number a)))
-                       (cdr (assq 'repo a))
-                       (or (cdr (assq 'type a)) "pr"))
-                 acc)))
+           (push (shipit-notifications-buffer--activity-key-tuple a) acc)))
        shipit--notification-pr-activities))
     acc))
+
+(defun shipit-notifications-buffer--collect-visible-by-predicate (predicate)
+  "Return (NUMBER REPO TYPE) for visible activities matching PREDICATE.
+Visible means the same set the buffer is rendering: post-scope,
+post-selector, post-filter.  When the user invokes a bulk mark
+this is what they expect to act on -- not entries off-screen
+hidden by their selectors or another scope."
+  (let ((acc '()))
+    (dolist (a (shipit-notifications-buffer--repo-filtered-activities))
+      (when (and (shipit-notifications-buffer--matches-scope-p a)
+                 (shipit-notifications-buffer--matches-jira-component-p a)
+                 (or (string-empty-p shipit-notifications-buffer--filter-text)
+                     (shipit-notifications-buffer--matches-filter-p a))
+                 (funcall predicate a))
+        (push (shipit-notifications-buffer--activity-key-tuple a) acc)))
+    (nreverse acc)))
 
 (defun shipit-notifications-buffer--preview-rows-by-predicate (predicate)
   "Add strike-through preview overlays to notification rows where
@@ -2351,12 +2373,19 @@ PREDICATE returns non-nil for the row's activity."
                (walk c))))))
       (walk magit-root-section))))
 
-(defun shipit-notifications-buffer--mark-by-predicate (predicate label)
+(defun shipit-notifications-buffer--mark-by-predicate (predicate label &optional visible-only)
   "Mark every activity for which PREDICATE returns non-nil as read.
 Previews matching rows with a strike-through overlay before the y/n
 prompt; tears down the overlay whether you confirm or abort.  LABEL
-is a short noun used in the prompt and confirmation message."
-  (let ((targets (shipit-notifications-buffer--collect-by-predicate predicate)))
+is a short noun used in the prompt and confirmation message.
+When VISIBLE-ONLY is non-nil, only sweep activities currently
+rendered in the buffer (post-scope, post-selector, post-filter);
+otherwise sweep the full activity hash."
+  (let ((targets (if visible-only
+                     (shipit-notifications-buffer--collect-visible-by-predicate
+                      predicate)
+                   (shipit-notifications-buffer--collect-by-predicate
+                    predicate))))
     (cond
      ((null targets)
       (message "No %s notifications to mark as read" label))
@@ -2386,25 +2415,31 @@ Actionable reasons are listed in `shipit-notifications-actionable-reasons'."
     (and (stringp r)
          (member r shipit-notifications-actionable-reasons))))
 
-(defun shipit-notifications-buffer-mark-actionable-read ()
-  "Mark every notification with an actionable reason as read.
+(defun shipit-notifications-buffer-mark-actionable-read (&optional arg)
+  "Mark notifications with an actionable reason as read.
 Actionable reasons are listed in `shipit-notifications-actionable-reasons'
-\(mentions, review_requested, etc.)."
-  (interactive)
+\(mentions, review_requested, etc.).
+Operates on currently visible rows by default; with prefix ARG
+sweeps the full activity hash regardless of scope/selectors."
+  (interactive "P")
   (shipit-notifications-buffer--mark-by-predicate
    #'shipit-notifications-buffer--actionable-activity-p
-   "actionable"))
+   "actionable"
+   (not arg)))
 
-(defun shipit-notifications-buffer-mark-non-actionable-read ()
-  "Mark every notification with a non-actionable reason as read.
+(defun shipit-notifications-buffer-mark-non-actionable-read (&optional arg)
+  "Mark notifications with a non-actionable reason as read.
 Non-actionable reasons are everything not in
 `shipit-notifications-actionable-reasons' \(subscribed, etc.) — the
-ones that pile up during routine triage."
-  (interactive)
+ones that pile up during routine triage.
+Operates on currently visible rows by default; with prefix ARG
+sweeps the full activity hash regardless of scope/selectors."
+  (interactive "P")
   (shipit-notifications-buffer--mark-by-predicate
    (lambda (a)
      (not (shipit-notifications-buffer--actionable-activity-p a)))
-   "non-actionable"))
+   "non-actionable"
+   (not arg)))
 
 (defun shipit-notifications-buffer-mark-resolved-read ()
   "Mark all merged and closed PR notifications as read.

@@ -2600,20 +2600,39 @@ Each activity should be an alist with keys: number, type, subject, reason, repo.
       (setq shipit--last-notification-count new-count))))
 
 (defun shipit--count-unread-activities ()
-  "Count activities in the global hash that are still unread.
+  "Count activities in the global hash that are still unread and not snoozed.
 GitHub activities whose `notification.unread' is nil or :json-false
 are skipped; backend activities are counted unconditionally
-because they are removed from the hash on mark."
-  (let ((count 0))
+because they are removed from the hash on mark.  Activities whose
+key sits on the notifications buffer's session-local snooze list
+(with an unexpired deadline) are also excluded so the modeline
+bell reflects only the user's active work."
+  (let* ((count 0)
+         (buf (and (boundp 'shipit-notifications-buffer-name)
+                   (get-buffer shipit-notifications-buffer-name)))
+         (snoozes (and buf
+                       (buffer-live-p buf)
+                       (buffer-local-value
+                        'shipit-notifications-buffer--snoozed-items buf)))
+         (now (float-time)))
     (when (and (boundp 'shipit--notification-pr-activities)
                shipit--notification-pr-activities)
       (maphash
        (lambda (_k a)
          (let* ((notif (cdr (assq 'notification a)))
-                (u (and notif (cdr (assq 'unread notif)))))
-           (cond
-            ((null notif) (cl-incf count))
-            ((and u (not (eq u :json-false))) (cl-incf count)))))
+                (u (and notif (cdr (assq 'unread notif))))
+                (repo (cdr (assq 'repo a)))
+                (type (or (cdr (assq 'type a)) "pr"))
+                (number (or (cdr (assq 'number a))
+                            (cdr (assq 'pr-number a))))
+                (key (and repo number
+                          (format "%s:%s:%s" repo type number)))
+                (snooze-cell (and key snoozes (assoc key snoozes)))
+                (snoozed (and snooze-cell (> (cdr snooze-cell) now))))
+           (unless snoozed
+             (cond
+              ((null notif) (cl-incf count))
+              ((and u (not (eq u :json-false))) (cl-incf count))))))
        shipit--notification-pr-activities))
     count))
 

@@ -213,6 +213,10 @@ GraphQL round-trip only happens once per session.  Cleared by
   "Magit section identifier for notification entries.")
 (put 'notification-entry 'magit-section t)
 
+(defun notification-snoozed-group (&rest _args)
+  "Magit section identifier for the collapsible snoozed-group footer.")
+(put 'notification-snoozed-group 'magit-section t)
+
 (defun notification-repo (&rest _args)
   "Magit section identifier for the per-repo wrapper used when
 `shipit-notifications-buffer--group-by-repo' is non-nil.")
@@ -382,6 +386,17 @@ elapsed lets the activity through; an unexpired snooze hides it."
 
 ;;; Rendering
 
+(defvar shipit-notifications-buffer--render-pool nil
+  "Dynamic cache of the repo-filtered activity pool during one render.
+Bound by `shipit-notifications-buffer--render' so header helpers and
+the list renderer share a single hash walk per render instead of
+repeating it for every count call.  Nil outside the render.
+
+Declared here (before the binder) so the byte-compiler treats it as
+special; otherwise the `let' inside `--render' binds it lexically
+and downstream readers like `--repo-filtered-activities' see the
+global nil and fall through to their own filter chain.")
+
 (defun shipit-notifications-buffer--render ()
   "Render the notifications buffer content.
 Bind `shipit-notifications-buffer--render-pool' once per render so
@@ -401,12 +416,6 @@ share a single hash walk + filter."
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
       (shipit-notifications-buffer--insert-notifications))))
-
-(defvar shipit-notifications-buffer--render-pool nil
-  "Dynamic cache of the repo-filtered activity pool during one render.
-Bound by `shipit-notifications-buffer--render' so header helpers and
-the list renderer share a single hash walk per render instead of
-repeating it for every count call.  Nil outside the render.")
 
 (defun shipit-notifications-buffer--all-activities ()
   "Return the list of all activities in the global hash (unfiltered)."
@@ -535,7 +544,8 @@ hash walk + filters happen once per render instead of three times
 (header shown-count, header loaded-count, list renderer)."
   (or shipit-notifications-buffer--render-pool
       (seq-filter (lambda (a)
-                    (and (shipit-notifications-buffer--matches-repo-p a)
+                    (and (shipit-notifications-buffer--matches-snooze-p a)
+                         (shipit-notifications-buffer--matches-repo-p a)
                          (shipit-notifications-buffer--matches-type-p a)
                          (shipit-notifications-buffer--matches-state-p a)
                          (shipit-notifications-buffer--matches-reason-p a)
@@ -598,6 +608,11 @@ probe-derived server total for the current scope, when known."
   (unless (string-empty-p shipit-notifications-buffer--filter-text)
     (shipit-notifications-buffer--insert-filter-bracket
      "filter" shipit-notifications-buffer--filter-text nil))
+  (when shipit-notifications-buffer--snoozed-items
+    (shipit-notifications-buffer--insert-filter-bracket
+     "snoozed"
+     (number-to-string (length shipit-notifications-buffer--snoozed-items))
+     'font-lock-keyword-face))
   (insert "\n\n"))
 
 (defun shipit-notifications-buffer--insert-filter-bracket (label value face)
@@ -694,7 +709,43 @@ nested under per-repo wrapper sections."
       (shipit-notifications-buffer--insert-grouped-by-repo activities))
      (t
       (dolist (activity activities)
-        (shipit-notifications-buffer--insert-notification activity))))))
+        (shipit-notifications-buffer--insert-notification activity))))
+    ;; Snoozed-group footer (unread scope only).  Shows what the user
+    ;; deferred so they can see + unsnooze without the `Z' completion
+    ;; round-trip.  Collapsed by default.
+    (when (and (eq shipit-notifications-buffer--display-scope 'unread)
+               shipit-notifications-buffer--snoozed-items)
+      (shipit-notifications-buffer--insert-snoozed-group))))
+
+(defun shipit-notifications-buffer--insert-snoozed-group ()
+  "Insert a collapsed `notification-snoozed-group' section listing snoozes.
+Each row uses the standard `notification-entry' format so the
+existing keymap (RET, `m m', `z' to unsnooze, ...) keeps working;
+the heading shows a remaining-time annotation per row.  Activities
+whose key has expired but not yet been pruned are skipped."
+  (let* ((live (shipit-notifications-buffer--prune-expired-snoozes))
+         (snoozed-keys (mapcar #'car live))
+         (rows (when snoozed-keys
+                 (let ((all (shipit-notifications-buffer--all-activities))
+                       (matches '()))
+                   (dolist (a all)
+                     (let* ((repo (cdr (assq 'repo a)))
+                            (type (or (cdr (assq 'type a)) "pr"))
+                            (number (or (cdr (assq 'number a))
+                                        (cdr (assq 'pr-number a))))
+                            (key (and repo number
+                                      (format "%s:%s:%s" repo type number))))
+                       (when (member key snoozed-keys)
+                         (push a matches))))
+                   (nreverse matches)))))
+    (when rows
+      (insert "\n")
+      (let ((heading (format "🕓 Snoozed (%d)" (length rows))))
+        (magit-insert-section (notification-snoozed-group nil t)
+          (magit-insert-heading
+            (propertize heading 'font-lock-face 'magit-section-heading))
+          (dolist (a rows)
+            (shipit-notifications-buffer--insert-notification a)))))))
 
 (defun shipit-notifications-buffer--group-activities-by-repo (activities)
   "Group ACTIVITIES into a list of (REPO . ACTIVITIES) cons cells.
@@ -3033,36 +3084,64 @@ Resets current-page to 1, then refreshes."
   (shipit-notifications-buffer-refresh))
 
 (defun shipit-notifications-buffer-snooze-at-point (&optional arg)
-  "Snooze the notification at point for `shipit-notifications-snooze-default-hours'.
-Numeric prefix ARG overrides the duration in hours.  `C-u' (or any
-non-numeric prefix) prompts for the value.  The activity stays
-hidden until the snooze expires; `Z' clears all active snoozes."
+  "Snooze (or unsnooze) the notification at point.
+On an unsnoozed row, snoozes for
+`shipit-notifications-snooze-default-hours'.  On an already-snoozed
+row (visible only via the `Snoozed' group footer in unread scope),
+unsnoozes it instead.
+
+Numeric prefix ARG overrides the snooze duration in hours.  `C-u'
+or any non-numeric prefix prompts for the value (default
+pre-filled).  `Z' clears or lists all active snoozes."
   (interactive "P")
   (let ((activity (shipit-notifications-buffer--activity-at-point)))
     (cond
      ((null activity)
       (user-error "No notification at point"))
      (t
-      (let* ((hours (cond
-                     ((numberp arg) arg)
-                     (arg (read-number "Snooze for how many hours? "
-                                       shipit-notifications-snooze-default-hours))
-                     (t shipit-notifications-snooze-default-hours)))
-             (repo (cdr (assq 'repo activity)))
+      (let* ((repo (cdr (assq 'repo activity)))
              (type (or (cdr (assq 'type activity)) "pr"))
              (number (or (cdr (assq 'number activity))
                          (cdr (assq 'pr-number activity))))
              (key (format "%s:%s:%s" repo type number))
-             (expires (+ (float-time) (* hours 60 60))))
-        (setq shipit-notifications-buffer--snoozed-items
-              (cons (cons key expires)
-                    (assoc-delete-all
-                     key shipit-notifications-buffer--snoozed-items)))
-        (shipit--debug-log "Snooze: stored key=%S expires=%S list=%S"
-                           key expires shipit-notifications-buffer--snoozed-items)
-        (message "Snoozed %s for %s hour%s"
-                 key hours (if (= hours 1) "" "s"))
-        (shipit-notifications-buffer--rerender))))))
+             (existing (assoc key shipit-notifications-buffer--snoozed-items)))
+        (cond
+         ((and existing (> (cdr existing) (float-time)))
+          (setq shipit-notifications-buffer--snoozed-items
+                (assoc-delete-all
+                 key shipit-notifications-buffer--snoozed-items))
+          (message "Unsnoozed %s" key)
+          (shipit-notifications-buffer--rerender)
+          (shipit-notifications-buffer--refresh-modeline-count))
+         (t
+          (let* ((hours (cond
+                         ((numberp arg) arg)
+                         (arg (read-number "Snooze for how many hours? "
+                                           shipit-notifications-snooze-default-hours))
+                         (t shipit-notifications-snooze-default-hours)))
+                 (expires (+ (float-time) (* hours 60 60))))
+            (setq shipit-notifications-buffer--snoozed-items
+                  (cons (cons key expires)
+                        (assoc-delete-all
+                         key shipit-notifications-buffer--snoozed-items)))
+            (shipit--debug-log "Snooze: stored key=%S expires=%S list=%S"
+                               key expires
+                               shipit-notifications-buffer--snoozed-items)
+            (message "Snoozed %s for %s hour%s"
+                     key hours (if (= hours 1) "" "s"))
+            (shipit-notifications-buffer--rerender)
+            (shipit-notifications-buffer--refresh-modeline-count)))))))))
+
+(defun shipit-notifications-buffer--refresh-modeline-count ()
+  "Recompute and apply the modeline bell count after a snooze/unsnooze.
+Walks `shipit--count-unread-activities' which subtracts the
+buffer-local snooze list, then pushes the value through
+`shipit--update-modeline-indicator'."
+  (when (and (fboundp 'shipit--count-unread-activities)
+             (fboundp 'shipit--update-modeline-indicator))
+    (let ((n (shipit--count-unread-activities)))
+      (setq shipit--last-notification-count n)
+      (shipit--update-modeline-indicator n))))
 
 (defun shipit-notifications-buffer--format-snooze-remaining (expires)
   "Format the snooze remaining at EXPIRES (float-time) as `Nh Mm'."
@@ -3091,7 +3170,8 @@ clears every snooze, same as the prefix variant."
       (setq shipit-notifications-buffer--snoozed-items nil)
       (message "Cleared %d snooze%s" (length live)
                (if (= (length live) 1) "" "s"))
-      (shipit-notifications-buffer--rerender))
+      (shipit-notifications-buffer--rerender)
+      (shipit-notifications-buffer--refresh-modeline-count))
      (t
       (let* ((clear-label "<clear all>")
              (rows (mapcar (lambda (cell)
@@ -3113,7 +3193,8 @@ clears every snooze, same as the prefix variant."
                   (assoc-delete-all
                    key shipit-notifications-buffer--snoozed-items))
             (message "Unsnoozed %s" key))))
-        (shipit-notifications-buffer--rerender))))))
+        (shipit-notifications-buffer--rerender)
+        (shipit-notifications-buffer--refresh-modeline-count))))))
 
 (defun shipit-notifications-buffer-clear-all-filters ()
   "Clear every filter (text, repo, type, state, actionable, before, since).

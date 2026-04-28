@@ -196,6 +196,7 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map [tab] #'shipit-notifications-buffer-toggle-section)
     (define-key map (kbd "m") #'shipit-notifications-buffer-mark-read)
     (define-key map (kbd "M") #'shipit-notifications-buffer-mark-all-read)
+    (define-key map (kbd "+") #'shipit-notifications-buffer-add-auto-mark-rule-from-point)
     (define-key map (kbd "n") #'magit-section-forward)
     (define-key map (kbd "p") #'magit-section-backward)
     (define-key map (kbd "M-n") #'shipit-notifications-buffer-page-forward)
@@ -1568,6 +1569,81 @@ the input parses again, instead of a flurry of error messages."
             (shipit-notifications-buffer--add-preview-match-overlays
              child regex)))))))
 
+(defun shipit-notifications-buffer--apply-auto-mark-rule-preview (rule)
+  "Highlight notification rows that RULE (a plist) would match.
+Strike-throughs the row and, when RULE includes a `:title' regex,
+also highlights the matching characters in the title.  Invalid
+mid-typing rules are silently skipped — the preview refreshes once
+the input parses again."
+  (shipit-notifications-buffer--clear-auto-mark-preview)
+  (when (and rule
+             (listp rule)
+             (keywordp (car-safe rule))
+             (zerop (mod (length rule) 2))
+             (bound-and-true-p magit-root-section)
+             (fboundp 'shipit--auto-mark-rule-matches-activity-p))
+    (let ((title-regex (plist-get rule :title)))
+      (dolist (child (oref magit-root-section children))
+        (when (eq (oref child type) 'notification-entry)
+          (let ((activity (oref child value)))
+            (when (condition-case nil
+                      (shipit--auto-mark-rule-matches-activity-p rule activity)
+                    (error nil))
+              (shipit-notifications-buffer--add-preview-row-overlay child)
+              (when (and (stringp title-regex)
+                         (not (string-empty-p title-regex))
+                         (condition-case nil
+                             (progn (string-match-p title-regex "") t)
+                           (error nil)))
+                (shipit-notifications-buffer--add-preview-match-overlays
+                 child title-regex)))))))))
+
+(defun shipit-notifications-buffer--read-auto-mark-rule-with-preview (default)
+  "Read an auto-mark rule from the minibuffer, prefilled with DEFAULT.
+Live updates strike-through preview on the notifications buffer for
+notifications matching the typed rule.  Returns the input string.
+Cleans up overlays on exit (confirm or abort)."
+  (let ((original-buffer (current-buffer))
+        (timer nil)
+        (minibuf nil)
+        (last-input nil)
+        result)
+    (unwind-protect
+        (minibuffer-with-setup-hook
+            (lambda ()
+              (setq minibuf (current-buffer))
+              (add-hook
+               'post-command-hook
+               (lambda ()
+                 (when timer (cancel-timer timer))
+                 (setq timer
+                       (run-with-idle-timer
+                        shipit-notifications-filter-live-delay nil
+                        (lambda ()
+                          (when (and (buffer-live-p minibuf)
+                                     (buffer-live-p original-buffer))
+                            (let ((input (with-current-buffer minibuf
+                                           (minibuffer-contents-no-properties))))
+                              (unless (equal input last-input)
+                                (setq last-input input)
+                                (let ((parsed (condition-case nil
+                                                  (read input)
+                                                (error nil))))
+                                  (with-current-buffer original-buffer
+                                    (shipit-notifications-buffer--apply-auto-mark-rule-preview
+                                     parsed))))))))))
+               nil t))
+          (setq result
+                (read-from-minibuffer
+                 "Add rule (live preview): "
+                 (prin1-to-string default)
+                 nil nil
+                 'shipit-notifications-buffer--auto-mark-edit-history)))
+      (when (buffer-live-p original-buffer)
+        (with-current-buffer original-buffer
+          (shipit-notifications-buffer--clear-auto-mark-preview))))
+    result))
+
 (defun shipit-notifications-buffer--candidate-reasons ()
   "Return the sorted distinct list of reason strings in the hash."
   (let ((seen (make-hash-table :test 'equal)))
@@ -1703,6 +1779,55 @@ for the next poll."
                       (shipit--auto-mark-rules-apply))))
           (message "Added auto-mark rule: %S (%s)"
                    conds
+                   (cond
+                    ((and n (> n 0))
+                     (format "marked %d notification%s as read"
+                             n (if (= n 1) "" "s")))
+                    (n "no notifications matched yet")
+                    (t "saved"))))
+        (when (fboundp 'shipit--rerender-notifications-buffer-if-visible)
+          (shipit--rerender-notifications-buffer-if-visible))
+        (when (get-buffer-window "*shipit-auto-mark-rules*" t)
+          (shipit-notifications-buffer-list-auto-mark-rules))))))
+
+(defun shipit-notifications-buffer-add-auto-mark-rule-from-point ()
+  "Add an auto-mark rule prefilled from the notification at point.
+Reads `:repo' from the notification's repo and `:title' from a
+regex-escaped version of the subject, then prompts you in the
+minibuffer with the rule expression so you can tweak it (loosen the
+title regex, swap to `:not', add other conditions) before saving.
+Saves, applies immediately, and rerenders."
+  (interactive)
+  (let* ((activity (shipit-notifications-buffer--activity-at-point)))
+    (unless activity
+      (user-error "No notification at point"))
+    (let* ((repo (cdr (assq 'repo activity)))
+           (subject (or (cdr (assq 'subject activity)) ""))
+           ;; No regex anchors — `string-match-p' (used by the rule
+           ;; matcher) already treats the title regex as a substring,
+           ;; and an unanchored default is easier to trim down to a
+           ;; prefix or keyword without deleting escape syntax.
+           (title-regex (regexp-quote subject))
+           (default `(:repo ,repo :title ,title-regex))
+           (input (shipit-notifications-buffer--read-auto-mark-rule-with-preview
+                   default))
+           (parsed (condition-case err
+                       (read input)
+                     (error
+                      (user-error "Cannot parse rule: %s"
+                                  (error-message-string err))))))
+      (unless (and (listp parsed)
+                   (keywordp (car-safe parsed))
+                   (zerop (mod (length parsed) 2)))
+        (user-error
+         "Rule must be a plist like (:repo \"owner/name\" :title \"...\")"))
+      (let ((existing shipit-notifications-auto-mark-read-rules))
+        (shipit-notifications--save-auto-mark-rules
+         (append existing (list parsed)))
+        (let ((n (and (fboundp 'shipit--auto-mark-rules-apply)
+                      (shipit--auto-mark-rules-apply))))
+          (message "Added auto-mark rule: %S (%s)"
+                   parsed
                    (cond
                     ((and n (> n 0))
                      (format "marked %d notification%s as read"
@@ -1870,7 +1995,9 @@ with rule edits made from the transient."
   "Manage auto-mark-read rules without leaving the notifications buffer."
   [["Add"
     ("a" "Add rule (guided)"
-     shipit-notifications-buffer-add-auto-mark-rule)]
+     shipit-notifications-buffer-add-auto-mark-rule)
+    ("." "Add rule from notification at point"
+     shipit-notifications-buffer-add-auto-mark-rule-from-point)]
    ["Manage"
     ("l" "Show rules list"
      shipit-notifications-buffer-toggle-auto-mark-rules-list)

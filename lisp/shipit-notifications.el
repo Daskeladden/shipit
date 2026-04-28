@@ -565,6 +565,88 @@ SCOPE is one of `all', `participating', `unread',
     ('unread-participating '((participating . "true") (per_page . 100)))
     (_ '((per_page . 100)))))
 
+(defun shipit--notifications-count-from-response (headers json)
+  "Return the total notification count from a per_page=1 probe response.
+HEADERS is the alist produced by
+`shipit--url-retrieve-async-with-headers'.  JSON is the parsed
+body (a list of notifications, possibly empty).
+With per_page=1, the last-page number returned in the pagination
+Link header equals the total item count.  Falls back to body
+length when no Link header is present (0 or 1 items).
+HTTP header names are case-insensitive per RFC 9110, so the Link
+lookup ignores case."
+  (let* ((link-pair (and headers
+                         (cl-find-if
+                          (lambda (h)
+                            (and (stringp (car h))
+                                 (string-equal-ignore-case
+                                  (car h) "Link")))
+                          headers)))
+         (last-page (and link-pair
+                         (shipit--parse-link-header-last-page
+                          (list (cons "Link" (cdr link-pair)))))))
+    (or last-page (length (or json '())))))
+
+(defun shipit--fetch-notifications-total-count-async (scope callback)
+  "Fetch the total notification count for SCOPE asynchronously.
+Fires a lightweight per_page=1 request to /notifications, then
+calls CALLBACK with an integer (or nil on failure).  With
+per_page=1, each notification is on its own page, so the
+last-page number from the pagination Link header equals the total
+item count."
+  (require 'shipit-http)
+  (condition-case setup-err
+      (let* ((scope-params (shipit--notification-params-for-scope scope))
+             (probe-params (cons '(per_page . 1)
+                                 (assq-delete-all 'per_page
+                                                  (copy-sequence scope-params))))
+             (qstr (mapconcat (lambda (p)
+                                (format "%s=%s" (car p) (cdr p)))
+                              probe-params "&"))
+             (url (concat (or shipit-api-url "https://api.github.com")
+                          "/notifications?" qstr))
+             (token (ignore-errors (shipit--github-token)))
+             (headers (delq nil
+                            (list '("Accept" . "application/vnd.github+json")
+                                  (when token
+                                    (cons "Authorization"
+                                          (format "Bearer %s" token)))))))
+        (shipit--debug-log "PROBE: scope=%s url=%s token=%s"
+                           scope url (if token "present" "MISSING"))
+        (if (not token)
+            (funcall callback nil)
+          ;; Force a fresh 200 with the Link header on every probe.
+          ;; GitHub's /notifications endpoint is Last-Modified-aware and
+          ;; will return 304 (no body, routed to the error callback of
+          ;; `shipit--url-retrieve-async-with-headers') as soon as url.el
+          ;; has a cache entry — which it will on the 2nd+ call.
+          ;; `url-automatic-caching nil' alone is not enough: url.el
+          ;; still reads the cache file and derives an
+          ;; `If-Modified-Since' from it.  Delete the cache file too.
+          (when (fboundp 'url-cache-create-filename)
+            (let ((cache-file (url-cache-create-filename url)))
+              (when (and cache-file (file-exists-p cache-file))
+                (ignore-errors (delete-file cache-file))
+                (shipit--debug-log "PROBE: deleted stale url cache %s"
+                                   cache-file))))
+          (let ((url-automatic-caching nil))
+            (shipit--url-retrieve-async-with-headers
+             url "GET" headers nil
+             (lambda (json response-headers)
+               (let ((link (cdr (assoc "Link" response-headers)))
+                     (count (shipit--notifications-count-from-response
+                             response-headers json)))
+                 (shipit--debug-log "PROBE: response Link=%S -> count=%S"
+                                    link count)
+                 (funcall callback count)))
+             (lambda (err)
+               (shipit--debug-log "PROBE: request failed: %s" err)
+               (funcall callback nil))))))
+    (error
+     (shipit--debug-log "PROBE: setup failed: %s"
+                        (error-message-string setup-err))
+     (funcall callback nil))))
+
 (defun shipit--check-notifications-background (&optional force-fresh scope-override max-pages)
   "Check GitHub notifications in background using ETag caching with pagination.
 If FORCE-FRESH is non-nil, bypasses ETag cache to get fresh data.

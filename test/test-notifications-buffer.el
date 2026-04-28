@@ -170,6 +170,84 @@ THEN page-limit stays at 1 and user-error is signalled."
           (should (= shipit-notifications-buffer--page-limit 1)))
       (kill-buffer buf))))
 
+(ert-deftest test-shipit-notifications-buffer-total-count-default-nil ()
+  "GIVEN a fresh notifications buffer
+THEN the buffer-local total-count is nil (unknown until probed)."
+  (let ((buf (shipit-notifications-buffer-create)))
+    (unwind-protect
+        (with-current-buffer buf
+          (should (null shipit-notifications-buffer--total-count)))
+      (kill-buffer buf))))
+
+(ert-deftest test-shipit-notifications-buffer-header-shows-shown-over-total ()
+  "GIVEN a buffer with total-count=666 and 2 activities in the hash
+WHEN the buffer is rendered
+THEN the header shows `2/666' (shown / total)."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/repo:pr:1"
+               (quote ((repo . "owner/repo") (number . 1) (type . "pr")
+                       (subject . "A") (reason . "mention")
+                       (updated-at . "2026-01-01T00:00:00Z")))
+               shipit--notification-pr-activities)
+      (puthash "owner/repo:pr:2"
+               (quote ((repo . "owner/repo") (number . 2) (type . "pr")
+                       (subject . "B") (reason . "mention")
+                       (updated-at . "2026-01-02T00:00:00Z")))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--display-scope 'all
+                  shipit-notifications-buffer--page-limit 1
+                  shipit-notifications-buffer--total-count 666)
+            (shipit-notifications-buffer--rerender)
+            (let ((header (buffer-substring-no-properties
+                           (point-min)
+                           (min (point-max) 200))))
+              (should (string-match-p "2/666" header))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-header-filter-changes-denominator ()
+  "Test that the denominator follows the filter.
+GIVEN a buffer with total-count=666, 2 activities in the hash, and
+a filter that matches only 1 of them
+WHEN the buffer is rendered
+THEN the header shows `1/2' — matches over loaded — not
+`1/666', because the filter can only see locally-loaded items."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/match-repo:pr:1"
+               (quote ((repo . "owner/match-repo") (number . 1) (type . "pr")
+                       (subject . "A") (reason . "mention")
+                       (updated-at . "2026-01-01T00:00:00Z")))
+               shipit--notification-pr-activities)
+      (puthash "owner/other-repo:pr:2"
+               (quote ((repo . "owner/other-repo") (number . 2) (type . "pr")
+                       (subject . "B") (reason . "mention")
+                       (updated-at . "2026-01-02T00:00:00Z")))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--display-scope 'all
+                  shipit-notifications-buffer--page-limit 1
+                  shipit-notifications-buffer--total-count 666
+                  shipit-notifications-buffer--filter-text "match-repo")
+            (shipit-notifications-buffer--rerender)
+            (let ((header (buffer-substring-no-properties
+                           (point-min)
+                           (min (point-max) 200))))
+              (should (string-match-p "1/2 (of 666)" header))
+              (should-not (string-match-p "1/666" header))))
+        (kill-buffer buf)))))
+
 (ert-deftest test-shipit-notifications-buffer-header-shows-scope ()
   "Test that the header reflects scope and page limit.
 GIVEN a buffer in `all' scope with page-limit=2

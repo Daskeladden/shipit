@@ -31,6 +31,7 @@
 (declare-function shipit--notification-actions "shipit-notifications")
 (declare-function shipit--notification-activity-key "shipit-notifications")
 (declare-function shipit--check-notifications-background "shipit-notifications")
+(declare-function shipit--fetch-notifications-total-count-async "shipit-notifications")
 (declare-function shipit--update-modeline-indicator "shipit-notifications")
 (declare-function shipit--format-time-ago "shipit-notifications")
 (declare-function shipit--get-notification-type-icon "shipit-render")
@@ -72,6 +73,11 @@ Meaningful mainly when `shipit-notifications-buffer--display-scope'
 is `all'; incremented by `shipit-notifications-buffer-load-more'.
 Starts at 1 and resets to 1 on every scope toggle so switching
 views doesn't silently fan out 10 pages of network requests.")
+
+(defvar-local shipit-notifications-buffer--total-count nil
+  "Last known total notification count for the current scope.
+Populated asynchronously by `shipit--fetch-notifications-total-count-async'
+after each refresh; nil means the probe has not returned yet (or failed).")
 
 ;; Section types
 (defun notification-entry (&rest _args)
@@ -140,9 +146,18 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
   (interactive)
   (message "Fetching notifications...")
   (let ((scope shipit-notifications-buffer--display-scope)
-        (pages shipit-notifications-buffer--page-limit))
+        (pages shipit-notifications-buffer--page-limit)
+        (buf (current-buffer)))
     (when (fboundp 'shipit--check-notifications-background)
-      (shipit--check-notifications-background t scope pages)))
+      (shipit--check-notifications-background t scope pages))
+    (when (fboundp 'shipit--fetch-notifications-total-count-async)
+      (shipit--fetch-notifications-total-count-async
+       scope
+       (lambda (count)
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq shipit-notifications-buffer--total-count count)
+             (shipit-notifications-buffer--rerender)))))))
   (shipit-notifications-buffer--rerender)
   (message "Notifications refreshed"))
 
@@ -164,17 +179,62 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
     (shipit-notifications-buffer--insert-header)
     (shipit-notifications-buffer--insert-notifications)))
 
+(defun shipit-notifications-buffer--all-activities ()
+  "Return the list of all activities in the global hash (unfiltered)."
+  (let ((all '()))
+    (when (and (boundp 'shipit--notification-pr-activities)
+               shipit--notification-pr-activities)
+      (maphash (lambda (_k v) (push v all))
+               shipit--notification-pr-activities))
+    all))
+
+(defun shipit-notifications-buffer--loaded-count ()
+  "Return the total number of activities loaded into the buffer.
+Ignores the text filter — this is the denominator when a filter is
+active, so the user can see `<matches>/<loaded>'."
+  (length (shipit-notifications-buffer--all-activities)))
+
+(defun shipit-notifications-buffer--shown-count ()
+  "Return the number of activities currently rendered in the buffer.
+Applies the text filter first so the count matches what the user sees."
+  (let ((all (shipit-notifications-buffer--all-activities)))
+    (if (string-empty-p shipit-notifications-buffer--filter-text)
+        (length all)
+      (length (seq-filter #'shipit-notifications-buffer--matches-filter-p all)))))
+
 (defun shipit-notifications-buffer--insert-header ()
-  "Insert the buffer header, including scope and page info."
+  "Insert the buffer header, including scope, page info, and count.
+Fraction semantics: when a text filter is active the denominator is
+the number of activities loaded in the buffer (so the user sees how
+many local items match); otherwise the denominator is the
+probe-derived server total for the current scope, when known."
   (insert (propertize "Notifications" 'font-lock-face 'bold))
-  (insert (propertize
-           (format "  [%s%s]"
-                   (symbol-name shipit-notifications-buffer--display-scope)
-                   (if (eq shipit-notifications-buffer--display-scope 'all)
-                       (format ", pages: %d" shipit-notifications-buffer--page-limit)
-                     ""))
-           'font-lock-face 'font-lock-comment-face))
-  (unless (string-empty-p shipit-notifications-buffer--filter-text)
+  (let* ((shown (shipit-notifications-buffer--shown-count))
+         (loaded (shipit-notifications-buffer--loaded-count))
+         (total shipit-notifications-buffer--total-count)
+         (filter-active (not (string-empty-p
+                              shipit-notifications-buffer--filter-text)))
+         (count-part (cond
+                      ;; Filter is client-side, so the true matches-on-server
+                      ;; count is unknowable without pulling every page.
+                      ;; Show matches/loaded, plus the server total in parens
+                      ;; when we know it, so the user sees why the denominator
+                      ;; may seem small.
+                      ((and filter-active total)
+                       (format ", %d/%d (of %d)" shown loaded total))
+                      (filter-active (format ", %d/%d" shown loaded))
+                      (total (format ", %d/%d" shown total))
+                      (t (format ", %d shown" shown))))
+         (pages-part (if (eq shipit-notifications-buffer--display-scope 'all)
+                         (format ", pages: %d"
+                                 shipit-notifications-buffer--page-limit)
+                       "")))
+    (insert (propertize
+             (format "  [%s%s%s]"
+                     (symbol-name shipit-notifications-buffer--display-scope)
+                     pages-part count-part)
+             'font-lock-face 'font-lock-comment-face)))
+  (when (not (string-empty-p shipit-notifications-buffer--filter-text))
     (insert (propertize (format "  [filter: %s]" shipit-notifications-buffer--filter-text)
                         'font-lock-face 'font-lock-comment-face)))
   (insert "\n\n"))

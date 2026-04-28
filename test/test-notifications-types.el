@@ -602,5 +602,31 @@ THEN the line contains \"GL\" source indicator."
             (setq found t)))
         (should found)))))
 
+;;; Total-count probe parsing
+
+(ert-deftest test-shipit--notifications-count-from-response-link-last ()
+  "GIVEN response headers with a `rel=\"last\"' Link of page=42 and
+any non-empty JSON body
+WHEN extracting the total count for a per_page=1 probe
+THEN the count is 42 (one item per page, so last page = total items)."
+  (let ((headers '(("Link" . "<https://api.github.com/notifications?per_page=1&page=2>; rel=\"next\", <https://api.github.com/notifications?per_page=1&page=42>; rel=\"last\"")))
+        (json '(((id . "1")))))
+    (should (= 42 (shipit--notifications-count-from-response headers json)))))
+
+(ert-deftest test-shipit--notifications-count-from-response-single-item ()
+  "GIVEN headers without a `rel=\"last\"' entry and a one-item body
+WHEN extracting the count
+THEN it falls back to (length json), i.e. 1."
+  (let ((headers '(("Link" . "<https://…>; rel=\"next\"")))
+        (json '(((id . "only")))))
+    (should (= 1 (shipit--notifications-count-from-response headers json)))))
+
+(ert-deftest test-shipit--notifications-count-from-response-empty ()
+  "GIVEN headers with no Link and an empty JSON body
+WHEN extracting the count
+THEN it returns 0."
+  (should (= 0 (shipit--notifications-count-from-response nil nil)))
+  (should (= 0 (shipit--notifications-count-from-response '() '()))))
+
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

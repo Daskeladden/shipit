@@ -2344,15 +2344,14 @@ for a `mark-what-I-can-see' action use
 
 (defun shipit-notifications-buffer--collect-visible-by-predicate (predicate)
   "Return (NUMBER REPO TYPE) for visible activities matching PREDICATE.
-Visible means the same set the buffer is rendering: post-scope,
-post-selector, post-filter.  When the user invokes a bulk mark
-this is what they expect to act on -- not entries off-screen
-hidden by their selectors or another scope."
+Visible means the same set the buffer is rendering: the
+selector + structural filters that produce the render pool,
+plus the text filter on top.  When the user invokes a bulk
+mark this is what they expect to act on -- not entries
+hidden by their selectors."
   (let ((acc '()))
     (dolist (a (shipit-notifications-buffer--repo-filtered-activities))
-      (when (and (shipit-notifications-buffer--matches-scope-p a)
-                 (shipit-notifications-buffer--matches-jira-component-p a)
-                 (or (string-empty-p shipit-notifications-buffer--filter-text)
+      (when (and (or (string-empty-p shipit-notifications-buffer--filter-text)
                      (shipit-notifications-buffer--matches-filter-p a))
                  (funcall predicate a))
         (push (shipit-notifications-buffer--activity-key-tuple a) acc)))

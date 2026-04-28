@@ -887,5 +887,52 @@ THEN the backend activity is counted, the permanent-snoozed one is not."
     (push (cons "owner/foo:pr:7" :permanent) shipit-notifications--snoozes)
     (should (= 1 (shipit--count-unread-activities)))))
 
+(ert-deftest test-shipit-notifications-buffer--unread-scope-hides-read-items ()
+  "GIVEN the activity hash holds two GitHub items: one unread, one read
+\(left over from a previous `all' scope fetch),
+WHEN the buffer is in `unread' scope,
+THEN only the unread item passes the repo-filtered-activities chain.
+WHEN scope is flipped to `all',
+THEN both items pass."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications--snoozes nil)
+        (shipit--locally-marked-read-notifications (make-hash-table :test 'equal)))
+    (puthash "owner/foo:pr:1"
+             '((repo . "owner/foo") (number . 1) (type . "pr")
+               (notification . ((id . "id-1") (unread . t))))
+             shipit--notification-pr-activities)
+    (puthash "owner/foo:pr:2"
+             '((repo . "owner/foo") (number . 2) (type . "pr")
+               (notification . ((id . "id-2") (unread . :json-false))))
+             shipit--notification-pr-activities)
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((shipit-notifications-buffer--render-pool nil))
+              (setq shipit-notifications-buffer--display-scope 'unread)
+              (should (= 1 (length (shipit-notifications-buffer--repo-filtered-activities))))
+              (setq shipit-notifications-buffer--display-scope 'all)
+              (should (= 2 (length (shipit-notifications-buffer--repo-filtered-activities))))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer--unread-scope-passes-backend-activities ()
+  "GIVEN a backend activity in the hash (no `notification' field),
+WHEN the buffer is in `unread' scope,
+THEN the backend activity passes the filter regardless of unread state
+\(backends remove activities from the hash on mark)."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications--snoozes nil)
+        (shipit--locally-marked-read-notifications (make-hash-table :test 'equal)))
+    (puthash "owner/foo:issue:42"
+             '((repo . "owner/foo") (number . 42) (type . "issue"))
+             shipit--notification-pr-activities)
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (let ((shipit-notifications-buffer--render-pool nil))
+              (setq shipit-notifications-buffer--display-scope 'unread)
+              (should (= 1 (length (shipit-notifications-buffer--repo-filtered-activities))))))
+        (kill-buffer buf)))))
+
 (provide 'test-notifications-integration)
 ;;; test-notifications-integration.el ends here

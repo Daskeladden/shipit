@@ -618,6 +618,21 @@ have no PR state to compare against)."
              (or (null allow) (member effective allow))
              (not (member effective deny))))))))
 
+(defun shipit-notifications-buffer--matches-display-scope-p (activity)
+  "Return non-nil when ACTIVITY should appear in the current display scope.
+In `unread' scope, GitHub activities (those with a `notification'
+field) only pass when `notification.unread' is truthy -- so
+already-read entries left in the hash by a previous `all' scope
+poll are filtered out instead of polluting the unread view.
+Backend activities (no `notification' field) always pass; backends
+remove them from the hash on mark.  Outside `unread' scope every
+activity passes."
+  (or (not (eq shipit-notifications-buffer--display-scope 'unread))
+      (let* ((notif (cdr (assq 'notification activity)))
+             (u (and notif (cdr (assq 'unread notif)))))
+        (or (null notif)
+            (and u (not (eq u :json-false)))))))
+
 (defun shipit-notifications-buffer--repo-filtered-activities ()
   "Activities after the structural (repo + type + state) filters.
 Reuses `shipit-notifications-buffer--render-pool' when set so the
@@ -626,6 +641,7 @@ hash walk + filters happen once per render instead of three times
   (or shipit-notifications-buffer--render-pool
       (seq-filter (lambda (a)
                     (and (shipit-notifications-buffer--matches-snooze-p a)
+                         (shipit-notifications-buffer--matches-display-scope-p a)
                          (shipit-notifications-buffer--matches-repo-p a)
                          (shipit-notifications-buffer--matches-type-p a)
                          (shipit-notifications-buffer--matches-state-p a)

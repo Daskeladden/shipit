@@ -607,12 +607,19 @@ Dispatches to API-FN otherwise."
   "Check if SHA exists in the local git repository."
   (zerop (call-process "git" nil nil nil "cat-file" "-e" sha)))
 
-(defun shipit--ediff-local-fn (repo pr-number file-path base-sha head-sha head-ref _base-ref _pr-data)
-  "Open ediff for FILE-PATH using local git objects.
-Fetches missing commits synchronously via backend dispatch if needed."
+(defun shipit--ensure-pr-shas-local (repo pr-number head-ref base-sha head-sha &optional prompt-p)
+  "Ensure BASE-SHA and HEAD-SHA exist locally for PR-NUMBER in REPO.
+HEAD-REF is fed to the backend's `:refspec-for-pr' to compute the
+fetch refspec.  When PROMPT-P is non-nil, ask the user before
+fetching; raises `user-error' if the user declines or the fetch
+fails."
   (let ((shas-local (and (shipit--sha-exists-locally-p base-sha)
                          (shipit--sha-exists-locally-p head-sha))))
     (unless shas-local
+      (when (and prompt-p
+                 (not (y-or-n-p (format "Fetch PR #%s from %s? "
+                                        pr-number (or repo "origin")))))
+        (user-error "Aborted: required SHAs not in local repo"))
       (let* ((resolved (shipit-pr--resolve-for-repo repo))
              (backend (car resolved))
              (config (cdr resolved))
@@ -627,14 +634,22 @@ Fetches missing commits synchronously via backend dispatch if needed."
              (cmd (format "git fetch %s %s 2>&1" (shell-quote-argument remote) refspec)))
         (message "Fetching PR #%s from %s (please wait)..." pr-number (or repo "origin"))
         (let ((output (shell-command-to-string cmd)))
+          (dolist (sha (list base-sha head-sha))
+            (unless (shipit--sha-exists-locally-p sha)
+              (call-process "git" nil nil nil "fetch" remote sha)))
           (unless (and (shipit--sha-exists-locally-p base-sha)
                        (shipit--sha-exists-locally-p head-sha))
             (message "Fetch output: %s" output)
-            (user-error "Failed to fetch PR #%s commits" pr-number)))
-        (message "Fetch complete")))
-    (shipit--open-file-ediff base-sha head-sha file-path
-                             (format "PR#%s Base" pr-number)
-                             (format "PR#%s Head" pr-number))))
+            (user-error "Failed to fetch PR #%s commits" pr-number))
+          (message "Fetch complete"))))))
+
+(defun shipit--ediff-local-fn (repo pr-number file-path base-sha head-sha head-ref _base-ref _pr-data)
+  "Open ediff for FILE-PATH using local git objects.
+Fetches missing commits synchronously via backend dispatch if needed."
+  (shipit--ensure-pr-shas-local repo pr-number head-ref base-sha head-sha)
+  (shipit--open-file-ediff base-sha head-sha file-path
+                           (format "PR#%s Base" pr-number)
+                           (format "PR#%s Head" pr-number)))
 
 (defun shipit--open-pr-file-ediff (repo pr-number file-path)
   "Open FILE-PATH in ediff, comparing base and head versions from PR-NUMBER in REPO.
@@ -2114,6 +2129,97 @@ If on a specific file, open ediff for that file."
                 (shipit--add-comment-to-pr pr-number file-path line-number comment-text "RIGHT")
               (message "shipit--add-comment-to-pr function not available")))))
     (message "Cannot add comment: not in a shipit ediff buffer")))
+
+(defun shipit--difftastic-write-version (sha file-path)
+  "Write the contents of FILE-PATH at SHA to a temp file; return (PATH . FOUND).
+PATH is a temp file path tagged with the SHA + basename so
+difftastic's header is informative.  FOUND is t when `git show'
+succeeded with a non-empty result (real file content), nil when
+the path didn't exist in that revision (added/deleted file -- an
+empty file is the right opposite side for difftastic) or when
+`git show' failed entirely (SHA not fetched).  Callers can
+distinguish the two cases via the `git cat-file -e SHA' check
+they should make beforehand."
+  (let* ((basename (file-name-nondirectory file-path))
+         (short (if (and (stringp sha) (>= (length sha) 7))
+                    (substring sha 0 7)
+                  sha))
+         (tmp (make-temp-file (format "shipit-diff-%s-%s-" short basename)))
+         (found nil))
+    (with-temp-buffer
+      (let ((exit (call-process "git" nil (current-buffer) nil
+                                "show" (format "%s:%s" sha file-path))))
+        (when (zerop exit)
+          (setq found (> (point-max) (point-min)))
+          (write-region (point-min) (point-max) tmp nil 'silent))))
+    (cons tmp found)))
+
+(defun shipit--difftastic-diff-shas (base-sha head-sha file-path &optional repo pr-number head-ref)
+  "Run `difftastic-files' on FILE-PATH between BASE-SHA and HEAD-SHA.
+When REPO/PR-NUMBER/HEAD-REF are supplied and a SHA is missing
+locally, prompt the user to fetch via the backend's PR refspec.
+Without PR context, raise `user-error' instructing the user to
+run `git fetch' manually -- silent empty-side diffs render as a
+full-file change which is misleading."
+  (let ((shas-local (and (shipit--sha-exists-locally-p base-sha)
+                         (shipit--sha-exists-locally-p head-sha))))
+    (unless shas-local
+      (if (and repo pr-number)
+          (shipit--ensure-pr-shas-local repo pr-number head-ref
+                                        base-sha head-sha t)
+        (let ((missing (if (shipit--sha-exists-locally-p base-sha)
+                           head-sha
+                         base-sha)))
+          (user-error "SHA %s not in local repo -- run `git fetch' first"
+                      (substring missing 0 (min 12 (length missing))))))))
+  (let* ((base (shipit--difftastic-write-version base-sha file-path))
+         (head (shipit--difftastic-write-version head-sha file-path)))
+    (difftastic-files (car base) (car head))))
+
+(defun shipit--show-difftastic-diff-at-point ()
+  "Show the file at point through difftastic.
+Materializes the base + head versions of the file via `git show'
+on the local clone, then hands the two paths to
+`difftastic-files'.  Errors out if difftastic is not available,
+the local repo lookup fails, or required SHAs are not yet
+fetched."
+  (interactive)
+  (unless (fboundp 'difftastic-files)
+    (user-error "difftastic is not installed (function `difftastic-files' is not bound)"))
+  (let* ((file-path (get-text-property (point) 'shipit-file-path))
+         (commit-sha (get-text-property (point) 'shipit-commit-sha))
+         (pr-number (or (get-text-property (point) 'shipit-pr-number)
+                        (bound-and-true-p shipit-buffer-pr-number)))
+         (repo (or (get-text-property (point) 'shipit-repo)
+                   (bound-and-true-p shipit-buffer-repo)
+                   (shipit--get-repo-from-remote))))
+    (cond
+     ((not file-path)
+      (user-error "No file at point"))
+     ((and commit-sha (not pr-number))
+      (shipit--difftastic-diff-shas (concat commit-sha "^")
+                                    commit-sha file-path))
+     ((and pr-number repo)
+      (shipit--with-local-or-api
+       repo pr-number
+       (lambda (base-sha head-sha head-ref _base-ref _pr-data)
+         (shipit--difftastic-diff-shas base-sha head-sha file-path
+                                       repo pr-number head-ref))
+       (lambda (_repo _pr)
+         (user-error "Difftastic requires a local clone of %s" repo))))
+     (t
+      (user-error "No file or PR context at point")))))
+
+;;;###autoload (autoload 'shipit-pr-diff-menu "shipit-pr-diff" nil t)
+(transient-define-prefix shipit-pr-diff-menu ()
+  "Choose how to display the diff for the file at point."
+  ["Diff modes"
+   ("p" "Plain (no comments)" shipit--show-diff-at-point)
+   ("c" "With inline comments" shipit--show-diff-with-comments-at-point)
+   ("t" "Difftastic"
+    shipit--show-difftastic-diff-at-point
+    :if (lambda () (fboundp 'difftastic-files)))
+   ("q" "Quit" transient-quit-one)])
 
 (provide 'shipit-pr-diff)
 ;;; shipit-pr-diff.el ends here

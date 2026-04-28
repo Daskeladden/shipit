@@ -3198,15 +3198,17 @@ Resets current-page to 1, then refreshes."
   (shipit-notifications-buffer-refresh))
 
 (defun shipit-notifications-buffer-snooze-at-point (&optional arg)
-  "Snooze (or unsnooze) the notification at point.
-On an unsnoozed row, snoozes for
-`shipit-notifications-snooze-default-hours'.  On an already-snoozed
-row (visible only via the `Snoozed' group footer in unread scope),
-unsnoozes it instead.
+  "Snooze the notification at point for the chosen duration.
+Replaces any existing snooze for this row, so reinvoking the
+command on an already-snoozed row (e.g. switching a permanent
+snooze to 4 hours) just updates the duration.  Use `Z' or
+`z l' to unsnooze.
 
-Numeric prefix ARG overrides the snooze duration in hours.  `C-u'
-or any non-numeric prefix prompts for the value (default
-pre-filled).  `Z' clears or lists all active snoozes."
+Numeric prefix ARG sets the duration in hours; `0' or any
+non-positive value snoozes permanently.  `C-u' (or any
+non-numeric prefix) prompts for the value with the default
+pre-filled.  No prefix uses
+`shipit-notifications-snooze-default-hours'."
   (interactive "P")
   (let ((activity (shipit-notifications-buffer--activity-at-point)))
     (cond
@@ -3217,20 +3219,8 @@ pre-filled).  `Z' clears or lists all active snoozes."
              (type (or (cdr (assq 'type activity)) "pr"))
              (number (or (cdr (assq 'number activity))
                          (cdr (assq 'pr-number activity))))
-             (key (format "%s:%s:%s" repo type number))
-             (existing (assoc key shipit-notifications--snoozes)))
+             (key (format "%s:%s:%s" repo type number)))
         (cond
-         ;; Active = either permanent (non-numeric cdr) or unexpired numeric.
-         ((and existing
-               (or (not (numberp (cdr existing)))
-                   (> (cdr existing) (float-time))))
-          (setq shipit-notifications--snoozes
-                (assoc-delete-all
-                 key shipit-notifications--snoozes))
-          (shipit-notifications-buffer--snoozes-save)
-          (message "Unsnoozed %s" key)
-          (shipit-notifications-buffer--rerender)
-          (shipit-notifications-buffer--refresh-modeline-count))
          (t
           (let* ((hours (cond
                          ((numberp arg) arg)
@@ -3240,6 +3230,9 @@ pre-filled).  `Z' clears or lists all active snoozes."
                  (permanent (and (numberp hours) (<= hours 0)))
                  (expires (if permanent :permanent
                             (+ (float-time) (* hours 60 60)))))
+            ;; Replace any existing snooze for this key -- the user
+            ;; is explicitly choosing a (possibly different) duration
+            ;; via `z' / the transient.  Use `Z' or `z l' to unsnooze.
             (setq shipit-notifications--snoozes
                   (cons (cons key expires)
                         (assoc-delete-all

@@ -107,6 +107,16 @@ prompts for the value."
   :type 'number
   :group 'shipit)
 
+(defcustom shipit-notifications-snoozes-file
+  (expand-file-name "shipit-snoozes.el" user-emacs-directory)
+  "File path where snoozed notifications are persisted.
+The file stores a single Lisp form: an alist of
+  (KEY . EXPIRES) where EXPIRES is a float-time or `:permanent'.
+Read on package load, written on every snooze/unsnooze.  Set to
+nil to disable persistence."
+  :type '(choice file (const :tag "Disabled" nil))
+  :group 'shipit)
+
 (defcustom shipit-notifications-column-widths '((repo . 50) (pr . 10) (title . 80) (reason . 30))
   "Column widths for notification display formatting.
 - repo: Repository name (owner/repo)

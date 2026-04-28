@@ -306,6 +306,9 @@ GraphQL round-trip only happens once per session.  Cleared by
       (setq buf (get-buffer-create shipit-notifications-buffer-name))
       (with-current-buffer buf
         (shipit-notifications-buffer-mode)))
+    (unless shipit-notifications-buffer--snoozes-loaded
+      (shipit-notifications-buffer--snoozes-load)
+      (setq shipit-notifications-buffer--snoozes-loaded t))
     buf))
 
 (defun shipit-notifications-buffer-refresh (&optional _ignore-auto _noconfirm)
@@ -362,6 +365,53 @@ NOCONFIRM are for compatibility with `revert-buffer'."
         (erase-buffer)
         (shipit-notifications-buffer--render)
         (goto-char (min pos (point-max)))))))
+
+(defun shipit-notifications-buffer--snoozes-load ()
+  "Read snoozed entries from `shipit-notifications-snoozes-file' if any.
+Auto-prunes expired numeric entries before installing the list,
+so a restart never resurfaces a snooze that should already have
+lapsed.  Permanent (`:permanent') entries always survive.  Errors
+during read are swallowed -- a corrupt or missing file just leaves
+the in-memory list as-is."
+  (when (and (boundp 'shipit-notifications-snoozes-file)
+             shipit-notifications-snoozes-file
+             (file-readable-p shipit-notifications-snoozes-file))
+    (condition-case err
+        (with-temp-buffer
+          (insert-file-contents shipit-notifications-snoozes-file)
+          (goto-char (point-min))
+          (let ((data (read (current-buffer)))
+                (now (float-time)))
+            (when (listp data)
+              (setq shipit-notifications--snoozes
+                    (cl-remove-if (lambda (cell)
+                                    (and (numberp (cdr cell))
+                                         (<= (cdr cell) now)))
+                                  data)))))
+      (error
+       (when (fboundp 'shipit--debug-log)
+         (shipit--debug-log "Snooze load failed: %S" err))))))
+
+(defun shipit-notifications-buffer--snoozes-save ()
+  "Write the current `--snoozes' alist to disk.
+No-op when `shipit-notifications-snoozes-file' is nil.  Errors
+during write are logged but never raised, so a snooze action
+never aborts on disk trouble."
+  (when (and (boundp 'shipit-notifications-snoozes-file)
+             shipit-notifications-snoozes-file)
+    (condition-case err
+        (with-temp-file shipit-notifications-snoozes-file
+          (let ((print-level nil)
+                (print-length nil))
+            (insert ";; shipit notification snoozes -- generated, do not edit.\n")
+            (prin1 shipit-notifications--snoozes (current-buffer))
+            (insert "\n")))
+      (error
+       (when (fboundp 'shipit--debug-log)
+         (shipit--debug-log "Snooze save failed: %S" err))))))
+
+(defvar shipit-notifications-buffer--snoozes-loaded nil
+  "Set to t after the first successful snooze read on package load.")
 
 (defun shipit-notifications-buffer--prune-expired-snoozes ()
   "Drop expired entries from `--snoozes'.  Returns the live alist.
@@ -3174,6 +3224,7 @@ pre-filled).  `Z' clears or lists all active snoozes."
           (setq shipit-notifications--snoozes
                 (assoc-delete-all
                  key shipit-notifications--snoozes))
+          (shipit-notifications-buffer--snoozes-save)
           (message "Unsnoozed %s" key)
           (shipit-notifications-buffer--rerender)
           (shipit-notifications-buffer--refresh-modeline-count))
@@ -3190,6 +3241,7 @@ pre-filled).  `Z' clears or lists all active snoozes."
                   (cons (cons key expires)
                         (assoc-delete-all
                          key shipit-notifications--snoozes)))
+            (shipit-notifications-buffer--snoozes-save)
             (shipit--debug-log "Snooze: stored key=%S expires=%S list=%S"
                                key expires
                                shipit-notifications--snoozes)
@@ -3286,6 +3338,7 @@ clears every snooze, same as the prefix variant."
       (message "No active snoozes"))
      (arg
       (setq shipit-notifications--snoozes nil)
+      (shipit-notifications-buffer--snoozes-save)
       (message "Cleared %d snooze%s" (length live)
                (if (= (length live) 1) "" "s"))
       (shipit-notifications-buffer--rerender)
@@ -3303,6 +3356,7 @@ clears every snooze, same as the prefix variant."
         (cond
          ((string= choice clear-label)
           (setq shipit-notifications--snoozes nil)
+          (shipit-notifications-buffer--snoozes-save)
           (message "Cleared %d snooze%s" (length live)
                    (if (= (length live) 1) "" "s")))
          (t
@@ -3310,6 +3364,7 @@ clears every snooze, same as the prefix variant."
             (setq shipit-notifications--snoozes
                   (assoc-delete-all
                    key shipit-notifications--snoozes))
+            (shipit-notifications-buffer--snoozes-save)
             (message "Unsnoozed %s" key))))
         (shipit-notifications-buffer--rerender)
         (shipit-notifications-buffer--refresh-modeline-count))))))

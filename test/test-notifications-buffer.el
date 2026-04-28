@@ -1642,4 +1642,25 @@ THEN the entry hides the activity AND survives pruning."
                  (shipit-notifications-buffer--format-snooze-remaining
                   :permanent))))
 
+(ert-deftest test-shipit-notifications-snoozes-roundtrip ()
+  "GIVEN a snooze list with a permanent and a future-timed entry
+WHEN saved to a temp file then loaded back
+THEN the alist is restored verbatim (modulo any auto-pruned expired entries)."
+  (let* ((tmp (make-temp-file "shipit-snoozes" nil ".el"))
+         (shipit-notifications-snoozes-file tmp)
+         (shipit-notifications--snoozes
+          (list (cons "owner/foo:pr:1" :permanent)
+                (cons "owner/foo:pr:2" (+ (float-time) 7200))
+                (cons "owner/foo:pr:3" (- (float-time) 3600))))) ; expired
+    (unwind-protect
+        (progn
+          (shipit-notifications-buffer--snoozes-save)
+          (let ((shipit-notifications--snoozes nil))
+            (shipit-notifications-buffer--snoozes-load)
+            (should (assoc "owner/foo:pr:1" shipit-notifications--snoozes))
+            (should (assoc "owner/foo:pr:2" shipit-notifications--snoozes))
+            ;; Expired entry pruned on load.
+            (should-not (assoc "owner/foo:pr:3" shipit-notifications--snoozes))))
+      (delete-file tmp))))
+
 (provide 'test-notifications-buffer)

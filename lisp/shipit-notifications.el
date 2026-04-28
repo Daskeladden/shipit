@@ -2608,12 +2608,8 @@ key sits on the notifications buffer's session-local snooze list
 (with an unexpired deadline) are also excluded so the modeline
 bell reflects only the user's active work."
   (let* ((count 0)
-         (buf (and (boundp 'shipit-notifications-buffer-name)
-                   (get-buffer shipit-notifications-buffer-name)))
-         (snoozes (and buf
-                       (buffer-live-p buf)
-                       (buffer-local-value
-                        'shipit-notifications-buffer--snoozed-items buf)))
+         (snoozes (and (boundp 'shipit-notifications--snoozes)
+                       shipit-notifications--snoozes))
          (now (float-time)))
     (when (and (boundp 'shipit--notification-pr-activities)
                shipit--notification-pr-activities)

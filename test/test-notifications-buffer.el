@@ -1586,7 +1586,7 @@ WHEN evaluating `--matches-snooze-p'
 THEN it returns nil so the activity is hidden."
   (with-temp-buffer
     (shipit-notifications-buffer-mode)
-    (setq shipit-notifications-buffer--snoozed-items
+    (setq shipit-notifications--snoozes
           (list (cons "owner/foo:pr:42" (+ (float-time) 3600))))
     (should-not (shipit-notifications-buffer--matches-snooze-p
                  '((repo . "owner/foo") (type . "pr") (number . 42))))
@@ -1599,9 +1599,30 @@ WHEN evaluating `--matches-snooze-p'
 THEN it returns t (snooze elapsed; auto-prune will drop it)."
   (with-temp-buffer
     (shipit-notifications-buffer-mode)
-    (setq shipit-notifications-buffer--snoozed-items
+    (setq shipit-notifications--snoozes
           (list (cons "owner/foo:pr:42" (- (float-time) 3600))))
     (should (shipit-notifications-buffer--matches-snooze-p
              '((repo . "owner/foo") (type . "pr") (number . 42))))))
+
+(ert-deftest test-shipit-notifications-buffer-snoozes-survive-buffer-kill ()
+  "GIVEN a snooze stored while the notifications buffer is alive
+WHEN the buffer is killed and a fresh one is created
+THEN the snooze is still in effect (the var lives at module level,
+not as a buffer-local that dies with the buffer)."
+  (let ((shipit-notifications--snoozes nil))
+    (let ((buf (shipit-notifications-buffer-create)))
+      (with-current-buffer buf
+        (setq shipit-notifications--snoozes
+              (list (cons "owner/foo:pr:42" (+ (float-time) 3600)))))
+      (kill-buffer buf))
+    ;; After the kill the global var should still hold the entry.
+    (should (assoc "owner/foo:pr:42"
+                   shipit-notifications--snoozes))
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (should-not (shipit-notifications-buffer--matches-snooze-p
+                         '((repo . "owner/foo") (type . "pr") (number . 42)))))
+        (kill-buffer buf)))))
 
 (provide 'test-notifications-buffer)

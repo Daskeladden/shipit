@@ -1401,6 +1401,10 @@ CONFIG provides context for display name."
                      "Jira involvement detection failed for %s: %S" key err)
                     "updated")))
          (author (cdr (assq 'displayName (cdr (assq 'reporter fields)))))
+         (status-obj (cdr (assq 'status fields)))
+         (status-name (cdr (assq 'name status-obj)))
+         (status-category (cdr (assq 'key
+                                     (cdr (assq 'statusCategory status-obj)))))
          (base-url (plist-get config :base-url))
          (display-name (or (plist-get config :display-name)
                            (car (plist-get config :project-keys))
@@ -1417,6 +1421,8 @@ CONFIG provides context for display name."
       (backend-config . ,config)
       (jira-components . ,components)
       (author . ,author)
+      (state . ,status-name)
+      (status-category . ,status-category)
       (browse-url . ,(when base-url
                        (format "%s/browse/%s"
                                (string-trim-right base-url "/") key)))

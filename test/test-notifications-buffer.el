@@ -1663,4 +1663,47 @@ THEN the alist is restored verbatim (modulo any auto-pruned expired entries)."
             (should-not (assoc "owner/foo:pr:3" shipit-notifications--snoozes))))
       (delete-file tmp))))
 
+(ert-deftest test-shipit-notifications-buffer-activity-resolved-p ()
+  "Resolved predicate covers PR merged/closed, issue closed, Jira done."
+  (should (shipit-notifications-buffer--activity-resolved-p
+           '((type . "pr") (pr-state . "merged"))))
+  (should (shipit-notifications-buffer--activity-resolved-p
+           '((type . "pr") (pr-state . "closed"))))
+  (should-not (shipit-notifications-buffer--activity-resolved-p
+               '((type . "pr") (pr-state . "open"))))
+  (should (shipit-notifications-buffer--activity-resolved-p
+           '((type . "issue") (state . "closed"))))
+  (should-not (shipit-notifications-buffer--activity-resolved-p
+               '((type . "issue") (state . "open"))))
+  (should (shipit-notifications-buffer--activity-resolved-p
+           '((type . "issue") (source . jira) (status-category . "done"))))
+  (should-not (shipit-notifications-buffer--activity-resolved-p
+               '((type . "issue") (source . jira)
+                 (status-category . "indeterminate")))))
+
+(ert-deftest test-shipit-notifications-buffer-auto-clean-snoozes-drops-resolved ()
+  "GIVEN a snooze whose activity is in a resolved state
+WHEN auto-clean runs
+THEN the snooze is removed."
+  (let* ((tmp (make-temp-file "shipit-snoozes" nil ".el"))
+         (shipit-notifications-snoozes-file tmp)
+         (shipit-notifications--snoozes
+          (list (cons "owner/foo:pr:42" :permanent)
+                (cons "owner/foo:pr:99" :permanent)))
+         (shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "owner/foo:pr:42"
+             '((repo . "owner/foo") (number . 42) (type . "pr")
+               (pr-state . "merged"))
+             shipit--notification-pr-activities)
+    (puthash "owner/foo:pr:99"
+             '((repo . "owner/foo") (number . 99) (type . "pr")
+               (pr-state . "open"))
+             shipit--notification-pr-activities)
+    (unwind-protect
+        (progn
+          (shipit-notifications-buffer--auto-clean-snoozes)
+          (should-not (assoc "owner/foo:pr:42" shipit-notifications--snoozes))
+          (should (assoc "owner/foo:pr:99" shipit-notifications--snoozes)))
+      (delete-file tmp))))
+
 (provide 'test-notifications-buffer)

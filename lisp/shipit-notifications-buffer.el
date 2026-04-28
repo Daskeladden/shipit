@@ -799,14 +799,62 @@ nested under per-repo wrapper sections."
                shipit-notifications--snoozes)
       (shipit-notifications-buffer--insert-snoozed-group))))
 
+(defun shipit-notifications-buffer--activity-resolved-p (activity)
+  "Return non-nil when ACTIVITY's underlying item is resolved.
+Resolved means: PR is merged or closed, GitHub issue is closed,
+or Jira issue is in the `done' status category."
+  (let ((type (or (cdr (assq 'type activity)) "pr"))
+        (pr-state (cdr (assq 'pr-state activity)))
+        (state (cdr (assq 'state activity)))
+        (status-cat (cdr (assq 'status-category activity))))
+    (cond
+     ((and (equal type "pr") pr-state)
+      (member pr-state '("merged" "closed")))
+     ((eq (cdr (assq 'source activity)) 'jira)
+      (equal status-cat "done"))
+     ((and (equal type "issue") state)
+      (equal state "closed"))
+     (t nil))))
+
+(defun shipit-notifications-buffer--auto-clean-snoozes ()
+  "Drop snoozes whose underlying activity is resolved.
+Walks `--snoozes' and removes entries whose activity in the hash
+has reached a terminal state (PR merged/closed, issue closed,
+Jira done).  Saves to disk when anything was dropped."
+  (let ((to-remove '()))
+    (dolist (cell shipit-notifications--snoozes)
+      (let* ((key (car cell))
+             (activity (catch 'found
+                         (dolist (a (shipit-notifications-buffer--all-activities))
+                           (let* ((repo (cdr (assq 'repo a)))
+                                  (type (or (cdr (assq 'type a)) "pr"))
+                                  (number (or (cdr (assq 'number a))
+                                              (cdr (assq 'pr-number a))))
+                                  (k (and repo number
+                                          (format "%s:%s:%s" repo type number))))
+                             (when (equal k key)
+                               (throw 'found a)))))))
+        (when (and activity
+                   (shipit-notifications-buffer--activity-resolved-p activity))
+          (push key to-remove))))
+    (when to-remove
+      (dolist (k to-remove)
+        (setq shipit-notifications--snoozes
+              (assoc-delete-all k shipit-notifications--snoozes)))
+      (shipit-notifications-buffer--snoozes-save))))
+
 (defun shipit-notifications-buffer--insert-snoozed-group ()
   "Insert a collapsed `notification-snoozed-group' section listing snoozes.
 Each row uses the standard `notification-entry' format so the
 existing keymap (RET, `m m', `z' to unsnooze, ...) keeps working;
 the heading shows a remaining-time annotation per row.  Activities
 whose key has expired but not yet been pruned are skipped."
+  (shipit-notifications-buffer--auto-clean-snoozes)
   (let* ((live (shipit-notifications-buffer--prune-expired-snoozes))
          (snoozed-keys (mapcar #'car live))
+         (locally-read (and (boundp 'shipit--locally-marked-read-notifications)
+                            (hash-table-p shipit--locally-marked-read-notifications)
+                            shipit--locally-marked-read-notifications))
          (rows (when snoozed-keys
                  (let ((all (shipit-notifications-buffer--all-activities))
                        (matches '()))
@@ -817,7 +865,12 @@ whose key has expired but not yet been pruned are skipped."
                                         (cdr (assq 'pr-number a))))
                             (key (and repo number
                                       (format "%s:%s:%s" repo type number))))
-                       (when (member key snoozed-keys)
+                       ;; Surface only snoozed activities the user has
+                       ;; not also marked read -- a marked-read snoozed
+                       ;; row is "dealt with" and should not pop back.
+                       (when (and (member key snoozed-keys)
+                                  (not (and locally-read
+                                            (gethash key locally-read))))
                          (push a matches))))
                    (nreverse matches)))))
     (when rows

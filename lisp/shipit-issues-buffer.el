@@ -89,6 +89,7 @@
 (declare-function shipit-toggle-timestamp-format "shipit-commands")
 (declare-function shipit--notification-activity-key "shipit-notifications")
 (declare-function shipit--mark-notification-read "shipit-notifications")
+(declare-function shipit-issue-branch-menu "shipit-issue-branch")
 
 ;; Forward variable declarations
 (defvar shipit-render-markdown)
@@ -191,6 +192,7 @@ Each entry is (TYPE . VALUE).  Supported types:
     (define-key map (kbd "f") #'shipit-issue-filter-comments)
     (define-key map (kbd "l") #'shipit-issue-jump-to-load-more)
     (define-key map (kbd "R") #'shipit-issue--toggle-load-direction)
+    (define-key map (kbd "b") #'shipit-issue-branch-menu)
     map)
   "Keymap for `shipit-issue-mode'.")
 

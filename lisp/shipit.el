@@ -106,6 +106,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
           (when feature (require feature)))))
     (require 'shipit-issues)           ; Issues search
     (require 'shipit-issues-buffer)    ; Issues buffer view
+    (require 'shipit-issue-branch)     ; Branch creation transient
     (require 'shipit-issue-create))    ; Rich issue creation buffer
   (when shipit-discussions-enabled
     (require 'shipit-discussions-graphql)  ; GraphQL queries + normalization

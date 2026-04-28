@@ -443,7 +443,12 @@ THEN notification count resets to 0 and modeline clears."
     ;; WHEN: process empty notification list (GitHub returned 0 unread)
     (shipit--process-pr-notifications nil)
 
-    ;; THEN: count is 0 and modeline indicator is cleared
+    ;; THEN: with the 1-poll grace period the first empty response keeps
+    ;; the entries (now tagged missed-polls=1) so a single flaky GitHub
+    ;; reply doesn't silently wipe legitimate notifications.
+    (should (= 2 (hash-table-count shipit--notification-pr-activities)))
+    ;; A second consecutive empty response evicts them.
+    (shipit--process-pr-notifications nil)
     (should (= 0 (hash-table-count shipit--notification-pr-activities)))
     (should (= 0 shipit--notification-count))
     (should (null shipit--modeline-string))))
@@ -470,10 +475,12 @@ THEN the callback should still process and clear the count."
     (puthash "repo/a:pr:2" '((repo . "repo/a") (number . 2) (type . "pr") (reason . "comment")) shipit--notification-pr-activities)
 
     ;; WHEN: simulate the async callback with nil (empty JSON array)
+    ;; twice (grace period: first empty response keeps stale entries,
+    ;; second evicts them).
     (cl-letf (((symbol-function 'shipit--fetch-all-notifications-async)
                (lambda (_params _since _force callback)
-                 ;; Simulate GitHub returning empty array
                  (funcall callback nil))))
+      (shipit--check-notifications-background-async t)
       (shipit--check-notifications-background-async t))
 
     ;; THEN: notifications should be cleared
@@ -792,6 +799,50 @@ THEN the PR backend's :mark-notification-read is called for GitHub notifications
 
       ;; THEN: PR backend's mark-notification-read was called
       (should (member "thread-111" pr-backend-mark-called-ids)))))
+
+(ert-deftest test-shipit--merge-github-notifications-grace-period ()
+  "GIVEN a GitHub entry from a previous poll
+WHEN the next poll's response is missing it once
+THEN the entry survives with `missed-polls' incremented.
+WHEN the poll after that is also missing it
+THEN the entry is evicted."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (let ((first (make-hash-table :test 'equal)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr"))
+               first)
+      (shipit--merge-github-notifications first))
+    (should (gethash "owner/foo:pr:1" shipit--notification-pr-activities))
+    ;; Empty response: entry stays, missed-polls bumped to 1.
+    (shipit--merge-github-notifications (make-hash-table :test 'equal))
+    (let ((entry (gethash "owner/foo:pr:1" shipit--notification-pr-activities)))
+      (should entry)
+      (should (= 1 (cdr (assq 'missed-polls entry)))))
+    ;; Second consecutive empty: evicted.
+    (shipit--merge-github-notifications (make-hash-table :test 'equal))
+    (should-not (gethash "owner/foo:pr:1" shipit--notification-pr-activities))))
+
+(ert-deftest test-shipit--merge-github-notifications-resets-on-reappearance ()
+  "An entry that reappears after one missing poll has missed-polls reset to 0."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (let ((first (make-hash-table :test 'equal)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr"))
+               first)
+      (shipit--merge-github-notifications first))
+    ;; Missing once.
+    (shipit--merge-github-notifications (make-hash-table :test 'equal))
+    (let ((entry (gethash "owner/foo:pr:1" shipit--notification-pr-activities)))
+      (should (= 1 (cdr (assq 'missed-polls entry)))))
+    ;; Reappears.
+    (let ((second (make-hash-table :test 'equal)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr"))
+               second)
+      (shipit--merge-github-notifications second))
+    (let ((entry (gethash "owner/foo:pr:1" shipit--notification-pr-activities)))
+      (should entry)
+      (should (= 0 (cdr (assq 'missed-polls entry)))))))
 
 (provide 'test-notifications-integration)
 ;;; test-notifications-integration.el ends here

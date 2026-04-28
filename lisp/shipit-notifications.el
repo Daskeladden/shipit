@@ -2555,21 +2555,48 @@ pile up with the others into one long UI freeze."
 
 (defun shipit--merge-github-notifications (github-activities)
   "Merge GITHUB-ACTIVITIES into the global hash table.
-Replaces existing GitHub entries, preserves non-GitHub backend entries."
+Preserves backend (non-GitHub) entries.  GitHub entries get a
+1-poll grace period: when a key from the previous merge is
+missing from GITHUB-ACTIVITIES, it stays in the hash with a
+`missed-polls' counter incremented; on the second consecutive
+miss it is evicted.  This tolerates transient inconsistencies in
+GitHub's `/notifications' edge cache without permanently
+silencing items, while still detecting genuine server-side
+marks within ~one poll cycle."
   (unless shipit--notification-pr-activities
     (setq shipit--notification-pr-activities (make-hash-table :test 'equal)))
-  ;; Remove old GitHub entries (those without a backend source)
-  (let ((keys-to-remove nil))
+  (let ((evicted 0)
+        (kept-stale 0))
+    ;; Walk existing GitHub entries.  If absent from the new response,
+    ;; bump missed-polls; evict on the second consecutive miss.
+    (let ((keys-to-evict nil))
+      (maphash
+       (lambda (key activity)
+         (unless (cdr (assq 'backend-id activity))
+           (unless (gethash key github-activities)
+             (let* ((misses (or (cdr (assq 'missed-polls activity)) 0))
+                    (next (1+ misses)))
+               (if (>= next 2)
+                   (push key keys-to-evict)
+                 (let ((bumped (cons (cons 'missed-polls next)
+                                     (assq-delete-all 'missed-polls
+                                                      (copy-alist activity)))))
+                   (puthash key bumped shipit--notification-pr-activities)
+                   (cl-incf kept-stale)))))))
+       shipit--notification-pr-activities)
+      (dolist (key keys-to-evict)
+        (remhash key shipit--notification-pr-activities)
+        (cl-incf evicted)))
+    ;; Add / overwrite with the freshly fetched entries; reset missed-polls.
     (maphash (lambda (key activity)
-               (unless (cdr (assq 'backend-id activity))
-                 (push key keys-to-remove)))
-             shipit--notification-pr-activities)
-    (dolist (key keys-to-remove)
-      (remhash key shipit--notification-pr-activities)))
-  ;; Add current GitHub entries
-  (maphash (lambda (key activity)
-             (puthash key activity shipit--notification-pr-activities))
-           github-activities))
+               (puthash key (cons (cons 'missed-polls 0)
+                                  (assq-delete-all 'missed-polls
+                                                   (copy-alist activity)))
+                        shipit--notification-pr-activities))
+             github-activities)
+    (when (or (> evicted 0) (> kept-stale 0))
+      (shipit--debug-log "GitHub merge: kept-stale=%d evicted=%d (grace period)"
+                         kept-stale evicted))))
 
 (defun shipit--merge-backend-notifications (activities)
   "Merge backend notification ACTIVITIES into the global hash table.

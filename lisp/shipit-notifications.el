@@ -147,6 +147,13 @@ Options: message (minibuffer), alert (alert.el), dbus (Linux), nil (disabled)."
 (defvar shipit--notification-count 0
   "Current notification count for modeline display.")
 
+(defvar shipit--processing-all-scope nil
+  "Bound to t while `shipit--process-notifications' is running on a
+payload from the `all' scope.  The modeline indicator skips its
+update in that case so an all-scope buffer refresh doesn't blank the
+bell with an artificially low unread-count — the unread-scope
+background poll keeps it accurate.")
+
 (defvar shipit--mention-count 0
   "Current mention count for modeline display.")
 
@@ -859,7 +866,8 @@ to time-travel past GitHub's default 2-week window."
                          (cons (cons 'since since) params)
                        params))
              (all-notifications
-              (shipit--fetch-all-notifications params nil force-fresh max-pages start-page)))
+              (shipit--fetch-all-notifications params nil force-fresh max-pages start-page))
+             (shipit--processing-all-scope (eq scope 'all)))
         (shipit--process-notifications all-notifications)
         ;; Schedule backend poll on next idle tick rather than running it
         ;; inline — backend fetches (Jira, RSS, GitLab) are sync and block
@@ -1003,6 +1011,7 @@ follow-up regardless of how many callbacks landed."
   "Process notifications and extract PR and Issue activity."
   (let ((activities (make-hash-table :test 'equal))
         (total-count 0)
+        (unread-count 0)
         (mention-prs '())
         (mention-count 0)
         (skipped-locally-read 0))
@@ -1067,6 +1076,13 @@ follow-up regardless of how many callbacks landed."
                                        (notification . ,notification))))
                       (puthash activity-key activity activities)
                       (setq total-count (1+ total-count))
+                      ;; GitHub returns `unread' as JSON true/false; with
+                      ;; `json-read' that becomes `t' or `:json-false'.
+                      ;; A bare `(when unread ...)' counts both as unread
+                      ;; because `:json-false' is non-nil — explicitly
+                      ;; reject it.
+                      (when (and unread (not (eq unread :json-false)))
+                        (setq unread-count (1+ unread-count)))
 
                       ;; Check if we should alert on this notification
                       (when (shipit--should-alert-p activity)
@@ -1104,12 +1120,25 @@ follow-up regardless of how many callbacks landed."
     (setq shipit--mention-prs mention-prs)
     (setq shipit--mention-count mention-count)
 
-    ;; Always update indicators when count changes (not just when it increases)
-    (when (not (eq total-count shipit--last-notification-count))
-      (shipit--handle-new-notifications total-count))
-    (setq shipit--last-notification-count total-count)
+    ;; Modeline reflects only the UNREAD count.  In `all' scope the
+    ;; notifications buffer renders both read and unread items, but the
+    ;; bell icon should answer "how many things still need attention".
+    ;; Skip the modeline update when this run was processing an `all'
+    ;; scope payload (its unread-count is artificially low — the
+    ;; payload includes already-read items but not freshly-arrived
+    ;; unread ones from other repos).  The next unread-scope poll
+    ;; refreshes the modeline.
+    (unless (and (boundp 'shipit--processing-all-scope)
+                 shipit--processing-all-scope)
+      (when (not (eq unread-count shipit--last-notification-count))
+        (shipit--handle-new-notifications unread-count))
+      (setq shipit--last-notification-count unread-count))
 
-    (shipit--debug-log "Processed %d notifications (%d mentions)" total-count mention-count)))
+    (shipit--debug-log "Processed %d notifications (%d unread, %d mentions, scope=%s, all-scope=%s)"
+                       total-count unread-count mention-count
+                       (and (boundp 'shipit-notifications-scope) shipit-notifications-scope)
+                       (and (boundp 'shipit--processing-all-scope)
+                            shipit--processing-all-scope))))
 
 (defalias 'shipit--process-pr-notifications 'shipit--process-notifications
   "Backward compatibility alias.")

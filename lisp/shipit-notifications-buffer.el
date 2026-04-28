@@ -194,9 +194,7 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "M-;") #'shipit-notifications-buffer-action)
     (define-key map (kbd "TAB") #'shipit-notifications-buffer-toggle-section)
     (define-key map [tab] #'shipit-notifications-buffer-toggle-section)
-    (define-key map (kbd "m") #'shipit-notifications-buffer-mark-read)
-    (define-key map (kbd "M") #'shipit-notifications-buffer-mark-all-read)
-    (define-key map (kbd "+") #'shipit-notifications-buffer-add-auto-mark-rule-from-point)
+    (define-key map (kbd "m") #'shipit-notifications-buffer-mark-menu)
     (define-key map (kbd "n") #'magit-section-forward)
     (define-key map (kbd "p") #'magit-section-backward)
     (define-key map (kbd "M-n") #'shipit-notifications-buffer-page-forward)
@@ -223,7 +221,6 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "A") #'shipit-notifications-buffer-clear-since-filter)
     (define-key map (kbd "b") #'shipit-notifications-buffer-set-before-filter)
     (define-key map (kbd "B") #'shipit-notifications-buffer-clear-before-filter)
-    (define-key map (kbd "Z") #'shipit-notifications-buffer-mark-resolved-read)
     (define-key map (kbd "x") #'shipit-notifications-buffer-clear-all-filters)
     map)
   "Keymap for `shipit-notifications-buffer-mode'.")
@@ -1431,19 +1428,25 @@ Otherwise it marks every entry in the buffer."
                         ((eq scope magit-root-section) "")
                         (t (format " in %s" (oref scope value))))))
     (if notifications
-        (when (yes-or-no-p (format "Mark %d notification%s%s as read? "
-                                   (length notifications)
-                                   (if (= 1 (length notifications)) "" "s")
-                                   scope-suffix))
-          (dolist (notif notifications)
-            (when (fboundp 'shipit--mark-notification-read)
-              (shipit--mark-notification-read
-               (car notif) (cadr notif) t (caddr notif))))
-          (message "Marked %d notification%s%s as read"
-                   (length notifications)
-                   (if (= 1 (length notifications)) "" "s")
-                   scope-suffix)
-          (shipit-notifications-buffer-refresh))
+        (progn
+          (shipit-notifications-buffer--clear-auto-mark-preview)
+          (shipit-notifications-buffer--preview-entries-under scope)
+          (redisplay t)
+          (unwind-protect
+              (when (yes-or-no-p (format "Mark %d notification%s%s as read? "
+                                         (length notifications)
+                                         (if (= 1 (length notifications)) "" "s")
+                                         scope-suffix))
+                (dolist (notif notifications)
+                  (when (fboundp 'shipit--mark-notification-read)
+                    (shipit--mark-notification-read
+                     (car notif) (cadr notif) t (caddr notif))))
+                (message "Marked %d notification%s%s as read"
+                         (length notifications)
+                         (if (= 1 (length notifications)) "" "s")
+                         scope-suffix)
+                (shipit-notifications-buffer-refresh))
+            (shipit-notifications-buffer--clear-auto-mark-preview)))
       (message "No notifications to mark as read"))))
 
 (defun shipit-notifications-buffer--collect-resolved-prs ()
@@ -1990,13 +1993,34 @@ with rule edits made from the transient."
       (shipit-notifications--save-auto-mark-rules nil)
       (message "Auto-mark rules cleared")))))
 
+;;;###autoload (autoload 'shipit-notifications-buffer-mark-menu "shipit-notifications-buffer" nil t)
+(transient-define-prefix shipit-notifications-buffer-mark-menu ()
+  "Mark notifications read or manage auto-mark rules."
+  [["Mark"
+    ("m" "Mark this (or region)"
+     shipit-notifications-buffer-mark-read)
+    ("M" "Mark all in buffer"
+     shipit-notifications-buffer-mark-all-read)
+    ("Z" "Mark merged/closed as read"
+     shipit-notifications-buffer-mark-resolved-read)
+    ("A" "Mark actionable as read"
+     shipit-notifications-buffer-mark-actionable-read)
+    ("N" "Mark non-actionable as read"
+     shipit-notifications-buffer-mark-non-actionable-read)]
+   ["Auto-mark rules"
+    ("+" "Add rule from notification at point"
+     shipit-notifications-buffer-add-auto-mark-rule-from-point)
+    ("a" "Manage auto-mark rules…"
+     shipit-notifications-buffer-auto-mark-menu)
+    ("q" "Quit" transient-quit-one)]])
+
 ;;;###autoload (autoload 'shipit-notifications-buffer-auto-mark-menu "shipit-notifications-buffer" nil t)
 (transient-define-prefix shipit-notifications-buffer-auto-mark-menu ()
   "Manage auto-mark-read rules without leaving the notifications buffer."
   [["Add"
     ("a" "Add rule (guided)"
      shipit-notifications-buffer-add-auto-mark-rule)
-    ("." "Add rule from notification at point"
+    ("+" "Add rule from notification at point"
      shipit-notifications-buffer-add-auto-mark-rule-from-point)]
    ["Manage"
     ("l" "Show rules list"
@@ -2009,6 +2033,21 @@ with rule edits made from the transient."
     ("c" "Open customize buffer"
      shipit-notifications-buffer-customize-auto-mark-rules)
     ("q" "Back" transient-quit-one)]])
+
+(defun shipit-notifications-buffer--preview-entries-under (section)
+  "Add strike-through preview overlays to every notification-entry in SECTION.
+Walks the section tree, so it works for both flat and group-by-repo
+layouts.  Reuses the auto-mark preview overlay list — a single
+`shipit-notifications-buffer--clear-auto-mark-preview' undoes it."
+  (cl-labels
+      ((walk (s)
+         (cond
+          ((eq (oref s type) 'notification-entry)
+           (shipit-notifications-buffer--add-preview-row-overlay s))
+          (t
+           (dolist (c (oref s children))
+             (walk c))))))
+    (walk section)))
 
 (defun shipit-notifications-buffer--preview-resolved-rows ()
   "Add strike-through overlays to notification rows whose PR is resolved.
@@ -2023,6 +2062,93 @@ preview overlay list so a single
                (state (cdr (assq 'pr-state activity))))
           (when (member state '("merged" "closed"))
             (shipit-notifications-buffer--add-preview-row-overlay child)))))))
+
+(defun shipit-notifications-buffer--collect-by-predicate (predicate)
+  "Walk the global activity hash and return (NUMBER REPO TYPE) for each
+ACTIVITY that PREDICATE returns non-nil for."
+  (let ((acc '()))
+    (when (and (boundp 'shipit--notification-pr-activities)
+               shipit--notification-pr-activities)
+      (maphash
+       (lambda (_k a)
+         (when (funcall predicate a)
+           (push (list (or (cdr (assq 'number a))
+                           (cdr (assq 'pr-number a)))
+                       (cdr (assq 'repo a))
+                       (or (cdr (assq 'type a)) "pr"))
+                 acc)))
+       shipit--notification-pr-activities))
+    acc))
+
+(defun shipit-notifications-buffer--preview-rows-by-predicate (predicate)
+  "Add strike-through preview overlays to notification rows where
+PREDICATE returns non-nil for the row's activity."
+  (when (bound-and-true-p magit-root-section)
+    (cl-labels
+        ((walk (s)
+           (cond
+            ((eq (oref s type) 'notification-entry)
+             (when (funcall predicate (oref s value))
+               (shipit-notifications-buffer--add-preview-row-overlay s)))
+            (t
+             (dolist (c (oref s children))
+               (walk c))))))
+      (walk magit-root-section))))
+
+(defun shipit-notifications-buffer--mark-by-predicate (predicate label)
+  "Mark every activity for which PREDICATE returns non-nil as read.
+Previews matching rows with a strike-through overlay before the y/n
+prompt; tears down the overlay whether you confirm or abort.  LABEL
+is a short noun used in the prompt and confirmation message."
+  (let ((targets (shipit-notifications-buffer--collect-by-predicate predicate)))
+    (cond
+     ((null targets)
+      (message "No %s notifications to mark as read" label))
+     (t
+      (shipit-notifications-buffer--clear-auto-mark-preview)
+      (shipit-notifications-buffer--preview-rows-by-predicate predicate)
+      (redisplay t)
+      (unwind-protect
+          (when (yes-or-no-p
+                 (format "Mark %d %s notification%s as read? "
+                         (length targets) label
+                         (if (= 1 (length targets)) "" "s")))
+            (dolist (notif targets)
+              (when (fboundp 'shipit--mark-notification-read)
+                (shipit--mark-notification-read
+                 (car notif) (cadr notif) t (caddr notif))))
+            (message "Marked %d %s notification%s as read"
+                     (length targets) label
+                     (if (= 1 (length targets)) "" "s"))
+            (shipit-notifications-buffer-refresh))
+        (shipit-notifications-buffer--clear-auto-mark-preview))))))
+
+(defun shipit-notifications-buffer--actionable-activity-p (activity)
+  "Return non-nil if ACTIVITY's reason is actionable.
+Actionable reasons are listed in `shipit-notifications-actionable-reasons'."
+  (let ((r (cdr (assq 'reason activity))))
+    (and (stringp r)
+         (member r shipit-notifications-actionable-reasons))))
+
+(defun shipit-notifications-buffer-mark-actionable-read ()
+  "Mark every notification with an actionable reason as read.
+Actionable reasons are listed in `shipit-notifications-actionable-reasons'
+\(mentions, review_requested, etc.)."
+  (interactive)
+  (shipit-notifications-buffer--mark-by-predicate
+   #'shipit-notifications-buffer--actionable-activity-p
+   "actionable"))
+
+(defun shipit-notifications-buffer-mark-non-actionable-read ()
+  "Mark every notification with a non-actionable reason as read.
+Non-actionable reasons are everything not in
+`shipit-notifications-actionable-reasons' \(subscribed, etc.) — the
+ones that pile up during routine triage."
+  (interactive)
+  (shipit-notifications-buffer--mark-by-predicate
+   (lambda (a)
+     (not (shipit-notifications-buffer--actionable-activity-p a)))
+   "non-actionable"))
 
 (defun shipit-notifications-buffer-mark-resolved-read ()
   "Mark all merged and closed PR notifications as read.
@@ -2550,11 +2676,9 @@ clearing takes effect alongside the client-side resets."
     ("G" shipit-notifications-buffer-toggle-group-by-repo
      :description shipit-notifications-buffer--group-by-repo-description
      :transient t)]]
-  [["Bulk / auto-mark"
-    ("Z" "Mark merged/closed as read"
-     shipit-notifications-buffer-mark-resolved-read)
-    ("M" "Manage auto-mark rules…"
-     shipit-notifications-buffer-auto-mark-menu)]
+  [["Mark / auto-mark"
+    ("m" "Mark menu…"
+     shipit-notifications-buffer-mark-menu)]
    ["Refresh"
     ("g" "Refresh now" shipit-notifications-buffer-refresh)
     ("x" "Clear all filters" shipit-notifications-buffer-clear-all-filters)

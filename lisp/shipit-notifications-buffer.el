@@ -293,14 +293,14 @@ GraphQL round-trip only happens once per session.  Cleared by
 
 (defun shipit-notifications-buffer-refresh (&optional _ignore-auto _noconfirm)
   "Refresh the notifications buffer content.
-Uses ETag conditional GETs by default so an unchanged response
-comes back as 304 + cached data instantly.  Pass a prefix arg to
-bypass the ETag cache (force-fresh).  Re-renders using the buffer
+Interactive invocations bypass the ETag cache so the fetch is
+guaranteed to return fresh server state -- a manual `g' is a
+manual poll, distinct from the periodic auto-poller (which keeps
+ETag caching enabled to be polite).  Re-renders using the buffer
 local display scope, current page, and filters.  IGNORE-AUTO and
 NOCONFIRM are for compatibility with `revert-buffer'."
   (interactive)
-  (let ((force-fresh (and (called-interactively-p 'any)
-                          current-prefix-arg))
+  (let ((force-fresh (called-interactively-p 'any))
         (scope shipit-notifications-buffer--display-scope)
         (page shipit-notifications-buffer--current-page)
         ;; Server-side fast path only when exactly one repo is selected.

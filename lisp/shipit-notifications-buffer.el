@@ -425,12 +425,19 @@ never pruned."
                         shipit-notifications--snoozes))))
 
 (defun shipit-notifications-buffer--live-snoozed-count ()
-  "Return the count of snoozes whose key has a live activity in the hash.
-Stale entries (e.g. items the user marked read after snoozing)
-are dropped from the count so the header bracket matches what
-the buffer can actually surface."
+  "Return the count of snoozes the snoozed group will actually render.
+Mirrors the filters in `--insert-snoozed-group': the activity must
+be in the hash, and it must not have been locally marked read
+\(a marked-read snoozed row is `dealt with' and wouldn't be
+surfaced even though the snooze entry still sits in the list).
+Without this match the header bracket and the rendered group can
+disagree -- the bracket would say `snoozed: 1' while the group
+section is suppressed because the only entry was marked read."
   (let ((live 0)
-        (keys (mapcar #'car shipit-notifications--snoozes)))
+        (keys (mapcar #'car shipit-notifications--snoozes))
+        (locally-read (and (boundp 'shipit--locally-marked-read-notifications)
+                           (hash-table-p shipit--locally-marked-read-notifications)
+                           shipit--locally-marked-read-notifications)))
     (when keys
       (dolist (a (shipit-notifications-buffer--all-activities))
         (let* ((repo (cdr (assq 'repo a)))
@@ -439,7 +446,8 @@ the buffer can actually surface."
                            (cdr (assq 'pr-number a))))
                (key (and repo number
                          (format "%s:%s:%s" repo type number))))
-          (when (member key keys)
+          (when (and (member key keys)
+                     (not (and locally-read (gethash key locally-read))))
             (cl-incf live)))))
     live))
 
@@ -757,9 +765,14 @@ in `font-lock-comment-face' so only the active value pops."
          (narrow-suffix
           (when (and client-narrowed range-part)
             (format " (%d shown after filters)" shown)))
+         ;; Local denominator when shown < loaded so the visible
+         ;; fraction tracks what the buffer actually has, not the
+         ;; server probe (which counts items hidden by the unread-
+         ;; scope filter, the snoozed group, or pending mark sync).
+         ;; Server total stays visible in parentheses for context.
          (count-part (cond
                       (range-part (concat range-part (or narrow-suffix "")))
-                      ((and text-filter-active total)
+                      ((and total (or text-filter-active (< shown loaded)))
                        (format ", %d/%d (of %d)" shown loaded total))
                       (text-filter-active (format ", %d/%d" shown loaded))
                       (total (format ", %d/%d" shown total))

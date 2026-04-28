@@ -74,7 +74,7 @@
         (notification '((reason . "mention")
                         (repo . "test/repo")
                         (number . 123)
-                        (notification . ((id . "notif-123"))))))
+                        (notification . ((id . "notif-123") (unread . t))))))
     (should (shipit--should-alert-p notification))))
 
 (ert-deftest test-shipit--should-alert-p-wrong-reason ()
@@ -85,7 +85,7 @@
         (notification '((reason . "comment")
                         (repo . "test/repo")
                         (number . 123)
-                        (notification . ((id . "notif-123"))))))
+                        (notification . ((id . "notif-123") (unread . t))))))
     (should-not (shipit--should-alert-p notification))))
 
 (ert-deftest test-shipit--should-alert-p-backend-disabled ()
@@ -96,7 +96,7 @@
         (notification '((reason . "mention")
                         (repo . "test/repo")
                         (number . 123)
-                        (notification . ((id . "notif-123"))))))
+                        (notification . ((id . "notif-123") (unread . t))))))
     (should-not (shipit--should-alert-p notification))))
 
 (ert-deftest test-shipit--should-alert-p-already-alerted ()
@@ -107,7 +107,7 @@
         (notification '((reason . "mention")
                         (repo . "test/repo")
                         (number . 123)
-                        (notification . ((id . "notif-123"))))))
+                        (notification . ((id . "notif-123") (unread . t))))))
     ;; Mark as already alerted
     (puthash "notif-123" t shipit--alerted-notification-ids)
     (should-not (shipit--should-alert-p notification))))
@@ -118,7 +118,7 @@
         (notification '((reason . "mention")
                         (repo . "test/repo")
                         (number . 123)
-                        (notification . ((id . "notif-456"))))))
+                        (notification . ((id . "notif-456") (unread . t))))))
     (shipit--mark-alerted notification)
     (should (gethash "notif-456" shipit--alerted-notification-ids))))
 
@@ -157,11 +157,11 @@
         (notification1 '((reason . "mention")
                          (repo . "test/repo")
                          (number . 123)
-                         (notification . ((id . "notif-1")))))
+                         (notification . ((id . "notif-1") (unread . t)))))
         (notification2 '((reason . "review_requested")
                          (repo . "test/repo")
                          (number . 456)
-                         (notification . ((id . "notif-2"))))))
+                         (notification . ((id . "notif-2") (unread . t))))))
     (unwind-protect
         (progn
           (shipit--queue-alert notification1)
@@ -194,7 +194,7 @@ THEN the PR backend's mark-notification-read is called and the notification is r
                (subject . "Test PR")
                (reason . "mention")
                (updated-at . "2025-01-29T10:00:00Z")
-               (notification . ((id . "notif-123"))))
+               (notification . ((id . "notif-123") (unread . t))))
              shipit--notification-pr-activities)
     ;; Add to mention tracking
     (push '((repo . "test/repo") (number . 42)) shipit--mention-prs)
@@ -243,7 +243,7 @@ THEN the PR backend's :mark-notification-read is called
                (type . "pr")
                (subject . "Fix widget")
                (reason . "review_requested")
-               (notification . ((id . "22923047192"))))
+               (notification . ((id . "22923047192") (unread . t))))
              shipit--notification-pr-activities)
 
     (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)
@@ -286,7 +286,7 @@ THEN the PR backend's :mark-notification-read is called (not routed through the 
                (type . "pr")
                (subject . "Add feature")
                (reason . "review_requested")
-               (notification . ((id . "22959180290"))))
+               (notification . ((id . "22959180290") (unread . t))))
              shipit--notification-pr-activities)
 
     (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)
@@ -319,7 +319,7 @@ THEN the notification is removed and mention count updated."
                (subject . "Test PR")
                (reason . "mention")
                (updated-at . "2025-01-29T10:00:00Z")
-               (notification . ((id . "notif-123"))))
+               (notification . ((id . "notif-123") (unread . t))))
              shipit--notification-pr-activities)
     (push '((repo . "test/repo") (number . 42)) shipit--mention-prs)
     (setq shipit--mention-count 1)
@@ -371,19 +371,19 @@ THEN only those 2 are marked as read and the 3rd remains."
              '((repo . "repo/a") (number . 1) (type . "pr")
                (subject . "First PR") (reason . "mention")
                (updated-at . "2025-01-29T10:00:00Z")
-               (notification . ((id . "notif-1"))))
+               (notification . ((id . "notif-1") (unread . t))))
              shipit--notification-pr-activities)
     (puthash "repo/a:pr:2"
              '((repo . "repo/a") (number . 2) (type . "pr")
                (subject . "Second PR") (reason . "comment")
                (updated-at . "2025-01-29T11:00:00Z")
-               (notification . ((id . "notif-2"))))
+               (notification . ((id . "notif-2") (unread . t))))
              shipit--notification-pr-activities)
     (puthash "repo/b:pr:3"
              '((repo . "repo/b") (number . 3) (type . "pr")
                (subject . "Third PR") (reason . "review_requested")
                (updated-at . "2025-01-29T12:00:00Z")
-               (notification . ((id . "notif-3"))))
+               (notification . ((id . "notif-3") (unread . t))))
              shipit--notification-pr-activities)
     (setq shipit--mention-count 1)
     (setq shipit--last-notification-count 3)
@@ -654,7 +654,7 @@ THEN the PR backend's :mark-notification-read function is called
                (type . "pr")
                (subject . "Fix widget")
                (reason . "review_requested")
-               (notification . ((id . "thread-99887"))))
+               (notification . ((id . "thread-99887") (unread . t))))
              shipit--notification-pr-activities)
 
     (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)
@@ -707,7 +707,7 @@ THEN no error is raised
                (type . "pr")
                (subject . "Test")
                (reason . "mention")
-               (notification . ((id . "thread-555"))))
+               (notification . ((id . "thread-555") (unread . t))))
              shipit--notification-pr-activities)
 
     (cl-letf (((symbol-function 'shipit--update-modeline-indicator) #'ignore))
@@ -784,7 +784,7 @@ THEN the PR backend's :mark-notification-read is called for GitHub notifications
                (type . "pr")
                (subject . "Test PR")
                (reason . "mention")
-               (notification . ((id . "thread-111"))))
+               (notification . ((id . "thread-111") (unread . t))))
              shipit--notification-pr-activities)
 
     (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)

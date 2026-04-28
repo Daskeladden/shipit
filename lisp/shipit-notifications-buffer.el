@@ -478,6 +478,21 @@ special; otherwise the `let' inside `--render' binds it lexically
 and downstream readers like `--repo-filtered-activities' see the
 global nil and fall through to their own filter chain.")
 
+(defun shipit-notifications-buffer--passes-all-filters-p (activity)
+  "Return non-nil when ACTIVITY survives every render-time filter.
+Single source of truth for the structurally-filtered activity pool:
+snooze, display scope (hides read items left in the hash by a
+previous `all' poll while we're back in `unread' scope), repo, type,
+state, reason, actionable, and Jira component."
+  (and (shipit-notifications-buffer--matches-snooze-p activity)
+       (shipit-notifications-buffer--matches-display-scope-p activity)
+       (shipit-notifications-buffer--matches-repo-p activity)
+       (shipit-notifications-buffer--matches-type-p activity)
+       (shipit-notifications-buffer--matches-state-p activity)
+       (shipit-notifications-buffer--matches-reason-p activity)
+       (shipit-notifications-buffer--matches-actionable-filter-p activity)
+       (shipit-notifications-buffer--matches-jira-component-p activity)))
+
 (defun shipit-notifications-buffer--render ()
   "Render the notifications buffer content.
 Bind `shipit-notifications-buffer--render-pool' once per render so
@@ -485,14 +500,7 @@ the callers that need the structurally-filtered activity pool
 share a single hash walk + filter."
   (shipit-notifications-buffer--prune-expired-snoozes)
   (let ((shipit-notifications-buffer--render-pool
-         (seq-filter (lambda (a)
-                       (and (shipit-notifications-buffer--matches-snooze-p a)
-                            (shipit-notifications-buffer--matches-repo-p a)
-                            (shipit-notifications-buffer--matches-type-p a)
-                            (shipit-notifications-buffer--matches-state-p a)
-                            (shipit-notifications-buffer--matches-reason-p a)
-                            (shipit-notifications-buffer--matches-actionable-filter-p a)
-                            (shipit-notifications-buffer--matches-jira-component-p a)))
+         (seq-filter #'shipit-notifications-buffer--passes-all-filters-p
                      (shipit-notifications-buffer--all-activities))))
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
@@ -639,14 +647,7 @@ Reuses `shipit-notifications-buffer--render-pool' when set so the
 hash walk + filters happen once per render instead of three times
 (header shown-count, header loaded-count, list renderer)."
   (or shipit-notifications-buffer--render-pool
-      (seq-filter (lambda (a)
-                    (and (shipit-notifications-buffer--matches-snooze-p a)
-                         (shipit-notifications-buffer--matches-display-scope-p a)
-                         (shipit-notifications-buffer--matches-repo-p a)
-                         (shipit-notifications-buffer--matches-type-p a)
-                         (shipit-notifications-buffer--matches-state-p a)
-                         (shipit-notifications-buffer--matches-reason-p a)
-                         (shipit-notifications-buffer--matches-actionable-filter-p a)))
+      (seq-filter #'shipit-notifications-buffer--passes-all-filters-p
                   (shipit-notifications-buffer--all-activities))))
 
 (defun shipit-notifications-buffer--loaded-count ()

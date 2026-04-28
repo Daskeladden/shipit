@@ -52,6 +52,8 @@
 (declare-function shipit--browse-pr-url "shipit-notifications")
 (declare-function shipit-comment--fetch-reactions-batch "shipit-comments")
 (declare-function shipit-comment--fetch-reactions "shipit-comments")
+(declare-function shipit-issue--load-more-all "shipit-issues-buffer")
+(declare-function shipit-issue-buffer-refresh "shipit-issues-buffer")
 (declare-function shipit--in-shipit-context-p "shipit-core")
 (declare-function shipit--open-file-at-point "shipit-diff")
 (declare-function shipit-editor-open "shipit-editor")
@@ -4106,42 +4108,69 @@ Returns the section if found and expanded, nil otherwise."
         (magit-section-show found-section)
         found-section))))
 
-(defun shipit--navigate-to-comment-by-id (comment-id)
+(defun shipit--navigate-to-comment-by-id (comment-id &optional no-retry)
   "Navigate to the comment with COMMENT-ID in the buffer.
-Searches in both inline comments (files section) and general comments section.
-Automatically expands sections if needed.
+Searches in both inline comments (files section) and general comments
+section.  Automatically expands sections if needed.  In an issue
+buffer, on miss, expands pagination via `shipit-issue--load-more-all'
+and — if still not found and NO-RETRY is nil — kicks off a buffer
+refresh and re-runs navigation once the new fetch settles, so a stale
+buffer that's missing a freshly-arrived comment still resolves.
 Returns t if found, nil otherwise."
   (shipit--debug-log "NAV: Searching for comment-id: %s (type: %s)" comment-id (type-of comment-id))
   (let ((found-pos (shipit--find-comment-pos comment-id)))
-    ;; If not found, try expanding general-comments section
     (unless found-pos
       (shipit--debug-log "NAV: Comment not found, expanding general-comments section")
       (when (shipit--expand-section-by-type 'general-comments)
         (redisplay)
         (setq found-pos (shipit--find-comment-pos comment-id))))
-    ;; If still not found, try expanding pr-files section (for inline comments)
     (unless found-pos
       (shipit--debug-log "NAV: Comment not found in general, expanding pr-files section")
       (when (shipit--expand-pr-files-section)
         (redisplay)
         (setq found-pos (shipit--find-comment-pos comment-id))))
-    (if found-pos
-        (progn
-          (goto-char found-pos)
-          ;; Expand parent sections to make the comment visible
-          (when (fboundp 'magit-section-show)
-            (let ((section (magit-current-section)))
-              (while section
-                (magit-section-show section)
-                (setq section (oref section parent)))))
-          (recenter)
-          (message "Navigated to comment in %s"
-                   (if (get-text-property found-pos 'shipit-file-path)
-                       "files section"
-                     "general comments"))
-          t)
+    ;; Issue pagination: rerender without pagination and re-search.
+    (unless found-pos
+      (when (and (derived-mode-p 'shipit-issue-mode)
+                 (fboundp 'shipit-issue--load-more-all))
+        (shipit--debug-log "NAV: comment %s not in head/tail, expanding pagination" comment-id)
+        (shipit-issue--load-more-all)
+        (redisplay)
+        (setq found-pos (shipit--find-comment-pos comment-id))))
+    (cond
+     (found-pos
+      (goto-char found-pos)
+      (when (fboundp 'magit-section-show)
+        (let ((section (magit-current-section)))
+          (while section
+            (magit-section-show section)
+            (setq section (oref section parent)))))
+      (recenter)
+      (message "Navigated to comment in %s"
+               (if (get-text-property found-pos 'shipit-file-path)
+                   "files section"
+                 "general comments"))
+      t)
+     ;; Stale issue buffer: the comment exists upstream but isn't in our
+     ;; cached state yet.  Trigger a fresh refresh and re-run navigation
+     ;; once `shipit-issue-buffer-ready-hook' fires.  NO-RETRY guards
+     ;; against an infinite loop when the comment really doesn't exist.
+     ((and (not no-retry)
+           (derived-mode-p 'shipit-issue-mode)
+           (fboundp 'shipit-issue-buffer-refresh))
+      (shipit--debug-log "NAV: comment %s missing — refreshing issue buffer and retrying"
+                         comment-id)
+      (let ((fn-sym (make-symbol "shipit-nav-retry-after-refresh")))
+        (fset fn-sym
+              (lambda ()
+                (remove-hook 'shipit-issue-buffer-ready-hook fn-sym t)
+                (shipit--navigate-to-comment-by-id comment-id t)))
+        (add-hook 'shipit-issue-buffer-ready-hook fn-sym nil t))
+      (shipit-issue-buffer-refresh)
+      nil)
+     (t
       (message "Comment not found")
-      nil)))
+      nil))))
 
 (defun shipit--clear-unread-indicator-at-point ()
   "Remove the red dot unread indicator on the current activity line."

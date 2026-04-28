@@ -25,6 +25,7 @@
 (require 'shipit-checks)
 (require 'shipit-render)
 (require 'shipit-actions)
+(require 'shipit-issues-buffer)
 (require 'shipit-editor)
 ;; Load backend modules so they register themselves
 (require 'shipit-pr-github)

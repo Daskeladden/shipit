@@ -2300,17 +2300,24 @@ layouts.  Reuses the auto-mark preview overlay list — a single
 
 (defun shipit-notifications-buffer--preview-resolved-rows ()
   "Add strike-through overlays to notification rows whose PR is resolved.
-Walks the buffer's notification sections and marks the ones whose
-activity has `pr-state' merged or closed.  Reuses the auto-mark
-preview overlay list so a single
+Recursively walks the section tree so the preview also lights up
+in `group-by-repo' mode where entries are nested under
+`notification-repo' wrappers.  Reuses the auto-mark preview
+overlay list so a single
 `shipit-notifications-buffer--clear-auto-mark-preview' undoes it."
   (when (bound-and-true-p magit-root-section)
-    (dolist (child (oref magit-root-section children))
-      (when (eq (oref child type) 'notification-entry)
-        (let* ((activity (oref child value))
-               (state (cdr (assq 'pr-state activity))))
-          (when (member state '("merged" "closed"))
-            (shipit-notifications-buffer--add-preview-row-overlay child)))))))
+    (cl-labels
+        ((walk (s)
+           (cond
+            ((eq (oref s type) 'notification-entry)
+             (let* ((activity (oref s value))
+                    (state (cdr (assq 'pr-state activity))))
+               (when (member state '("merged" "closed"))
+                 (shipit-notifications-buffer--add-preview-row-overlay s))))
+            (t
+             (dolist (c (oref s children))
+               (walk c))))))
+      (walk magit-root-section))))
 
 (defun shipit-notifications-buffer--collect-by-predicate (predicate)
   "Walk the global activity hash and return (NUMBER REPO TYPE) for each

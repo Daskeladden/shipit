@@ -688,18 +688,35 @@ Fraction semantics: when a text filter is active the denominator is
 the number of activities loaded in the buffer (so the user sees how
 many local items match); otherwise the denominator is the
 probe-derived server total for the current scope, when known."
-  (insert (propertize "Notifications" 'font-lock-face 'bold))
-  (shipit-notifications-buffer--insert-meta-bracket)
-  (shipit-notifications-buffer--insert-filter-bracket
-   "repo" shipit-notifications-buffer--selected-repo nil)
-  (shipit-notifications-buffer--insert-filter-bracket
-   "type" shipit-notifications-buffer--selected-type nil)
-  (shipit-notifications-buffer--insert-filter-bracket
-   "reason" shipit-notifications-buffer--selected-reason 'font-lock-keyword-face)
-  (shipit-notifications-buffer--insert-filter-bracket
-   "component" shipit-notifications-buffer--selected-jira-component 'font-lock-keyword-face)
-  (shipit-notifications-buffer--insert-filter-bracket
-   "state" shipit-notifications-buffer--selected-state 'font-lock-keyword-face)
+  (let ((repo-of (lambda (a) (cdr (assq 'repo a))))
+        (type-of (lambda (a) (or (cdr (assq 'type a)) "pr")))
+        (reason-of (lambda (a) (cdr (assq 'reason a))))
+        (component-of (lambda (a) (cdr (assq 'jira-component a))))
+        (state-of (lambda (a)
+                    (or (cdr (assq 'pr-state a))
+                        (cdr (assq 'state a))))))
+    (insert (propertize "Notifications" 'font-lock-face 'bold))
+    (shipit-notifications-buffer--insert-meta-bracket)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "repo" shipit-notifications-buffer--selected-repo nil repo-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "!repo" shipit-notifications-buffer--excluded-repos nil repo-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "type" shipit-notifications-buffer--selected-type nil type-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "!type" shipit-notifications-buffer--excluded-types nil type-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "reason" shipit-notifications-buffer--selected-reason 'font-lock-keyword-face reason-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "!reason" shipit-notifications-buffer--excluded-reasons 'font-lock-keyword-face reason-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "component" shipit-notifications-buffer--selected-jira-component 'font-lock-keyword-face component-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "!component" shipit-notifications-buffer--excluded-jira-components 'font-lock-keyword-face component-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "state" shipit-notifications-buffer--selected-state 'font-lock-keyword-face state-of)
+    (shipit-notifications-buffer--insert-filter-bracket
+     "!state" shipit-notifications-buffer--excluded-states 'font-lock-keyword-face state-of))
   (when shipit-notifications-buffer--actionable-only
     (shipit-notifications-buffer--insert-filter-bracket
      "actionable"
@@ -722,16 +739,46 @@ probe-derived server total for the current scope, when known."
        'font-lock-keyword-face)))
   (insert "\n\n"))
 
-(defun shipit-notifications-buffer--insert-filter-bracket (label value face)
+(defun shipit-notifications-buffer--insert-filter-bracket (label value face &optional getter)
   "Insert a `  [LABEL: VALUE]' bracket when VALUE is non-nil/non-empty.
 LABEL and brackets render in `font-lock-comment-face'; VALUE
-renders in FACE if non-nil, else also in `font-lock-comment-face'."
-  (when (and value (not (and (stringp value) (string-empty-p value))))
-    (insert (propertize (format "  [%s: " label)
-                        'font-lock-face 'font-lock-comment-face))
-    (insert (propertize (format "%s" value)
-                        'font-lock-face (or face 'font-lock-comment-face)))
-    (insert (propertize "]" 'font-lock-face 'font-lock-comment-face))))
+renders in FACE if non-nil, else also in `font-lock-comment-face'.
+
+Lists are comma-joined so a multi-value selector reads cleanly.
+When GETTER is non-nil, each list entry is suffixed with a
+`(N)' count showing how many activities in the hash match that
+entry -- useful in deny brackets like `[!repo: foo (6)]' where
+the user wants to see how much the filter is hiding.  Comparison
+is case-insensitive to match the underlying matcher behavior."
+  (let* ((all (and getter (shipit-notifications-buffer--all-activities)))
+         (count-of
+          (lambda (v)
+            (and getter v
+                 (cl-count-if
+                  (lambda (a)
+                    (let ((av (funcall getter a)))
+                      (and av (string-equal-ignore-case
+                               (format "%s" av) (format "%s" v)))))
+                  all))))
+         (rendered (cond
+                    ((null value) nil)
+                    ((and (listp value) value)
+                     (mapconcat
+                      (lambda (v)
+                        (let ((n (and getter (funcall count-of v))))
+                          (if (and n (> n 0))
+                              (format "%s (%d)" v n)
+                            (format "%s" v))))
+                      value ", "))
+                    ((stringp value)
+                     (and (not (string-empty-p value)) value))
+                    (t (format "%s" value)))))
+    (when (and rendered (not (string-empty-p rendered)))
+      (insert (propertize (format "  [%s: " label)
+                          'font-lock-face 'font-lock-comment-face))
+      (insert (propertize rendered
+                          'font-lock-face (or face 'font-lock-comment-face)))
+      (insert (propertize "]" 'font-lock-face 'font-lock-comment-face)))))
 
 (defun shipit-notifications-buffer--insert-meta-bracket ()
   "Insert the `  [scope, page: X/Y, shown/total]' header bracket.

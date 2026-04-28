@@ -1122,25 +1122,41 @@ follow-up regardless of how many callbacks landed."
     (setq shipit--mention-prs mention-prs)
     (setq shipit--mention-count mention-count)
 
-    ;; Modeline reflects only the UNREAD count.  In `all' scope the
-    ;; notifications buffer renders both read and unread items, but the
-    ;; bell icon should answer "how many things still need attention".
-    ;; Skip the modeline update when this run was processing an `all'
-    ;; scope payload (its unread-count is artificially low — the
-    ;; payload includes already-read items but not freshly-arrived
-    ;; unread ones from other repos).  The next unread-scope poll
-    ;; refreshes the modeline.
-    (unless (and (boundp 'shipit--processing-all-scope)
-                 shipit--processing-all-scope)
-      (when (not (eq unread-count shipit--last-notification-count))
-        (shipit--handle-new-notifications unread-count))
-      (setq shipit--last-notification-count unread-count))
+    ;; Recompute the unread count AFTER auto-mark rules have run, so the
+    ;; modeline reflects the post-auto-mark state immediately instead of
+    ;; showing the pre-auto-mark count and only catching up on the next
+    ;; poll.  Walks the global hash so backend entries (Jira, RSS, etc.)
+    ;; count too — those don't pass through the github fetch loop above.
+    (let ((post-auto-mark-unread 0))
+      (when (and (boundp 'shipit--notification-pr-activities)
+                 shipit--notification-pr-activities)
+        (maphash
+         (lambda (_k activity)
+           (let* ((notif (cdr (assq 'notification activity)))
+                  (notif-unread (cdr (assq 'unread notif)))
+                  (notif-id (cdr (assq 'id notif))))
+             (when (and notif-unread
+                        (not (eq notif-unread :json-false))
+                        (not (gethash notif-id
+                                      shipit--locally-marked-read-notifications)))
+               (setq post-auto-mark-unread (1+ post-auto-mark-unread)))))
+         shipit--notification-pr-activities))
+      ;; Skip the modeline update when this run was processing an `all'
+      ;; scope payload — that fetch may have wiped out unread github
+      ;; entries the user actually cares about while populating the
+      ;; activities hash with read items.  The next unread-scope poll
+      ;; refreshes accurately.
+      (unless (and (boundp 'shipit--processing-all-scope)
+                   shipit--processing-all-scope)
+        (when (not (eq post-auto-mark-unread shipit--last-notification-count))
+          (shipit--handle-new-notifications post-auto-mark-unread))
+        (setq shipit--last-notification-count post-auto-mark-unread))
 
-    (shipit--debug-log "Processed %d notifications (%d unread, %d mentions, scope=%s, all-scope=%s)"
-                       total-count unread-count mention-count
-                       (and (boundp 'shipit-notifications-scope) shipit-notifications-scope)
-                       (and (boundp 'shipit--processing-all-scope)
-                            shipit--processing-all-scope))))
+      (shipit--debug-log "Processed %d notifications (%d unread pre-mark, %d unread post-mark, %d mentions, scope=%s, all-scope=%s)"
+                         total-count unread-count post-auto-mark-unread mention-count
+                         (and (boundp 'shipit-notifications-scope) shipit-notifications-scope)
+                         (and (boundp 'shipit--processing-all-scope)
+                              shipit--processing-all-scope)))))
 
 (defalias 'shipit--process-pr-notifications 'shipit--process-notifications
   "Backward compatibility alias.")

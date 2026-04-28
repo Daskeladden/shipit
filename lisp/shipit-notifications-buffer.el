@@ -1668,9 +1668,9 @@ condition (one level deep), producing a sub-form like
 inner condition does NOT match.  For `:title' the regex input
 shows live overlay preview in the notifications buffer.
 
-Saves the rule but does NOT apply it — invoke
-`shipit-notifications-apply-auto-mark-rules' (`u' in the auto-mark
-transient) when you want the new rule to take effect."
+Saves the rule and applies it immediately so any matching
+notifications are marked as read in this buffer without waiting
+for the next poll."
   (interactive)
   (let ((conds nil)
         (more t)
@@ -1690,8 +1690,20 @@ transient) when you want the new rule to take effect."
       (let ((existing shipit-notifications-auto-mark-read-rules))
         (shipit-notifications--save-auto-mark-rules
          (append existing (list conds)))
-        (message "Added auto-mark rule: %S (press u in auto-mark menu to apply)"
-                 conds)
+        ;; Apply immediately so the user sees the rule take effect
+        ;; without waiting for the next poll cycle.
+        (let ((n (and (fboundp 'shipit--auto-mark-rules-apply)
+                      (shipit--auto-mark-rules-apply))))
+          (message "Added auto-mark rule: %S (%s)"
+                   conds
+                   (cond
+                    ((and n (> n 0))
+                     (format "marked %d notification%s as read"
+                             n (if (= n 1) "" "s")))
+                    (n "no notifications matched yet")
+                    (t "saved"))))
+        (when (fboundp 'shipit--rerender-notifications-buffer-if-visible)
+          (shipit--rerender-notifications-buffer-if-visible))
         (when (get-buffer-window "*shipit-auto-mark-rules*" t)
           (shipit-notifications-buffer-list-auto-mark-rules))))))
 
@@ -1859,10 +1871,7 @@ with rule edits made from the transient."
      shipit-notifications-buffer-remove-auto-mark-rule)
     ("X" "Clear all rules"
      shipit-notifications-buffer-clear-auto-mark-rules)]
-   ["Apply / advanced"
-    ("u" "Apply rules now"
-     shipit-notifications-apply-auto-mark-rules
-     :transient t)
+   ["Advanced"
     ("c" "Open customize buffer"
      shipit-notifications-buffer-customize-auto-mark-rules)
     ("q" "Back" transient-quit-one)]])

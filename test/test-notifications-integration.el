@@ -17,40 +17,52 @@
 
 (ert-deftest test-notifications-full-workflow ()
   "Test the complete notifications workflow."
-  ;; Setup mock data
-  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
-    (puthash "test/repo:pr:42"
-             '((repo . "test/repo")
-               (number . 42)
-               (type . "pr")
-               (subject . "Test PR")
-               (reason . "mention")
-               (updated-at . "2025-01-29T10:00:00Z"))
-             shipit--notification-pr-activities)
+  ;; Stub the network fetch + total probe so the merge step doesn't wipe
+  ;; our test fixture and the buffer renders only what we put in.
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _) nil))
+            ((symbol-function 'shipit--fetch-notifications-total-count-async)
+             (lambda (&rest _) nil))
+            ((symbol-function 'shipit--poll-backend-notifications)
+             (lambda (&rest _) nil)))
+    ;; Setup mock data — `backend-id' tag prevents
+    ;; `shipit--merge-github-notifications' from removing it on refresh.
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+      (puthash "test/repo:pr:42"
+               '((repo . "test/repo")
+                 (number . 42)
+                 (type . "pr")
+                 (subject . "Test PR")
+                 (reason . "mention")
+                 (updated-at . "2025-01-29T10:00:00Z")
+                 (backend-id . test))
+               shipit--notification-pr-activities)
 
-    (unwind-protect
-        (progn
-          ;; View notifications
-          (shipit--view-notifications)
-          (should (string= (buffer-name) "*shipit-notifications*"))
+      (unwind-protect
+          (progn
+            ;; View notifications
+            (shipit--view-notifications)
+            (should (string= (buffer-name) "*shipit-notifications*"))
 
-          ;; Check content rendered
-          (should (string-match-p "test/repo" (buffer-string)))
-          (should (string-match-p "#42" (buffer-string)))
+            ;; Check content rendered
+            (should (string-match-p "test/repo" (buffer-string)))
+            (should (string-match-p "#42" (buffer-string)))
 
-          ;; Test filter
-          (let ((shipit-notifications-buffer--filter-text "nonexistent"))
-            (shipit-notifications-buffer-refresh)
-            (should (string-match-p "No notifications" (buffer-string))))
+            ;; Test filter
+            (let ((shipit-notifications-buffer--filter-text "nonexistent"))
+              (shipit-notifications-buffer-refresh)
+              (should (string-match-p "No notifications" (buffer-string))))
 
-          ;; Clear filter
-          (let ((shipit-notifications-buffer--filter-text ""))
-            (shipit-notifications-buffer-refresh)
-            (should (string-match-p "test/repo" (buffer-string)))))
+            ;; Clear filter
+            (let ((shipit-notifications-buffer--filter-text ""))
+              (shipit-notifications-buffer-refresh)
+              (should (string-match-p "test/repo" (buffer-string)))))
 
-      ;; Cleanup
-      (when (get-buffer "*shipit-notifications*")
-        (kill-buffer "*shipit-notifications*")))))
+        ;; Cleanup
+        (when (get-buffer "*shipit-notifications*")
+          (kill-buffer "*shipit-notifications*"))))))
 
 ;;; Alert Tests
 

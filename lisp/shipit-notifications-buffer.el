@@ -269,7 +269,7 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "c") #'shipit-notifications-buffer-clear-filter)
     (define-key map (kbd "r") #'shipit-notifications-buffer-set-repo)
     (define-key map (kbd "R") #'shipit-notifications-buffer-clear-repo)
-    (define-key map (kbd "z") #'shipit-notifications-buffer-snooze-at-point)
+    (define-key map (kbd "z") #'shipit-notifications-buffer-snooze-menu)
     (define-key map (kbd "Z") #'shipit-notifications-buffer-clear-snoozes)
     (define-key map (kbd "o") #'shipit-notifications-buffer-set-jira-component)
     (define-key map (kbd "O") #'shipit-notifications-buffer-clear-jira-component)
@@ -3183,6 +3183,51 @@ literal string `permanent'."
        ((zerop hours) (format "%dm" mins))
        ((zerop mins) (format "%dh" hours))
        (t (format "%dh %dm" hours mins)))))))
+
+(defun shipit-notifications-buffer-snooze-1h ()
+  "Snooze the row at point for one hour."
+  (interactive) (shipit-notifications-buffer-snooze-at-point 1))
+
+(defun shipit-notifications-buffer-snooze-4h ()
+  "Snooze the row at point for four hours."
+  (interactive) (shipit-notifications-buffer-snooze-at-point 4))
+
+(defun shipit-notifications-buffer-snooze-8h ()
+  "Snooze the row at point for eight hours."
+  (interactive) (shipit-notifications-buffer-snooze-at-point 8))
+
+(defun shipit-notifications-buffer-snooze-24h ()
+  "Snooze the row at point for one day."
+  (interactive) (shipit-notifications-buffer-snooze-at-point 24))
+
+(defun shipit-notifications-buffer-snooze-default ()
+  "Snooze the row at point for `shipit-notifications-snooze-default-hours'."
+  (interactive) (shipit-notifications-buffer-snooze-at-point nil))
+
+(defun shipit-notifications-buffer-snooze-custom ()
+  "Prompt for snooze duration in hours; 0 = permanent."
+  (interactive) (shipit-notifications-buffer-snooze-at-point '(4)))
+
+(defun shipit-notifications-buffer-snooze-permanent ()
+  "Permanently snooze the row at point (until manually unsnoozed)."
+  (interactive) (shipit-notifications-buffer-snooze-at-point 0))
+
+;;;###autoload (autoload 'shipit-notifications-buffer-snooze-menu "shipit-notifications-buffer" nil t)
+(transient-define-prefix shipit-notifications-buffer-snooze-menu ()
+  "Snooze controls for the notifications buffer."
+  [["Snooze row at point"
+    ("s" "Default" shipit-notifications-buffer-snooze-default)
+    ("1" "1 hour" shipit-notifications-buffer-snooze-1h)
+    ("4" "4 hours" shipit-notifications-buffer-snooze-4h)
+    ("8" "8 hours" shipit-notifications-buffer-snooze-8h)
+    ("d" "1 day" shipit-notifications-buffer-snooze-24h)
+    ("c" "Custom hours..." shipit-notifications-buffer-snooze-custom)
+    ("P" "Permanent" shipit-notifications-buffer-snooze-permanent)]
+   ["Manage"
+    ("l" "List / unsnooze" shipit-notifications-buffer-clear-snoozes)
+    ("C" "Clear all" (lambda () (interactive)
+                       (shipit-notifications-buffer-clear-snoozes '(4))))
+    ("q" "Quit" transient-quit-one)]])
 
 (defun shipit-notifications-buffer-clear-snoozes (&optional arg)
   "List active snoozes and unsnooze a chosen item.

@@ -1561,30 +1561,37 @@ THEN it returns (:type url :url ...)."
       (should (equal "https://example.com" (plist-get link :url))))))
 
 (ert-deftest test-repo-buffer-find-org-heading ()
-  "GIVEN a buffer with rendered org headings (org-level-N font-lock-face)
+  "GIVEN a buffer with rendered org content as nested magit sections
 WHEN searching for a known heading text
-THEN the position of the heading line is returned."
+THEN the section's start position is returned."
   (require 'shipit-repo-buffer)
+  (require 'magit-section)
   (with-temp-buffer
-    (insert (propertize "* Usage\n" 'font-lock-face 'org-level-1))
-    (insert "Plain text\n")
-    (insert (propertize "** Setup\n" 'font-lock-face 'org-level-2))
+    (let ((inhibit-read-only t)
+          (text "* Usage\nPlain text\n** Setup\nbody\n"))
+      (magit-insert-section (test-root)
+        (shipit-repo-buffer--insert-org-as-sections text 0)))
     (let ((pos (shipit-repo-buffer--find-org-heading "Setup")))
       (should pos)
       (goto-char pos)
-      (should (looking-at-p "\\*\\* Setup")))))
+      ;; The heading line shows the cleaned title (no `**' markup).
+      (should (looking-at-p "[ \t]*Setup")))))
 
 (ert-deftest test-repo-buffer-find-org-heading-slugified ()
   "GIVEN an org TOC anchor (slug form like `other-llm-backends')
 WHEN the corresponding heading uses spaces and mixed case (`Other LLM backends')
 THEN the heading is found via slug normalization."
   (require 'shipit-repo-buffer)
+  (require 'magit-section)
   (with-temp-buffer
-    (insert (propertize "*** Other LLM backends\n" 'font-lock-face 'org-level-3))
+    (let ((inhibit-read-only t)
+          (text "*** Other LLM backends\n"))
+      (magit-insert-section (test-root)
+        (shipit-repo-buffer--insert-org-as-sections text 0)))
     (let ((pos (shipit-repo-buffer--find-org-heading "other-llm-backends")))
       (should pos)
       (goto-char pos)
-      (should (looking-at-p "\\*\\*\\* Other LLM backends")))))
+      (should (looking-at-p "[ \t]*Other LLM backends")))))
 
 (ert-deftest test-repo-buffer-normalize-anchor ()
   "Normalization lowercases and replaces non-alnum runs with a single dash."
@@ -1603,17 +1610,89 @@ WHEN goto-org-heading jumps to that heading
 THEN the previous point is recorded as the mark, so `consult-mark' /
      \\[set-mark-command] with prefix arg can navigate back."
   (require 'shipit-repo-buffer)
+  (require 'magit-section)
   (with-temp-buffer
-    (insert "Some prose at the top.\n\n")
-    (insert (propertize "* Usage\n" 'font-lock-face 'org-level-1))
+    (let ((inhibit-read-only t))
+      (magit-insert-section (test-root)
+        (insert "Some prose at the top.\n\n")
+        (shipit-repo-buffer--insert-org-as-sections "* Usage\nbody\n" 0)))
     (goto-char (point-min))
     (let ((origin (point)))
       (shipit-repo-buffer--goto-org-heading "Usage")
-      ;; Point moved.
       (should (/= origin (point)))
-      ;; Mark records the origin position so the user can pop back to it.
       (should (mark t))
       (should (= origin (marker-position (mark-marker)))))))
+
+(ert-deftest test-repo-buffer-org-heading-level-detection ()
+  "Heading level is detected from `font-lock-face' (symbol or face list)."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (insert (propertize "* heading\n" 'font-lock-face 'org-level-1))
+    (insert (propertize "*** sub\n" 'font-lock-face '(bold org-level-3)))
+    (insert "plain\n")
+    (goto-char (point-min))
+    (should (= 1 (shipit-repo-buffer--org-heading-level-at (point))))
+    (forward-line 1)
+    (should (= 3 (shipit-repo-buffer--org-heading-level-at (point))))
+    (forward-line 1)
+    (should-not (shipit-repo-buffer--org-heading-level-at (point)))))
+
+(ert-deftest test-repo-buffer-org-heading-level-indented ()
+  "Heading detection scans past leading whitespace from the README indent.
+The repo buffer prefixes README lines with three spaces that have no face;
+the heading face only starts at the asterisks."
+  (require 'shipit-repo-buffer)
+  (with-temp-buffer
+    (insert "   ")
+    (insert (propertize "* Usage\n" 'font-lock-face 'org-level-1))
+    (insert "   ")
+    (insert "body line\n")
+    (goto-char (point-min))
+    ;; Cursor at column 0 (on leading whitespace) still detects the heading.
+    (should (= 1 (shipit-repo-buffer--org-heading-level-at (point))))
+    (forward-line 1)
+    (should-not (shipit-repo-buffer--org-heading-level-at (point)))))
+
+
+(ert-deftest test-repo-buffer-insert-org-as-sections-creates-magit-sections ()
+  "GIVEN rendered org text with two top-level headings
+WHEN inserting via shipit-repo-buffer--insert-org-as-sections
+THEN child sections of type `org-heading' are added to the wrapping section."
+  (require 'shipit-repo-buffer)
+  (require 'magit-section)
+  (with-temp-buffer
+    (let ((inhibit-read-only t)
+          (text (concat (propertize "* Usage" 'font-lock-face 'org-level-1)
+                        "\nbody line one\nbody line two\n"
+                        (propertize "* Setup" 'font-lock-face 'org-level-1)
+                        "\nsetup body\n"))
+          root)
+      (magit-insert-section (test-root)
+        (setq root magit-insert-section--current)
+        (shipit-repo-buffer--insert-org-as-sections text 0))
+      (let ((types (mapcar (lambda (c) (oref c type)) (oref root children))))
+        (should (= 2 (cl-count 'org-heading types)))))))
+
+(ert-deftest test-repo-buffer-insert-org-as-sections-nests-children ()
+  "Sub-headings (level > parent) become nested child sections."
+  (require 'shipit-repo-buffer)
+  (require 'magit-section)
+  (with-temp-buffer
+    (let ((inhibit-read-only t)
+          (text (concat (propertize "* Outer" 'font-lock-face 'org-level-1)
+                        "\nouter body\n"
+                        (propertize "** Inner" 'font-lock-face 'org-level-2)
+                        "\ninner body\n"))
+          root)
+      (magit-insert-section (test-root)
+        (setq root magit-insert-section--current)
+        (shipit-repo-buffer--insert-org-as-sections text 0))
+      (let* ((level1 (car (oref root children)))
+             (level2 (and level1 (car (oref level1 children)))))
+        (should level1)
+        (should (eq 'org-heading (oref level1 type)))
+        (should level2)
+        (should (eq 'org-heading (oref level2 type)))))))
 
 (provide 'test-shipit-repo-buffer)
 ;;; test-shipit-repo-buffer.el ends here

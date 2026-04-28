@@ -571,9 +571,11 @@ with :filename and :content keys (the format returned by backend
                      (wrapped (if (fboundp 'shipit--wrap-text)
                                   (shipit--strip-face-on-whitespace (shipit--wrap-text rendered 80 0))
                                 rendered)))
-                (insert (concat "   "
-                                (replace-regexp-in-string "\n" "\n   " wrapped)
-                                "\n"))))
+                (if (eq format 'org)
+                    (shipit-repo-buffer--insert-org-as-sections wrapped 3)
+                  (insert (concat "   "
+                                  (replace-regexp-in-string "\n" "\n   " wrapped)
+                                  "\n")))))
             (when (fboundp 'shipit--create-generic-url-overlays)
               (shipit--create-generic-url-overlays readme-start (point)))
             (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
@@ -966,43 +968,36 @@ they refer to the same heading."
     trimmed))
 
 (defun shipit-repo-buffer--find-org-heading (heading-text)
-  "Return buffer position of an org heading matching HEADING-TEXT, or nil.
-Walks the buffer for runs of `font-lock-face' matching `org-level-N'
-and matches a heading whose line text equals HEADING-TEXT under
-slug-normalization (so anchors like `other-llm-backends' match a
-heading like `* Other LLM backends')."
+  "Return buffer position of an `org-heading' section matching HEADING-TEXT.
+Walks the buffer for magit-sections of type `org-heading' and matches
+on the section's heading-line text under slug-normalization, so anchor
+targets like `other-llm-backends' match a section whose heading reads
+`Other LLM backends'."
   (let ((target (shipit-repo-buffer--normalize-anchor heading-text))
+        (seen (make-hash-table :test 'eq))
         found pos)
     (when (not (string-empty-p target))
       (save-excursion
         (setq pos (point-min))
         (while (and (not found) (< pos (point-max)))
-          (let* ((flf (get-text-property pos 'font-lock-face))
-                 (sym (cond ((symbolp flf) flf)
-                            ((and (listp flf)
-                                  (cl-find-if (lambda (s)
-                                                (and (symbolp s)
-                                                     (string-prefix-p
-                                                      "org-level-"
-                                                      (symbol-name s))))
-                                              flf)))))
-                 (is-heading (and sym (symbolp sym)
-                                  (string-prefix-p "org-level-"
-                                                   (symbol-name sym)))))
-            (when is-heading
-              (goto-char pos)
-              (let* ((line (buffer-substring-no-properties
-                            (line-beginning-position) (line-end-position)))
-                     (clean (replace-regexp-in-string "\\`[ \t*]+" "" line))
-                     (heading-slug (shipit-repo-buffer--normalize-anchor clean)))
-                (when (or (equal target heading-slug)
-                          (string-prefix-p (concat target "-") heading-slug)
-                          (string-suffix-p (concat "-" target) heading-slug)
-                          (string-match-p (concat "\\`" (regexp-quote target) "\\'")
-                                          heading-slug))
-                  (setq found (line-beginning-position)))))
-            (setq pos (or (next-single-property-change pos 'font-lock-face)
-                          (point-max)))))))
+          (let ((s (get-text-property pos 'magit-section)))
+            (when (and s
+                       (eq (oref s type) 'org-heading)
+                       (not (gethash s seen)))
+              (puthash s t seen)
+              (let* ((start (and (oref s start) (marker-position (oref s start))))
+                     (line (and start
+                                (save-excursion
+                                  (goto-char start)
+                                  (buffer-substring-no-properties
+                                   (line-beginning-position)
+                                   (line-end-position)))))
+                     (heading-slug (and line
+                                        (shipit-repo-buffer--normalize-anchor line))))
+                (when (and heading-slug (equal target heading-slug))
+                  (setq found start)))))
+          (setq pos (or (next-single-property-change pos 'magit-section nil (point-max))
+                        (point-max))))))
     found))
 
 (defun shipit-repo-buffer--ret-action ()
@@ -1710,6 +1705,164 @@ when no matching heading is found in the buffer."
           (goto-char pos)
           (when (get-buffer-window (current-buffer)) (recenter 0)))
       (message "Heading %S not found in buffer" target))))
+
+(defun shipit-repo-buffer--org-level-from-face (flf)
+  "Extract heading level from FLF (a `font-lock-face' value)."
+  (let ((sym (cond ((symbolp flf) flf)
+                   ((listp flf)
+                    (cl-find-if (lambda (s)
+                                  (and (symbolp s)
+                                       (string-prefix-p "org-level-"
+                                                        (symbol-name s))))
+                                flf)))))
+    (when (and sym (symbolp sym))
+      (let ((name (symbol-name sym)))
+        (when (string-match "\\`org-level-\\([0-9]+\\)" name)
+          (string-to-number (match-string 1 name)))))))
+
+(defun shipit-repo-buffer--org-heading-level-at (pos)
+  "Return the org heading level on the line at POS (1-9), or nil.
+Scans the whole line for any character carrying an `org-level-N'
+`font-lock-face' — necessary because the README pipeline prefixes
+each line with literal whitespace that has no face, so the leading
+columns of the line do not carry the heading face."
+  (save-excursion
+    (goto-char pos)
+    (let ((bol (line-beginning-position))
+          (eol (line-end-position))
+          level scan)
+      (setq scan bol)
+      (while (and (not level) (< scan eol))
+        (let ((flf (get-text-property scan 'font-lock-face)))
+          (setq level (shipit-repo-buffer--org-level-from-face flf)))
+        (setq scan (or (next-single-property-change scan 'font-lock-face nil eol)
+                       eol)))
+      level)))
+
+(defun shipit-repo-buffer--org-subtree-end (start-level)
+  "Return the position where the subtree of START-LEVEL ends.
+Scans forward from current point for the next org heading whose level
+is <= START-LEVEL.  Returns the position just before that heading, or
+`point-max' if no such heading is found."
+  (save-excursion
+    (forward-line 1)
+    (let (found)
+      (while (and (not found) (< (point) (point-max)))
+        (let ((level (shipit-repo-buffer--org-heading-level-at
+                      (line-beginning-position))))
+          (if (and level (<= level start-level))
+              (setq found (line-beginning-position))
+            (forward-line 1))))
+      (or found (point-max)))))
+
+(defun shipit-repo-buffer--detect-line-level (text pos)
+  "Return the org heading level for the line at POS in TEXT, or nil.
+A heading line starts with one or more asterisks followed by
+whitespace.  Detection runs on text, not text properties, so it
+is robust to whatever propertization the renderer + wrapping leaves
+behind."
+  (let* ((nl (or (string-match "\n" text pos) (length text)))
+         (line (substring-no-properties text pos nl)))
+    (when (string-match "\\`\\(\\*+\\)[ \t]+" line)
+      (length (match-string 1 line)))))
+
+(defun shipit-repo-buffer--strip-org-heading-markup (line)
+  "Return LINE with the leading `*+ ' markup and trailing `:tags:' stripped."
+  (let ((s line))
+    (when (string-match "\\`[ \t]*\\*+[ \t]+\\(.*\\)\\'" s)
+      (setq s (match-string 1 s)))
+    (when (string-match "\\`\\(.*?\\)[ \t]+:[A-Za-z0-9_@:]+:[ \t]*\\'" s)
+      (setq s (match-string 1 s)))
+    (string-trim-right s)))
+
+(defun shipit-repo-buffer--line-end-after (text pos)
+  "Return the position just AFTER the newline ending the line at POS in TEXT."
+  (let ((nl (string-match "\n" text pos)))
+    (if nl (1+ nl) (length text))))
+
+(defun shipit-repo-buffer--next-heading-pos (text start max-level)
+  "Return position of next heading at or after START in TEXT.
+If MAX-LEVEL is non-nil, only headings at level <= MAX-LEVEL count.
+If MAX-LEVEL is nil, any heading line counts.
+Returns the length of TEXT when no matching heading is found."
+  (let ((pos start)
+        (text-len (length text))
+        found)
+    (while (and (not found) (< pos text-len))
+      (let ((level (shipit-repo-buffer--detect-line-level text pos)))
+        (if (and level (or (null max-level) (<= level max-level)))
+            (setq found pos)
+          (setq pos (shipit-repo-buffer--line-end-after text pos)))))
+    (or found text-len)))
+
+(defun shipit-repo-buffer--insert-content-with-indent (text indent)
+  "Insert TEXT into the current buffer with INDENT spaces prepended to each line.
+Preserves text properties from TEXT.  Always leaves point at BOL so a
+subsequent `magit-insert-section' begins on a fresh line — otherwise
+trailing whitespace from TEXT (e.g. an indented blank line) would
+absorb the next section's heading column."
+  (when (and text (> (length text) 0))
+    (let* ((indent-str (make-string indent ?\s))
+           (lines (split-string text "\n"))
+           (indented (mapconcat (lambda (l) (concat indent-str l)) lines "\n")))
+      (insert indented)
+      (unless (bolp) (insert "\n")))))
+
+(defun shipit-repo-buffer--insert-one-org-section (heading-line body indent level)
+  "Insert one org section as a magit section.
+HEADING-LINE is the heading text (no trailing newline).
+BODY is the section body (may contain sub-headings).
+INDENT is the column for indentation.  LEVEL is the heading level.
+
+Strips the leading `*+ ' org markup from the displayed heading so the
+section looks like a native magit section."
+  (let ((title (shipit-repo-buffer--strip-org-heading-markup heading-line)))
+    (magit-insert-section (org-heading nil)
+      (magit-insert-heading
+        (concat (make-string indent ?\s)
+                (propertize title 'font-lock-face 'magit-section-heading)))
+      (magit-insert-section-body
+        (when (> (length body) 0)
+          (shipit-repo-buffer--insert-org-as-sections body (+ indent 2)))
+        (unless (and (> (point) 1) (eq (char-before) ?\n))
+          (insert "\n"))))))
+
+(defun shipit-repo-buffer--insert-org-as-sections (text indent)
+  "Insert TEXT in the current buffer as nested magit sections.
+Heading lines (`^\\*+\\s-') split TEXT into sections at the level of
+the first heading found.  Deeper headings inside a section's body are
+processed by a recursive call; shallower headings would close the
+current section but the substring passed to the recursion never
+contains them.
+
+Each heading becomes a `magit-insert-section' of type `org-heading'.
+Text before the first heading is inserted as plain content."
+  (let* ((text-len (length text))
+         (first-pos (shipit-repo-buffer--next-heading-pos text 0 nil))
+         (section-level (and (< first-pos text-len)
+                             (shipit-repo-buffer--detect-line-level
+                              text first-pos))))
+    (cond
+     ((not section-level)
+      (when (> (length text) 0)
+        (shipit-repo-buffer--insert-content-with-indent text indent)))
+     (t
+      (when (> first-pos 0)
+        (let ((preamble (substring text 0 first-pos)))
+          (when (> (length preamble) 0)
+            (shipit-repo-buffer--insert-content-with-indent preamble indent))))
+      (let ((pos first-pos))
+        (while (< pos text-len)
+          (let* ((level (shipit-repo-buffer--detect-line-level text pos))
+                 (line-end (or (string-match "\n" text pos) text-len))
+                 (next-line (shipit-repo-buffer--line-end-after text pos))
+                 (heading-line (substring text pos line-end))
+                 (section-end (shipit-repo-buffer--next-heading-pos
+                               text next-line section-level))
+                 (body (substring text next-line section-end)))
+            (shipit-repo-buffer--insert-one-org-section
+             heading-line body indent level)
+            (setq pos section-end))))))))
 
 (provide 'shipit-repo-buffer)
 ;;; shipit-repo-buffer.el ends here

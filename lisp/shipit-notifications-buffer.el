@@ -1194,7 +1194,10 @@ matches the PR activity section."
           (goto-char content-pos)
           (shipit-notifications-buffer--insert-aligned-row
            indent left timestamp)
-          (oset section end (point-marker)))))))
+          (oset section end (point-marker))
+          ;; Keep ancestor `end' markers in sync so collapsing the
+          ;; parent notification-entry properly hides this section.
+          (shipit-notifications-buffer--extend-parent-ends section (point)))))))
 
 (defun shipit-notifications-buffer--insert-description (description)
   "Insert DESCRIPTION as expandable body content.

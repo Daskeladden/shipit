@@ -587,13 +587,16 @@ lookup ignores case."
                           (list (cons "Link" (cdr link-pair)))))))
     (or last-page (length (or json '())))))
 
-(defun shipit--fetch-notifications-total-count-async (scope callback)
+(defun shipit--fetch-notifications-total-count-async (scope callback &optional repo)
   "Fetch the total notification count for SCOPE asynchronously.
 Fires a lightweight per_page=1 request to /notifications, then
 calls CALLBACK with an integer (or nil on failure).  With
 per_page=1, each notification is on its own page, so the
 last-page number from the pagination Link header equals the total
-item count."
+item count.
+REPO, when a non-empty `OWNER/REPO' string, scopes the probe to
+that repository's per-repo notifications endpoint, giving an
+exact server-side count for just that repo."
   (require 'shipit-http)
   (condition-case setup-err
       (let* ((scope-params (shipit--notification-params-for-scope scope))
@@ -603,8 +606,11 @@ item count."
              (qstr (mapconcat (lambda (p)
                                 (format "%s=%s" (car p) (cdr p)))
                               probe-params "&"))
+             (endpoint (if (and repo (stringp repo) (> (length repo) 0))
+                           (format "/repos/%s/notifications" repo)
+                         "/notifications"))
              (url (concat (or shipit-api-url "https://api.github.com")
-                          "/notifications?" qstr))
+                          endpoint "?" qstr))
              (token (ignore-errors (shipit--github-token)))
              (headers (delq nil
                             (list '("Accept" . "application/vnd.github+json")
@@ -647,16 +653,23 @@ item count."
                         (error-message-string setup-err))
      (funcall callback nil))))
 
-(defun shipit--check-notifications-background (&optional force-fresh scope-override max-pages)
+(defun shipit--check-notifications-background (&optional force-fresh scope-override max-pages repo)
   "Check GitHub notifications in background using ETag caching with pagination.
 If FORCE-FRESH is non-nil, bypasses ETag cache to get fresh data.
 SCOPE-OVERRIDE, when non-nil, replaces `shipit-notifications-scope'
 for this call only — useful for the notifications buffer's
 buffer-local display scope.
-MAX-PAGES caps the number of pages fetched (default 10)."
+MAX-PAGES caps the number of pages fetched (default 10).
+REPO, when a non-empty `OWNER/REPO' string, is smuggled into PARAMS
+as a `:repo' entry; the backend\='s `:fetch-notifications' uses it
+to target the per-repo endpoint (see
+`shipit-pr-github--fetch-notifications')."
   (condition-case err
       (let* ((scope (or scope-override shipit-notifications-scope))
-             (params (shipit--notification-params-for-scope scope))
+             (base-params (shipit--notification-params-for-scope scope))
+             (params (if (and repo (stringp repo) (> (length repo) 0))
+                         (cons (cons :repo repo) base-params)
+                       base-params))
              (all-notifications
               (shipit--fetch-all-notifications params nil force-fresh max-pages)))
         (shipit--process-notifications all-notifications)

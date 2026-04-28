@@ -248,6 +248,105 @@ THEN the header shows `1/2' — matches over loaded — not
               (should-not (string-match-p "1/666" header))))
         (kill-buffer buf)))))
 
+(ert-deftest test-shipit-notifications-buffer-repo-filter-default-nil ()
+  "GIVEN a fresh notifications buffer
+THEN `shipit-notifications-buffer--repo-filter' is nil (no filter)."
+  (let ((buf (shipit-notifications-buffer-create)))
+    (unwind-protect
+        (with-current-buffer buf
+          (should (null shipit-notifications-buffer--repo-filter)))
+      (kill-buffer buf))))
+
+(ert-deftest test-shipit-notifications-buffer-repo-filter-in-header ()
+  "GIVEN a buffer with `shipit-notifications-buffer--repo-filter' set
+WHEN the buffer is rendered
+THEN the header includes `[repo: owner/foo]'."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--repo-filter "owner/foo")
+            (shipit-notifications-buffer--rerender)
+            (let ((header (buffer-substring-no-properties
+                           (point-min)
+                           (min (point-max) 200))))
+              (should (string-match-p "\[repo: owner/foo\]" header))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-clear-repo-filter ()
+  "GIVEN a buffer with a repo filter set
+WHEN `shipit-notifications-buffer-clear-repo-filter' is invoked
+THEN the filter is cleared to nil."
+  (cl-letf (((symbol-function 'shipit-notifications-buffer-refresh)
+             (lambda (&rest _args) nil)))
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--repo-filter "owner/foo")
+            (shipit-notifications-buffer-clear-repo-filter)
+            (should (null shipit-notifications-buffer--repo-filter)))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-repo-filter-drops-other-repos ()
+  "GIVEN 2 GitHub activities in `owner/foo' and 3 Jira activities in `BAR'
+and `shipit-notifications-buffer--repo-filter' set to `owner/foo'
+WHEN the buffer is rendered
+THEN both the header count and the rendered listing show 2/2 —
+the 3 off-repo activities are excluded from both."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               (quote ((repo . "owner/foo") (number . 1) (type . "pr")
+                       (subject . "A") (reason . "mention")
+                       (updated-at . "2026-01-01T00:00:00Z")))
+               shipit--notification-pr-activities)
+      (puthash "owner/foo:pr:2"
+               (quote ((repo . "owner/foo") (number . 2) (type . "pr")
+                       (subject . "B") (reason . "mention")
+                       (updated-at . "2026-01-02T00:00:00Z")))
+               shipit--notification-pr-activities)
+      (dotimes (i 3)
+        (puthash (format "BAR:issue:%d" i)
+                 (list (cons 'repo "BAR") (cons 'number i)
+                       (cons 'type "issue") (cons 'subject (format "J%d" i))
+                       (cons 'reason "mention")
+                       (cons 'updated-at "2026-01-01T00:00:00Z")
+                       (cons 'backend-id 'jira))
+                 shipit--notification-pr-activities))
+      (unwind-protect
+          (with-current-buffer buf
+            (setq shipit-notifications-buffer--repo-filter "owner/foo")
+            (should (= 2 (shipit-notifications-buffer--loaded-count)))
+            (should (= 2 (shipit-notifications-buffer--shown-count))))
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-candidate-repos-from-hash ()
+  "GIVEN activities in the hash from several repos and no watched-repos
+WHEN gathering picker candidates
+THEN distinct repos from the hash appear, sorted."
+  (cl-letf (((symbol-function 'shipit-notifications-buffer--gather-watched-repos)
+             (lambda () nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+      (puthash "owner/z:pr:1"
+               (quote ((repo . "owner/z") (number . 1) (type . "pr")))
+               shipit--notification-pr-activities)
+      (puthash "owner/a:pr:2"
+               (quote ((repo . "owner/a") (number . 2) (type . "pr")))
+               shipit--notification-pr-activities)
+      (puthash "owner/a:pr:3"
+               (quote ((repo . "owner/a") (number . 3) (type . "pr")))
+               shipit--notification-pr-activities)
+      (let ((candidates (shipit-notifications-buffer--candidate-repos)))
+        (should (equal '("owner/a" "owner/z") candidates))))))
+
 (ert-deftest test-shipit-notifications-buffer-header-shows-scope ()
   "Test that the header reflects scope and page limit.
 GIVEN a buffer in `all' scope with page-limit=2

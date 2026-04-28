@@ -1193,10 +1193,19 @@ Used for marking notifications as read, which returns 205 with empty body."
 
 (defun shipit-pr-github--fetch-notifications (config params &optional force-fresh)
   "Fetch notifications using CONFIG with query PARAMS.
-If FORCE-FRESH is non-nil, bypasses ETag caching."
+If FORCE-FRESH is non-nil, bypasses ETag caching.
+PARAMS may contain a `:repo' entry (symbol, with value `OWNER/REPO')
+that scopes the fetch to a single repo using GitHub's
+`/repos/OWNER/REPO/notifications' endpoint.  The entry is
+stripped before the query-string is built."
   (ignore config)
-  (let* ((result (shipit-gh-etag-get-json-with-refresh-cache
-                  "/notifications" params shipit-github-token force-fresh))
+  (let* ((repo (cdr (assq :repo params)))
+         (clean-params (assq-delete-all :repo (copy-sequence params)))
+         (endpoint (if (and repo (stringp repo) (> (length repo) 0))
+                       (format "/repos/%s/notifications" repo)
+                     "/notifications"))
+         (result (shipit-gh-etag-get-json-with-refresh-cache
+                  endpoint clean-params shipit-github-token force-fresh))
          (notifications (when result (plist-get result :json))))
     notifications))
 

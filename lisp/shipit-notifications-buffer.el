@@ -32,6 +32,7 @@
 (declare-function shipit--notification-activity-key "shipit-notifications")
 (declare-function shipit--check-notifications-background "shipit-notifications")
 (declare-function shipit--fetch-notifications-total-count-async "shipit-notifications")
+(declare-function shipit-subscriptions--backends-with-watched-repos "shipit-subscriptions-buffer")
 (declare-function shipit--update-modeline-indicator "shipit-notifications")
 (declare-function shipit--format-time-ago "shipit-notifications")
 (declare-function shipit--get-notification-type-icon "shipit-render")
@@ -78,6 +79,20 @@ views doesn't silently fan out 10 pages of network requests.")
   "Last known total notification count for the current scope.
 Populated asynchronously by `shipit--fetch-notifications-total-count-async'
 after each refresh; nil means the probe has not returned yet (or failed).")
+
+(defvar-local shipit-notifications-buffer--repo-filter nil
+  "Buffer-local server-side repo filter for the notifications buffer.
+Nil means all repos; a `OWNER/REPO' string targets that repo's
+per-repo notifications endpoint on the backend.  Unlike the
+text filter (client-side only), this makes both the main fetch
+and the total-count probe exact for the selected repo.")
+
+(defvar shipit-notifications-buffer--watched-repos-cache nil
+  "Session cache of subscribed/watched repos for the repo-filter picker.
+Populated on first open of the repo-filter picker via the backends'
+`:fetch-watched-repos'; reused for later picker invocations so the
+GraphQL round-trip only happens once per session.  Cleared by
+`shipit-notifications-buffer-refresh-watched-repos-cache'.")
 
 ;; Section types
 (defun notification-entry (&rest _args)
@@ -140,16 +155,18 @@ after each refresh; nil means the probe has not returned yet (or failed).")
 (defun shipit-notifications-buffer-refresh (&optional _ignore-auto _noconfirm)
   "Refresh the notifications buffer content.
 Fetches fresh data from the API before re-rendering using the
-buffer-local `shipit-notifications-buffer--display-scope' and
-`shipit-notifications-buffer--page-limit'.
+buffer-local `shipit-notifications-buffer--display-scope',
+`shipit-notifications-buffer--page-limit', and
+`shipit-notifications-buffer--repo-filter'.
 Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
   (interactive)
   (message "Fetching notifications...")
   (let ((scope shipit-notifications-buffer--display-scope)
         (pages shipit-notifications-buffer--page-limit)
+        (repo shipit-notifications-buffer--repo-filter)
         (buf (current-buffer)))
     (when (fboundp 'shipit--check-notifications-background)
-      (shipit--check-notifications-background t scope pages))
+      (shipit--check-notifications-background t scope pages repo))
     (when (fboundp 'shipit--fetch-notifications-total-count-async)
       (shipit--fetch-notifications-total-count-async
        scope
@@ -157,7 +174,8 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
          (when (buffer-live-p buf)
            (with-current-buffer buf
              (setq shipit-notifications-buffer--total-count count)
-             (shipit-notifications-buffer--rerender)))))))
+             (shipit-notifications-buffer--rerender))))
+       repo)))
   (shipit-notifications-buffer--rerender)
   (message "Notifications refreshed"))
 
@@ -188,19 +206,38 @@ Arguments IGNORE-AUTO and NOCONFIRM are for compatibility with `revert-buffer'."
                shipit--notification-pr-activities))
     all))
 
+(defun shipit-notifications-buffer--matches-repo-filter-p (activity)
+  "Return non-nil if ACTIVITY passes the buffer-local repo filter.
+When no repo filter is set, always returns t.  The comparison is
+case-insensitive because GitHub repo names are case-insensitive."
+  (let ((filter shipit-notifications-buffer--repo-filter))
+    (or (null filter)
+        (let ((repo (cdr (assq 'repo activity))))
+          (and (stringp repo)
+               (string-equal-ignore-case repo filter))))))
+
+(defun shipit-notifications-buffer--repo-filtered-activities ()
+  "Activities after the server-side repo filter (still all text-filter states).
+This is the pool that both the loaded-count and the shown-count
+draw from, so the two numbers stay consistent when a repo filter
+is active — the Jira backend's entries, which live in the same
+hash but don't belong to the selected repo, drop out here."
+  (seq-filter #'shipit-notifications-buffer--matches-repo-filter-p
+              (shipit-notifications-buffer--all-activities)))
+
 (defun shipit-notifications-buffer--loaded-count ()
-  "Return the total number of activities loaded into the buffer.
-Ignores the text filter — this is the denominator when a filter is
-active, so the user can see `<matches>/<loaded>'."
-  (length (shipit-notifications-buffer--all-activities)))
+  "Return the number of activities visible under the repo filter.
+Ignores the text filter — this is the denominator when a text
+filter is active, so the user sees `<matches>/<loaded>'."
+  (length (shipit-notifications-buffer--repo-filtered-activities)))
 
 (defun shipit-notifications-buffer--shown-count ()
   "Return the number of activities currently rendered in the buffer.
-Applies the text filter first so the count matches what the user sees."
-  (let ((all (shipit-notifications-buffer--all-activities)))
+Applies both the repo filter and the text filter."
+  (let ((pool (shipit-notifications-buffer--repo-filtered-activities)))
     (if (string-empty-p shipit-notifications-buffer--filter-text)
-        (length all)
-      (length (seq-filter #'shipit-notifications-buffer--matches-filter-p all)))))
+        (length pool)
+      (length (seq-filter #'shipit-notifications-buffer--matches-filter-p pool)))))
 
 (defun shipit-notifications-buffer--insert-header ()
   "Insert the buffer header, including scope, page info, and count.
@@ -234,20 +271,21 @@ probe-derived server total for the current scope, when known."
                      (symbol-name shipit-notifications-buffer--display-scope)
                      pages-part count-part)
              'font-lock-face 'font-lock-comment-face)))
+  (when shipit-notifications-buffer--repo-filter
+    (insert (propertize
+             (format "  [repo: %s]" shipit-notifications-buffer--repo-filter)
+             'font-lock-face 'font-lock-comment-face)))
   (when (not (string-empty-p shipit-notifications-buffer--filter-text))
     (insert (propertize (format "  [filter: %s]" shipit-notifications-buffer--filter-text)
                         'font-lock-face 'font-lock-comment-face)))
   (insert "\n\n"))
 
 (defun shipit-notifications-buffer--insert-notifications ()
-  "Insert all notification entries as magit sections."
+  "Insert all notification entries as magit sections.
+Applies the repo filter and then the text filter, using the same
+helpers as the header counts so the two stay in sync."
   (require 'shipit-notifications)
-  (let ((activities '()))
-    (when (and (boundp 'shipit--notification-pr-activities)
-               shipit--notification-pr-activities)
-      (maphash (lambda (_key activity)
-                 (push activity activities))
-               shipit--notification-pr-activities))
+  (let ((activities (shipit-notifications-buffer--repo-filtered-activities)))
     (setq activities (sort activities
                            (lambda (a b)
                              (string> (or (cdr (assq 'updated-at a)) "")
@@ -957,6 +995,81 @@ scoped to what's unread and pagination is rarely meaningful."
   (setq shipit-notifications-buffer--filter-text "")
   (shipit-notifications-buffer--rerender))
 
+;;; Repo filter (server-side)
+
+(defun shipit-notifications-buffer--gather-watched-repos ()
+  "Fetch watched repos from all PR backends, caching for the session.
+Returns a sorted list of `OWNER/REPO' strings.  Uses
+`shipit-notifications-buffer--watched-repos-cache' so the first
+picker invocation pays the round-trip but later ones are instant."
+  (require 'shipit-subscriptions-buffer)
+  (unless shipit-notifications-buffer--watched-repos-cache
+    (let ((repos '()))
+      (dolist (entry (shipit-subscriptions--backends-with-watched-repos))
+        (let* ((backend-plist (cdr entry))
+               (config (list :repo ""))
+               (fetch-fn (plist-get backend-plist :fetch-watched-repos)))
+          (dolist (repo (condition-case err
+                            (funcall fetch-fn config)
+                          (error
+                           (shipit--debug-log
+                            "Watched-repos fetch failed: %S" err)
+                           nil)))
+            (let ((name (cdr (assq 'full_name repo))))
+              (when (and name (stringp name) (> (length name) 0))
+                (push name repos))))))
+      (setq shipit-notifications-buffer--watched-repos-cache
+            (sort (delete-dups repos) #'string<))))
+  shipit-notifications-buffer--watched-repos-cache)
+
+(defun shipit-notifications-buffer--candidate-repos ()
+  "Return candidate repos for the repo-filter picker.
+Union of subscribed repos (from the PR backends) and repos
+currently visible in the notifications hash, so the picker works
+even before the backend fetch returns."
+  (let ((from-hash '()))
+    (dolist (a (shipit-notifications-buffer--all-activities))
+      (let ((r (cdr (assq 'repo a))))
+        (when (and r (stringp r) (> (length r) 0))
+          (push r from-hash))))
+    (let ((watched (ignore-errors
+                     (shipit-notifications-buffer--gather-watched-repos))))
+      (sort (delete-dups (append watched from-hash)) #'string<))))
+
+(defun shipit-notifications-buffer-set-repo-filter ()
+  "Prompt for a repo to scope the notifications buffer to server-side.
+Candidates come from the PR backends' `:fetch-watched-repos' plus
+any repos already present in the hash.  Picking the clear-label
+entry unscopes the filter.  Triggers a refresh so both the main
+fetch and the total-count probe hit the per-repo endpoint."
+  (interactive)
+  (let* ((clear-label "<all repos>")
+         (candidates (cons clear-label
+                           (shipit-notifications-buffer--candidate-repos)))
+         (choice (completing-read "Repo: " candidates nil t nil nil
+                                  (or shipit-notifications-buffer--repo-filter
+                                      clear-label))))
+    (setq shipit-notifications-buffer--repo-filter
+          (if (string= choice clear-label) nil choice))
+    (setq shipit-notifications-buffer--page-limit 1)
+    (message "Repo filter: %s"
+             (or shipit-notifications-buffer--repo-filter "all repos"))
+    (shipit-notifications-buffer-refresh)))
+
+(defun shipit-notifications-buffer-clear-repo-filter ()
+  "Clear the server-side repo filter and refresh."
+  (interactive)
+  (setq shipit-notifications-buffer--repo-filter nil)
+  (setq shipit-notifications-buffer--page-limit 1)
+  (message "Repo filter cleared")
+  (shipit-notifications-buffer-refresh))
+
+(defun shipit-notifications-buffer-refresh-watched-repos-cache ()
+  "Force a refetch of the repo-filter candidate cache next time."
+  (interactive)
+  (setq shipit-notifications-buffer--watched-repos-cache nil)
+  (message "Repo-filter candidate cache cleared"))
+
 ;;; Filter
 
 (defun shipit-notifications-buffer--scope-description ()
@@ -977,6 +1090,12 @@ scoped to what's unread and pagination is rarely meaningful."
       "Text filter…"
     (format "Text filter: %s" shipit-notifications-buffer--filter-text)))
 
+(defun shipit-notifications-buffer--repo-filter-description ()
+  "Describe the repo-filter action for the transient."
+  (if shipit-notifications-buffer--repo-filter
+      (format "Repo: %s" shipit-notifications-buffer--repo-filter)
+    "Repo: <all repos>"))
+
 ;;;###autoload (autoload 'shipit-notifications-buffer-filter-menu "shipit-notifications-buffer" nil t)
 (transient-define-prefix shipit-notifications-buffer-filter-menu ()
   "Filter and scope controls for the notifications buffer."
@@ -986,6 +1105,10 @@ scoped to what's unread and pagination is rarely meaningful."
     ("m" shipit-notifications-buffer-load-more
      :description shipit-notifications-buffer--load-more-description
      :transient t)]
+   ["Server-side"
+    ("r" shipit-notifications-buffer-set-repo-filter
+     :description shipit-notifications-buffer--repo-filter-description)
+    ("R" "Clear repo filter" shipit-notifications-buffer-clear-repo-filter)]
    ["Text filter"
     ("t" shipit-notifications-buffer-set-filter
      :description shipit-notifications-buffer--text-filter-description)

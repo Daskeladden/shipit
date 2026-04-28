@@ -100,6 +100,13 @@ Note: `shipit--modeline-string' can be read by custom modeline segments (e.g. do
                  (const :tag "Unread participating only" unread-participating))
   :group 'shipit)
 
+(defcustom shipit-notifications-snooze-default-hours 4
+  "Default snooze duration in hours for the buffer-level `z' command.
+A numeric prefix overrides this for one invocation; a `C-u' prefix
+prompts for the value."
+  :type 'number
+  :group 'shipit)
+
 (defcustom shipit-notifications-column-widths '((repo . 50) (pr . 10) (title . 80) (reason . 30))
   "Column widths for notification display formatting.
 - repo: Repository name (owner/repo)

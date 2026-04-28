@@ -1580,4 +1580,28 @@ THEN repos in the list pass and others do not."
     (should-not (shipit-notifications-buffer--matches-repo-p
                  '((repo . "owner/bar"))))))
 
+(ert-deftest test-shipit-notifications-buffer-matches-snooze-p-hides-snoozed ()
+  "GIVEN an activity whose key is in `--snoozed-items' with a future expiry
+WHEN evaluating `--matches-snooze-p'
+THEN it returns nil so the activity is hidden."
+  (with-temp-buffer
+    (shipit-notifications-buffer-mode)
+    (setq shipit-notifications-buffer--snoozed-items
+          (list (cons "owner/foo:pr:42" (+ (float-time) 3600))))
+    (should-not (shipit-notifications-buffer--matches-snooze-p
+                 '((repo . "owner/foo") (type . "pr") (number . 42))))
+    (should (shipit-notifications-buffer--matches-snooze-p
+             '((repo . "owner/foo") (type . "pr") (number . 99))))))
+
+(ert-deftest test-shipit-notifications-buffer-matches-snooze-p-passes-expired ()
+  "GIVEN a snooze whose expiry is in the past
+WHEN evaluating `--matches-snooze-p'
+THEN it returns t (snooze elapsed; auto-prune will drop it)."
+  (with-temp-buffer
+    (shipit-notifications-buffer-mode)
+    (setq shipit-notifications-buffer--snoozed-items
+          (list (cons "owner/foo:pr:42" (- (float-time) 3600))))
+    (should (shipit-notifications-buffer--matches-snooze-p
+             '((repo . "owner/foo") (type . "pr") (number . 42))))))
+
 (provide 'test-notifications-buffer)

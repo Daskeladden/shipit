@@ -844,5 +844,48 @@ THEN the entry is evicted."
       (should entry)
       (should (= 0 (cdr (assq 'missed-polls entry)))))))
 
+(ert-deftest test-shipit--count-unread-activities-subtracts-snooze-and-locally-read ()
+  "GIVEN three GitHub activities in the global hash, all with `unread=t',
+WHEN one is snoozed and another is on the locally-marked-read tracker,
+THEN `shipit--count-unread-activities' returns 1.
+This is the regression for the modeline bell counting items the user
+already dismissed -- previously the background poll's inline counter
+forgot to subtract snoozes, so the bell drifted out of sync with the
+buffer header on the manual-refresh path."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications--snoozes nil)
+        (shipit--locally-marked-read-notifications (make-hash-table :test 'equal)))
+    (dolist (n '((1 . "id-1") (2 . "id-2") (3 . "id-3")))
+      (let ((num (car n))
+            (id (cdr n)))
+        (puthash (format "owner/foo:pr:%d" num)
+                 `((repo . "owner/foo")
+                   (number . ,num)
+                   (type . "pr")
+                   (notification . ((id . ,id) (unread . t))))
+                 shipit--notification-pr-activities)))
+    (push (cons "owner/foo:pr:1" (+ (float-time) 3600))
+          shipit-notifications--snoozes)
+    (puthash "id-2" t shipit--locally-marked-read-notifications)
+    (should (= 1 (shipit--count-unread-activities)))))
+
+(ert-deftest test-shipit--count-unread-activities-counts-backend-and-permanent-snooze ()
+  "GIVEN a backend activity (no `notification' alist) and a github
+activity flagged with a `:permanent' snooze,
+WHEN counting,
+THEN the backend activity is counted, the permanent-snoozed one is not."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (shipit-notifications--snoozes nil)
+        (shipit--locally-marked-read-notifications (make-hash-table :test 'equal)))
+    (puthash "owner/foo:issue:42"
+             '((repo . "owner/foo") (number . 42) (type . "issue"))
+             shipit--notification-pr-activities)
+    (puthash "owner/foo:pr:7"
+             '((repo . "owner/foo") (number . 7) (type . "pr")
+               (notification . ((id . "id-7") (unread . t))))
+             shipit--notification-pr-activities)
+    (push (cons "owner/foo:pr:7" :permanent) shipit-notifications--snoozes)
+    (should (= 1 (shipit--count-unread-activities)))))
+
 (provide 'test-notifications-integration)
 ;;; test-notifications-integration.el ends here

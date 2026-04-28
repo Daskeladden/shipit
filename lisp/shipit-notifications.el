@@ -1144,20 +1144,7 @@ follow-up regardless of how many callbacks landed."
     ;; showing the pre-auto-mark count and only catching up on the next
     ;; poll.  Walks the global hash so backend entries (Jira, RSS, etc.)
     ;; count too — those don't pass through the github fetch loop above.
-    (let ((post-auto-mark-unread 0))
-      (when (and (boundp 'shipit--notification-pr-activities)
-                 shipit--notification-pr-activities)
-        (maphash
-         (lambda (_k activity)
-           (let* ((notif (cdr (assq 'notification activity)))
-                  (notif-unread (cdr (assq 'unread notif)))
-                  (notif-id (cdr (assq 'id notif))))
-             (when (and notif-unread
-                        (not (eq notif-unread :json-false))
-                        (not (gethash notif-id
-                                      shipit--locally-marked-read-notifications)))
-               (setq post-auto-mark-unread (1+ post-auto-mark-unread)))))
-         shipit--notification-pr-activities))
+    (let ((post-auto-mark-unread (shipit--count-unread-activities)))
       ;; Skip the modeline update when this run was processing an `all'
       ;; scope payload — that fetch may have wiped out unread github
       ;; entries the user actually cares about while populating the
@@ -2637,16 +2624,29 @@ Each activity should be an alist with keys: number, type, subject, reason, repo.
       (setq shipit--last-notification-count new-count))))
 
 (defun shipit--count-unread-activities ()
-  "Count activities in the global hash that are still unread and not snoozed.
+  "Canonical count of activities the user has not dismissed yet.
 GitHub activities whose `notification.unread' is nil or :json-false
-are skipped; backend activities are counted unconditionally
-because they are removed from the hash on mark.  Activities whose
-key sits on the notifications buffer's session-local snooze list
-(with an unexpired deadline) are also excluded so the modeline
-bell reflects only the user's active work."
+are skipped (the server already considers them read).  Backend
+activities are counted unconditionally because they are removed
+from the hash on mark.
+
+Activities whose key sits on the notifications buffer's
+session-local snooze list (unexpired or `:permanent') are
+excluded.  GitHub activities whose notification id is on
+`shipit--locally-marked-read-notifications' are also excluded --
+the user marked them read locally and the next poll will
+synchronize, but in the meantime the modeline shouldn't keep
+counting them.
+
+The background poll, the post-auto-mark refresh, and the buffer's
+manual refresh all route through this function so the modeline
+indicator stays in sync with the buffer header regardless of which
+path triggered the most recent update."
   (let* ((count 0)
          (snoozes (and (boundp 'shipit-notifications--snoozes)
                        shipit-notifications--snoozes))
+         (locally-read (and (boundp 'shipit--locally-marked-read-notifications)
+                            shipit--locally-marked-read-notifications))
          (now (float-time)))
     (when (and (boundp 'shipit--notification-pr-activities)
                shipit--notification-pr-activities)
@@ -2654,6 +2654,7 @@ bell reflects only the user's active work."
        (lambda (_k a)
          (let* ((notif (cdr (assq 'notification a)))
                 (u (and notif (cdr (assq 'unread notif))))
+                (notif-id (and notif (cdr (assq 'id notif))))
                 (repo (cdr (assq 'repo a)))
                 (type (or (cdr (assq 'type a)) "pr"))
                 (number (or (cdr (assq 'number a))
@@ -2665,8 +2666,12 @@ bell reflects only the user's active work."
                 ;; never expires -- always counted as snoozed.
                 (snoozed (and snooze-cell
                               (or (not (numberp (cdr snooze-cell)))
-                                  (> (cdr snooze-cell) now)))))
-           (unless snoozed
+                                  (> (cdr snooze-cell) now))))
+                (locally-marked-read
+                 (and notif-id locally-read
+                      (hash-table-p locally-read)
+                      (gethash notif-id locally-read))))
+           (unless (or snoozed locally-marked-read)
              (cond
               ((null notif) (cl-incf count))
               ((and u (not (eq u :json-false))) (cl-incf count))))))

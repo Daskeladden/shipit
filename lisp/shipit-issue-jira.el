@@ -1140,6 +1140,11 @@ Returns plist (:type issue :number KEY) or nil."
 
 ;;; Notification Polling
 
+(defconst shipit-issue-jira--notifications-fields
+  "key,summary,status,updated,components"
+  "JQL `fields=' value used by notification polls.
+Components are fetched so the notifications buffer can filter on them.")
+
 (defun shipit-issue-jira--fetch-notifications (config &optional since)
   "Fetch recently updated Jira issues as notifications.
 Uses JQL: updated >= (SINCE - 5min overlap margin).
@@ -1147,7 +1152,7 @@ Defaults to 1 hour ago if SINCE is nil.
 CONFIG is the backend config plist."
   (let* ((since-time (shipit-issue-jira--notifications-since-time since))
          (jql (shipit-issue-jira--build-notifications-jql config since-time))
-         (fields "key,summary,status,updated")
+         (fields shipit-issue-jira--notifications-fields)
          (path (format "/rest/api/3/search/jql?jql=%s&maxResults=50&fields=%s"
                        (url-hexify-string jql) fields))
          (raw (shipit-issue-jira--api-request config path))
@@ -1164,7 +1169,7 @@ search returns.  CONFIG and SINCE behave identically to the sync
 version.  CALLBACK is called with nil on error."
   (let* ((since-time (shipit-issue-jira--notifications-since-time since))
          (jql (shipit-issue-jira--build-notifications-jql config since-time))
-         (fields "key,summary,status,updated")
+         (fields shipit-issue-jira--notifications-fields)
          (path (format "/rest/api/3/search/jql?jql=%s&maxResults=50&fields=%s"
                        (url-hexify-string jql) fields)))
     (shipit-issue-jira--api-request-async
@@ -1209,6 +1214,9 @@ CONFIG provides context for display name."
          (fields (cdr (assq 'fields issue)))
          (summary (cdr (assq 'summary fields)))
          (updated (cdr (assq 'updated fields)))
+         (components-raw (append (cdr (assq 'components fields)) nil))
+         (components (delq nil (mapcar (lambda (c) (cdr (assq 'name c)))
+                                       components-raw)))
          (base-url (plist-get config :base-url))
          (display-name (or (plist-get config :display-name)
                            (car (plist-get config :project-keys))
@@ -1221,6 +1229,7 @@ CONFIG provides context for display name."
       (source . jira)
       (backend-id . jira)
       (backend-config . ,config)
+      (jira-components . ,components)
       (browse-url . ,(when base-url
                        (format "%s/browse/%s"
                                (string-trim-right base-url "/") key)))

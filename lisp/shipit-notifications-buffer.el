@@ -53,6 +53,7 @@
 (declare-function shipit--open-notification-pr "shipit-notifications")
 (declare-function shipit-pr--dispatch-activity-navigation "shipit-pr-actions")
 (declare-function shipit-buffer--on-section-ready "shipit-buffer")
+(declare-function shipit-issue-jira--fetch-components "shipit-issue-jira")
 (declare-function shipit--open-notification-issue "shipit-notifications")
 (declare-function shipit--open-notification-discussion "shipit-notifications")
 
@@ -134,6 +135,14 @@ Nil means all reasons; a string like \"mention\" or \"review_requested\"
 narrows to that specific GitHub reason.  Combines with every other
 filter (the actionable-only toggle is the broader preset of this).")
 
+(defvar-local shipit-notifications-buffer--jira-component-filter nil
+  "Buffer-local Jira component filter for the notifications buffer.
+Nil means no filtering (Jira and non-Jira activities both render).
+A string narrows the view to Jira activities whose `jira-components'
+list (case-insensitive) contains that component, plus non-Jira
+activities — so applying the filter doesn't hide your GitHub
+notifications, only narrows the Jira slice.")
+
 (defvar-local shipit-notifications-buffer--state-filter nil
   "Buffer-local client-side PR-state filter for the notifications buffer.
 Nil means no filtering.  Set to one of `open'/`closed'/`merged'/`draft'
@@ -213,6 +222,8 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "c") #'shipit-notifications-buffer-clear-filter)
     (define-key map (kbd "r") #'shipit-notifications-buffer-set-repo-filter)
     (define-key map (kbd "R") #'shipit-notifications-buffer-clear-repo-filter)
+    (define-key map (kbd "o") #'shipit-notifications-buffer-set-jira-component-filter)
+    (define-key map (kbd "O") #'shipit-notifications-buffer-clear-jira-component-filter)
     (define-key map (kbd "y") #'shipit-notifications-buffer-set-type-filter)
     (define-key map (kbd "Y") #'shipit-notifications-buffer-clear-type-filter)
     (define-key map (kbd "e") #'shipit-notifications-buffer-set-state-filter)
@@ -312,7 +323,8 @@ share a single hash walk + filter."
                             (shipit-notifications-buffer--matches-type-filter-p a)
                             (shipit-notifications-buffer--matches-state-filter-p a)
                             (shipit-notifications-buffer--matches-reason-filter-p a)
-                            (shipit-notifications-buffer--matches-actionable-filter-p a)))
+                            (shipit-notifications-buffer--matches-actionable-filter-p a)
+                            (shipit-notifications-buffer--matches-jira-component-filter-p a)))
                      (shipit-notifications-buffer--all-activities))))
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
@@ -356,6 +368,22 @@ When no reason filter is set, always returns t."
   (let ((filter shipit-notifications-buffer--reason-filter))
     (or (null filter)
         (equal (cdr (assq 'reason activity)) filter))))
+
+(defun shipit-notifications-buffer--matches-jira-component-filter-p (activity)
+  "Return non-nil if ACTIVITY passes the Jira component filter.
+When the filter is nil, always returns t.  When set to a string,
+non-Jira activities pass through (they don't carry components), and
+Jira activities only pass if their `jira-components' list contains
+the configured component (case-insensitive)."
+  (let ((filter shipit-notifications-buffer--jira-component-filter))
+    (or (null filter)
+        (not (eq (cdr (assq 'source activity)) 'jira))
+        (let ((comps (cdr (assq 'jira-components activity))))
+          (and comps
+               (cl-some (lambda (c)
+                          (and (stringp c)
+                               (string-equal-ignore-case c filter)))
+                        comps))))))
 
 (defun shipit-notifications-buffer--matches-actionable-filter-p (activity)
   "Return non-nil if ACTIVITY passes the actionable filter.
@@ -443,6 +471,8 @@ probe-derived server total for the current scope, when known."
    "type" shipit-notifications-buffer--type-filter nil)
   (shipit-notifications-buffer--insert-filter-bracket
    "reason" shipit-notifications-buffer--reason-filter 'font-lock-keyword-face)
+  (shipit-notifications-buffer--insert-filter-bracket
+   "component" shipit-notifications-buffer--jira-component-filter 'font-lock-keyword-face)
   (shipit-notifications-buffer--insert-filter-bracket
    "state" shipit-notifications-buffer--state-filter 'font-lock-keyword-face)
   (when shipit-notifications-buffer--actionable-only
@@ -1720,6 +1750,9 @@ itself a single-condition sub-rule read recursively."
     (:reason
      (let ((cands (shipit-notifications-buffer--candidate-reasons)))
        (completing-read "Reason: " cands nil t)))
+    (:jira-component
+     (let ((cands (shipit-notifications-buffer--candidate-jira-components)))
+       (completing-read "Jira component: " cands nil nil)))
     (:title
      (shipit-notifications-buffer--read-title-regex-with-preview))
     (:draft
@@ -1733,7 +1766,8 @@ itself a single-condition sub-rule read recursively."
 PROMPT is shown for the key choice.  When INCLUDE-NOT is non-nil,
 `:not' is offered as a key option; selecting it recursively reads
 an inner condition (no further nesting)."
-  (let* ((keys (append '(":state" ":type" ":repo" ":reason" ":title" ":draft")
+  (let* ((keys (append '(":state" ":type" ":repo" ":reason"
+                         ":jira-component" ":title" ":draft")
                        (and include-not '(":not"))))
          (chosen (completing-read (or prompt "Condition: ") keys nil t))
          (key (intern chosen))
@@ -2365,6 +2399,74 @@ fetch and the total-count probe hit the per-repo endpoint."
   (message "Repo filter cleared")
   (shipit-notifications-buffer-refresh))
 
+(defun shipit-notifications-buffer--candidate-jira-components ()
+  "Return sorted distinct Jira component names for completion.
+Combines components present on currently-loaded Jira activities with
+the full project component list fetched via
+`shipit-issue-jira--fetch-components'.  The activity sweep gives
+instant candidates; the API fetch fills in components that aren't
+on any currently-loaded notification.  API failures fall through
+silently (cached hash candidates remain)."
+  (let ((seen (make-hash-table :test 'equal)))
+    (dolist (a (shipit-notifications-buffer--all-activities))
+      (when (eq (cdr (assq 'source a)) 'jira)
+        (dolist (c (cdr (assq 'jira-components a)))
+          (when (and (stringp c) (> (length c) 0))
+            (puthash c t seen)))))
+    (let ((configs '())
+          (config-keys (make-hash-table :test 'equal)))
+      (dolist (a (shipit-notifications-buffer--all-activities))
+        (when (eq (cdr (assq 'source a)) 'jira)
+          (let* ((cfg (cdr (assq 'backend-config a)))
+                 (key (and cfg (or (plist-get cfg :base-url)
+                                   (prin1-to-string cfg)))))
+            (when (and key (not (gethash key config-keys)))
+              (puthash key t config-keys)
+              (push cfg configs)))))
+      (when (fboundp 'shipit-issue-jira--fetch-components)
+        (dolist (cfg configs)
+          (condition-case err
+              (dolist (c (shipit-issue-jira--fetch-components cfg))
+                (when (and (stringp c) (> (length c) 0))
+                  (puthash c t seen)))
+            (error
+             (when (fboundp 'shipit--debug-log)
+               (shipit--debug-log "fetch-components failed: %s"
+                                  (error-message-string err))))))))
+    (sort (hash-table-keys seen) #'string<)))
+
+(defun shipit-notifications-buffer-set-jira-component-filter ()
+  "Pick a Jira component to narrow the buffer to.
+Candidates come from the components present on Jira activities in the
+hash.  Picking the clear-label entry unscopes the filter.  Non-Jira
+activities (GitHub etc.) are unaffected — they don't carry components,
+so they always pass the filter."
+  (interactive)
+  (let* ((clear-label "<all components>")
+         (cands (shipit-notifications-buffer--candidate-jira-components)))
+    (cond
+     ((null cands)
+      (user-error "No Jira components found among current notifications"))
+     (t
+      (let* ((candidates (cons clear-label cands))
+             (choice (completing-read
+                      "Jira component: " candidates nil t nil nil
+                      (or shipit-notifications-buffer--jira-component-filter
+                          clear-label))))
+        (setq shipit-notifications-buffer--jira-component-filter
+              (if (string= choice clear-label) nil choice))
+        (message "Jira component filter: %s"
+                 (or shipit-notifications-buffer--jira-component-filter
+                     "all components"))
+        (shipit-notifications-buffer--rerender))))))
+
+(defun shipit-notifications-buffer-clear-jira-component-filter ()
+  "Clear the Jira component filter."
+  (interactive)
+  (setq shipit-notifications-buffer--jira-component-filter nil)
+  (message "Jira component filter cleared")
+  (shipit-notifications-buffer--rerender))
+
 (defun shipit-notifications-buffer--candidate-types ()
   "Return the sorted list of types currently present in the hash.
 Used as completion candidates for the type-filter picker so the
@@ -2460,6 +2562,13 @@ Candidates come from the reasons currently visible in the hash."
   (if shipit-notifications-buffer--reason-filter
       (format "Reason: %s" shipit-notifications-buffer--reason-filter)
     "Reason: <all reasons>"))
+
+(defun shipit-notifications-buffer--jira-component-filter-description ()
+  "Describe the Jira component filter action for the transient."
+  (if shipit-notifications-buffer--jira-component-filter
+      (format "Component: %s"
+              shipit-notifications-buffer--jira-component-filter)
+    "Component: <all components>"))
 
 (defun shipit-notifications-buffer-toggle-actionable-only (&optional inverse)
   "Toggle the actionable-only filter and re-render.
@@ -2573,6 +2682,7 @@ clearing takes effect alongside the client-side resets."
         shipit-notifications-buffer--actionable-only nil
         shipit-notifications-buffer--before-filter nil
         shipit-notifications-buffer--since-filter nil
+        shipit-notifications-buffer--jira-component-filter nil
         shipit-notifications-buffer--current-page 1)
   (message "All filters cleared")
   (shipit-notifications-buffer-refresh))
@@ -2665,6 +2775,11 @@ clearing takes effect alongside the client-side resets."
     ("n" shipit-notifications-buffer-set-reason-filter
      :description shipit-notifications-buffer--reason-filter-description)
     ("N" "Clear reason filter" shipit-notifications-buffer-clear-reason-filter)]
+   ["Jira"
+    ("o" shipit-notifications-buffer-set-jira-component-filter
+     :description shipit-notifications-buffer--jira-component-filter-description)
+    ("O" "Clear component filter"
+     shipit-notifications-buffer-clear-jira-component-filter)]
    ["Text"
     ("t" shipit-notifications-buffer-set-filter
      :description shipit-notifications-buffer--text-filter-description)

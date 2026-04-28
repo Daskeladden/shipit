@@ -1306,6 +1306,13 @@ activities whose title does not contain \"mythos\"."
              (and (stringp repo)
                   (stringp val)
                   (string-equal-ignore-case repo val))))
+    (:jira-component
+     (let ((comps (cdr (assq 'jira-components activity))))
+       (and comps
+            (stringp val)
+            (cl-some (lambda (c)
+                       (and (stringp c) (string-equal-ignore-case c val)))
+                     comps))))
     (:not (not (shipit--auto-mark-rule-matches-activity-p val activity)))
     (_ nil)))
 

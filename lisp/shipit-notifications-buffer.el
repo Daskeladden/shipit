@@ -424,6 +424,25 @@ never pruned."
                                (<= (cdr cell) now)))
                         shipit-notifications--snoozes))))
 
+(defun shipit-notifications-buffer--live-snoozed-count ()
+  "Return the count of snoozes whose key has a live activity in the hash.
+Stale entries (e.g. items the user marked read after snoozing)
+are dropped from the count so the header bracket matches what
+the buffer can actually surface."
+  (let ((live 0)
+        (keys (mapcar #'car shipit-notifications--snoozes)))
+    (when keys
+      (dolist (a (shipit-notifications-buffer--all-activities))
+        (let* ((repo (cdr (assq 'repo a)))
+               (type (or (cdr (assq 'type a)) "pr"))
+               (number (or (cdr (assq 'number a))
+                           (cdr (assq 'pr-number a))))
+               (key (and repo number
+                         (format "%s:%s:%s" repo type number))))
+          (when (member key keys)
+            (cl-incf live)))))
+    live))
+
 (defun shipit-notifications-buffer--matches-snooze-p (activity)
   "Return non-nil when ACTIVITY is NOT currently snoozed.
 A nil entry in `--snoozes' or an entry whose timestamp has
@@ -670,11 +689,12 @@ probe-derived server total for the current scope, when known."
   (unless (string-empty-p shipit-notifications-buffer--filter-text)
     (shipit-notifications-buffer--insert-filter-bracket
      "filter" shipit-notifications-buffer--filter-text nil))
-  (when shipit-notifications--snoozes
-    (shipit-notifications-buffer--insert-filter-bracket
-     "snoozed"
-     (number-to-string (length shipit-notifications--snoozes))
-     'font-lock-keyword-face))
+  (let ((live-snoozed (shipit-notifications-buffer--live-snoozed-count)))
+    (when (> live-snoozed 0)
+      (shipit-notifications-buffer--insert-filter-bracket
+       "snoozed"
+       (number-to-string live-snoozed)
+       'font-lock-keyword-face)))
   (insert "\n\n"))
 
 (defun shipit-notifications-buffer--insert-filter-bracket (label value face)

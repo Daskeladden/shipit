@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.5.2 (2026-04-29)
+
+### Bug fixes
+
+- **Deny-list filters were invisible in the header.** Toggling a value into a deny list with `C-u` narrowed the buffer silently — no `[!repo: ...]` bracket. Each selector now renders a sibling `!`-prefixed bracket whenever its deny list is non-empty.
+- **Multi-value filter brackets rendered as `(a b)`** (Lisp list notation from `%s`) instead of comma-joined values. Now read as `a, b`.
+- **Snoozed bracket disagreed with the snoozed group.** The `[snoozed: 1]` count walked the snooze list and the activity hash; the rendered group additionally hid rows the user had locally marked read. Bracket and group now apply the same exclusion, so they agree.
+- **`shown / total` was misleading when client filters narrowed the view.** The fraction now switches to `shown / loaded (of total)` whenever a structural filter or text filter reduces what's visible, so the visible numerator and denominator match the buffer state with the server total kept as context.
+
+### Polish
+
+- Filter-bracket entries are suffixed with the matching activity count, so a deny like `[!repo: zivid/zivid-sdk (6)]` makes it obvious how much the filter is hiding.
+
+---
+
 ## v1.5.1 (2026-04-28)
 
 ### Bug fixes

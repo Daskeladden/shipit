@@ -1852,7 +1852,8 @@ absorb the next section's heading column."
       (insert indented)
       (unless (bolp) (insert "\n")))))
 
-(defun shipit-repo-buffer--insert-as-sections (text indent section-type detect-fn strip-fn)
+(defun shipit-repo-buffer--insert-as-sections
+    (text indent section-type detect-fn strip-fn &optional content-fn)
   "Insert TEXT into the current buffer as nested magit sections.
 Heading lines split TEXT into sections at the level of the first heading
 found.  Deeper headings inside a section's body are processed by a
@@ -1860,20 +1861,26 @@ recursive call.
 
 SECTION-TYPE is the symbol to pass to `magit-insert-section'.
 DETECT-FN takes (TEXT POS) → heading level or nil.
-STRIP-FN takes a heading line → cleaned title text."
+STRIP-FN takes a heading line → cleaned title text.
+CONTENT-FN, when non-nil, is called as (CONTENT-FN BODY INDENT)
+to insert non-heading body text and the preamble before the
+first heading.  Defaults to `--insert-content-with-indent' which
+preserves the input verbatim."
   (let* ((text-len (length text))
          (first-pos (shipit-repo-buffer--next-heading-pos text 0 nil detect-fn))
          (section-level (and (< first-pos text-len)
-                             (funcall detect-fn text first-pos))))
+                             (funcall detect-fn text first-pos)))
+         (insert-content (or content-fn
+                             #'shipit-repo-buffer--insert-content-with-indent)))
     (cond
      ((not section-level)
       (when (> (length text) 0)
-        (shipit-repo-buffer--insert-content-with-indent text indent)))
+        (funcall insert-content text indent)))
      (t
       (when (> first-pos 0)
         (let ((preamble (substring text 0 first-pos)))
           (when (> (length preamble) 0)
-            (shipit-repo-buffer--insert-content-with-indent preamble indent))))
+            (funcall insert-content preamble indent))))
       (let ((pos first-pos))
         (while (< pos text-len)
           (let* ((line-end (or (string-match "\n" text pos) text-len))
@@ -1890,7 +1897,7 @@ STRIP-FN takes a heading line → cleaned title text."
               (magit-insert-section-body
                 (when (> (length body) 0)
                   (shipit-repo-buffer--insert-as-sections
-                   body (+ indent 2) section-type detect-fn strip-fn))
+                   body (+ indent 2) section-type detect-fn strip-fn content-fn))
                 (unless (and (> (point) 1) (eq (char-before) ?\n))
                   (insert "\n"))))
             (setq pos section-end))))))))
@@ -1905,16 +1912,20 @@ inserted as plain content."
    #'shipit-repo-buffer--detect-org-line-level
    #'shipit-repo-buffer--strip-org-heading-markup))
 
-(defun shipit-repo-buffer--insert-markdown-as-sections (text indent)
+(defun shipit-repo-buffer--insert-markdown-as-sections (text indent &optional content-fn)
   "Insert TEXT into the current buffer as nested magit sections of type
 `markdown-heading'.  Each `# heading' line opens a section whose body
 and sub-headings are nested inside.  Text before the first heading is
 inserted as plain content.  Only ATX-style headings (`# ' through
-`###### ') are recognized; setext-style underlines are treated as body."
+`###### ') are recognized; setext-style underlines are treated as body.
+CONTENT-FN, when supplied, is used in place of the default plain
+inserter to render non-heading text (e.g. apply markdown
+font-lock + wrapping for issue descriptions)."
   (shipit-repo-buffer--insert-as-sections
    text indent 'markdown-heading
    #'shipit-repo-buffer--detect-markdown-line-level
-   #'shipit-repo-buffer--strip-markdown-heading-markup))
+   #'shipit-repo-buffer--strip-markdown-heading-markup
+   content-fn))
 
 (provide 'shipit-repo-buffer)
 ;;; shipit-repo-buffer.el ends here

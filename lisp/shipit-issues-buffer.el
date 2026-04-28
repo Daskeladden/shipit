@@ -638,18 +638,40 @@ buffer-local overrides so the issue fetches use the correct backend
                 (if (fboundp 'string-pixel-width)
                     (string-pixel-width (make-string 80 ?M))
                   (* 80 (frame-char-width)))))
-          (if (not clean-body)
-              (insert (propertize "   No description provided\n" 'font-lock-face 'italic))
-            (if (string-match-p "<details>" clean-body)
-                (shipit--insert-body-with-details clean-body 3)
-              (let* ((rendered (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
-                                       (fboundp 'shipit--render-body))
-                                  (shipit--render-body clean-body)
-                                clean-body))
-                     (wrapped (if (fboundp 'shipit--wrap-text)
-                                  (shipit--wrap-text rendered 80 0)
-                                rendered)))
-                (insert (concat "   " (replace-regexp-in-string "\n" "\n   " wrapped) "\n")))))
+          (cond
+           ((not clean-body)
+            (insert (propertize "   No description provided\n" 'font-lock-face 'italic)))
+           ((string-match-p "<details>" clean-body)
+            (shipit--insert-body-with-details clean-body 3))
+           ;; Markdown headings → nested collapsible magit sections,
+           ;; same treatment as README.md in the repo buffer.
+           ((string-match-p "^#\\{1,6\\}[ \t]" clean-body)
+            (require 'shipit-repo-buffer)
+            (shipit-repo-buffer--insert-markdown-as-sections
+             clean-body 3
+             (lambda (chunk indent)
+               (let* ((rendered (if (and (boundp 'shipit-render-markdown)
+                                         shipit-render-markdown
+                                         (fboundp 'shipit--render-body))
+                                    (shipit--render-body chunk)
+                                  chunk))
+                      (wrapped (if (fboundp 'shipit--wrap-text)
+                                   (shipit--wrap-text rendered 80 0)
+                                 rendered))
+                      (indent-str (make-string indent ?\s)))
+                 (insert (concat indent-str
+                                 (replace-regexp-in-string
+                                  "\n" (concat "\n" indent-str) wrapped)
+                                 "\n"))))))
+           (t
+            (let* ((rendered (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
+                                     (fboundp 'shipit--render-body))
+                                (shipit--render-body clean-body)
+                              clean-body))
+                   (wrapped (if (fboundp 'shipit--wrap-text)
+                                (shipit--wrap-text rendered 80 0)
+                              rendered)))
+              (insert (concat "   " (replace-regexp-in-string "\n" "\n   " wrapped) "\n")))))
           ;; Create overlays for references
           (when (fboundp 'shipit--create-pr-reference-overlays)
             (shipit--create-pr-reference-overlays repo issue-number description-start (point)))

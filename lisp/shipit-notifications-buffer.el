@@ -581,40 +581,37 @@ Page numbers render in `font-lock-constant-face'; the rest stays
 in `font-lock-comment-face' so only the active value pops."
   (let* ((shown (shipit-notifications-buffer--shown-count))
          (loaded (shipit-notifications-buffer--loaded-count))
+         (fetched (length (shipit-notifications-buffer--all-activities)))
          (total shipit-notifications-buffer--total-count)
-         (filter-active (not (string-empty-p
-                              shipit-notifications-buffer--filter-text)))
-         ;; Matches `per_page' actually returned by GitHub for
-         ;; `/notifications' (capped at 50 server-side regardless of
-         ;; what the client requests).
+         (text-filter-active (not (string-empty-p
+                                   shipit-notifications-buffer--filter-text)))
+         ;; Any client-side selector/filter that narrows the visible set
+         ;; below what was fetched on this page.  When this is non-nil the
+         ;; per-page count is no longer "50 of 50 fetched" so we annotate
+         ;; the header with the breakdown.
+         (client-narrowed (< shown fetched))
          (per-page 50)
          (total-pages (when total (max 1 (ceiling (/ (float total) per-page)))))
          ;; In `all' scope, show the absolute server-side range of items
-         ;; we're viewing (e.g. `[2201-2250]/2819') instead of the bare
-         ;; shown count, so the user can tell at a glance where the
-         ;; current page sits in the full feed.
+         ;; we're viewing (e.g. `[2201-2250]/2819') so the user can tell
+         ;; where the current page sits in the full feed.
          (range-part
-          ;; Filter-active state still uses the matches/loaded format
-          ;; below — the range-of-the-page concept doesn't map onto a
-          ;; client-side filter that may pick items from anywhere.
           (when (and total
-                     (not filter-active)
+                     (not text-filter-active)
                      (eq shipit-notifications-buffer--display-scope 'all)
-                     (> shown 0))
+                     (> fetched 0))
             (let* ((page-start (1+ (* per-page
                                       (1- shipit-notifications-buffer--current-page))))
-                   (page-end (min total (+ page-start shown -1))))
+                   (page-end (min total (+ page-start fetched -1))))
               (format ", [%d-%d]/%d" page-start page-end total))))
+         (narrow-suffix
+          (when (and client-narrowed range-part)
+            (format " (%d shown after filters)" shown)))
          (count-part (cond
-                      (range-part range-part)
-                      ;; Filter is client-side, so the true matches-on-server
-                      ;; count is unknowable without pulling every page.
-                      ;; Show matches/loaded, plus the server total in parens
-                      ;; when we know it, so the user sees why the denominator
-                      ;; may seem small.
-                      ((and filter-active total)
+                      (range-part (concat range-part (or narrow-suffix "")))
+                      ((and text-filter-active total)
                        (format ", %d/%d (of %d)" shown loaded total))
-                      (filter-active (format ", %d/%d" shown loaded))
+                      (text-filter-active (format ", %d/%d" shown loaded))
                       (total (format ", %d/%d" shown total))
                       (t (format ", %d shown" shown))))
          (cmt 'font-lock-comment-face))

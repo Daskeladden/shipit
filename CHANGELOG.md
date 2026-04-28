@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.5.1 (2026-04-28)
+
+### Bug fixes
+
+- **Switching from `all` back to `unread` scope kept showing read items.** The buffer rendered everything left in the activity hash from the previous `all` poll, even though those items were no longer unread. The render pipeline now filters by `notification.unread` while in `unread` scope; `all` scope is unaffected.
+- **Modeline bell disagreed with the buffer header.** The background poll's inline counter and the buffer's manual-refresh counter were two different functions that disagreed on whether to subtract snoozed and locally-marked-read items. Both paths now route through a single canonical counter so the bell stays in sync with the header.
+
+---
+
 ## v1.5.0 (2026-04-28)
 
 ### Features

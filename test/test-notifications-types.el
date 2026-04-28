@@ -474,7 +474,7 @@ THEN the buffer only renders that type."
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (with-current-buffer buf
-            (setq-local shipit-notifications-buffer--selected-type "workflow")
+            (setq-local shipit-notifications-buffer--selected-type (list "workflow"))
             (shipit-notifications-buffer--rerender)
             (goto-char (point-min))
             (should (search-forward "Deploy two" nil t))

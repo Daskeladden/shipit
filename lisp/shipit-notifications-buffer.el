@@ -86,17 +86,31 @@ Populated asynchronously by `shipit--fetch-notifications-total-count-async'
 after each refresh; nil means the probe has not returned yet (or failed).")
 
 (defvar-local shipit-notifications-buffer--selected-repo nil
-  "Buffer-local server-side repo filter for the notifications buffer.
-Nil means all repos; a `OWNER/REPO' string targets that repo's
-per-repo notifications endpoint on the backend.  Unlike the
-text filter (client-side only), this makes both the main fetch
-and the total-count probe exact for the selected repo.")
+  "Buffer-local repo allow-list for the notifications buffer.
+Nil means all repos.  A list of `OWNER/REPO' strings restricts
+the view to those repos.  Single-entry lists keep the
+server-side fast path: the fetch + total-count probe target
+that repo's per-repo notifications endpoint.  Two or more
+entries fall back to the all-notifications endpoint with
+client-side filtering.  Comparison is case-insensitive.")
+
+(defvar-local shipit-notifications-buffer--excluded-repos nil
+  "List of repo strings hidden from the notifications buffer.
+Inverse of `--selected-repo': the selector picks one to show, the
+exclusion list picks any number to hide.  Comparison is
+case-insensitive.  Toggled via prefix arg on the repo set/clear
+commands.")
 
 (defvar-local shipit-notifications-buffer--selected-type nil
-  "Buffer-local client-side type filter for the notifications buffer.
-Nil means all types; a type string like \"pr\" or \"workflow\"
-restricts the view to activities with that internal type.
-Combines with the repo filter and the text filter.")
+  "Buffer-local type allow-list for the notifications buffer.
+Nil/empty means all types pass.  Otherwise a list of internal
+type strings (`pr', `issue', `discussion', ...) restricts the
+view to activities whose type is in the list.")
+
+(defvar-local shipit-notifications-buffer--excluded-types nil
+  "List of types hidden from the notifications buffer.
+Inverse of `--selected-type'.  Toggled via prefix arg on the
+type set/clear commands.")
 
 (defcustom shipit-notifications-actionable-reasons
   '("mention" "team_mention" "review_requested" "assign"
@@ -131,11 +145,19 @@ whose children are the usual `notification-entry' rows.  Repos are
 ordered by the `updated-at' of their newest entry, so the most
 recently active repo is at the top.")
 
+(defvar-local shipit-notifications-buffer--excluded-reasons nil
+  "List of reasons hidden from the notifications buffer.
+Inverse of `--selected-reason'.")
+
 (defvar-local shipit-notifications-buffer--selected-reason nil
   "Buffer-local client-side reason filter for the notifications buffer.
 Nil means all reasons; a string like \"mention\" or \"review_requested\"
 narrows to that specific GitHub reason.  Combines with every other
 filter (the actionable-only toggle is the broader preset of this).")
+
+(defvar-local shipit-notifications-buffer--excluded-jira-components nil
+  "List of Jira components hidden from the notifications buffer.
+Inverse of `--selected-jira-component'.")
 
 (defvar-local shipit-notifications-buffer--selected-jira-component nil
   "Buffer-local Jira component filter for the notifications buffer.
@@ -144,6 +166,10 @@ A string narrows the view to Jira activities whose `jira-components'
 list (case-insensitive) contains that component, plus non-Jira
 activities — so applying the filter doesn't hide your GitHub
 notifications, only narrows the Jira slice.")
+
+(defvar-local shipit-notifications-buffer--excluded-states nil
+  "List of PR states hidden from the notifications buffer.
+Inverse of `--selected-state'.")
 
 (defvar-local shipit-notifications-buffer--selected-state nil
   "Buffer-local client-side PR-state filter for the notifications buffer.
@@ -277,7 +303,11 @@ NOCONFIRM are for compatibility with `revert-buffer'."
                           current-prefix-arg))
         (scope shipit-notifications-buffer--display-scope)
         (page shipit-notifications-buffer--current-page)
-        (repo shipit-notifications-buffer--selected-repo)
+        ;; Server-side fast path only when exactly one repo is selected.
+        ;; With 0 or 2+ entries we fetch the unfiltered feed and rely on
+        ;; client-side `--matches-repo-p' to narrow.
+        (repo (let ((sel shipit-notifications-buffer--selected-repo))
+                (and (consp sel) (= 1 (length sel)) (car sel))))
         (before shipit-notifications-buffer--before-filter)
         (since shipit-notifications-buffer--since-filter)
         (buf (current-buffer)))
@@ -352,44 +382,74 @@ repeating it for every count call.  Nil outside the render.")
     all))
 
 (defun shipit-notifications-buffer--matches-repo-p (activity)
-  "Return non-nil if ACTIVITY passes the buffer-local repo filter.
-When no repo filter is set, always returns t.  The comparison is
-case-insensitive because GitHub repo names are case-insensitive."
-  (let ((filter shipit-notifications-buffer--selected-repo))
-    (or (null filter)
-        (let ((repo (cdr (assq 'repo activity))))
-          (and (stringp repo)
-               (string-equal-ignore-case repo filter))))))
+  "Return non-nil if ACTIVITY passes the repo allow-list and exclusion list.
+- Allow-list (`--selected-repo'): when nil/empty, every repo passes.
+  When non-empty, the activity's repo must match at least one entry.
+- Deny-list (`--excluded-repos'): when the activity's repo matches an
+  entry, hide regardless of the allow-list.
+Comparison is case-insensitive."
+  (let ((allow shipit-notifications-buffer--selected-repo)
+        (deny shipit-notifications-buffer--excluded-repos)
+        (repo (cdr (assq 'repo activity))))
+    (and (or (null allow)
+             (and (stringp repo)
+                  (cl-some (lambda (a)
+                             (and (stringp a)
+                                  (string-equal-ignore-case repo a)))
+                           allow)))
+         (not (and (stringp repo)
+                   (cl-some (lambda (d)
+                              (and (stringp d)
+                                   (string-equal-ignore-case repo d)))
+                            deny))))))
 
 (defun shipit-notifications-buffer--matches-type-p (activity)
-  "Return non-nil if ACTIVITY passes the buffer-local type filter.
-When no type filter is set, always returns t."
-  (let ((filter shipit-notifications-buffer--selected-type))
-    (or (null filter)
-        (equal (cdr (assq 'type activity)) filter))))
+  "Return non-nil if ACTIVITY passes the type allow- and deny-lists."
+  (let ((allow shipit-notifications-buffer--selected-type)
+        (deny shipit-notifications-buffer--excluded-types)
+        (ty (cdr (assq 'type activity))))
+    (and (or (null allow) (and ty (member ty allow)))
+         (not (and ty (member ty deny))))))
 
 (defun shipit-notifications-buffer--matches-reason-p (activity)
-  "Return non-nil if ACTIVITY passes the buffer-local reason filter.
-When no reason filter is set, always returns t."
-  (let ((filter shipit-notifications-buffer--selected-reason))
-    (or (null filter)
-        (equal (cdr (assq 'reason activity)) filter))))
+  "Return non-nil if ACTIVITY passes the reason allow- and deny-lists."
+  (let ((allow shipit-notifications-buffer--selected-reason)
+        (deny shipit-notifications-buffer--excluded-reasons)
+        (r (cdr (assq 'reason activity))))
+    (and (or (null allow) (and r (member r allow)))
+         (not (and r (member r deny))))))
 
 (defun shipit-notifications-buffer--matches-jira-component-p (activity)
-  "Return non-nil if ACTIVITY passes the Jira component filter.
-When the filter is nil, always returns t.  When set to a string,
-non-Jira activities pass through (they don't carry components), and
-Jira activities only pass if their `jira-components' list contains
-the configured component (case-insensitive)."
-  (let ((filter shipit-notifications-buffer--selected-jira-component))
-    (or (null filter)
-        (not (eq (cdr (assq 'source activity)) 'jira))
+  "Return non-nil if ACTIVITY passes the Jira component allow/deny lists.
+Non-Jira activities pass through (no components to match).  Jira
+activities pass only if (a) the allow-list is empty or the
+issue's components include one of the allowed ones, AND (b) none
+of the issue's components is in the deny-list.
+Comparison is case-insensitive."
+  (let ((allow shipit-notifications-buffer--selected-jira-component)
+        (deny shipit-notifications-buffer--excluded-jira-components))
+    (or (not (eq (cdr (assq 'source activity)) 'jira))
+        (and (null allow) (null deny))
         (let ((comps (cdr (assq 'jira-components activity))))
-          (and comps
-               (cl-some (lambda (c)
-                          (and (stringp c)
-                               (string-equal-ignore-case c filter)))
-                        comps))))))
+          (and (or (null allow)
+                   (cl-some (lambda (c)
+                              (and (stringp c)
+                                   (cl-some
+                                    (lambda (a)
+                                      (and (stringp a)
+                                           (string-equal-ignore-case c a)))
+                                    allow)))
+                            comps))
+               (not (and comps
+                         (cl-some
+                          (lambda (c)
+                            (and (stringp c)
+                                 (cl-some
+                                  (lambda (d)
+                                    (and (stringp d)
+                                         (string-equal-ignore-case c d)))
+                                  deny)))
+                          comps))))))))
 
 (defun shipit-notifications-buffer--matches-actionable-filter-p (activity)
   "Return non-nil if ACTIVITY passes the actionable filter.
@@ -408,24 +468,31 @@ pass only non-actionable rows."
           actionable))))))
 
 (defun shipit-notifications-buffer--matches-state-p (activity)
-  "Return non-nil if ACTIVITY passes the buffer-local state filter.
-When the filter is nil, always returns t.  When set, only PRs with
-the matching state pass — non-PR activities are hidden so picking
-`draft' shows just drafts.  Filter values: `draft' = open + isDraft;
-`open' = open + not-draft; `merged' / `closed' = direct state match."
-  (let ((filter shipit-notifications-buffer--selected-state))
-    (or (null filter)
-        (and (equal (cdr (assq 'type activity)) "pr")
-             (let ((state (cdr (assq 'pr-state activity)))
-                   (draft (cdr (assq 'draft activity))))
-               (cond
-                ((or (null state)
-                     (and (stringp state) (string-empty-p state))) nil)
-                ((equal filter "draft") (and (equal state "open") draft))
-                ((equal filter "open") (and (equal state "open") (not draft)))
-                (t (equal state filter))))))))
+  "Return non-nil if ACTIVITY passes the state allow- and deny-lists.
+State values are `open' / `merged' / `closed' / `draft'; non-PR
+activities pass through only when both lists are empty (any
+selection or exclusion implicitly hides non-PR rows because they
+have no PR state to compare against)."
+  (let ((allow shipit-notifications-buffer--selected-state)
+        (deny shipit-notifications-buffer--excluded-states))
+    (cond
+     ((and (null allow) (null deny)) t)
+     ((not (equal (cdr (assq 'type activity)) "pr")) nil)
+     (t
+      (let* ((state (cdr (assq 'pr-state activity)))
+             (draft (cdr (assq 'draft activity)))
+             (effective (cond
+                         ((or (null state)
+                              (and (stringp state) (string-empty-p state)))
+                          nil)
+                         ((and (equal state "open") draft) "draft")
+                         ((equal state "open") "open")
+                         (t state))))
+        (and effective
+             (or (null allow) (member effective allow))
+             (not (member effective deny))))))))
 
-(defun shipit-notifications-buffer--selected-repoed-activities ()
+(defun shipit-notifications-buffer--repo-filtered-activities ()
   "Activities after the structural (repo + type + state) filters.
 Reuses `shipit-notifications-buffer--render-pool' when set so the
 hash walk + filters happen once per render instead of three times
@@ -443,12 +510,12 @@ hash walk + filters happen once per render instead of three times
   "Return the number of activities visible under the repo filter.
 Ignores the text filter — this is the denominator when a text
 filter is active, so the user sees `<matches>/<loaded>'."
-  (length (shipit-notifications-buffer--selected-repoed-activities)))
+  (length (shipit-notifications-buffer--repo-filtered-activities)))
 
 (defun shipit-notifications-buffer--shown-count ()
   "Return the number of activities currently rendered in the buffer.
 Applies both the repo filter and the text filter."
-  (let ((pool (shipit-notifications-buffer--selected-repoed-activities)))
+  (let ((pool (shipit-notifications-buffer--repo-filtered-activities)))
     (if (string-empty-p shipit-notifications-buffer--filter-text)
         (length pool)
       (length (seq-filter #'shipit-notifications-buffer--matches-filter-p pool)))))
@@ -577,7 +644,7 @@ helpers as the header counts so the two stay in sync.  Honors
 `shipit-notifications-buffer--group-by-repo': when on, entries are
 nested under per-repo wrapper sections."
   (require 'shipit-notifications)
-  (let ((activities (shipit-notifications-buffer--selected-repoed-activities)))
+  (let ((activities (shipit-notifications-buffer--repo-filtered-activities)))
     (setq activities (sort activities
                            (lambda (a b)
                              (string> (or (cdr (assq 'updated-at a)) "")
@@ -2522,33 +2589,68 @@ even before the backend fetch returns."
                      (shipit-notifications-buffer--gather-watched-repos))))
       (sort (delete-dups (append watched from-hash)) #'string<))))
 
-(defun shipit-notifications-buffer-set-repo ()
+(defun shipit-notifications-buffer-set-repo (&optional arg)
   "Prompt for a repo to scope the notifications buffer to server-side.
 Candidates come from the PR backends' `:fetch-watched-repos' plus
 any repos already present in the hash.  Picking the clear-label
 entry unscopes the filter.  Triggers a refresh so both the main
-fetch and the total-count probe hit the per-repo endpoint."
-  (interactive)
-  (let* ((clear-label "<all repos>")
-         (candidates (cons clear-label
-                           (shipit-notifications-buffer--candidate-repos)))
-         (choice (completing-read "Repo: " candidates nil t nil nil
-                                  (or shipit-notifications-buffer--selected-repo
-                                      clear-label))))
-    (setq shipit-notifications-buffer--selected-repo
-          (if (string= choice clear-label) nil choice))
-    (setq shipit-notifications-buffer--current-page 1)
-    (message "Repo filter: %s"
-             (or shipit-notifications-buffer--selected-repo "all repos"))
-    (shipit-notifications-buffer-refresh)))
+fetch and the total-count probe hit the per-repo endpoint.
 
-(defun shipit-notifications-buffer-clear-repo ()
-  "Clear the server-side repo filter and refresh."
-  (interactive)
-  (setq shipit-notifications-buffer--selected-repo nil)
-  (setq shipit-notifications-buffer--current-page 1)
-  (message "Repo filter cleared")
-  (shipit-notifications-buffer-refresh))
+With prefix ARG the prompt instead toggles the chosen repo in
+`--excluded-repos' (the inverse list-valued filter): repos in the
+exclusion list are hidden regardless of the selector."
+  (interactive "P")
+  (if arg
+      (let* ((candidates (delete-dups
+                          (append shipit-notifications-buffer--excluded-repos
+                                  (shipit-notifications-buffer--candidate-repos))))
+             (choice (completing-read "Toggle repo in exclusion list: "
+                                      candidates nil nil)))
+        (when (and (stringp choice) (not (string-empty-p choice)))
+          (if (cl-find choice shipit-notifications-buffer--excluded-repos
+                       :test #'string-equal-ignore-case)
+              (progn
+                (setq shipit-notifications-buffer--excluded-repos
+                      (cl-remove choice
+                                 shipit-notifications-buffer--excluded-repos
+                                 :test #'string-equal-ignore-case))
+                (message "Repo %s removed from exclusion list" choice))
+            (push choice shipit-notifications-buffer--excluded-repos)
+            (message "Repo %s excluded" choice)))
+        (shipit-notifications-buffer--rerender))
+    (let* ((candidates (delete-dups
+                        (append shipit-notifications-buffer--selected-repo
+                                (shipit-notifications-buffer--candidate-repos))))
+           (choice (completing-read "Toggle repo in selector: "
+                                    candidates nil t)))
+      (when (and (stringp choice) (not (string-empty-p choice)))
+        (if (cl-find choice shipit-notifications-buffer--selected-repo
+                     :test #'string-equal-ignore-case)
+            (progn
+              (setq shipit-notifications-buffer--selected-repo
+                    (cl-remove choice
+                               shipit-notifications-buffer--selected-repo
+                               :test #'string-equal-ignore-case))
+              (message "Repo %s removed from selector" choice))
+          (push choice shipit-notifications-buffer--selected-repo)
+          (message "Repo %s added to selector" choice)))
+      (setq shipit-notifications-buffer--current-page 1)
+      (shipit-notifications-buffer-refresh))))
+
+(defun shipit-notifications-buffer-clear-repo (&optional arg)
+  "Clear the server-side repo filter and refresh.
+With prefix ARG, instead clear the repo exclusion list."
+  (interactive "P")
+  (cond
+   (arg
+    (setq shipit-notifications-buffer--excluded-repos nil)
+    (message "Repo exclusion list cleared")
+    (shipit-notifications-buffer--rerender))
+   (t
+    (setq shipit-notifications-buffer--selected-repo nil)
+    (setq shipit-notifications-buffer--current-page 1)
+    (message "Repo selector cleared")
+    (shipit-notifications-buffer-refresh))))
 
 (defun shipit-notifications-buffer--candidate-jira-components ()
   "Return sorted distinct Jira component names for completion.
@@ -2586,36 +2688,40 @@ silently (cached hash candidates remain)."
                                   (error-message-string err))))))))
     (sort (hash-table-keys seen) #'string<)))
 
-(defun shipit-notifications-buffer-set-jira-component ()
-  "Pick a Jira component to narrow the buffer to.
-Candidates come from the components present on Jira activities in the
-hash.  Picking the clear-label entry unscopes the filter.  Non-Jira
-activities (GitHub etc.) are unaffected — they don't carry components,
-so they always pass the filter."
-  (interactive)
-  (let* ((clear-label "<all components>")
-         (cands (shipit-notifications-buffer--candidate-jira-components)))
+(defun shipit-notifications-buffer-set-jira-component (&optional arg)
+  "Toggle a Jira component in the allow-list (or deny-list with prefix ARG)."
+  (interactive "P")
+  (let ((cands (shipit-notifications-buffer--candidate-jira-components)))
     (cond
      ((null cands)
       (user-error "No Jira components found among current notifications"))
      (t
-      (let* ((candidates (cons clear-label cands))
-             (choice (completing-read
-                      "Jira component: " candidates nil t nil nil
-                      (or shipit-notifications-buffer--selected-jira-component
-                          clear-label))))
-        (setq shipit-notifications-buffer--selected-jira-component
-              (if (string= choice clear-label) nil choice))
-        (message "Jira component filter: %s"
-                 (or shipit-notifications-buffer--selected-jira-component
-                     "all components"))
-        (shipit-notifications-buffer--rerender))))))
+      (let ((choice (completing-read
+                     (if arg "Toggle component in deny-list: "
+                       "Toggle component in allow-list: ")
+                     cands nil t)))
+        (when (and (stringp choice) (not (string-empty-p choice)))
+          (let ((sym (if arg
+                         'shipit-notifications-buffer--excluded-jira-components
+                       'shipit-notifications-buffer--selected-jira-component)))
+            (set sym
+                 (if (member choice (symbol-value sym))
+                     (remove choice (symbol-value sym))
+                   (cons choice (symbol-value sym))))
+            (message "Component %s %s: %S"
+                     choice (if arg "deny-list" "allow-list")
+                     (symbol-value sym)))
+          (shipit-notifications-buffer--rerender)))))))
 
-(defun shipit-notifications-buffer-clear-jira-component ()
-  "Clear the Jira component filter."
-  (interactive)
-  (setq shipit-notifications-buffer--selected-jira-component nil)
-  (message "Jira component filter cleared")
+(defun shipit-notifications-buffer-clear-jira-component (&optional arg)
+  "Clear the Jira component allow-list (or deny-list with prefix ARG)."
+  (interactive "P")
+  (if arg
+      (progn
+        (setq shipit-notifications-buffer--excluded-jira-components nil)
+        (message "Component deny-list cleared"))
+    (setq shipit-notifications-buffer--selected-jira-component nil)
+    (message "Component allow-list cleared"))
   (shipit-notifications-buffer--rerender))
 
 (defun shipit-notifications-buffer--candidate-types ()
@@ -2629,30 +2735,37 @@ user only sees types that would actually return matches."
           (puthash ty t seen))))
     (sort (hash-table-keys seen) #'string<)))
 
-(defun shipit-notifications-buffer-set-type ()
-  "Prompt for a type to restrict the notifications buffer client-side.
-Candidates come from the types currently visible in the hash.
-Picking the clear-label entry unscopes the filter.  Unlike the
-repo filter this does not trigger a refresh — we already have
-all data locally, we just re-render."
-  (interactive)
-  (let* ((clear-label "<all types>")
-         (candidates (cons clear-label
-                           (shipit-notifications-buffer--candidate-types)))
+(defun shipit-notifications-buffer-set-type (&optional arg)
+  "Toggle a type in the allow-list (or deny-list with prefix ARG).
+Candidates come from types currently in the hash."
+  (interactive "P")
+  (let* ((cands (shipit-notifications-buffer--candidate-types))
          (choice (completing-read
-                  "Type: " candidates nil t nil nil
-                  (or shipit-notifications-buffer--selected-type clear-label))))
-    (setq shipit-notifications-buffer--selected-type
-          (if (string= choice clear-label) nil choice))
-    (message "Type filter: %s"
-             (or shipit-notifications-buffer--selected-type "all types"))
-    (shipit-notifications-buffer--rerender)))
+                  (if arg "Toggle type in deny-list: "
+                    "Toggle type in allow-list: ")
+                  cands nil t)))
+    (when (and (stringp choice) (not (string-empty-p choice)))
+      (let ((sym (if arg
+                     'shipit-notifications-buffer--excluded-types
+                   'shipit-notifications-buffer--selected-type)))
+        (set sym
+             (if (member choice (symbol-value sym))
+                 (remove choice (symbol-value sym))
+               (cons choice (symbol-value sym))))
+        (message "Type %s %s: %S"
+                 choice (if arg "deny-list" "allow-list")
+                 (symbol-value sym)))
+      (shipit-notifications-buffer--rerender))))
 
-(defun shipit-notifications-buffer-clear-type ()
-  "Clear the type filter and re-render."
-  (interactive)
-  (setq shipit-notifications-buffer--selected-type nil)
-  (message "Type filter cleared")
+(defun shipit-notifications-buffer-clear-type (&optional arg)
+  "Clear the type allow-list (or deny-list with prefix ARG)."
+  (interactive "P")
+  (if arg
+      (progn
+        (setq shipit-notifications-buffer--excluded-types nil)
+        (message "Type deny-list cleared"))
+    (setq shipit-notifications-buffer--selected-type nil)
+    (message "Type allow-list cleared"))
   (shipit-notifications-buffer--rerender))
 
 (defun shipit-notifications-buffer--candidate-states ()
@@ -2660,66 +2773,92 @@ all data locally, we just re-render."
 Static set matching the icon-picker: open / merged / closed / draft."
   '("open" "merged" "closed" "draft"))
 
-(defun shipit-notifications-buffer-set-state ()
-  "Prompt for a PR state to restrict the notifications buffer client-side.
-Candidates: open / merged / closed / draft.  Picking the clear-label
-entry unscopes the filter.  Re-renders without refetching since the
-data is already enriched locally."
-  (interactive)
-  (let* ((clear-label "<all states>")
-         (candidates (cons clear-label
-                           (shipit-notifications-buffer--candidate-states)))
+(defun shipit-notifications-buffer-set-state (&optional arg)
+  "Toggle a PR state in the allow-list (or deny-list with prefix ARG)."
+  (interactive "P")
+  (let* ((cands (shipit-notifications-buffer--candidate-states))
          (choice (completing-read
-                  "State: " candidates nil t nil nil
-                  (or shipit-notifications-buffer--selected-state clear-label))))
-    (setq shipit-notifications-buffer--selected-state
-          (if (string= choice clear-label) nil choice))
-    (message "State filter: %s"
-             (or shipit-notifications-buffer--selected-state "all states"))
-    (shipit-notifications-buffer--rerender)))
+                  (if arg "Toggle state in deny-list: "
+                    "Toggle state in allow-list: ")
+                  cands nil t)))
+    (when (and (stringp choice) (not (string-empty-p choice)))
+      (let ((sym (if arg
+                     'shipit-notifications-buffer--excluded-states
+                   'shipit-notifications-buffer--selected-state)))
+        (set sym
+             (if (member choice (symbol-value sym))
+                 (remove choice (symbol-value sym))
+               (cons choice (symbol-value sym))))
+        (message "State %s %s: %S"
+                 choice (if arg "deny-list" "allow-list")
+                 (symbol-value sym)))
+      (shipit-notifications-buffer--rerender))))
 
-(defun shipit-notifications-buffer-clear-state ()
-  "Clear the state filter and re-render."
-  (interactive)
-  (setq shipit-notifications-buffer--selected-state nil)
-  (message "State filter cleared")
+(defun shipit-notifications-buffer-clear-state (&optional arg)
+  "Clear the state allow-list (or deny-list with prefix ARG)."
+  (interactive "P")
+  (if arg
+      (progn
+        (setq shipit-notifications-buffer--excluded-states nil)
+        (message "State deny-list cleared"))
+    (setq shipit-notifications-buffer--selected-state nil)
+    (message "State allow-list cleared"))
   (shipit-notifications-buffer--rerender))
 
-(defun shipit-notifications-buffer-set-reason ()
-  "Prompt for a reason to restrict the notifications buffer client-side.
-Candidates come from the reasons currently visible in the hash."
-  (interactive)
-  (let* ((clear-label "<all reasons>")
-         (candidates (cons clear-label
-                           (shipit-notifications-buffer--candidate-reasons)))
+(defun shipit-notifications-buffer-set-reason (&optional arg)
+  "Toggle a reason in the allow-list (or deny-list with prefix ARG)."
+  (interactive "P")
+  (let* ((cands (shipit-notifications-buffer--candidate-reasons))
          (choice (completing-read
-                  "Reason: " candidates nil t nil nil
-                  (or shipit-notifications-buffer--selected-reason clear-label))))
-    (setq shipit-notifications-buffer--selected-reason
-          (if (string= choice clear-label) nil choice))
-    (message "Reason filter: %s"
-             (or shipit-notifications-buffer--selected-reason "all reasons"))
-    (shipit-notifications-buffer--rerender)))
+                  (if arg "Toggle reason in deny-list: "
+                    "Toggle reason in allow-list: ")
+                  cands nil t)))
+    (when (and (stringp choice) (not (string-empty-p choice)))
+      (let ((sym (if arg
+                     'shipit-notifications-buffer--excluded-reasons
+                   'shipit-notifications-buffer--selected-reason)))
+        (set sym
+             (if (member choice (symbol-value sym))
+                 (remove choice (symbol-value sym))
+               (cons choice (symbol-value sym))))
+        (message "Reason %s %s: %S"
+                 choice (if arg "deny-list" "allow-list")
+                 (symbol-value sym)))
+      (shipit-notifications-buffer--rerender))))
 
-(defun shipit-notifications-buffer-clear-reason ()
-  "Clear the reason filter and re-render."
-  (interactive)
-  (setq shipit-notifications-buffer--selected-reason nil)
-  (message "Reason filter cleared")
+(defun shipit-notifications-buffer-clear-reason (&optional arg)
+  "Clear the reason allow-list (or deny-list with prefix ARG)."
+  (interactive "P")
+  (if arg
+      (progn
+        (setq shipit-notifications-buffer--excluded-reasons nil)
+        (message "Reason deny-list cleared"))
+    (setq shipit-notifications-buffer--selected-reason nil)
+    (message "Reason allow-list cleared"))
   (shipit-notifications-buffer--rerender))
 
 (defun shipit-notifications-buffer--reason-description ()
-  "Describe the reason-filter action for the transient."
-  (if shipit-notifications-buffer--selected-reason
-      (format "Reason: %s" shipit-notifications-buffer--selected-reason)
-    "Reason: <all reasons>"))
+  "Describe the reason allow- and deny-lists for the transient."
+  (let* ((allow shipit-notifications-buffer--selected-reason)
+         (deny shipit-notifications-buffer--excluded-reasons)
+         (allow-part (if allow
+                         (format "Reason: %s" (mapconcat #'identity allow ","))
+                       "Reason: <all reasons>")))
+    (if deny
+        (format "%s  -%s" allow-part (mapconcat #'identity deny ","))
+      allow-part)))
 
 (defun shipit-notifications-buffer--jira-component-description ()
-  "Describe the Jira component filter action for the transient."
-  (if shipit-notifications-buffer--selected-jira-component
-      (format "Component: %s"
-              shipit-notifications-buffer--selected-jira-component)
-    "Component: <all components>"))
+  "Describe the Jira component allow- and deny-lists for the transient."
+  (let* ((allow shipit-notifications-buffer--selected-jira-component)
+         (deny shipit-notifications-buffer--excluded-jira-components)
+         (allow-part (if allow
+                         (format "Component: %s"
+                                 (mapconcat #'identity allow ","))
+                       "Component: <all components>")))
+    (if deny
+        (format "%s  -%s" allow-part (mapconcat #'identity deny ","))
+      allow-part)))
 
 (defun shipit-notifications-buffer-toggle-actionable-only (&optional inverse)
   "Toggle the actionable-only filter and re-render.
@@ -2827,13 +2966,18 @@ clearing takes effect alongside the client-side resets."
   (interactive)
   (setq shipit-notifications-buffer--filter-text ""
         shipit-notifications-buffer--selected-repo nil
+        shipit-notifications-buffer--excluded-repos nil
         shipit-notifications-buffer--selected-type nil
+        shipit-notifications-buffer--excluded-types nil
         shipit-notifications-buffer--selected-state nil
+        shipit-notifications-buffer--excluded-states nil
         shipit-notifications-buffer--selected-reason nil
+        shipit-notifications-buffer--excluded-reasons nil
         shipit-notifications-buffer--actionable-only nil
         shipit-notifications-buffer--before-filter nil
         shipit-notifications-buffer--since-filter nil
         shipit-notifications-buffer--selected-jira-component nil
+        shipit-notifications-buffer--excluded-jira-components nil
         shipit-notifications-buffer--current-page 1)
   (message "All filters cleared")
   (shipit-notifications-buffer-refresh))
@@ -2865,22 +3009,37 @@ clearing takes effect alongside the client-side resets."
     (format "Text filter: %s" shipit-notifications-buffer--filter-text)))
 
 (defun shipit-notifications-buffer--repo-description ()
-  "Describe the repo-filter action for the transient."
-  (if shipit-notifications-buffer--selected-repo
-      (format "Repo: %s" shipit-notifications-buffer--selected-repo)
-    "Repo: <all repos>"))
+  "Describe the repo allow- and deny-lists for the transient."
+  (let* ((allow shipit-notifications-buffer--selected-repo)
+         (deny shipit-notifications-buffer--excluded-repos)
+         (allow-part (if allow
+                         (format "Repo: %s" (mapconcat #'identity allow ","))
+                       "Repo: <all repos>")))
+    (if deny
+        (format "%s  -%s" allow-part (mapconcat #'identity deny ","))
+      allow-part)))
 
 (defun shipit-notifications-buffer--type-description ()
-  "Describe the type-filter action for the transient."
-  (if shipit-notifications-buffer--selected-type
-      (format "Type: %s" shipit-notifications-buffer--selected-type)
-    "Type: <all types>"))
+  "Describe the type allow- and deny-lists for the transient."
+  (let* ((allow shipit-notifications-buffer--selected-type)
+         (deny shipit-notifications-buffer--excluded-types)
+         (allow-part (if allow
+                         (format "Type: %s" (mapconcat #'identity allow ","))
+                       "Type: <all types>")))
+    (if deny
+        (format "%s  -%s" allow-part (mapconcat #'identity deny ","))
+      allow-part)))
 
 (defun shipit-notifications-buffer--state-description ()
-  "Describe the state-filter action for the transient."
-  (if shipit-notifications-buffer--selected-state
-      (format "State: %s" shipit-notifications-buffer--selected-state)
-    "State: <all states>"))
+  "Describe the state allow- and deny-lists for the transient."
+  (let* ((allow shipit-notifications-buffer--selected-state)
+         (deny shipit-notifications-buffer--excluded-states)
+         (allow-part (if allow
+                         (format "State: %s" (mapconcat #'identity allow ","))
+                       "State: <all states>")))
+    (if deny
+        (format "%s  -%s" allow-part (mapconcat #'identity deny ","))
+      allow-part)))
 
 (defun shipit-notifications-buffer--before-filter-description ()
   "Describe the before-filter action for the transient."

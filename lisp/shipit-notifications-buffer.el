@@ -364,16 +364,22 @@ NOCONFIRM are for compatibility with `revert-buffer'."
         (goto-char (min pos (point-max)))))))
 
 (defun shipit-notifications-buffer--prune-expired-snoozes ()
-  "Drop expired entries from `--snoozed-items'.  Returns the live alist."
+  "Drop expired entries from `--snoozes'.  Returns the live alist.
+Permanent snoozes (cdr is not a number, e.g. `:permanent') are
+never pruned."
   (let ((now (float-time)))
     (setq shipit-notifications--snoozes
-          (cl-remove-if (lambda (cell) (<= (cdr cell) now))
+          (cl-remove-if (lambda (cell)
+                          (and (numberp (cdr cell))
+                               (<= (cdr cell) now)))
                         shipit-notifications--snoozes))))
 
 (defun shipit-notifications-buffer--matches-snooze-p (activity)
   "Return non-nil when ACTIVITY is NOT currently snoozed.
-A nil entry in `--snoozed-items' or an entry whose timestamp has
-elapsed lets the activity through; an unexpired snooze hides it."
+A nil entry in `--snoozes' or an entry whose timestamp has
+elapsed lets the activity through; an unexpired or permanent
+snooze hides it.  Permanent snoozes have a non-numeric `cdr'
+(typically the symbol `:permanent')."
   (let* ((repo (cdr (assq 'repo activity)))
          (type (or (cdr (assq 'type activity)) "pr"))
          (number (or (cdr (assq 'number activity))
@@ -381,8 +387,10 @@ elapsed lets the activity through; an unexpired snooze hides it."
          (key (and repo number
                    (format "%s:%s:%s" repo type number)))
          (cell (and key (assoc key shipit-notifications--snoozes)))
+         (expires (and cell (cdr cell)))
          (result (or (null cell)
-                     (<= (cdr cell) (float-time)))))
+                     (and (numberp expires)
+                          (<= expires (float-time))))))
     (when (and shipit-notifications--snoozes
                (not result))
       (shipit--debug-log "Snooze: hiding key=%S" key))
@@ -3116,7 +3124,10 @@ pre-filled).  `Z' clears or lists all active snoozes."
              (key (format "%s:%s:%s" repo type number))
              (existing (assoc key shipit-notifications--snoozes)))
         (cond
-         ((and existing (> (cdr existing) (float-time)))
+         ;; Active = either permanent (non-numeric cdr) or unexpired numeric.
+         ((and existing
+               (or (not (numberp (cdr existing)))
+                   (> (cdr existing) (float-time))))
           (setq shipit-notifications--snoozes
                 (assoc-delete-all
                  key shipit-notifications--snoozes))
@@ -3126,10 +3137,12 @@ pre-filled).  `Z' clears or lists all active snoozes."
          (t
           (let* ((hours (cond
                          ((numberp arg) arg)
-                         (arg (read-number "Snooze for how many hours? "
+                         (arg (read-number "Snooze for how many hours? (0 = permanent) "
                                            shipit-notifications-snooze-default-hours))
                          (t shipit-notifications-snooze-default-hours)))
-                 (expires (+ (float-time) (* hours 60 60))))
+                 (permanent (and (numberp hours) (<= hours 0)))
+                 (expires (if permanent :permanent
+                            (+ (float-time) (* hours 60 60)))))
             (setq shipit-notifications--snoozes
                   (cons (cons key expires)
                         (assoc-delete-all
@@ -3137,8 +3150,10 @@ pre-filled).  `Z' clears or lists all active snoozes."
             (shipit--debug-log "Snooze: stored key=%S expires=%S list=%S"
                                key expires
                                shipit-notifications--snoozes)
-            (message "Snoozed %s for %s hour%s"
-                     key hours (if (= hours 1) "" "s"))
+            (message (if permanent
+                         (format "Snoozed %s permanently" key)
+                       (format "Snoozed %s for %s hour%s"
+                               key hours (if (= hours 1) "" "s"))))
             (shipit-notifications-buffer--rerender)
             (shipit-notifications-buffer--refresh-modeline-count)))))))))
 
@@ -3154,15 +3169,20 @@ buffer-local snooze list, then pushes the value through
       (shipit--update-modeline-indicator n))))
 
 (defun shipit-notifications-buffer--format-snooze-remaining (expires)
-  "Format the snooze remaining at EXPIRES (float-time) as `Nh Mm'."
-  (let* ((seconds (max 0 (round (- expires (float-time)))))
-         (hours (/ seconds 3600))
-         (mins (/ (mod seconds 3600) 60)))
-    (cond
-     ((and (= hours 0) (= mins 0)) "<1m")
-     ((zerop hours) (format "%dm" mins))
-     ((zerop mins) (format "%dh" hours))
-     (t (format "%dh %dm" hours mins)))))
+  "Format the snooze remaining at EXPIRES as `Nh Mm' or `permanent'.
+A non-numeric EXPIRES (typically `:permanent') renders as the
+literal string `permanent'."
+  (cond
+   ((not (numberp expires)) "permanent")
+   (t
+    (let* ((seconds (max 0 (round (- expires (float-time)))))
+           (hours (/ seconds 3600))
+           (mins (/ (mod seconds 3600) 60)))
+      (cond
+       ((and (= hours 0) (= mins 0)) "<1m")
+       ((zerop hours) (format "%dm" mins))
+       ((zerop mins) (format "%dh" hours))
+       (t (format "%dh %dm" hours mins)))))))
 
 (defun shipit-notifications-buffer-clear-snoozes (&optional arg)
   "List active snoozes and unsnooze a chosen item.

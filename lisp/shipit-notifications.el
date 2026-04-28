@@ -2624,7 +2624,11 @@ bell reflects only the user's active work."
                 (key (and repo number
                           (format "%s:%s:%s" repo type number)))
                 (snooze-cell (and key snoozes (assoc key snoozes)))
-                (snoozed (and snooze-cell (> (cdr snooze-cell) now))))
+                ;; Non-numeric expires (e.g. `:permanent') means
+                ;; never expires -- always counted as snoozed.
+                (snoozed (and snooze-cell
+                              (or (not (numberp (cdr snooze-cell)))
+                                  (> (cdr snooze-cell) now)))))
            (unless snoozed
              (cond
               ((null notif) (cl-incf count))

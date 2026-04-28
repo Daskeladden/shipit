@@ -1625,4 +1625,21 @@ not as a buffer-local that dies with the buffer)."
                          '((repo . "owner/foo") (type . "pr") (number . 42)))))
         (kill-buffer buf)))))
 
+(ert-deftest test-shipit-notifications-buffer-snooze-permanent ()
+  "GIVEN a snooze stored with :permanent (non-numeric expires)
+WHEN the predicate runs and prune-expired-snoozes runs
+THEN the entry hides the activity AND survives pruning."
+  (let ((shipit-notifications--snoozes
+         (list (cons "owner/foo:pr:42" :permanent))))
+    (should-not (shipit-notifications-buffer--matches-snooze-p
+                 '((repo . "owner/foo") (type . "pr") (number . 42))))
+    (shipit-notifications-buffer--prune-expired-snoozes)
+    (should (assoc "owner/foo:pr:42" shipit-notifications--snoozes))))
+
+(ert-deftest test-shipit-notifications-buffer-format-snooze-remaining-permanent ()
+  "Format helper renders non-numeric expires as `permanent'."
+  (should (equal "permanent"
+                 (shipit-notifications-buffer--format-snooze-remaining
+                  :permanent))))
+
 (provide 'test-notifications-buffer)

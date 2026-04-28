@@ -935,6 +935,23 @@ THEN has correct fields."
       (should (equal "Fix the bug" (cdr (assq 'subject activity))))
       (should (equal "updated" (cdr (assq 'reason activity)))))))
 
+(ert-deftest test-jira-issue-to-activity-surfaces-reporter-as-author ()
+  "GIVEN a Jira issue with reporter.displayName
+WHEN converting to an activity alist
+THEN `(author . displayName)' is set so the expanded notification
+body can render an Author line."
+  (require 'shipit-issue-jira)
+  (cl-letf (((symbol-function 'shipit-issue-jira--fetch-myself)
+             (lambda (_config) nil)))
+    (let* ((config '(:project-keys ("PRJ") :display-name "MyJira"))
+           (issue '((key . "PRJ-7")
+                    (fields . ((summary . "Hi")
+                               (updated . "2026-01-01T00:00:00.000+0000")
+                               (reporter . ((displayName . "Alice Anderson")
+                                            (accountId . "abc")))))))
+           (activity (shipit-issue-jira--issue-to-activity config issue)))
+      (should (equal "Alice Anderson" (cdr (assq 'author activity)))))))
+
 (ert-deftest test-jira-issue-to-activity-includes-backend-info ()
   "GIVEN a raw Jira issue response and config
 WHEN converting to activity alist

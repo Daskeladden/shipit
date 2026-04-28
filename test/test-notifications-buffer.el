@@ -1469,4 +1469,81 @@ old root-children-are-entries case."
               (should (= 2 (length marked))))
           (kill-buffer buf))))))
 
+(ert-deftest test-shipit-notifications-buffer-insert-activity-details-shows-component ()
+  "GIVEN a Jira activity with `jira-components'
+WHEN `--insert-activity-details' renders the expanded body
+THEN a Component line appears with each component name."
+  (with-temp-buffer
+    (shipit-notifications-buffer--insert-activity-details
+     '((repo . "ZIVID")
+       (number . "ZIVID-7")
+       (type . "issue")
+       (subject . "T")
+       (reason . "updated")
+       (updated-at . "2026-04-25T10:00:00Z")
+       (jira-components . ("SDK Core" "Motion"))))
+    (let ((text (buffer-string)))
+      (should (string-match-p "Component: " text))
+      (should (string-match-p "SDK Core" text))
+      (should (string-match-p "Motion" text)))))
+
+(ert-deftest test-shipit-notifications-buffer-insert-activity-details-omits-component-when-absent ()
+  "GIVEN an activity with no jira-components
+WHEN rendering the expanded body
+THEN no Component line is inserted (avoids a stray label on GitHub items)."
+  (with-temp-buffer
+    (shipit-notifications-buffer--insert-activity-details
+     '((repo . "owner/foo")
+       (number . 1)
+       (type . "pr")
+       (subject . "T")
+       (reason . "mention")))
+    (should-not (string-match-p "Component: " (buffer-string)))))
+
+(ert-deftest test-shipit-notifications-buffer-insert-activity-details-shows-jira-author ()
+  "GIVEN a Jira activity with `author' (from reporter.displayName)
+WHEN `--insert-activity-details' renders the expanded body
+THEN an Author line appears with that name."
+  (with-temp-buffer
+    (shipit-notifications-buffer--insert-activity-details
+     '((repo . "ZIVID")
+       (number . "ZIVID-7")
+       (type . "issue")
+       (subject . "T")
+       (reason . "updated")
+       (author . "Alice Anderson")))
+    (let ((text (buffer-string)))
+      (should (string-match-p "Author: " text))
+      (should (string-match-p "Alice Anderson" text)))))
+
+(ert-deftest test-shipit-notifications-buffer-insert-activity-details-shows-pr-author ()
+  "GIVEN a GitHub PR activity enriched with `pr-author'
+WHEN `--insert-activity-details' renders the expanded body
+THEN an Author line appears, falling back through `pr-author' when
+`author' is absent."
+  (with-temp-buffer
+    (shipit-notifications-buffer--insert-activity-details
+     '((repo . "owner/foo")
+       (number . 42)
+       (type . "pr")
+       (subject . "Fix bug")
+       (reason . "review_requested")
+       (pr-author . "octocat")))
+    (let ((text (buffer-string)))
+      (should (string-match-p "Author: " text))
+      (should (string-match-p "octocat" text)))))
+
+(ert-deftest test-shipit-notifications-buffer-insert-activity-details-omits-author-when-absent ()
+  "GIVEN an activity without author or pr-author
+WHEN rendering the expanded body
+THEN no Author line is inserted."
+  (with-temp-buffer
+    (shipit-notifications-buffer--insert-activity-details
+     '((repo . "owner/foo")
+       (number . 1)
+       (type . "issue")
+       (subject . "T")
+       (reason . "subscribed")))
+    (should-not (string-match-p "Author: " (buffer-string)))))
+
 (provide 'test-notifications-buffer)

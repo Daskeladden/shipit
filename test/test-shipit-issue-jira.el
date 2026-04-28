@@ -1243,5 +1243,88 @@ THEN icon render and face keys are present."
     (should (plist-get backend :status-category-face))
     (should (plist-get backend :dashboard-columns))))
 
+(defun test-shipit-issue-jira--make-comment (author created body)
+  "Build a Jira comment alist for tests."
+  (list (cons 'author (list (cons 'displayName author)))
+        (cons 'created created)
+        (cons 'body body)))
+
+(defun test-shipit-issue-jira--make-history (author created items)
+  "Build a Jira changelog history alist for tests."
+  (list (cons 'author (list (cons 'displayName author)))
+        (cons 'created created)
+        (cons 'items items)))
+
+(defun test-shipit-issue-jira--make-issue (comments histories)
+  "Wrap COMMENTS and HISTORIES into a Jira-style raw issue alist."
+  (list (cons 'fields (list (cons 'comment (list (cons 'comments comments)))))
+        (cons 'changelog (list (cons 'histories histories)))))
+
+(ert-deftest test-shipit-issue-jira-extract-last-activity-prefers-newer-comment ()
+  "GIVEN an issue with both a comment and a changelog entry
+WHEN the comment is newer
+THEN the comment wins."
+  (let* ((comments (list (test-shipit-issue-jira--make-comment
+                          "Bob" "2026-04-27T15:00:00.000+0000" "looks good")))
+         (histories (list (test-shipit-issue-jira--make-history
+                           "Alice" "2026-04-27T14:00:00.000+0000"
+                           (list (list (cons 'field "status")
+                                       (cons 'fromString "In Progress")
+                                       (cons 'toString "Done"))))))
+         (raw (test-shipit-issue-jira--make-issue comments histories))
+         (last (shipit-issue-jira--extract-last-activity raw)))
+    (should (eq 'comment (plist-get last :type)))
+    (should (equal "Bob" (plist-get last :author)))
+    (should (equal "looks good" (plist-get last :summary)))))
+
+(ert-deftest test-shipit-issue-jira-extract-last-activity-prefers-newer-history ()
+  "GIVEN an issue with both a comment and a changelog entry
+WHEN the changelog entry is newer
+THEN the changelog entry wins and the summary is field: from -> to."
+  (let* ((comments (list (test-shipit-issue-jira--make-comment
+                          "Bob" "2026-04-27T14:00:00.000+0000" "earlier comment")))
+         (histories (list (test-shipit-issue-jira--make-history
+                           "Alice" "2026-04-27T15:00:00.000+0000"
+                           (list (list (cons 'field "status")
+                                       (cons 'fromString "In Progress")
+                                       (cons 'toString "Done"))))))
+         (raw (test-shipit-issue-jira--make-issue comments histories))
+         (last (shipit-issue-jira--extract-last-activity raw)))
+    (should (eq 'change (plist-get last :type)))
+    (should (equal "Alice" (plist-get last :author)))
+    (should (string-match-p "status: In Progress -> Done"
+                            (plist-get last :summary)))))
+
+(ert-deftest test-shipit-issue-jira-extract-last-activity-empty ()
+  "GIVEN an issue with no comments and no changelog
+WHEN extracting last activity
+THEN it returns nil."
+  (let ((raw (test-shipit-issue-jira--make-issue nil nil)))
+    (should (null (shipit-issue-jira--extract-last-activity raw)))))
+
+(ert-deftest test-shipit-issue-jira-summarize-comment-body-truncates ()
+  "GIVEN a long comment body
+WHEN summarizing
+THEN whitespace collapses and the result fits in 80 chars (with ...)."
+  (let* ((body (make-string 200 ?x))
+         (out (shipit-issue-jira--summarize-comment-body body)))
+    (should (<= (length out) 80))
+    (should (string-suffix-p "..." out))))
+
+(ert-deftest test-shipit-issue-jira-summarize-history-items-joins ()
+  "GIVEN multiple history items
+WHEN summarizing
+THEN they are comma-joined as field: from -> to."
+  (let ((items '(((field . "status")
+                  (fromString . "Open")
+                  (toString . "Done"))
+                 ((field . "assignee")
+                  (fromString . "")
+                  (toString . "Bob")))))
+    (let ((out (shipit-issue-jira--summarize-history-items items)))
+      (should (string-match-p "status: Open -> Done" out))
+      (should (string-match-p "assignee: <empty> -> Bob" out))
+      (should (string-match-p ", " out)))))
+
 (provide 'test-shipit-issue-jira)
 ;;; test-shipit-issue-jira.el ends here

@@ -55,6 +55,7 @@
 (declare-function shipit-pr--dispatch-activity-navigation "shipit-pr-actions")
 (declare-function shipit-buffer--on-section-ready "shipit-buffer")
 (declare-function shipit-issue-jira--fetch-components "shipit-issue-jira")
+(declare-function shipit-issue-jira--fetch-last-activity-async "shipit-issue-jira")
 (declare-function shipit--open-notification-issue "shipit-notifications")
 (declare-function shipit--open-notification-discussion "shipit-notifications")
 
@@ -187,6 +188,10 @@ GraphQL round-trip only happens once per session.  Cleared by
 (defun notification-activity (&rest _args)
   "Magit section identifier for notification activity timeline.")
 (put 'notification-activity 'magit-section t)
+
+(defun notification-jira-last-activity (&rest _args)
+  "Magit section identifier for the lazily-fetched Jira last-activity row.")
+(put 'notification-jira-last-activity 'magit-section t)
 
 (defun notification-description (&rest _args)
   "Magit section identifier for notification description.")
@@ -793,13 +798,145 @@ icon matches GitHub's web UI for deployment review requests."
             (if (string-empty-p number-str) "" (concat " " number-str))
             " in " repo "\n")
     (insert "    " subject "\n")
+    (let ((author (or (cdr (assq 'author activity))
+                      (cdr (assq 'pr-author activity)))))
+      (when author
+        (insert "    Author: "
+                (propertize author 'font-lock-face 'shipit-username-face)
+                "\n")))
     (when (and reason (not (string-empty-p reason)))
       (insert "    Reason: " (propertize reason 'font-lock-face 'font-lock-keyword-face) "\n"))
+    (let ((components (cdr (assq 'jira-components activity))))
+      (when components
+        (insert "    Component: "
+                (mapconcat (lambda (n)
+                             (propertize n 'font-lock-face 'font-lock-constant-face))
+                           components ", ")
+                "\n")))
     (when updated
       (insert "    Updated: " (propertize (shipit--format-timestamp updated)
                                           'font-lock-face 'shipit-timestamp-face) "\n"))
     (when url
-      (insert "    " (propertize url 'font-lock-face 'link) "\n"))))
+      (insert "    " (propertize url 'font-lock-face 'link) "\n"))
+    (when (eq (cdr (assq 'source activity)) 'jira)
+      (shipit-notifications-buffer--insert-jira-last-activity activity))))
+
+(defun shipit-notifications-buffer--format-last-activity (last)
+  "Format LAST as `<author> <verb>: <summary>' (no timestamp).
+Caller is responsible for right-aligning the timestamp column.
+Returns nil when LAST is nil so callers can substitute their own
+empty-state placeholder."
+  (when last
+    (let* ((author (or (plist-get last :author) "Unknown"))
+           (summary (or (plist-get last :summary) ""))
+           (verb (pcase (plist-get last :type)
+                   ('comment "commented")
+                   ('change "changed")
+                   (_ "did"))))
+      (concat (propertize author 'font-lock-face 'shipit-username-face)
+              " " verb
+              (if (string-empty-p summary) "" (concat ": " summary))))))
+
+(defun shipit-notifications-buffer--insert-aligned-row (indent left timestamp)
+  "Insert a single row at the current point with TIMESTAMP right-aligned.
+INDENT is the leading whitespace string, LEFT is the propertized
+content for the left column, TIMESTAMP is an ISO string or nil.
+Layout matches the PR Activity section: indent + truncated-left +
+1 space + 16-char right-aligned timestamp + 3-char magit reserve."
+  (let* ((indent-width (length indent))
+         (window-width (- (max 80 (or (window-width) 80))
+                          (or left-margin 0)))
+         (timestamp-width 16)
+         (magit-reserve 3)
+         (timestamp-col (- window-width timestamp-width magit-reserve 1))
+         (left-max-width (max 20 (- timestamp-col indent-width)))
+         (truncated (truncate-string-to-width (or left "") left-max-width))
+         (padded-left
+          (let* ((w (string-width truncated))
+                 (pad (max 0 (- left-max-width w))))
+            (concat truncated (make-string pad ?\s))))
+         (ts-text (when timestamp
+                    (substring-no-properties (shipit--format-timestamp timestamp))))
+         (padded-ts
+          (if ts-text
+              (let* ((tw (string-width ts-text))
+                     (pad (max 0 (- timestamp-width tw))))
+                (propertize (concat (make-string pad ?\s) ts-text)
+                            'font-lock-face 'shipit-timestamp-face))
+            (make-string timestamp-width ?\s))))
+    (insert indent padded-left " " padded-ts "\n")))
+
+(defun shipit-notifications-buffer--insert-jira-last-activity (activity)
+  "Insert a `notification-jira-last-activity' section and async-fill its body.
+Heading mirrors the PR activity section so the look stays
+consistent (icon + Activity label + indented body).  Spawns one
+HTTP request and replaces the placeholder body when the response
+arrives.  Stale markers (from buffer re-renders) are tolerated."
+  (require 'shipit-issue-jira)
+  (let* ((key (cdr (assq 'number activity)))
+         (config (cdr (assq 'backend-config activity)))
+         (buf (current-buffer))
+         (heading-indent 4)
+         (icon (shipit--get-pr-field-icon "activity" "\U0001f4a5"))
+         (heading (format "%s%s Activity"
+                          (make-string heading-indent ?\s) icon))
+         (body-indent (make-string (+ heading-indent 3) ?\s))
+         (sect (magit-insert-section (notification-jira-last-activity activity)
+                 (magit-insert-heading heading)
+                 (shipit-notifications-buffer--insert-aligned-row
+                  body-indent
+                  (propertize "loading..."
+                              'font-lock-face 'font-lock-comment-face)
+                  nil))))
+    (shipit--debug-log "Last-activity dispatch: key=%s base-url=%s fbound=%s"
+                       key
+                       (and config (plist-get config :base-url))
+                       (fboundp 'shipit-issue-jira--fetch-last-activity-async))
+    (cond
+     ((not (and key config))
+      (shipit--debug-log "Last-activity dispatch: skipping -- missing %s"
+                         (if (not key) "key" "config")))
+     ((not (fboundp 'shipit-issue-jira--fetch-last-activity-async))
+      (shipit--debug-log "Last-activity dispatch: fetcher not bound"))
+     (t
+      (condition-case err
+          (shipit-issue-jira--fetch-last-activity-async
+           config key
+           (lambda (last)
+             (shipit--debug-log "Last-activity callback for %s: type=%s"
+                                key (plist-get last :type))
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (condition-case inner
+                     (shipit-notifications-buffer--replace-jira-last-activity-body
+                      sect body-indent last)
+                   (error
+                    (shipit--debug-log "Last-activity render failed: %S" inner)))))))
+        (error
+         (shipit--debug-log "Last-activity dispatch raised: %S" err)))))))
+
+(defun shipit-notifications-buffer--replace-jira-last-activity-body (section indent last)
+  "Replace SECTION's body with the formatted LAST activity.
+INDENT is the body indent used at insertion time so the
+replacement matches the surrounding column layout.  Renders the
+timestamp right-aligned with `shipit-timestamp-face' so the row
+matches the PR activity section."
+  (let* ((content (oref section content))
+         (end (oref section end))
+         (left (or (shipit-notifications-buffer--format-last-activity last)
+                   (propertize "(no activity)"
+                               'font-lock-face 'font-lock-comment-face)))
+         (timestamp (and last (plist-get last :timestamp))))
+    (when (and content end (markerp content) (markerp end)
+               (marker-position content) (marker-position end))
+      (let ((inhibit-read-only t)
+            (content-pos (marker-position content)))
+        (save-excursion
+          (delete-region content-pos (marker-position end))
+          (goto-char content-pos)
+          (shipit-notifications-buffer--insert-aligned-row
+           indent left timestamp)
+          (oset section end (point-marker)))))))
 
 (defun shipit-notifications-buffer--insert-description (description)
   "Insert DESCRIPTION as expandable body content.

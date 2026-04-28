@@ -926,6 +926,87 @@ Calls CALLBACK with the normalized comment list."
            (funcall callback
                     (mapcar #'shipit-issue-jira--normalize-comment comments))))))))
 
+(defun shipit-issue-jira--summarize-history-items (items)
+  "Render Jira changelog ITEMS to a one-line summary string.
+ITEMS is the raw `items' array from a single `histories' entry.
+Each item becomes `field: from -> to'; multiple items are
+comma-joined."
+  (mapconcat
+   (lambda (item)
+     (let* ((field (or (cdr (assq 'field item)) "field"))
+            (from (cdr (assq 'fromString item)))
+            (to (cdr (assq 'toString item)))
+            (from-s (if (and from (not (string-empty-p from))) from "<empty>"))
+            (to-s (if (and to (not (string-empty-p to))) to "<empty>")))
+       (format "%s: %s -> %s" field from-s to-s)))
+   (append items nil) ", "))
+
+(defun shipit-issue-jira--summarize-comment-body (body)
+  "Render Jira comment BODY (string or ADF) to a short single line.
+ADF nodes are flattened via `--adf-to-text', whitespace is
+collapsed, and the result is truncated to 80 chars."
+  (let ((text (cond
+               ((stringp body) body)
+               ((and body (listp body))
+                (string-trim (shipit-issue-jira--adf-to-text body)))
+               (t ""))))
+    (setq text (replace-regexp-in-string "[\n\r\t ]+" " " text))
+    (if (> (length text) 80)
+        (concat (substring text 0 77) "...")
+      text)))
+
+(defun shipit-issue-jira--extract-last-activity (raw)
+  "Pick the most recent activity from a RAW issue response with
+`fields=comment&expand=changelog'.  Returns nil when neither
+stream has any entries.  The result is a plist:
+  (:type comment|change :author NAME :timestamp ISO :summary STR)."
+  (let* ((fields (cdr (assq 'fields raw)))
+         (comments (append (cdr (assq 'comments
+                                      (cdr (assq 'comment fields))))
+                           nil))
+         (changelog (cdr (assq 'changelog raw)))
+         (histories (append (cdr (assq 'histories changelog)) nil))
+         ;; Both arrays come back oldest-first; the last element is newest.
+         (last-comment (car (last comments)))
+         (last-history (car (last histories)))
+         (c-time (and last-comment (cdr (assq 'created last-comment))))
+         (h-time (and last-history (cdr (assq 'created last-history)))))
+    (cond
+     ((and c-time h-time (string> c-time h-time))
+      (list :type 'comment
+            :author (cdr (assq 'displayName
+                               (cdr (assq 'author last-comment))))
+            :timestamp c-time
+            :summary (shipit-issue-jira--summarize-comment-body
+                      (cdr (assq 'body last-comment)))))
+     (last-history
+      (list :type 'change
+            :author (cdr (assq 'displayName
+                               (cdr (assq 'author last-history))))
+            :timestamp h-time
+            :summary (shipit-issue-jira--summarize-history-items
+                      (cdr (assq 'items last-history)))))
+     (last-comment
+      (list :type 'comment
+            :author (cdr (assq 'displayName
+                               (cdr (assq 'author last-comment))))
+            :timestamp c-time
+            :summary (shipit-issue-jira--summarize-comment-body
+                      (cdr (assq 'body last-comment)))))
+     (t nil))))
+
+(defun shipit-issue-jira--fetch-last-activity-async (config issue-key callback)
+  "Fetch ISSUE-KEY's most recent activity (comment or changelog entry).
+Calls CALLBACK with a plist or nil when the issue has no activity
+at all.  ISSUE-KEY is a Jira issue key string."
+  (let ((path (format "/rest/api/3/issue/%s?fields=comment&expand=changelog"
+                      issue-key)))
+    (shipit-issue-jira--api-request-async
+     config path
+     (lambda (raw)
+       (funcall callback
+                (and raw (shipit-issue-jira--extract-last-activity raw)))))))
+
 (defun shipit-issue-jira--search-page (config jql page-size fields next-page-token)
   "Fetch one page of Jira search results.
 Uses /rest/api/3/search/jql with cursor-based pagination.
@@ -1145,11 +1226,12 @@ Returns plist (:type issue :number KEY) or nil."
 ;;; Notification Polling
 
 (defconst shipit-issue-jira--notifications-fields
-  "key,summary,status,updated,components,assignee,comment,description"
+  "key,summary,status,updated,components,assignee,reporter,comment,description"
   "JQL `fields=' value used by notification polls.
 `components' enables component-based filtering; `assignee',
 `comment' and `description' feed involvement detection so each
-activity gets a real reason (mention/comment/assigned/updated).")
+activity gets a real reason (mention/comment/assigned/updated);
+`reporter' surfaces the author in the expanded body.")
 
 (defvar shipit-issue-jira--myself-cache (make-hash-table :test 'equal)
   "Cache mapping Jira base-url to the current user's account-id.
@@ -1318,6 +1400,7 @@ CONFIG provides context for display name."
                     (shipit--debug-log
                      "Jira involvement detection failed for %s: %S" key err)
                     "updated")))
+         (author (cdr (assq 'displayName (cdr (assq 'reporter fields)))))
          (base-url (plist-get config :base-url))
          (display-name (or (plist-get config :display-name)
                            (car (plist-get config :project-keys))
@@ -1333,6 +1416,7 @@ CONFIG provides context for display name."
       (backend-id . jira)
       (backend-config . ,config)
       (jira-components . ,components)
+      (author . ,author)
       (browse-url . ,(when base-url
                        (format "%s/browse/%s"
                                (string-trim-right base-url "/") key)))

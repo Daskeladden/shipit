@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.5.0 (2026-04-28)
+
+### Features
+
+- **Notifications buffer overhaul.** Major rework of the unread queue:
+  - **Filter transient (`f`)** with scope toggle, pagination, and exact server totals.
+  - **Selectors vs filters.** Selectors decide what to fetch (repo, scope). Filters narrow on the client (type, state, reason, component). Each selector has an allow list and a deny list. `C-u` on a toggle flips a value into deny.
+  - **Auto-mark rules engine.** `m a` adds a rule prefilled from the row at point, with a live strike-through preview of which rows the rule would mark. Rules support `:not`, AND-compose, and edit-in-place. They apply on add — no separate `u` step.
+  - **`m` transient** for mark actions. Bulk shortcuts mark only actionable or only non-actionable rows. `m M` shows a strike-through preview before committing. `m M` on the snoozed-group heading scopes to that group.
+  - **Snooze on rows.** `z` snoozes (prefix sets hours, fractions allowed). `Z` lists snoozes and unsnoozes the one at point. Permanent variant via the `z` transient's `p`. Snoozed rows live in a collapsible group with a time-left column. Counts show in the header bracket and the group footer. The modeline bell ignores snoozes. Snoozes persist across Emacs restarts and auto-clean when the item is resolved.
+  - **Jira component is a first-class dimension.** Filter selector value and auto-mark rule condition. Auto-mark rules apply to Jira activities too.
+  - **Expanded Jira body** shows Author, components, and the most recent comment or status change.
+  - **Async backends + icons** for new notification types (workflow runs, discussions). `RET` on a workflow run opens its actions buffer.
+  - **Modeline bell** counts unread, not total, and stays visible in all-scope.
+
+- **Difftastic via `d` transient.** `d` on a file opens a diff-mode transient: plain, with comments, or difftastic. Difftastic only shows when the package is installed. Missing PR SHAs are fetched on confirmation.
+
+- **READMEs render as outlined documents.** Markdown and org headings nest as collapsible magit sections. Inline images cap at the wrap-column width and honor `<img width>`. SVG badges, animated GIFs, and `/blob/` images render correctly. Mp4 video links become clickable buttons. The same heading-as-section rendering also applies to issue descriptions.
+
+- **Branch creation from an issue.** `b` opens a transient that creates a git branch named from the issue (project key + slugged title) in the configured repo dir, off a configurable base ref. The working tree is left alone.
+
+- **Eldoc preview on issue references.** Hovering on `PRJ-1234` shows the issue title in the echo area.
+
+- **Show Jira components on the issue buffer.**
+
+- **Deep-link to a workflow run.** `M-x shipit-open-actions-run` jumps directly to a run.
+
+### Performance
+
+- **SVG icon cache** survives rerenders.
+- **Re-entry guard** on the rerender hook stops a spinning loop on large buffers.
+- **Live filter** debounces input and dedupes hash walks.
+
+### Bug fixes
+
+- **Markdown file hangs** in the PR diff (regression from v1.4.0) fixed.
+- **Linked PRs** now resolve under Jira-backed issues.
+- **Assignee label** aligned with other metadata rows.
+- **Worktree probe** returns `nil` when run outside any clone.
+- **Nav to a comment** loads all unread pages and refreshes the issue buffer if the comment is still not visible.
+- **Repo-buffer About line** wraps at 80 columns.
+- **Pagination** refuses to advance past the last page in all-scope. The buffer always uses 50 per page (GitHub's cap).
+- **Activity-nav** unblocks when opening a PR from notifications.
+- **`z` replaces a snooze** instead of toggling it off.
+- **GitHub edge-cache flicker.** Items that vanish for one poll and reappear on the next no longer flicker out.
+- **Snooze list** survives buffer kill and reopen.
+- **Snooze group** starts expanded so `n` enters it, with a reinforced invisibility overlay so the group icon doesn't leak through on collapse.
+- **Interactive `g`** bypasses the ETag cache, so a manual refresh actually round-trips.
+
+---
+
 ## v1.4.0 (2026-04-20)
 
 ### ⚠️ Breaking: dependency bump

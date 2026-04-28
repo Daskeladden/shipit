@@ -753,6 +753,16 @@ If SKIP-REACTIONS is non-nil, reactions are not rendered (caller will handle the
   (let* ((raw-body (shipit--clean-text (or (cdr (assq 'body comment)) "")))
          (comment-type (cdr (assq 'shipit-comment-type comment)))
          (review-state (cdr (assq 'review-state comment)))
+         ;; Cap inline images (screenshots, badges, gifs) to the 80-col
+         ;; wrap envelope used by the comment text.  Measured here in
+         ;; the destination buffer's face — the renderer otherwise
+         ;; falls back to its `with-temp-buffer' default which can
+         ;; differ from this buffer's.
+         (shipit--image-target-width
+          (or (and (boundp 'shipit--image-target-width) shipit--image-target-width)
+              (if (fboundp 'string-pixel-width)
+                  (string-pixel-width (make-string 80 ?M))
+                (* 80 (frame-char-width)))))
          ;; Use the common rendering function
          (indented-body (shipit--render-comment-body comment indent-level))
          (body-indent-str (make-string (+ indent-level 0) ?\s)))
@@ -1630,8 +1640,13 @@ URL, leaving the surrounding fragments visible in the buffer."
      (lambda (url) (save-match-data (shipit--render-video-link url)))
      text nil t)))
 
-(defun shipit--create-image-display (url alt-text)
-  "Create an image display for URL with ALT-TEXT."
+(defun shipit--create-image-display (url alt-text &optional explicit-width)
+  "Create an image display for URL with ALT-TEXT.
+When EXPLICIT-WIDTH is a positive integer (e.g. parsed from an
+`<img width=\"N\">' attribute) the image is sized to it exactly,
+overriding the wrap-column heuristic.  Without it the precedence
+chain (shipit--image-target-width, col-width, shipit-image-max-width,
+window-body-width) applies."
   ;; Strip markdown backslash escapes (e.g. \_ → _) from URLs
   (setq url (replace-regexp-in-string "\\\\\\([_*()~>#+.!|-]\\)" "\\1" url))
   ;; GitHub `/blob/' URLs return HTML — rewrite to raw.githubusercontent.com.
@@ -1657,7 +1672,17 @@ URL, leaving the surrounding fragments visible in the buffer."
                    (col-width (when (and (boundp 'shipit--image-base-repo)
                                          shipit--image-base-repo)
                                 (* 80 (frame-char-width))))
-                   (max-w (or col-width
+                   ;; Width precedence:
+                   ;; 1. EXPLICIT-WIDTH from the source (e.g. `<img width=N>')
+                   ;;    — the author asked for this size, honor it.
+                   ;; 2. `shipit--image-target-width' bound by the caller.
+                   ;; 3. col-width / shipit-image-max-width / window-body-width.
+                   (max-w (or (and (integerp explicit-width)
+                                   (> explicit-width 0)
+                                   explicit-width)
+                              (and (boundp 'shipit--image-target-width)
+                                   shipit--image-target-width)
+                              col-width
                               shipit-image-max-width
                               (window-body-width nil t)))
                    (max-h (or shipit-image-max-height
@@ -1670,16 +1695,15 @@ URL, leaving the surrounding fragments visible in the buffer."
                    ;; up.  If gifsicle isn't installed we fall back to
                    ;; in-Emacs `:scale'.
                    ;; Width resolution order:
-                   ;; 1. `shipit--image-target-width' bound by the caller.
-                   ;;    The caller knows the destination buffer's face and
-                   ;;    has already measured the wrap-column width — we
-                   ;;    trust it directly without applying the defcustom
-                   ;;    cap, since the cap is a fallback heuristic.
-                   ;; 2. Otherwise, `string-pixel-width' (or
-                   ;;    `frame-char-width') in the current buffer, capped
-                   ;;    by `shipit-animated-gif-max-width' if set.
+                   ;; 1. EXPLICIT-WIDTH from source (`<img width=N>').
+                   ;; 2. `shipit--image-target-width' bound by the caller.
+                   ;; 3. `string-pixel-width' / `frame-char-width' in the
+                   ;;    current buffer, capped by `shipit-animated-gif-max-width'.
                    (gif-target-w
-                    (or (and (boundp 'shipit--image-target-width)
+                    (or (and (integerp explicit-width)
+                             (> explicit-width 0)
+                             explicit-width)
+                        (and (boundp 'shipit--image-target-width)
                              shipit--image-target-width)
                         (let ((natural
                                (cond
@@ -1973,9 +1997,15 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
                  (let ((src (when (string-match "src=\"\\([^\"]+\\)\"" img-tag)
                               (match-string 1 img-tag)))
                        (alt (when (string-match "alt=\"\\([^\"]*\\)\"" img-tag)
-                              (match-string 1 img-tag))))
+                              (match-string 1 img-tag)))
+                       ;; GitHub authors set explicit display sizes via
+                       ;; `<img width="N">' on issue/PR screenshots.
+                       ;; Honor it so shipit doesn't upscale to fill the
+                       ;; column when the author asked for a smaller size.
+                       (width (when (string-match "width=\"\\([0-9]+\\)\"" img-tag)
+                                (string-to-number (match-string 1 img-tag)))))
                    (if src
-                       (shipit--create-image-display src (or alt "image"))
+                       (shipit--create-image-display src (or alt "image") width)
                      img-tag))))
              result nil t))
       ;; Process linked images [![alt](img-url)](link-url) BEFORE plain images

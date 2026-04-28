@@ -617,7 +617,16 @@ buffer-local overrides so the issue fetches use the correct backend
                 (shipit--get-pr-field-icon "description" "📝")
                 (propertize "Description:" 'font-lock-face 'markdown-metadata-key-face)))
       (magit-insert-section-body
-        (let ((description-start (point)))
+        (let* ((description-start (point))
+               ;; Cap inline images (PNG screenshots, GIFs, badges) to
+               ;; the same 80-col wrap envelope the description text
+               ;; uses.  Measured in THIS buffer's face — measuring in
+               ;; the renderer's `with-temp-buffer' would use a
+               ;; different default face.
+               (shipit--image-target-width
+                (if (fboundp 'string-pixel-width)
+                    (string-pixel-width (make-string 80 ?M))
+                  (* 80 (frame-char-width)))))
           (if (not clean-body)
               (insert (propertize "   No description provided\n" 'font-lock-face 'italic))
             (if (string-match-p "<details>" clean-body)

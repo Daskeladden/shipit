@@ -891,9 +891,17 @@ REPO is the repository name (owner/repo format)."
                                                      shipit-pr-body ,clean-body
                                                      shipit-repo ,repo)))
       (magit-insert-section-body
-        (let ((description-start (point))
-              (is-empty (not clean-body))
-              (has-details (and clean-body (string-match-p "<details>" clean-body))))
+        (let* ((description-start (point))
+               (is-empty (not clean-body))
+               (has-details (and clean-body (string-match-p "<details>" clean-body)))
+               ;; Cap inline images to the 80-col wrap envelope used by
+               ;; the rest of the description body.  Measured here in
+               ;; the destination buffer's face so the renderer's
+               ;; `with-temp-buffer' default doesn't shrink it.
+               (shipit--image-target-width
+                (if (fboundp 'string-pixel-width)
+                    (string-pixel-width (make-string 80 ?M))
+                  (* 80 (frame-char-width)))))
         (if is-empty
             (insert (propertize "   No description provided\n" 'font-lock-face 'italic))
           (if has-details

@@ -2154,6 +2154,20 @@ checks (i.e., the activity's `subject')."
               (push mov
                     shipit-notifications-buffer--auto-mark-preview-overlays))))))))
 
+(defun shipit-notifications-buffer--for-each-entry (fn)
+  "Call FN on every `notification-entry' section in the buffer's tree.
+Walks recursively so group-by-repo's nested entries (which sit
+under `notification-repo' wrappers) are reached too -- a flat
+`(oref magit-root-section children)' loop misses them."
+  (when (bound-and-true-p magit-root-section)
+    (cl-labels ((walk (s)
+                  (cond
+                   ((eq (oref s type) 'notification-entry)
+                    (funcall fn s))
+                   (t
+                    (dolist (c (oref s children)) (walk c))))))
+      (walk magit-root-section))))
+
 (defun shipit-notifications-buffer--apply-auto-mark-preview (regex)
   "Highlight notification rows whose subject matches REGEX.
 Each matching row gets a strike-through overlay; the actual
@@ -2166,18 +2180,17 @@ the input parses again, instead of a flurry of error messages."
   (when (and regex
              (stringp regex)
              (not (string-empty-p regex))
-             (bound-and-true-p magit-root-section)
              (condition-case nil
                  (progn (string-match-p regex "") t)
                (error nil)))
-    (dolist (child (oref magit-root-section children))
-      (when (eq (oref child type) 'notification-entry)
-        (let* ((activity (oref child value))
-               (subj (cdr (assq 'subject activity))))
-          (when (and (stringp subj) (string-match-p regex subj))
-            (shipit-notifications-buffer--add-preview-row-overlay child)
-            (shipit-notifications-buffer--add-preview-match-overlays
-             child regex)))))))
+    (shipit-notifications-buffer--for-each-entry
+     (lambda (section)
+       (let* ((activity (oref section value))
+              (subj (cdr (assq 'subject activity))))
+         (when (and (stringp subj) (string-match-p regex subj))
+           (shipit-notifications-buffer--add-preview-row-overlay section)
+           (shipit-notifications-buffer--add-preview-match-overlays
+            section regex)))))))
 
 (defun shipit-notifications-buffer--apply-auto-mark-rule-preview (rule)
   "Highlight notification rows that RULE (a plist) would match.
@@ -2190,23 +2203,22 @@ the input parses again."
              (listp rule)
              (keywordp (car-safe rule))
              (zerop (mod (length rule) 2))
-             (bound-and-true-p magit-root-section)
              (fboundp 'shipit--auto-mark-rule-matches-activity-p))
     (let ((title-regex (plist-get rule :title)))
-      (dolist (child (oref magit-root-section children))
-        (when (eq (oref child type) 'notification-entry)
-          (let ((activity (oref child value)))
-            (when (condition-case nil
-                      (shipit--auto-mark-rule-matches-activity-p rule activity)
-                    (error nil))
-              (shipit-notifications-buffer--add-preview-row-overlay child)
-              (when (and (stringp title-regex)
-                         (not (string-empty-p title-regex))
-                         (condition-case nil
-                             (progn (string-match-p title-regex "") t)
-                           (error nil)))
-                (shipit-notifications-buffer--add-preview-match-overlays
-                 child title-regex)))))))))
+      (shipit-notifications-buffer--for-each-entry
+       (lambda (section)
+         (let ((activity (oref section value)))
+           (when (condition-case nil
+                     (shipit--auto-mark-rule-matches-activity-p rule activity)
+                   (error nil))
+             (shipit-notifications-buffer--add-preview-row-overlay section)
+             (when (and (stringp title-regex)
+                        (not (string-empty-p title-regex))
+                        (condition-case nil
+                            (progn (string-match-p title-regex "") t)
+                          (error nil)))
+               (shipit-notifications-buffer--add-preview-match-overlays
+                section title-regex)))))))))
 
 (defun shipit-notifications-buffer--read-auto-mark-rule-with-preview (default)
   "Read an auto-mark rule from the minibuffer, prefilled with DEFAULT.

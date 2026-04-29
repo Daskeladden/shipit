@@ -2848,6 +2848,27 @@ then refreshes."
            shipit-notifications-buffer--display-scope)
   (shipit-notifications-buffer-refresh))
 
+(defun shipit-notifications-buffer--clear-github-activities ()
+  "Drop GitHub activities from the global hash, keep backend entries.
+Page navigation in `all' scope is supposed to be windowed -- one
+page replaces the previous page's view -- but the merge step's
+1-poll grace period (which tolerates GitHub's edge-cache flicker)
+keeps the prior page's items around, so paging forward looked
+like accumulation: page 1 (50 items) + page 2 (50 items) =
+100 items in the buffer.  Clearing GitHub entries before each
+page request restores the windowed behavior; backend activities
+\(Jira / RSS / GitLab) are left alone since they have their own
+lifecycle."
+  (when (and (boundp 'shipit--notification-pr-activities)
+             (hash-table-p shipit--notification-pr-activities))
+    (let ((to-remove '()))
+      (maphash (lambda (k a)
+                 (when (cdr (assq 'notification a))
+                   (push k to-remove)))
+               shipit--notification-pr-activities)
+      (dolist (k to-remove)
+        (remhash k shipit--notification-pr-activities)))))
+
 (defun shipit-notifications-buffer-page-forward ()
   "Advance to the next page of notifications in `all' scope.
 Windowed: the buffer replaces the current view with only page N+1,
@@ -2863,6 +2884,7 @@ last page when the total count is known."
                (>= shipit-notifications-buffer--current-page max-page))
       (user-error "Already on the last page (%d)" max-page)))
   (cl-incf shipit-notifications-buffer--current-page)
+  (shipit-notifications-buffer--clear-github-activities)
   (message "Loading page %d..." shipit-notifications-buffer--current-page)
   (shipit-notifications-buffer-refresh))
 
@@ -2878,6 +2900,7 @@ Refuses when already at page 1."
   (when (<= shipit-notifications-buffer--current-page 1)
     (user-error "Already at page 1"))
   (cl-decf shipit-notifications-buffer--current-page)
+  (shipit-notifications-buffer--clear-github-activities)
   (message "Going back to page %d..." shipit-notifications-buffer--current-page)
   (shipit-notifications-buffer-refresh))
 
@@ -2898,6 +2921,7 @@ the requested `per_page'."
   (when (= shipit-notifications-buffer--current-page 1)
     (user-error "Already at page 1"))
   (setq shipit-notifications-buffer--current-page 1)
+  (shipit-notifications-buffer--clear-github-activities)
   (message "Going to page 1...")
   (shipit-notifications-buffer-refresh))
 
@@ -2916,6 +2940,7 @@ still in flight."
     (when (= shipit-notifications-buffer--current-page last)
       (user-error "Already at the last page (%d)" last))
     (setq shipit-notifications-buffer--current-page last)
+    (shipit-notifications-buffer--clear-github-activities)
     (message "Going to last page %d..." last)
     (shipit-notifications-buffer-refresh)))
 
@@ -2939,6 +2964,7 @@ numbers signal a user-error."
     (when (and last (> page last))
       (user-error "Page %d exceeds last page %d" page last)))
   (setq shipit-notifications-buffer--current-page page)
+  (shipit-notifications-buffer--clear-github-activities)
   (message "Going to page %d..." page)
   (shipit-notifications-buffer-refresh))
 

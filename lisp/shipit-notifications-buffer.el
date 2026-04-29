@@ -145,6 +145,12 @@ whose children are the usual `notification-entry' rows.  Repos are
 ordered by the `updated-at' of their newest entry, so the most
 recently active repo is at the top.")
 
+(defvar-local shipit-notifications-buffer--hide-snoozed-section nil
+  "When non-nil, the snoozed-group footer is omitted from the buffer.
+Toggled from the snooze transient (`z t').  The header bracket
+\(`[snoozed: N]') still shows so the user knows snoozes exist;
+hiding the section just removes the inline list.")
+
 (defvar-local shipit-notifications-buffer--excluded-reasons nil
   "List of reasons hidden from the notifications buffer.
 Inverse of `--selected-reason'.")
@@ -871,9 +877,11 @@ nested under per-repo wrapper sections."
         (shipit-notifications-buffer--insert-notification activity))))
     ;; Snoozed-group footer (unread scope only).  Shows what the user
     ;; deferred so they can see + unsnooze without the `Z' completion
-    ;; round-trip.  Collapsed by default.
+    ;; round-trip.  Collapsed by default.  Hidden entirely when the
+    ;; user toggles it off via the snooze transient.
     (when (and (eq shipit-notifications-buffer--display-scope 'unread)
-               shipit-notifications--snoozes)
+               shipit-notifications--snoozes
+               (not shipit-notifications-buffer--hide-snoozed-section))
       (shipit-notifications-buffer--insert-snoozed-group))))
 
 (defun shipit-notifications-buffer--activity-resolved-p (activity)
@@ -3503,6 +3511,18 @@ literal string `permanent'."
   (interactive) (shipit-notifications-buffer-snooze-at-point 0))
 
 ;;;###autoload (autoload 'shipit-notifications-buffer-snooze-menu "shipit-notifications-buffer" nil t)
+(defun shipit-notifications-buffer-toggle-snoozed-section ()
+  "Toggle the inline snoozed-group footer in the notifications buffer.
+The header bracket `[snoozed: N]' is unaffected -- it always shows
+the count so the user can tell snoozes exist; this just hides or
+shows the inline list of snoozed rows."
+  (interactive)
+  (setq shipit-notifications-buffer--hide-snoozed-section
+        (not shipit-notifications-buffer--hide-snoozed-section))
+  (message "Snoozed section: %s"
+           (if shipit-notifications-buffer--hide-snoozed-section "hidden" "shown"))
+  (shipit-notifications-buffer--rerender))
+
 (transient-define-prefix shipit-notifications-buffer-snooze-menu ()
   "Snooze controls for the notifications buffer."
   [["Snooze row at point"
@@ -3515,6 +3535,7 @@ literal string `permanent'."
     ("p" "Permanent" shipit-notifications-buffer-snooze-permanent)]
    ["Manage"
     ("l" "List / unsnooze" shipit-notifications-buffer-clear-snoozes)
+    ("t" "Toggle snoozed section" shipit-notifications-buffer-toggle-snoozed-section)
     ("C" "Clear all" (lambda () (interactive)
                        (shipit-notifications-buffer-clear-snoozes '(4))))
     ("q" "Quit" transient-quit-one)]])

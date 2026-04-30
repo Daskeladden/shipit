@@ -1193,6 +1193,35 @@ Used for marking notifications as read, which returns 205 with empty body."
           t
         (error "API returned HTTP %s" status-code)))))
 
+(defun shipit-pr-github--api-request-patch-no-json-async (endpoint)
+  "Fire-and-forget async variant of `--api-request-patch-no-json'.
+Used by the notifications buffer's deferred mark-as-read so a
+batch commit doesn't block the editor on N synchronous PATCHes.
+Errors are logged via `shipit--debug-log'; the caller does not
+wait on success."
+  (when (shipit--github-token)
+    (let* ((url (concat shipit-api-url endpoint))
+           (headers (list (shipit--get-auth-header)
+                          '("Accept" . "application/vnd.github.v3+json")))
+           (headers (remove nil headers)))
+      (shipit--debug-log "API REQUEST (PATCH-NO-JSON, async): %s" url)
+      (shipit--url-retrieve-async
+       url "PATCH" headers nil
+       (lambda (_data)
+         (shipit--debug-log "Async PATCH succeeded: %s" url))
+       (lambda (err)
+         (shipit--debug-log "Async PATCH failed (%s): %S" url err))))))
+
+(defun shipit-pr-github--mark-notification-read-async (config notification-id)
+  "Async variant of `--mark-notification-read'.
+Fire-and-forget: returns immediately, the network PATCH happens
+in the background.  Used by the notifications buffer's batch
+commit so a 50-row mark doesn't serialize 50 synchronous PATCHes."
+  (ignore config)
+  (let ((endpoint (format "/notifications/threads/%s" notification-id)))
+    (shipit--debug-log "GitHub PR backend: marking notification %s as read (async)" notification-id)
+    (shipit-pr-github--api-request-patch-no-json-async endpoint)))
+
 (defun shipit-pr-github--fetch-notifications (config params &optional force-fresh)
   "Fetch notifications using CONFIG with query PARAMS.
 If FORCE-FRESH is non-nil, bypasses ETag caching.
@@ -1436,6 +1465,7 @@ PAGE defaults to 1.  Returns the parsed JSON list."
        :fetch-action-run-info-async #'shipit-pr-github--fetch-action-run-info-async
        :fetch-commit-check-runs-async #'shipit-pr-github--fetch-commit-check-runs-async
        :mark-notification-read #'shipit-pr-github--mark-notification-read
+       :mark-notification-read-async #'shipit-pr-github--mark-notification-read-async
        :fetch-notifications #'shipit-pr-github--fetch-notifications
        :browse-discussion-url #'shipit-pr-github--browse-discussion-url
        :fetch-user-teams #'shipit-pr-github--fetch-user-teams

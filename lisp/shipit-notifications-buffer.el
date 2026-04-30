@@ -151,6 +151,20 @@ Toggled from the snooze transient (`z t').  The header bracket
 \(`[snoozed: N]') still shows so the user knows snoozes exist;
 hiding the section just removes the inline list.")
 
+(defvar-local shipit-notifications-buffer--pending-mark-batches nil
+  "Pending mark-as-read batches waiting for their undo window to expire.
+Each entry is (BATCH-ID TIMER ACTIVITY-KEYS DESC) where:
+- BATCH-ID is a unique symbol used to identify the batch from the
+  custom undo entry on `buffer-undo-list'.
+- TIMER is the `run-with-timer' handle that will fire the
+  server PATCH at the end of the window.
+- ACTIVITY-KEYS is the list of `repo:type:number' keys to mark.
+- DESC is a human-readable description for messaging.
+
+While a batch is pending, its rows are hidden from the buffer via
+`--matches-pending-mark-p'.  `undo' invokes the batch's recorded
+custom entry to cancel the timer and bring the rows back.")
+
 (defvar-local shipit-notifications-buffer--excluded-reasons nil
   "List of reasons hidden from the notifications buffer.
 Inverse of `--selected-reason'.")
@@ -257,6 +271,19 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "TAB") #'shipit-notifications-buffer-toggle-section)
     (define-key map [tab] #'shipit-notifications-buffer-toggle-section)
     (define-key map (kbd "m") #'shipit-notifications-buffer-mark-menu)
+    ;; Undo wrappers: the notifications buffer is read-only, so the
+    ;; vanilla `undo' command short-circuits before reaching the
+    ;; `(apply ...)' entries our scheduled mark-batches push onto
+    ;; `buffer-undo-list'.  Remap the common undo commands to a
+    ;; wrapper that binds `inhibit-read-only' first so undo works
+    ;; with whatever package the user has -- vanilla, undo-tree,
+    ;; undo-fu, undo-only, etc.
+    (define-key map [remap undo] #'shipit-notifications-buffer-undo)
+    (define-key map [remap undo-only] #'shipit-notifications-buffer-undo)
+    (define-key map [remap undo-tree-undo] #'shipit-notifications-buffer-undo)
+    (define-key map [remap undo-fu-only-undo] #'shipit-notifications-buffer-undo)
+    (define-key map [remap undo-tree-visualize]
+                #'shipit-notifications-buffer-undo-tree-visualize)
     (define-key map (kbd "n") #'magit-section-forward)
     (define-key map (kbd "p") #'magit-section-backward)
     (define-key map (kbd "M-n") #'shipit-notifications-buffer-page-forward)
@@ -326,6 +353,10 @@ ETag caching enabled to be polite).  Re-renders using the buffer
 local display scope, current page, and filters.  IGNORE-AUTO and
 NOCONFIRM are for compatibility with `revert-buffer'."
   (interactive)
+  ;; Commit any pending mark-as-read batches before fetching new
+  ;; data.  Otherwise the timer races the fetch and the next poll
+  ;; could resurface rows the user already chose to mark.
+  (shipit-notifications-buffer--commit-all-pending-marks)
   (let ((force-fresh (called-interactively-p 'any))
         (scope shipit-notifications-buffer--display-scope)
         (page shipit-notifications-buffer--current-page)
@@ -457,6 +488,25 @@ section is suppressed because the only entry was marked read."
             (cl-incf live)))))
     live))
 
+(defun shipit-notifications-buffer--activity-key (activity)
+  "Return the `repo:type:number' key for ACTIVITY, or nil."
+  (let ((repo (cdr (assq 'repo activity)))
+        (type (or (cdr (assq 'type activity)) "pr"))
+        (number (or (cdr (assq 'number activity))
+                    (cdr (assq 'pr-number activity)))))
+    (and repo number (format "%s:%s:%s" repo type number))))
+
+(defun shipit-notifications-buffer--matches-pending-mark-p (activity)
+  "Return non-nil when ACTIVITY is NOT pending mark-as-read.
+Activities scheduled for mark-as-read (waiting in the undo
+window) are hidden from the buffer so the visible state matches
+the user's intent immediately; `undo' restores them."
+  (let ((key (shipit-notifications-buffer--activity-key activity)))
+    (or (null key)
+        (not (cl-some (lambda (batch)
+                        (member key (nth 2 batch)))
+                      shipit-notifications-buffer--pending-mark-batches)))))
+
 (defun shipit-notifications-buffer--matches-snooze-p (activity)
   "Return non-nil when ACTIVITY is NOT currently snoozed.
 A nil entry in `--snoozes' or an entry whose timestamp has
@@ -498,7 +548,8 @@ Single source of truth for the structurally-filtered activity pool:
 snooze, display scope (hides read items left in the hash by a
 previous `all' poll while we're back in `unread' scope), repo, type,
 state, reason, actionable, and Jira component."
-  (and (shipit-notifications-buffer--matches-snooze-p activity)
+  (and (shipit-notifications-buffer--matches-pending-mark-p activity)
+       (shipit-notifications-buffer--matches-snooze-p activity)
        (shipit-notifications-buffer--matches-display-scope-p activity)
        (shipit-notifications-buffer--matches-repo-p activity)
        (shipit-notifications-buffer--matches-type-p activity)
@@ -1920,71 +1971,46 @@ For RSS entries, opens the link in browser directly."
     (shipit-notifications-buffer--mark-single-read)))
 
 (defun shipit-notifications-buffer--mark-single-read ()
-  "Mark the single notification at point as read and remove the section."
-  (let* ((data (shipit-notifications-buffer--get-notification-at-point))
-         (activity (shipit-notifications-buffer--activity-at-point))
-         ;; Find the notification-entry section (not root)
-         (section (let ((s (magit-current-section)))
-                    (while (and s (not (eq (oref s type) 'notification-entry)))
-                      (setq s (oref s parent)))
-                    s)))
-    ;; If walk-up failed, try backward search
-    (unless section
-      (save-excursion
-        (while (and (not (bobp))
-                    (let ((s (get-text-property (point) 'magit-section)))
-                      (not (and s (eq (oref s type) 'notification-entry)))))
-          (forward-line -1))
-        (setq section (get-text-property (point) 'magit-section))))
+  "Mark the single notification at point as read (with undo window)."
+  (let ((data (shipit-notifications-buffer--get-notification-at-point)))
     (if data
-        (let ((repo (plist-get data :repo))
-              (pr-number (plist-get data :pr-number))
-              (type (or (plist-get data :type) "pr")))
-          (shipit--debug-log "NOTIF-BUFFER: Marking %s %s#%s as read" type repo pr-number)
-          (when (fboundp 'shipit--mark-notification-read)
-            (shipit--mark-notification-read pr-number repo t type))
-          ;; Remove the section in-place instead of full re-render
-          (when (and section (eq (oref section type) 'notification-entry))
-            (let ((inhibit-read-only t))
-              (delete-region (oref section start) (oref section end))
-              (when-let* ((parent (oref section parent)))
-                (oset parent children
-                      (delq section (oref parent children)))))))
+        (let* ((repo (plist-get data :repo))
+               (pr-number (plist-get data :pr-number))
+               (type (or (plist-get data :type) "pr"))
+               (key (format "%s:%s:%s" repo type pr-number)))
+          (shipit-notifications-buffer--schedule-mark
+           (list key)
+           (format "Marked %s %s#%s as read" type repo pr-number)))
       (user-error "No notification at point"))))
 
 (defun shipit-notifications-buffer--mark-region-read ()
-  "Mark all notifications in the active region as read."
+  "Mark all notifications in the active region as read (with undo window)."
   (let ((beg (region-beginning))
         (end (region-end))
-        (notifications '())
+        (keys '())
         (seen (make-hash-table :test 'equal)))
-    ;; Walk lines in region, collect unique notifications
     (save-excursion
       (goto-char beg)
       (while (< (point) end)
         (let* ((section (get-text-property (point) 'magit-section))
                (type (when section (oref section type))))
-          (shipit--debug-log "mark-region: line=%d section-type=%s"
-                             (line-number-at-pos) type)
           (when (and section (eq type 'notification-entry))
-            (let* ((activity (oref section value))
-                   (repo (cdr (assq 'repo activity)))
-                   (number (or (cdr (assq 'number activity))
-                               (cdr (assq 'pr-number activity))))
-                   (ntype (or (cdr (assq 'type activity)) "pr"))
-                   (key (format "%s:%s:%s" repo ntype number)))
-              (unless (gethash key seen)
+            (let ((key (shipit-notifications-buffer--activity-key
+                        (oref section value))))
+              (when (and key (not (gethash key seen)))
                 (puthash key t seen)
-                (push (list number repo ntype) notifications)))))
+                (push key keys)))))
         (forward-line 1)))
-    (when notifications
-      (let ((count (length notifications)))
-        (dolist (notif (nreverse notifications))
-          (when (fboundp 'shipit--mark-notification-read)
-            (shipit--mark-notification-read (car notif) (cadr notif) t (caddr notif))))
+    (when keys
+      (let ((n (length keys)))
         (deactivate-mark)
-        (message "Marked %d notifications as read" count)
-        (shipit-notifications-buffer--rerender)))))
+        (shipit-notifications-buffer--schedule-mark
+         (nreverse keys)
+         (format "Marked %d notification%s as read" n (if (= n 1) "" "s")))))))
+
+(defun shipit-notifications-buffer--triple-to-key (triple)
+  "Return the `repo:type:number' key for a (NUMBER REPO TYPE) TRIPLE."
+  (format "%s:%s:%s" (nth 1 triple) (or (nth 2 triple) "pr") (nth 0 triple)))
 
 (defun shipit-notifications-buffer--collect-entries-under (section)
   "Walk SECTION's tree and return (NUMBER REPO TYPE) for every entry.
@@ -2052,15 +2078,12 @@ rows.  Otherwise it marks every entry in the buffer."
                                          (length notifications)
                                          (if (= 1 (length notifications)) "" "s")
                                          scope-suffix))
-                (dolist (notif notifications)
-                  (when (fboundp 'shipit--mark-notification-read)
-                    (shipit--mark-notification-read
-                     (car notif) (cadr notif) t (caddr notif))))
-                (message "Marked %d notification%s%s as read"
+                (shipit-notifications-buffer--schedule-mark
+                 (mapcar #'shipit-notifications-buffer--triple-to-key notifications)
+                 (format "Marked %d notification%s%s as read"
                          (length notifications)
                          (if (= 1 (length notifications)) "" "s")
-                         scope-suffix)
-                (shipit-notifications-buffer-refresh))
+                         scope-suffix)))
             (shipit-notifications-buffer--clear-auto-mark-preview)))
       (message "No notifications to mark as read"))))
 
@@ -2227,6 +2250,270 @@ the input parses again."
                           (error nil)))
                (shipit-notifications-buffer--add-preview-match-overlays
                 section title-regex)))))))))
+
+(defvar shipit-notifications-buffer--mark-regex-history nil
+  "Minibuffer history for `shipit-notifications-buffer-mark-by-regex'.")
+
+(defun shipit-notifications-buffer--read-regex-with-preview (prompt &optional default)
+  "Read a regex from the minibuffer, live-previewing matches.
+PROMPT is the minibuffer prompt; DEFAULT is the prefilled value.
+Strike-throughs every notification row whose subject matches the
+typed regex as the user types, so the user sees exactly what the
+regex would catch before submitting.  Returns the input string;
+clears overlays on exit (confirm or abort)."
+  (let ((original-buffer (current-buffer))
+        (timer nil)
+        (minibuf nil)
+        (last-input nil)
+        result)
+    (unwind-protect
+        (minibuffer-with-setup-hook
+            (lambda ()
+              (setq minibuf (current-buffer))
+              (add-hook
+               'post-command-hook
+               (lambda ()
+                 (when timer (cancel-timer timer))
+                 (setq timer
+                       (run-with-idle-timer
+                        shipit-notifications-filter-live-delay nil
+                        (lambda ()
+                          (when (and (buffer-live-p minibuf)
+                                     (buffer-live-p original-buffer))
+                            (let ((input (with-current-buffer minibuf
+                                           (minibuffer-contents-no-properties))))
+                              (unless (equal input last-input)
+                                (setq last-input input)
+                                (with-current-buffer original-buffer
+                                  (shipit-notifications-buffer--apply-auto-mark-preview
+                                   input)))))))))
+               nil t))
+          (setq result
+                (read-from-minibuffer
+                 prompt (or default "") nil nil
+                 'shipit-notifications-buffer--mark-regex-history)))
+      (when (buffer-live-p original-buffer)
+        (with-current-buffer original-buffer
+          (shipit-notifications-buffer--clear-auto-mark-preview))))
+    result))
+
+(defun shipit-notifications-buffer--blink-restored-rows (keys buf)
+  "Briefly blink strike-through on rows for KEYS in BUF.
+After undo, the matched rows have just reappeared in the
+buffer; flashing them with the auto-mark preview face a few
+times tells the user which ones came back without scanning the
+list.  Reuses `shipit-auto-mark-preview-face' for visual
+consistency with the schedule-time preview.
+
+Each frame is 80ms; 5 frames at 80ms = 400ms total before the
+overlays are torn down."
+  (when (and keys (buffer-live-p buf))
+    (with-current-buffer buf
+      (let ((sections '()))
+        (shipit-notifications-buffer--for-each-entry
+         (lambda (s)
+           (let ((k (shipit-notifications-buffer--activity-key (oref s value))))
+             (when (member k keys)
+               (push s sections)))))
+        (when sections
+          (let ((overlays
+                 (mapcar (lambda (s)
+                           (let ((ov (make-overlay (oref s start) (oref s end))))
+                             (overlay-put ov 'face 'shipit-auto-mark-preview-face)
+                             (overlay-put ov 'priority 100)
+                             ov))
+                         sections)))
+            (cl-labels ((set-face (face)
+                          (dolist (ov overlays)
+                            (when (overlay-buffer ov)
+                              (overlay-put ov 'face face)))))
+              (run-with-timer 0.080 nil #'set-face nil)
+              (run-with-timer 0.160 nil #'set-face 'shipit-auto-mark-preview-face)
+              (run-with-timer 0.240 nil #'set-face nil)
+              (run-with-timer 0.320 nil #'set-face 'shipit-auto-mark-preview-face)
+              (run-with-timer 0.400 nil
+                              (lambda ()
+                                (dolist (ov overlays)
+                                  (when (overlay-buffer ov)
+                                    (delete-overlay ov))))))))))))
+
+(defun shipit-notifications-buffer--undo-pending-mark (batch-id buf)
+  "Cancel pending mark batch BATCH-ID in BUF, restoring its rows.
+Invoked by `undo' (and undo-tree) via the `(apply ...)' entry
+pushed onto `buffer-undo-list' when the batch was scheduled.
+No-op if the batch has already been committed or cancelled --
+once the timer fires, the server PATCH is irreversible."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (let ((batch (assq batch-id shipit-notifications-buffer--pending-mark-batches)))
+        (cond
+         ((null batch)
+          (message "Mark already committed; cannot undo"))
+         (t
+          (cancel-timer (nth 1 batch))
+          (let ((n (length (nth 2 batch)))
+                (keys (nth 2 batch)))
+            (setq shipit-notifications-buffer--pending-mark-batches
+                  (assq-delete-all batch-id
+                                   shipit-notifications-buffer--pending-mark-batches))
+            (let ((buffer-undo-list nil)) ; nil, not t -- t is the sentinel that breaks goggles'-style advice that walks the list
+              (shipit-notifications-buffer--rerender))
+            (shipit-notifications-buffer--blink-restored-rows keys buf)
+            (message "Restored %d row%s" n (if (= n 1) "" "s")))))))))
+
+(defun shipit-notifications-buffer--commit-pending-mark (batch-id buf)
+  "Commit pending mark batch BATCH-ID in BUF: PATCH the server.
+Called from the timer in `--schedule-mark', or eagerly from
+`--commit-all-pending-marks' on refresh.  Cancelling the timer
+is idempotent (no-op if it already fired); the body short-
+circuits if the batch was already cancelled by `undo'."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (let ((batch (assq batch-id shipit-notifications-buffer--pending-mark-batches)))
+        (when batch
+          (cancel-timer (nth 1 batch))
+          (let ((keys (nth 2 batch))
+                ;; Memoize backend resolution per repo across the
+                ;; batch -- shells out via `git remote get-url' once
+                ;; per repo instead of once per row.
+                (resolved-cache (make-hash-table :test 'equal)))
+            (dolist (key keys)
+              (let ((activity (and (boundp 'shipit--notification-pr-activities)
+                                   (gethash key shipit--notification-pr-activities))))
+                (when activity
+                  (let ((number (or (cdr (assq 'number activity))
+                                    (cdr (assq 'pr-number activity))))
+                        (repo (cdr (assq 'repo activity)))
+                        (type (or (cdr (assq 'type activity)) "pr")))
+                    (when (and number repo
+                               (fboundp 'shipit--mark-notification-read-async))
+                      (shipit--mark-notification-read-async
+                       number repo type resolved-cache)))))))
+          (setq shipit-notifications-buffer--pending-mark-batches
+                (assq-delete-all batch-id
+                                 shipit-notifications-buffer--pending-mark-batches))
+          (let ((buffer-undo-list nil)) ; nil, not t -- t is the sentinel that breaks goggles'-style advice that walks the list
+            (shipit-notifications-buffer--rerender)))))))
+
+(defun shipit-notifications-buffer--commit-all-pending-marks ()
+  "Commit every pending mark batch in the current buffer immediately.
+Called from `--refresh' so a manual `g' confirms in-flight
+scheduled marks before fetching new state, avoiding a race
+where the next poll surfaces rows the user already chose to
+mark."
+  (let ((buf (current-buffer))
+        (batches (copy-sequence shipit-notifications-buffer--pending-mark-batches)))
+    (dolist (batch batches)
+      (shipit-notifications-buffer--commit-pending-mark (car batch) buf))))
+
+(defun shipit-notifications-buffer--schedule-mark (items desc)
+  "Schedule mark-as-read for ITEMS after the undo window.
+ITEMS may be a list of activity alists, a list of
+`repo:type:number' key strings, or a mix -- both shapes are
+coerced to keys.  DESC describes the operation for the
+user-facing message.  Hides the matching rows immediately via
+`--matches-pending-mark-p', records a custom undo entry on
+`buffer-undo-list' so `undo' (and undo-tree) cancels the batch,
+and starts the commit timer."
+  (let* ((batch-id (gensym "shipit-mark-batch-"))
+         (keys (delq nil
+                     (mapcar (lambda (it)
+                               (cond
+                                ((stringp it) it)
+                                (t (shipit-notifications-buffer--activity-key it))))
+                             items)))
+         (buf (current-buffer))
+         (window shipit-notifications-mark-undo-window-seconds)
+         (timer (run-with-timer
+                 window nil
+                 #'shipit-notifications-buffer--commit-pending-mark
+                 batch-id buf)))
+    (push (list batch-id timer keys desc)
+          shipit-notifications-buffer--pending-mark-batches)
+    ;; Suppress undo recording during the rerender so the only
+    ;; entry undo sees for this operation is our custom apply form.
+    (let ((buffer-undo-list nil)) ; nil, not t -- t is the sentinel that breaks goggles'-style advice that walks the list
+      (shipit-notifications-buffer--rerender))
+    ;; magit-section-mode flips `buffer-undo-list' to t on its
+    ;; non-edited buffers to disable recording.  Pushing onto t
+    ;; produces an improper list `(entry . t)' that
+    ;; `primitive-undo' (and any advice that walks the list, e.g.
+    ;; goggles) trips over with `wrong-type-argument listp t'.
+    ;; Flip it to nil first so our push lands in a proper list.
+    (when (eq buffer-undo-list t)
+      (setq buffer-undo-list nil))
+    (undo-boundary)
+    (push (list 'apply
+                'shipit-notifications-buffer--undo-pending-mark
+                batch-id buf)
+          buffer-undo-list)
+    (message "%s" desc)))
+
+(defun shipit-notifications-buffer-undo-tree-visualize ()
+  "Open undo-tree's visualizer for the read-only notifications buffer.
+The buffer is read-only so `undo-tree-visualize' would refuse
+before reaching the tree.  Bind `inhibit-read-only' for the
+duration of the call."
+  (interactive)
+  (when (fboundp 'undo-tree-visualize)
+    (let ((inhibit-read-only t))
+      (call-interactively #'undo-tree-visualize))))
+
+(defun shipit-notifications-buffer-undo (&optional arg)
+  "Undo in the notifications buffer.
+The buffer is read-only, so `undo' (and `undo-tree-undo' /
+`undo-fu-only-undo' / `undo-only') would refuse to run before
+ever reaching the `(apply ...)' entries we push onto
+`buffer-undo-list' for scheduled mark batches.  This wrapper
+binds `inhibit-read-only' for the duration of the call and
+dispatches to whichever undo package the user has active so
+their bound key works without further configuration."
+  (interactive "P")
+  (let ((inhibit-read-only t))
+    (cond
+     ((and (fboundp 'undo-tree-undo) (bound-and-true-p undo-tree-mode))
+      (undo-tree-undo arg))
+     ((fboundp 'undo-fu-only-undo)
+      (undo-fu-only-undo arg))
+     (t
+      (undo arg)))))
+
+(defun shipit-notifications-buffer-mark-by-regex (regex)
+  "Mark every visible notification whose subject matches REGEX as read.
+Interactive invocation reads REGEX from the minibuffer with a
+live strike-through preview of the matching rows -- you see what
+will be marked before pressing RET.  One-shot operation: no
+persistent auto-mark rule is saved (use the auto-mark-rules
+menu via `m a' for that).
+
+The actual server-side mark fires after a short undo window
+\(`shipit-notifications-mark-undo-window-seconds').  During the
+window the rows are hidden from the buffer and `undo' restores
+them.
+
+Walks the section tree, so it works in both flat and
+group-by-repo layouts.  An invalid regex is silently skipped --
+the user can fix it and re-submit."
+  (interactive
+   (list (shipit-notifications-buffer--read-regex-with-preview
+          "Mark by regex (live preview): ")))
+  (when (and regex (stringp regex) (not (string-empty-p regex))
+             (condition-case nil
+                 (progn (string-match-p regex "") t)
+               (error nil)))
+    (let ((to-mark '()))
+      (shipit-notifications-buffer--for-each-entry
+       (lambda (section)
+         (let* ((activity (oref section value))
+                (subj (cdr (assq 'subject activity))))
+           (when (and (stringp subj) (string-match-p regex subj))
+             (push activity to-mark)))))
+      (if (null to-mark)
+          (message "No rows match %S" regex)
+        (let ((n (length to-mark)))
+          (shipit-notifications-buffer--schedule-mark
+           to-mark
+           (format "Marked %d row%s by regex" n (if (= n 1) "" "s"))))))))
 
 (defun shipit-notifications-buffer--read-auto-mark-rule-with-preview (default)
   "Read an auto-mark rule from the minibuffer, prefilled with DEFAULT.
@@ -2632,6 +2919,8 @@ with rule edits made from the transient."
      shipit-notifications-buffer-mark-read)
     ("M" "Mark all in buffer"
      shipit-notifications-buffer-mark-all-read)
+    ("r" "Mark by regex…"
+     shipit-notifications-buffer-mark-by-regex)
     ("Z" "Mark merged/closed as read"
      shipit-notifications-buffer-mark-resolved-read)
     ("A" "Mark actionable as read"
@@ -2779,14 +3068,11 @@ otherwise sweep the full activity hash."
                  (format "Mark %d %s notification%s as read? "
                          (length targets) label
                          (if (= 1 (length targets)) "" "s")))
-            (dolist (notif targets)
-              (when (fboundp 'shipit--mark-notification-read)
-                (shipit--mark-notification-read
-                 (car notif) (cadr notif) t (caddr notif))))
-            (message "Marked %d %s notification%s as read"
+            (shipit-notifications-buffer--schedule-mark
+             (mapcar #'shipit-notifications-buffer--triple-to-key targets)
+             (format "Marked %d %s notification%s as read"
                      (length targets) label
-                     (if (= 1 (length targets)) "" "s"))
-            (shipit-notifications-buffer-refresh))
+                     (if (= 1 (length targets)) "" "s"))))
         (shipit-notifications-buffer--clear-auto-mark-preview))))))
 
 (defun shipit-notifications-buffer--actionable-activity-p (activity)
@@ -2843,14 +3129,11 @@ torn down whether you confirm or abort."
                  (format "Mark %d resolved PR%s (merged/closed) as read? "
                          (length resolved)
                          (if (= 1 (length resolved)) "" "s")))
-            (dolist (notif resolved)
-              (when (fboundp 'shipit--mark-notification-read)
-                (shipit--mark-notification-read
-                 (car notif) (cadr notif) t (caddr notif))))
-            (message "Marked %d resolved PR%s as read"
+            (shipit-notifications-buffer--schedule-mark
+             (mapcar #'shipit-notifications-buffer--triple-to-key resolved)
+             (format "Marked %d resolved PR%s as read"
                      (length resolved)
-                     (if (= 1 (length resolved)) "" "s"))
-            (shipit-notifications-buffer-refresh))
+                     (if (= 1 (length resolved)) "" "s"))))
         (shipit-notifications-buffer--clear-auto-mark-preview))))))
 
 ;;; Scope / pagination
@@ -3744,6 +4027,18 @@ Raising this makes fast typing less laggy at the cost of a slightly
 delayed preview; lowering it makes the preview feel more immediate
 at the cost of extra renders per keystroke."
   :type 'number
+  :group 'shipit)
+
+(defcustom shipit-notifications-mark-undo-window-seconds 30
+  "Seconds to wait before sending a mark-as-read to the server.
+During this window the marked rows are hidden from the buffer
+and a custom entry on `buffer-undo-list' lets `undo' (and
+undo-tree) cancel the pending mark.  After the window expires,
+the server PATCH fires and the mark cannot be reversed
+client-side -- GitHub's Notifications API has no \"mark unread\"
+counterpart.  A manual refresh (`g') commits any pending batch
+immediately so the next fetch sees a consistent state."
+  :type 'integer
   :group 'shipit)
 
 (defun shipit-notifications-buffer-set-filter ()

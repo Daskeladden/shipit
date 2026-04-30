@@ -345,6 +345,9 @@ THEN the notification is removed and mention count updated."
                          (lambda (_config _id) nil)))
                 ;; Call the mark-read function (simulates pressing 'm')
                 (shipit-notifications-buffer-mark-read)
+                ;; Marking is deferred behind an undo window; force-commit
+                ;; in the test so we can assert the post-commit hash state.
+                (shipit-notifications-buffer--commit-all-pending-marks)
 
                 ;; Verify notification was removed from hash table
                 (should (= 0 (hash-table-count shipit--notification-pr-activities)))
@@ -411,6 +414,7 @@ THEN only those 2 are marked as read and the 3rd remains."
                 (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)
                            (lambda (_config _id) nil)))
                   (shipit-notifications-buffer-mark-read)
+                  (shipit-notifications-buffer--commit-all-pending-marks)
 
                   ;; THEN: only 1 notification remains
                   ;; (notifications render newest-first, so first 2 lines

@@ -223,6 +223,29 @@ Key is notification ID, value is timestamp when marked read.")
 Format: \"repo:type:number\" to prevent collisions between PR and Issue."
   (format "%s:%s:%s" repo type number))
 
+(defun shipit--dispatch-mark-thread-read-async (repo thread-id &optional resolved-cache)
+  "Async fire-and-forget version of `--dispatch-mark-thread-read'.
+Prefers the backend's `:mark-notification-read-async' plist
+when present; falls back to the synchronous one otherwise.
+RESOLVED-CACHE, when a hash table, is consulted for a cached
+(BACKEND . CONFIG) cons keyed by REPO so a batch commit doesn't
+re-shell-out via `shipit-pr--resolve-for-repo' per row."
+  (let* ((resolved (or (and resolved-cache (gethash repo resolved-cache))
+                       (let ((r (ignore-errors (shipit-pr--resolve-for-repo repo))))
+                         (when (and r resolved-cache)
+                           (puthash repo r resolved-cache))
+                         r)))
+         (backend (car-safe resolved))
+         (config (cdr-safe resolved))
+         (async-fn (and backend (plist-get backend :mark-notification-read-async)))
+         (sync-fn (and backend (plist-get backend :mark-notification-read))))
+    (cond
+     (async-fn (funcall async-fn config thread-id))
+     (sync-fn (funcall sync-fn config thread-id))
+     (t (shipit--debug-log
+         "No mark-notification-read on backend for %s; skipping thread %s"
+         repo thread-id)))))
+
 (defun shipit--dispatch-mark-thread-read (repo thread-id)
   "Mark notification THREAD-ID as read via the PR backend for REPO.
 Resolves the backend through `shipit-pr--resolve-for-repo\=' and
@@ -2087,6 +2110,72 @@ Uses backend-config from the activity if present."
          (activity-config (cdr (assq 'backend-config activity)))
          (config (or activity-config (list :backend backend-id))))
     (cons backend-plist config)))
+
+(defun shipit--apply-local-mark-as-read (activity-key activity)
+  "Apply the local-state side of marking ACTIVITY (at ACTIVITY-KEY) as read.
+Server-side mark is the caller's responsibility; this just:
+- adds notification-id and activity-key to
+  `shipit--locally-marked-read-notifications' so the next poll's
+  merge skips them,
+- removes the activity from `shipit--notification-pr-activities',
+- decrements the mention count when the activity was a mention,
+- recomputes the modeline unread bell.
+
+Used by both the synchronous and async paths so the local state
+stays consistent regardless of how the network PATCH was issued."
+  (let* ((notification (cdr (assq 'notification activity)))
+         (notification-id (when notification (cdr (assq 'id notification))))
+         (reason (cdr (assq 'reason activity)))
+         (number (or (cdr (assq 'number activity))
+                     (cdr (assq 'pr-number activity))))
+         (repo (cdr (assq 'repo activity))))
+    (when notification-id
+      (puthash notification-id (float-time) shipit--locally-marked-read-notifications))
+    (when activity-key
+      (puthash activity-key (float-time) shipit--locally-marked-read-notifications)
+      (remhash activity-key shipit--notification-pr-activities))
+    (when (string= reason "mention")
+      (setq shipit--mention-prs
+            (cl-remove-if (lambda (m)
+                            (and (equal (cdr (assq 'repo m)) repo)
+                                 (equal (cdr (assq 'number m)) number)))
+                          shipit--mention-prs))
+      (setq shipit--mention-count (length shipit--mention-prs)))
+    (let ((new-count (and (fboundp 'shipit--count-unread-activities)
+                          (shipit--count-unread-activities))))
+      (when new-count
+        (setq shipit--last-notification-count new-count)
+        (when (fboundp 'shipit--update-modeline-indicator)
+          (shipit--update-modeline-indicator new-count))))))
+
+(defun shipit--mark-notification-read-async (number repo &optional type resolved-cache)
+  "Mark NUMBER in REPO as read; fire the network PATCH async.
+Local state (hash, locally-marked-read tracker, mention count,
+modeline) is applied synchronously via
+`shipit--apply-local-mark-as-read'; the network request goes
+through the backend's `:mark-notification-read-async' (with
+fallback to the synchronous variant if the backend doesn't
+expose async).  RESOLVED-CACHE is a hash table reused across a
+batch so `shipit-pr--resolve-for-repo' isn't re-invoked per row."
+  (let* ((type (or type "pr"))
+         (activity-key (shipit--notification-activity-key repo type number))
+         (activity (gethash activity-key shipit--notification-pr-activities)))
+    (when activity
+      (let* ((notification (cdr (assq 'notification activity)))
+             (notification-id (when notification (cdr (assq 'id notification))))
+             (backend-id (cdr (assq 'backend-id activity))))
+        (cond
+         (notification-id
+          (shipit--dispatch-mark-thread-read-async repo notification-id resolved-cache))
+         (backend-id
+          ;; Backend (Jira/RSS/etc.) — typically in-memory only; sync.
+          (let* ((resolved (or (and resolved-cache (gethash repo resolved-cache))
+                               (ignore-errors (shipit-pr--resolve-for-repo repo))))
+                 (backend (car-safe resolved))
+                 (config (cdr-safe resolved))
+                 (mark-fn (and backend (plist-get backend :mark-notification-read))))
+            (when mark-fn (funcall mark-fn config activity)))))
+        (shipit--apply-local-mark-as-read activity-key activity)))))
 
 (defun shipit--mark-notification-read (number repo &optional no-refresh type)
   "Mark notification as read via the appropriate backend.

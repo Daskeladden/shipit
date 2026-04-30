@@ -1635,7 +1635,9 @@ not update local state or print a misleading success message."
                        (cmd (nth 2 entry))
                        (label (shipit--subscription-state-label state))
                        (label (if (equal state current)
-                                  (concat label "  <- current")
+                                  (concat label "  "
+                                          (propertize "<- current"
+                                                      'face 'success))
                                 label)))
                   (transient-parse-suffix
                    transient--prefix

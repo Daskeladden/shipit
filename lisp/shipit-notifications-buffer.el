@@ -532,6 +532,14 @@ section is suppressed because the only entry was marked read."
                     (cdr (assq 'pr-number activity)))))
     (and repo number (format "%s:%s:%s" repo type number))))
 
+(defun shipit-notifications-buffer--pending-mark-row-count ()
+  "Total number of rows across all in-flight mark batches.
+Each batch holds a list of activity-keys; sum their lengths so
+the header bracket reads `pending mark: 8' when the user has
+scheduled an 8-row mark that's still inside the undo window."
+  (apply #'+ 0 (mapcar (lambda (b) (length (nth 2 b)))
+                       shipit-notifications-buffer--pending-mark-batches)))
+
 (defun shipit-notifications-buffer--matches-pending-mark-p (activity)
   "Return non-nil when ACTIVITY is NOT pending mark-as-read.
 Activities scheduled for mark-as-read (waiting in the undo
@@ -830,6 +838,15 @@ probe-derived server total for the current scope, when known."
        "snoozed"
        (number-to-string live-snoozed)
        'font-lock-keyword-face)))
+  ;; Pending mark batches (still in the undo window) -- show
+  ;; the total row count so the user can see at a glance that
+  ;; a mark is in flight and how big it is.
+  (let ((pending (shipit-notifications-buffer--pending-mark-row-count)))
+    (when (> pending 0)
+      (shipit-notifications-buffer--insert-filter-bracket
+       "pending mark"
+       (number-to-string pending)
+       'font-lock-warning-face)))
   (insert "\n\n"))
 
 (defun shipit-notifications-buffer--insert-filter-bracket (label value face &optional getter)
@@ -2258,23 +2275,29 @@ Each matching row gets a strike-through overlay; the actual
 characters that the regex picks up inside the title also get a
 brighter sub-match overlay so the user can see *what* matched.
 Clears any previous preview first.  An invalid (mid-typing) regex
-is silently skipped — the user will get a fresh preview as soon as
-the input parses again, instead of a flurry of error messages."
+is silently skipped -- the user will get a fresh preview as soon
+as the input parses again.
+
+Returns the number of matched rows so callers (e.g. the regex
+minibuffer reader) can show a live match count."
   (shipit-notifications-buffer--clear-auto-mark-preview)
-  (when (and regex
-             (stringp regex)
-             (not (string-empty-p regex))
-             (condition-case nil
-                 (progn (string-match-p regex "") t)
-               (error nil)))
-    (shipit-notifications-buffer--for-each-entry
-     (lambda (section)
-       (let* ((activity (oref section value))
-              (subj (cdr (assq 'subject activity))))
-         (when (and (stringp subj) (string-match-p regex subj))
-           (shipit-notifications-buffer--add-preview-row-overlay section)
-           (shipit-notifications-buffer--add-preview-match-overlays
-            section regex)))))))
+  (let ((count 0))
+    (when (and regex
+               (stringp regex)
+               (not (string-empty-p regex))
+               (condition-case nil
+                   (progn (string-match-p regex "") t)
+                 (error nil)))
+      (shipit-notifications-buffer--for-each-entry
+       (lambda (section)
+         (let* ((activity (oref section value))
+                (subj (cdr (assq 'subject activity))))
+           (when (and (stringp subj) (string-match-p regex subj))
+             (cl-incf count)
+             (shipit-notifications-buffer--add-preview-row-overlay section)
+             (shipit-notifications-buffer--add-preview-match-overlays
+              section regex))))))
+    count))
 
 (defun shipit-notifications-buffer--apply-auto-mark-rule-preview (rule)
   "Highlight notification rows that RULE (a plist) would match.
@@ -2307,6 +2330,20 @@ the input parses again."
 (defvar shipit-notifications-buffer--mark-regex-history nil
   "Minibuffer history for `shipit-notifications-buffer-mark-by-regex'.")
 
+(defun shipit-notifications-buffer--update-regex-count-overlay (ov count)
+  "Update OV's `after-string' to show COUNT matches.
+The overlay sits at the end of the regex minibuffer prompt
+showing `(N matches)' as the user types.  Empty when COUNT is
+nil/0 so the user doesn't see a stray `(0 matches)' before they
+finish typing."
+  (when (overlayp ov)
+    (overlay-put
+     ov 'after-string
+     (if (and count (> count 0))
+         (propertize (format "  (%d match%s)" count (if (= count 1) "" "es"))
+                     'face 'minibuffer-prompt)
+       ""))))
+
 (defun shipit-notifications-buffer--read-regex-with-preview (prompt &optional default)
   "Read a regex from the minibuffer, live-previewing matches.
 PROMPT is the minibuffer prompt; DEFAULT is the prefilled value.
@@ -2318,11 +2355,14 @@ clears overlays on exit (confirm or abort)."
         (timer nil)
         (minibuf nil)
         (last-input nil)
+        (count-overlay nil)
         result)
     (unwind-protect
         (minibuffer-with-setup-hook
             (lambda ()
               (setq minibuf (current-buffer))
+              (setq count-overlay
+                    (make-overlay (point-max) (point-max) minibuf nil t))
               (add-hook
                'post-command-hook
                (lambda ()
@@ -2337,14 +2377,17 @@ clears overlays on exit (confirm or abort)."
                                            (minibuffer-contents-no-properties))))
                               (unless (equal input last-input)
                                 (setq last-input input)
-                                (with-current-buffer original-buffer
-                                  (shipit-notifications-buffer--apply-auto-mark-preview
-                                   input)))))))))
+                                (let ((n (with-current-buffer original-buffer
+                                           (shipit-notifications-buffer--apply-auto-mark-preview
+                                            input))))
+                                  (shipit-notifications-buffer--update-regex-count-overlay
+                                   count-overlay n)))))))))
                nil t))
           (setq result
                 (read-from-minibuffer
                  prompt (or default "") nil nil
                  'shipit-notifications-buffer--mark-regex-history)))
+      (when (overlayp count-overlay) (delete-overlay count-overlay))
       (when (buffer-live-p original-buffer)
         (with-current-buffer original-buffer
           (shipit-notifications-buffer--clear-auto-mark-preview))))

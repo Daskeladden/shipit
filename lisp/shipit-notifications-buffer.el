@@ -1448,6 +1448,23 @@ Strips HTML tags and renders as plain text."
 
 ;;; Section toggle with lazy loading
 
+(defun shipit-notifications-buffer--reinforce-after-hide (section &rest _)
+  "After-advice for `magit-section-hide': reinforce overlays in our buffer.
+Magit's built-in hide creates invisibility overlays, but
+text-property `display' specs (SVG icons rendered via
+`(propertize \" \" \='display IMAGE)') win over the
+`invisible' flag and leak as a leftover icon at the row's old
+start.  TAB went through our wrapper that called the reinforce;
+the magit level digits (`1', `2', etc.) bypass it.  Advise the
+underlying hide so any path produces clean output."
+  (when (and section
+             (eq major-mode 'shipit-notifications-buffer-mode))
+    (shipit-notifications-buffer--reinforce-invisibility-overlays section)))
+
+(with-eval-after-load 'magit-section
+  (advice-add 'magit-section-hide :after
+              #'shipit-notifications-buffer--reinforce-after-hide))
+
 (defun shipit-notifications-buffer--reinforce-invisibility-overlays (section)
   "Add a `display' override to SECTION's invisibility overlays.
 Text with the `display' text property (e.g. SVG icons rendered via

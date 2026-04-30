@@ -133,6 +133,18 @@ Note: Time column is right-aligned to window edge."
   :type 'integer
   :group 'shipit)
 
+(defcustom shipit-notifications-activity-line-width nil
+  "Maximum width (in columns) for activity timeline rows.
+Activity rows in an expanded notification (the `Activity (N
+since notification)' section) right-align their timestamp.
+Default nil tracks `window-width' so activity timestamps line up
+with the notification list's timestamps above.  Set to an
+integer (e.g. 120) to cap the target on wide windows -- useful
+when you'd rather the gap stay readable than the columns line
+up."
+  :type '(choice (const :tag "No cap (window-width)" nil) integer)
+  :group 'shipit)
+
 (defcustom shipit-notification-alert-reasons '(mention)
   "List of notification reasons that trigger desktop alerts.
 Common reasons: mention, review_requested, assign, comment, team_mention."

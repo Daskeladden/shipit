@@ -3995,7 +3995,21 @@ This function adds 3 to create child indent (default 0 → margin 3)."
     (magit-insert-section (activity-event event-id t)
       (let* ((activity-margin (+ (or indent 0) 1))  ; parent + 3 - 2 (unread indicator width)
              (margin-str (make-string activity-margin ?\s))
-             (window-width (- (max 80 (or (window-width) 80)) left-margin))
+             ;; Layout target: the right edge that notification
+             ;; rows land on (`window-body-width' - 3 padding
+             ;; cols).  Subtract `activity-margin' so the indent
+             ;; doesn't push the timestamp past that edge, plus
+             ;; one more column to compensate for a residual
+             ;; 1-col offset versus the notification row layout
+             ;; (varies with fringe/scrollbar/cursor-column).
+             (window-width (- (let* ((raw (max 80 (or (window-body-width) 80)))
+                                     (cap (and (boundp 'shipit-notifications-activity-line-width)
+                                               shipit-notifications-activity-line-width)))
+                                (if (and cap (numberp cap))
+                                    (min cap raw)
+                                  raw))
+                              activity-margin
+                              1))
              (magit-indicator-width 3)  ; Space for "..." or fold indicator (matches Commits section)
              ;; Fixed timestamp column width (16 chars handles both formats)
              (timestamp-width 16)

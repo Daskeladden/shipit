@@ -2986,146 +2986,113 @@ Prints overlay properties, cache entry, and raw eldoc output to *Messages*."
              id repo entry doc
              (bound-and-true-p eldoc-mode))))
 
-(defun shipit--create-commit-sha-overlays (repo &optional body-start body-end)
-  "Create overlays for commit SHAs in comment body.
-Styles commit SHAs with blue underline and makes them clickable.
-REPO is used for constructing GitHub URLs.
-BODY-START and BODY-END define the region to search."
-  (condition-case err
-      (let ((search-start (or body-start (point)))
-            (search-limit (or body-end (point-max))))
-        (save-excursion
-          (goto-char search-start)
-          ;; Match 7-40 character hex strings that look like commit SHAs
-          ;; Use word boundaries to avoid matching partial hex strings
-          ;; Require at least 7 chars to avoid matching short hex like colors
-          (while (re-search-forward "\\b\\([0-9a-f]\\{7,40\\}\\)\\b" search-limit t)
-            (let* ((sha (match-string 1))
-                   (start (match-beginning 1))
-                   (end (match-end 1))
-                   (short-sha (substring sha 0 (min 7 (length sha))))
-                   (backtick-count 0)
-                   (in-url nil))
-              ;; Check if in code block by counting backticks on this line
-              (save-excursion
-                (beginning-of-line)
-                (while (< (point) start)
-                  (when (= (char-after) ?`)
-                    (setq backtick-count (1+ backtick-count)))
-                  (forward-char)))
-              ;; Check if this is part of a URL
-              (save-excursion
-                (goto-char start)
-                (beginning-of-line)
-                (while (re-search-forward "https?://[^ \t\n]*" (line-end-position) t)
-                  ;; Check if our match position is within the URL
-                  (when (and (<= (match-beginning 0) start)
-                             (>= (match-end 0) end))
-                    (setq in-url t))))
-              ;; Create overlay only if not in inline code and not part of URL
-              (when (and (= (mod backtick-count 2) 0)
-                         (not in-url))
-                (let* ((ov (make-overlay start end))
-                       (keymap (make-sparse-keymap)))
-                  (set-keymap-parent keymap (current-local-map))
-                  ;; Add RET keybinding to show action menu
-                  (define-key keymap (kbd "RET")
-                    (let ((sha-copy sha)
-                          (repo-copy repo))
-                      (lambda ()
-                        (interactive)
-                        (shipit--commit-sha-action-menu sha-copy repo-copy))))
-                  ;; Apply styling (same as PR references - blue with underline)
-                  (overlay-put ov 'face 'markdown-plain-url-face)
-                  (overlay-put ov 'keymap keymap)
-                  (overlay-put ov 'evaporate t)
-                  (overlay-put ov 'shipit-commit-sha sha)
-                  (overlay-put ov 'help-echo (format "Commit %s - RET: actions" short-sha))))))))
-    (error
-     (when (fboundp 'shipit--debug-log)
-       (shipit--debug-log "ERROR in shipit--create-commit-sha-overlays: %s" err)))))
+(defcustom shipit-commit-cache-directory
+  (locate-user-emacs-file "shipit-commit-cache/")
+  "Path to the shipit commit cache git repo.
+Used by `shipit--view-commit-in-magit' to fetch and display
+commits from arbitrary remote repos without needing a local
+clone -- the cache is initialised as an empty git repo on
+first use, and each clicked SHA is fetched into it
+\(`git fetch URL SHA --depth=1') before
+`magit-show-commit' takes over.
 
-(defun shipit--commit-sha-action-menu (sha repo)
-  "Show action menu for commit SHA."
-  (let* ((short-sha (substring sha 0 (min 7 (length sha))))
-         (in-commits-section (shipit--find-commit-in-commits-section sha))
-         (prompt (if in-commits-section
-                     (format "Commit %s: [g]o to section, [v]iew in magit, [b]rowser, [c]opy SHA, [q]uit: " short-sha)
-                   (format "Commit %s: [v]iew in magit, [b]rowser, [c]opy SHA, [q]uit: " short-sha)))
-         (choices (if in-commits-section '(?g ?v ?b ?c ?q) '(?v ?b ?c ?q)))
-         (choice (read-char-choice prompt choices)))
-    (pcase choice
-      (?g (shipit--goto-commit-in-commits-section sha))
-      (?v (shipit--view-commit-in-magit sha))
-      (?b (shipit--open-commit-in-browser sha repo))
-      (?c (kill-new sha)
-          (message "Copied %s to kill ring" sha))
-      (?q nil))))
+Wipe this directory if it ever gets too large; new clicks
+re-init it."
+  :type 'directory
+  :group 'shipit)
 
-(defun shipit--find-commit-in-commits-section (sha)
-  "Check if SHA exists in the Commits section of the current buffer.
-Returns the position if found, nil otherwise.
-Matches by prefix since comments may have short SHAs (7-8 chars)
-while the section stores full SHAs (40 chars)."
-  (let ((short-sha (substring sha 0 (min 7 (length sha)))))
-    (catch 'found
-      ;; Walk through magit section tree recursively
-      (shipit--find-commit-in-section-tree magit-root-section short-sha)
-      nil)))
+(defun shipit--commit-cache-init ()
+  "Ensure `shipit-commit-cache-directory' is an initialised git repo.
+Returns the directory path."
+  (let ((dir (file-name-as-directory
+              (expand-file-name shipit-commit-cache-directory))))
+    (unless (file-directory-p dir)
+      (make-directory dir t))
+    (unless (file-directory-p (expand-file-name ".git" dir))
+      (let ((default-directory dir))
+        (call-process "git" nil nil nil "init" "--quiet")
+        ;; Suppress "fetch refspec must look like X" warnings on
+        ;; bare SHA fetches by allowing them.
+        (call-process "git" nil nil nil "config"
+                      "uploadpack.allowReachableSHA1InWant" "true")))
+    dir))
 
-(defun shipit--find-commit-in-section-tree (section short-sha)
-  "Recursively search SECTION and its children for a commit matching SHORT-SHA."
-  (when (and section (magit-section-p section))
-    ;; Check if this section is a shipit-commit with matching SHA
-    (when (eq (oref section type) 'shipit-commit)
-      (let ((section-sha (oref section value)))
-        (when (and section-sha
-                   (stringp section-sha)
-                   (string-prefix-p short-sha section-sha))
-          (throw 'found (oref section start)))))
-    ;; Recursively check children
-    (dolist (child (oref section children))
-      (shipit--find-commit-in-section-tree child short-sha))))
+(defun shipit--repo-clone-url (repo)
+  "Return the git clone URL for REPO via the active PR backend.
+Uses the backend's `:browse-repo-url' (the HTML URL for
+`owner/name') with `.git' appended.  Returns nil when the
+backend doesn't expose `:browse-repo-url'."
+  (let* ((resolved (ignore-errors (shipit-pr--resolve-for-repo repo)))
+         (backend (car-safe resolved))
+         (config (cdr-safe resolved))
+         (fn (and backend (plist-get backend :browse-repo-url))))
+    (when fn
+      (concat (funcall fn config) ".git"))))
 
-(defun shipit--goto-commit-in-commits-section (sha)
-  "Jump to SHA in the Commits section.
-Expands parent sections and positions cursor on the commit header."
-  (let ((pos (shipit--find-commit-in-commits-section sha)))
-    (if pos
-        (progn
-          (goto-char pos)
-          (let ((section (magit-current-section)))
-            ;; Expand all parent sections (e.g., the Commits section itself)
-            (when section
-              (let ((parent (oref section parent)))
-                (while parent
-                  (when (oref parent hidden)
-                    (magit-section-show parent))
-                  (setq parent (oref parent parent))))
-              ;; Expand the commit section itself
-              (when (oref section hidden)
-                (magit-section-show section))
-              ;; Go to section start (the header line)
-              (goto-char (oref section start))))
-          (message "Jumped to commit %s" (substring sha 0 (min 7 (length sha)))))
-      (message "Commit %s not found in Commits section" (substring sha 0 (min 7 (length sha)))))))
+(defun shipit--expand-commit-sha (sha repo)
+  "Expand SHA to its full 40-char form via the GitHub commits API.
+Returns the full SHA on success, nil otherwise.  GitHub's git
+server only accepts full SHAs in `git fetch URL SHA' -- but
+the REST API accepts short SHAs (>=4 chars) and returns the
+full one in the `sha' field, which is exactly the round-trip
+we need before fetching."
+  (when (and (stringp sha) (stringp repo))
+    (let ((data (ignore-errors
+                  (shipit--api-request
+                   (format "/repos/%s/commits/%s" repo sha)))))
+      (and data (alist-get 'sha data)))))
 
-(defun shipit--view-commit-in-magit (sha)
-  "View commit SHA in magit-revision buffer.
-If the commit is not available locally, offer to fetch from origin."
-  (if (fboundp 'magit-show-commit)
-      (if (magit-commit-p sha)
-          (magit-show-commit sha)
-        ;; Commit not found locally
-        (if (y-or-n-p (format "Commit %s not found locally. Fetch from origin? " sha))
-            (progn
-              (message "Fetching from origin...")
-              (magit-run-git "fetch" "origin")
-              (if (magit-commit-p sha)
-                  (magit-show-commit sha)
-                (message "Commit %s still not found. It may be from a fork or unmerged PR." sha)))
-          (message "Commit %s not available locally." sha)))
-    (message "magit-show-commit not available")))
+(defun shipit--fetch-commit-into-cache (sha repo)
+  "Fetch SHA from REPO into `shipit-commit-cache-directory'.
+Returns (CACHE . FULL-SHA) on success, nil on failure.  Expands
+short SHAs to 40-char form via the GitHub API first since
+`git fetch URL SHA' rejects short SHAs.  Uses `--depth=1' so
+only the target commit (and its tree) is downloaded, not the
+whole history."
+  (let* ((full-sha (if (= (length sha) 40)
+                       sha
+                     (shipit--expand-commit-sha sha repo)))
+         (url (shipit--repo-clone-url repo))
+         (cache (shipit--commit-cache-init)))
+    (when (and full-sha url)
+      (let ((default-directory cache))
+        (when (zerop (call-process "git" nil nil nil
+                                   "fetch" "--depth=1" url full-sha))
+          (cons cache full-sha))))))
+
+(defun shipit--view-commit-in-magit (sha &optional repo)
+  "View commit SHA in a magit-revision buffer.
+When REPO (`owner/name') is provided, fetches the SHA from
+that repo's clone URL into `shipit-commit-cache-directory'
+and shows it -- no local clone of REPO required.  Without
+REPO, falls back to looking up SHA in the current
+`default-directory' (the legacy behaviour for SHAs in PR
+buffers where the repo *is* the local repo)."
+  (cond
+   ((not (fboundp 'magit-show-commit))
+    (message "magit-show-commit not available"))
+   (repo
+    (message "Fetching %s from %s..." (substring sha 0 (min 10 (length sha))) repo)
+    (let ((result (shipit--fetch-commit-into-cache sha repo)))
+      (cond
+       (result
+        (let ((default-directory (car result))
+              (full-sha (cdr result)))
+          (if (magit-commit-p full-sha)
+              (magit-show-commit full-sha)
+            (message "Fetched but commit %s not visible in cache" sha)
+            (shipit--open-commit-in-browser sha repo))))
+       (t
+        (message "Could not fetch %s from %s -- opening in browser" sha repo)
+        (shipit--open-commit-in-browser sha repo)))))
+   ((magit-commit-p sha) (magit-show-commit sha))
+   ((y-or-n-p (format "Commit %s not found locally. Fetch from origin? " sha))
+    (message "Fetching from origin...")
+    (magit-run-git "fetch" "origin")
+    (if (magit-commit-p sha)
+        (magit-show-commit sha)
+      (message "Commit %s still not found." sha)))
+   (t (message "Commit %s not available locally." sha))))
 
 (defun shipit--open-commit-in-browser (sha repo)
   "Open commit SHA in browser via the active PR backend."
@@ -3136,6 +3103,42 @@ If the commit is not available locally, offer to fetch from origin."
     (if fn
         (browse-url (funcall fn config sha))
       (error "Backend has no :browse-commit-url"))))
+
+(defun shipit--create-commit-sha-overlays (repo &optional body-start body-end)
+  "Highlight 7-40-char hex runs as commit SHAs in REPO.
+Applies `magit-hash' face to each match and binds RET / mouse-2
+to open the commit in a magit-revision buffer via
+`shipit--view-commit-in-magit' (which fetches from origin if
+the commit isn't available locally).  Skips runs that are pure
+digits (line numbers / dates) since real SHAs contain at least
+one [a-f]."
+  (when repo
+    (let ((search-start (or body-start (point)))
+          (search-limit (or body-end (point-max))))
+      (save-excursion
+        (goto-char search-start)
+        (while (re-search-forward "\\b[0-9a-f]\\{7,40\\}\\b" search-limit t)
+          (let* ((sha (match-string-no-properties 0))
+                 (start (match-beginning 0))
+                 (end (match-end 0)))
+            (when (string-match-p "[a-f]" sha)
+              (let ((ov (make-overlay start end))
+                    (keymap (make-sparse-keymap)))
+                (set-keymap-parent keymap (current-local-map))
+                (define-key keymap (kbd "RET")
+                  (lambda ()
+                    (interactive)
+                    (shipit--view-commit-in-magit sha repo)))
+                (define-key keymap [mouse-2]
+                  (lambda (_)
+                    (interactive "e")
+                    (shipit--view-commit-in-magit sha repo)))
+                (overlay-put ov 'face 'magit-hash)
+                (overlay-put ov 'mouse-face 'highlight)
+                (overlay-put ov 'keymap keymap)
+                (overlay-put ov 'evaporate t)
+                (overlay-put ov 'help-echo
+                             (format "%s - RET: open in magit-revision" sha))))))))))
 
 (defun shipit--reference-is-pr-p (ref-data)
   "Return non-nil if REF-DATA (from issues endpoint) represents a PR."
@@ -3157,10 +3160,13 @@ Uses the backend's :detect-hash-reference function when registered."
 
 (defun shipit--hash-reference-open-issue (number repo url)
   "Open #NUMBER in REPO as an issue, passing PR backend as the issue backend.
-Falls back to browsing URL when issues are disabled."
+Falls back to browsing URL when issues are disabled.  Resolves
+the `auto' sentinel via `shipit-pr--backend-id' so the issue
+backend lookup gets a concrete symbol (e.g. `github') rather
+than `auto', which is not a registered issue backend."
   (if shipit-issues-enabled
       (shipit-issues-open-buffer number repo
-                                 shipit-pr-backend
+                                 (shipit-pr--backend-id)
                                  shipit-pr-backend-config)
     (browse-url url)))
 
@@ -3411,8 +3417,67 @@ Tries PR backends first, then issue backends."
     (or (shipit-pr--classify-url clean)
         (shipit-issue--classify-url clean))))
 
+(defun shipit--region-face-to-font-lock-face (start end)
+  "Move `face' text-property to `font-lock-face' from START to END.
+The blob viewer's host buffer enables `font-lock-mode' which
+strips arbitrary `face' properties on its first pass; copying
+to the persistent `font-lock-face' preserves the rendered
+styling."
+  (save-excursion
+    (let ((pos start))
+      (while (< pos end)
+        (let ((next (next-single-property-change pos 'face nil end))
+              (face (get-text-property pos 'face)))
+          (when face
+            (with-silent-modifications
+              (put-text-property pos next 'font-lock-face face)
+              (remove-text-properties pos next '(face nil))))
+          (setq pos next))))))
+
+(defun shipit--blob-prose-format--from-local-vars (content)
+  "Return `org' or `markdown' from a `-*- mode: NAME -*-' header in CONTENT.
+Honors the standard Emacs file-local-variables line so files
+like magit/forge's `CHANGELOG' (which begins
+`# -*- mode: org -*-') are recognised even though the file
+itself has no extension and lacks `#+TITLE:'-style org
+keywords."
+  (when (and (stringp content) (not (string-empty-p content)))
+    (let* ((first-newline (string-search "\n" content))
+           (first-line (substring content 0 (or first-newline (length content)))))
+      (when (string-match
+             "-\\*-[ \t]*\\(?:.*[ \t;]+\\)?mode:[ \t]*\\([A-Za-z0-9_-]+\\)\\b"
+             first-line)
+        (let ((mode (downcase (match-string 1 first-line))))
+          (cond
+           ((member mode '("org" "org-mode")) 'org)
+           ((member mode '("markdown" "markdown-mode" "gfm" "gfm-mode")) 'markdown)))))))
+
+(defun shipit--blob-prose-format (filename content)
+  "Return `markdown', `org', or nil for FILENAME with CONTENT.
+Returns a non-nil format when FILENAME is a prose file the blob
+viewer should render as collapsible magit-sections.  Order:
+1. `-*- mode: org -*-' / `-*- mode: markdown -*-' file-local-vars
+   line (`# -*- mode: org -*-' on a CHANGELOG counts).
+2. Extension (`.md' -> markdown, `.org' -> org).
+3. Extension-less GitHub conventions (`CHANGELOG' / `CHANGES' /
+   `HISTORY' / `NEWS' / `README') -- format detected from
+   CONTENT via `shipit--detect-body-format'."
+  (or (shipit--blob-prose-format--from-local-vars content)
+      (let ((base (file-name-nondirectory (or filename ""))))
+        (cond
+         ((string-match-p "\\.\\(md\\|markdown\\|mdown\\)\\'" base) 'markdown)
+         ((string-match-p "\\.org\\'" base) 'org)
+         ((string-match-p
+           "\\`\\(CHANGELOG\\|CHANGES\\|HISTORY\\|NEWS\\|README\\)\\(\\..+\\)?\\'"
+           base)
+          (and content (shipit--detect-body-format content)))))))
+
 (defun shipit--open-blob-url (classified)
-  "Open a blob URL CLASSIFIED plist in a buffer with appropriate major mode."
+  "Open a blob URL CLASSIFIED plist in a buffer with appropriate major mode.
+For markdown-shaped files (`.md', `CHANGELOG', etc.) the body is
+rendered as nested magit-sections so the user can navigate +
+collapse / expand by heading; other filetypes fall back to
+`set-auto-mode' on the raw content."
   (let* ((repo (plist-get classified :repo))
          (ref (plist-get classified :ref))
          (path (plist-get classified :path))
@@ -3431,20 +3496,65 @@ Tries PR backends first, then issue backends."
                            (funcall fetch-fn config path ref))))
       (if (not file-content)
           (user-error "Could not fetch %s" path)
-        (let ((buf (get-buffer-create buf-name)))
+        (let ((buf (get-buffer-create buf-name))
+              (prose-format (shipit--blob-prose-format filename file-content)))
           (with-current-buffer buf
             (let ((inhibit-read-only t))
               (erase-buffer)
-              (insert file-content)
-              (goto-char (point-min))
-              ;; Set major mode from filename
-              (let ((buffer-file-name filename))
-                (set-auto-mode))
-              (setq buffer-read-only t)
-              ;; Navigate to fragment anchor
-              (when (and fragment (not (string-empty-p fragment)))
+              (cond
+               (prose-format
+                (require 'shipit-repo-buffer)
+                (magit-section-mode)
+                ;; Pre-render via `shipit--render-body' so inline
+                ;; markup (`~code~', `*bold*', emphasis, links)
+                ;; carries `font-lock-face' properties through to
+                ;; the section inserter -- the inserter only
+                ;; preserves properties, it does not re-render.
+                ;; Without this the buffer shows raw `~code~'.
+                (let ((rendered (if (fboundp 'shipit--render-body)
+                                    (shipit--render-body file-content prose-format)
+                                  file-content))
+                      (render-start (point)))
+                  (magit-insert-section (shipit-blob-root)
+                    (cond
+                     ((eq prose-format 'org)
+                      (shipit-repo-buffer--insert-org-as-sections rendered 0))
+                     (t
+                      (shipit-repo-buffer--insert-markdown-as-sections rendered 0))))
+                  ;; Make `#NNN' issue/PR references, bare URLs, and
+                  ;; code blocks visually distinct + clickable.  Same
+                  ;; pipeline used for repo READMEs.
+                  ;; magit-section-mode enables font-lock-mode and
+                  ;; font-lock clears any pre-existing `face' on its
+                  ;; first pass.  Migrate the rendered body's `face'
+                  ;; to `font-lock-face' (which font-lock leaves
+                  ;; alone) so org's `~code~' / markdown emphasis
+                  ;; faces survive.
+                  (shipit--region-face-to-font-lock-face
+                   render-start (point))
+                  (when (fboundp 'shipit--create-pr-reference-overlays)
+                    (shipit--create-pr-reference-overlays
+                     repo nil render-start (point)))
+                  (when (fboundp 'shipit--create-commit-sha-overlays)
+                    (shipit--create-commit-sha-overlays repo render-start (point)))
+                  (when (fboundp 'shipit--create-generic-url-overlays)
+                    (shipit--create-generic-url-overlays render-start (point)))
+                  (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
+                    (shipit--apply-code-block-backgrounds-in-region
+                     render-start (point)))
+                  (when (fboundp 'shipit--animate-images-in-region)
+                    (shipit--animate-images-in-region render-start (point)))))
+               (t
+                (insert file-content)
                 (goto-char (point-min))
-                ;; Try heading/anchor patterns
+                ;; Set major mode from filename for non-prose files.
+                (let ((buffer-file-name filename))
+                  (set-auto-mode))))
+              (setq buffer-read-only t)
+              (goto-char (point-min))
+              ;; Navigate to fragment anchor (post-render so heading
+              ;; sections are present).
+              (when (and fragment (not (string-empty-p fragment)))
                 (or (search-forward fragment nil t)
                     (search-forward (replace-regexp-in-string "-" " " fragment) nil t)
                     (goto-char (point-min))))

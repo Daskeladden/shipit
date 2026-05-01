@@ -6735,8 +6735,8 @@ REPO should be 'owner/repo' format."
                (response-data (car result))
                (status (cdr result)))
           (cond
-           ;; Success - parse content
-           ((and response-data (= status 200))
+           ;; Success (200 fresh or 304 served from etag cache with data).
+           ((and response-data (memq status '(200 304)))
             (let ((content (cdr (assq 'content response-data)))
                   (encoding (cdr (assq 'encoding response-data))))
               (if (and content (string= encoding "base64"))

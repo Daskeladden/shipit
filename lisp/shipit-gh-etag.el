@@ -519,7 +519,7 @@ Returns plist with :status, :json, :etag, :from-cache, :rate-remaining, :rate-re
                                        (json-false nil))
                                   (goto-char body-start)
                                   (setq json-data (condition-case err
-                                                   (json-read)
+                                                   (json-parse-buffer :object-type 'alist :array-type 'list :null-object nil :false-object nil)
                                                  (error
                                                   (when (fboundp 'shipit--debug-log)
                                                     (shipit--debug-log "❌ JSON parsing error after UTF-8 decoding: %s" (error-message-string err))
@@ -685,7 +685,7 @@ Returns plist with :status, :json, :etag, :from-cache, :rate-remaining, :rate-re
                                    (json-false nil))
                               (goto-char body-start)
                               (setq json-data (condition-case err
-                                               (json-read)
+                                               (json-parse-buffer :object-type 'alist :array-type 'list :null-object nil :false-object nil)
                                              (error
                                               (when (fboundp 'shipit--debug-log)
                                                 (shipit--debug-log "❌ JSON parsing error after UTF-8 decoding: %s" (error-message-string err))
@@ -1286,7 +1286,7 @@ Uses the same response parsing logic as the synchronous version."
                                         (json-null nil)
                                         (json-false nil))
                                     (goto-char body-start)
-                                    (json-read)))
+                                    (json-parse-buffer :object-type 'alist :array-type 'list :null-object nil :false-object nil)))
                        (normalized-etag (shipit-gh-etag--normalize-etag etag)))
                 ;; Cache the new data (same as sync)
                 (when json-data

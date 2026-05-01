@@ -83,6 +83,15 @@
   :type 'integer
   :group 'shipit)
 
+(defcustom shipit-notifications-unread-max-pages 30
+  "Max pages of unread notifications to fetch per refresh / poll.
+GitHub caps `/notifications' at 50 items per page, so this also
+caps the visible unread set at `50 * value' items.  Default 30
+covers a 1500-item inbox; bump higher if you have more, lower
+if the fetch is slow and you don't need everything visible."
+  :type 'integer
+  :group 'shipit)
+
 (defcustom shipit-notifications-visual-indicator 'modeline
   "Where to show notification indicators.
 - modeline: Show count in modeline via `global-mode-string' and `shipit--modeline-string'.
@@ -950,7 +959,7 @@ the notifications buffer windowed pagination."
          (first-page (or start-page 1))
          (page first-page)
          (has-more t)
-         (page-cap (+ first-page (1- (or max-pages 10)))))
+         (page-cap (+ first-page (1- (or max-pages shipit-notifications-unread-max-pages)))))
 
     (while (and has-more (<= page page-cap))
       (let* ((page-params (append params `((page . ,page))))
@@ -1033,33 +1042,44 @@ re-rendered the entire buffer mid-render.")
 Drained at the end of the active rerender; coalesces a burst of
 async callbacks into a single follow-up redraw.")
 
-(defun shipit--rerender-notifications-buffer-if-visible ()
-  "Re-render the shipit notifications buffer if it exists.
-Used by deferred enrichment paths to surface freshly-resolved
-draft/state/author icons and workflow run URLs without forcing
-the user to press `g'.
+(defvar-local shipit--rerender-debounce-timer nil
+  "Active debounce timer for rerendering the notifications buffer.
+Coalesces a burst of `--rerender-...-if-visible' calls (one per
+async HTTP response: poll completion, GraphQL enrichment, PATCH
+success) into a single rerender after a short idle delay.")
 
-Re-entry guard: if a rerender is already in progress (e.g. an
-async enrichment callback fires while the buffer is rendering),
-just mark the buffer as needing another render and return.  The
-outer rerender drains the flag and runs once more — a single
-follow-up regardless of how many callbacks landed."
+(defcustom shipit-notifications-rerender-debounce-seconds 0.3
+  "Idle delay before a debounced notifications-buffer rerender fires.
+Lower = more responsive enrichment updates at the cost of more
+work; higher = fewer renders per poll cycle but staler-looking
+icons/states for that long."
+  :type 'number
+  :group 'shipit)
+
+(defun shipit--rerender-notifications-buffer-if-visible ()
+  "Schedule a rerender of the notifications buffer (debounced).
+Multiple callers in quick succession (a poll completing, the
+GraphQL enrichment callbacks landing, async PATCH success) all
+collapse into a single rerender after
+`shipit-notifications-rerender-debounce-seconds' of idle.  The
+buffer is rendered with N >> 100 entries -- individually
+re-rendering on every callback was a major source of GC churn
+and stutter."
   (let ((buf (and (boundp 'shipit-notifications-buffer-name)
                   (get-buffer shipit-notifications-buffer-name))))
     (when (and buf (buffer-live-p buf))
       (with-current-buffer buf
-        (cond
-         (shipit--rerender-in-progress
-          (setq shipit--rerender-pending t))
-         (t
-          (let ((shipit--rerender-in-progress t))
-            (setq shipit--rerender-pending nil)
-            (when (fboundp 'shipit-notifications-buffer--rerender)
-              (shipit-notifications-buffer--rerender))
-            (when shipit--rerender-pending
-              (setq shipit--rerender-pending nil)
-              (when (fboundp 'shipit-notifications-buffer--rerender)
-                (shipit-notifications-buffer--rerender))))))))))
+        (when (timerp shipit--rerender-debounce-timer)
+          (cancel-timer shipit--rerender-debounce-timer))
+        (setq shipit--rerender-debounce-timer
+              (run-with-idle-timer
+               shipit-notifications-rerender-debounce-seconds nil
+               (lambda ()
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (setq shipit--rerender-debounce-timer nil)
+                     (when (fboundp 'shipit-notifications-buffer--rerender)
+                       (shipit-notifications-buffer--rerender)))))))))))
 
 (defun shipit--process-notifications (notifications)
   "Process notifications and extract PR and Issue activity."

@@ -378,7 +378,7 @@ NOCONFIRM are for compatibility with `revert-buffer'."
       ;; In `unread' scope, page math is irrelevant and we want every
       ;; unread item populated up front so the buffer reflects the same
       ;; state as the background poll.
-      (let ((max-pages (if (eq scope 'all) 1 10)))
+      (let ((max-pages (if (eq scope 'all) 1 shipit-notifications-unread-max-pages)))
         (shipit--check-notifications-background
          force-fresh scope max-pages repo page before since)))
     (when (fboundp 'shipit--fetch-notifications-total-count-async)
@@ -575,6 +575,22 @@ snooze hides it.  Permanent snoozes have a non-numeric `cdr'
 
 ;;; Rendering
 
+(defvar shipit-notifications-buffer--render-cache nil
+  "Plist of values reused across `--format-heading' calls in one render.
+Bound for the dynamic extent of `--render'.  Hoisting these out
+of the per-row hot loop drops a 1000-row render's GC pressure
+substantially.
+
+Keys: :repo-width :pr-width :title-width-cfg :reason-width
+:spacing :spacer :window-width.  Each plist value is the
+result of the corresponding defcustom lookup or window query
+that `--format-heading' would otherwise repeat per row.
+
+When unbound (nil), `--format-heading' falls back to live
+defcustom reads -- callers outside the full-buffer render path
+\(e.g. partial section refreshes) still work without the
+cache.")
+
 (defvar shipit-notifications-buffer--render-pool nil
   "Dynamic cache of the repo-filtered activity pool during one render.
 Bound by `shipit-notifications-buffer--render' so header helpers and
@@ -602,15 +618,30 @@ state, reason, actionable, and Jira component."
        (shipit-notifications-buffer--matches-actionable-filter-p activity)
        (shipit-notifications-buffer--matches-jira-component-p activity)))
 
+(defun shipit-notifications-buffer--build-render-cache ()
+  "Snapshot defcustom reads + window-width for one render.
+Returns a plist consumed by `--format-heading'."
+  (let ((spacing (or (bound-and-true-p shipit-notifications-column-spacing) 2)))
+    (list :repo-width (or (cdr (assq 'repo shipit-notifications-column-widths)) 30)
+          :pr-width (or (cdr (assq 'pr shipit-notifications-column-widths)) 5)
+          :title-width-cfg (or (cdr (assq 'title shipit-notifications-column-widths)) 45)
+          :reason-width (or (cdr (assq 'reason shipit-notifications-column-widths)) 12)
+          :spacing spacing
+          :spacer (make-string spacing ?\s)
+          :window-width (or (window-body-width) 120))))
+
 (defun shipit-notifications-buffer--render ()
   "Render the notifications buffer content.
-Bind `shipit-notifications-buffer--render-pool' once per render so
-the callers that need the structurally-filtered activity pool
-share a single hash walk + filter."
+Bind `shipit-notifications-buffer--render-pool' and
+`shipit-notifications-buffer--render-cache' once per render so
+the per-row formatter doesn't repeat defcustom lookups + window
+queries 1000 times on a big inbox."
   (shipit-notifications-buffer--prune-expired-snoozes)
   (let ((shipit-notifications-buffer--render-pool
          (seq-filter #'shipit-notifications-buffer--passes-all-filters-p
-                     (shipit-notifications-buffer--all-activities))))
+                     (shipit-notifications-buffer--all-activities)))
+        (shipit-notifications-buffer--render-cache
+         (shipit-notifications-buffer--build-render-cache)))
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
       (shipit-notifications-buffer--insert-notifications))))
@@ -1245,12 +1276,19 @@ icon matches GitHub's web UI for deployment review requests."
                                  ("alert" "AL")
                                  ("invitation" "IN")
                                  (_ "??"))))
-         (repo-width (or (cdr (assq 'repo shipit-notifications-column-widths)) 30))
-         (pr-width (or (cdr (assq 'pr shipit-notifications-column-widths)) 5))
-         (title-width-cfg (or (cdr (assq 'title shipit-notifications-column-widths)) 45))
-         (reason-width (or (cdr (assq 'reason shipit-notifications-column-widths)) 12))
-         (spacing (or (bound-and-true-p shipit-notifications-column-spacing) 2))
-         (spacer (make-string spacing ?\s))
+         (cache shipit-notifications-buffer--render-cache)
+         (repo-width (or (and cache (plist-get cache :repo-width))
+                         (or (cdr (assq 'repo shipit-notifications-column-widths)) 30)))
+         (pr-width (or (and cache (plist-get cache :pr-width))
+                       (or (cdr (assq 'pr shipit-notifications-column-widths)) 5)))
+         (title-width-cfg (or (and cache (plist-get cache :title-width-cfg))
+                              (or (cdr (assq 'title shipit-notifications-column-widths)) 45)))
+         (reason-width (or (and cache (plist-get cache :reason-width))
+                           (or (cdr (assq 'reason shipit-notifications-column-widths)) 12)))
+         (spacing (or (and cache (plist-get cache :spacing))
+                      (or (bound-and-true-p shipit-notifications-column-spacing) 2)))
+         (spacer (or (and cache (plist-get cache :spacer))
+                     (make-string spacing ?\s)))
          (number-str (cond
                       ((member type '("rss" "release" "check" "commit"
                                       "workflow" "alert" "invitation"))
@@ -1275,7 +1313,8 @@ icon matches GitHub's web UI for deployment review requests."
          (icon-cols 4)
          (fixed-left-width (+ icon-cols 1 repo-width 1 (1+ pr-width)
                               spacing title-width spacing reason-width))
-         (window-width (or (window-body-width) 120))
+         (window-width (or (and cache (plist-get cache :window-width))
+                           (or (window-body-width) 120)))
          (time-field-width 16)  ; fixed width to survive format toggles
          (time-text (let* ((ts-width (string-width time-ago))
                            (pad (max 0 (- time-field-width ts-width))))

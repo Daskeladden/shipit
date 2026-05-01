@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.6.0 (2026-05-01)
+
+### Features
+
+- **Undo window for all mark-as-read commands.** Single (`m m`), region, all-in-buffer (`M`), actionable (`m A`), non-actionable (`m N`), resolved (`m Z`), and the new mark-by-regex (`m r`) all defer the actual server PATCH for `shipit-notifications-mark-undo-window-seconds` (default 30s).  Affected rows hide immediately; any undo key (vanilla, undo-tree, undo-fu, undo-tree-visualize) cancels the batch via a custom `(apply ...)' entry on `buffer-undo-list'.  The eventual commit fires the PATCHes asynchronously and concurrently — a 50-row mark used to block the editor for 50× RTT.
+- **`m r` mark-by-regex with live preview.** Reads a regex from the minibuffer with a strike-through preview of matching rows that updates as you type, plus a live `(N matches)' suffix on the prompt.  RET marks the matched rows (with the same undo window).
+- **Snooze transient toggles the snoozed-section visibility** (`z t`).  The header bracket `[snoozed: N]` always shows; this just hides the inline list of snoozed rows.
+- **`w` works on group headings and entries.** On a `notification-repo` group heading the watch transient opens for the repo; on an entry it additionally surfaces the per-thread subscription group so individual PRs / issues / discussions can be subscribed / unsubscribed / ignored without leaving the notifications buffer.
+- **Live match count + pending-mark count in the header.** The mark-by-regex minibuffer shows `(N matches)`; the buffer header carries `[pending mark: N]` whenever a batch is in flight (clears on commit / undo).
+- **`<- current` marker in the subscription transient gets a color** (the `success` face) so the active subscription state stands out.
+- **Release notifications open in the in-Emacs releases buffer.** RET / `o` on a release notification opens `shipit-open-releases-buffer` for the repo + tag instead of bouncing to a browser.  Markdown links in the release body are clickable; URL clicks route through `shipit--classify-url` so blob / PR / issue URLs land in their shipit buffer.
+- **Markdown / org blob viewer with collapsible sections.** Blob URLs to prose files (`.md`, `.markdown`, `.mdown`, `.org`, plus extension-less `CHANGELOG` / `CHANGES` / `HISTORY` / `NEWS` / `README`, plus files with a `-*- mode: org -*-` first line) render as a magit-section-mode buffer.  Each `# heading` / `* heading` becomes a navigable, collapsible section.  `#NNN` issue/PR references and bare URLs are clickable; commit SHAs render in `magit-hash` face and `RET` fetches the commit on demand into `shipit-commit-cache-directory` (default `~/.emacs.d/shipit-commit-cache/`) via `git fetch --depth=1` and opens it in a magit-revision buffer — no local clone of the source repo required.  Inline `~code~` / `*bold*` keeps its rendered styling.
+
+### Performance
+
+- **Cut GC + render time on large notifications inboxes** (~1000 unread).  Four changes against the 30s profile:
+  - Async-callback rerenders are debounced (`shipit-notifications-rerender-debounce-seconds`, default 0.3) so a poll cycle's worth of GraphQL enrichments coalesce into one render.
+  - The etag-cache hot path uses native `json-parse-buffer` (Emacs 27+) instead of the elisp `json-read` — ~5× faster + a fraction of the conses.
+  - Per-row defcustom lookups + `window-body-width` are hoisted into a render-cache plist bound for one render's dynamic extent.
+  - `shipit-notifications-unread-max-pages` defcustom (default 30, was hardcoded 10) raises the visible cap from 500 to 1500 items.
+- **Fast README hard-wrap.** `shipit--wrap-text` was a ~25% slice of repo-buffer redisplay profiles -- `fill-region` per input line, with paragraph-detection / `adaptive-fill-mode` / change-hooks all kicking in.  Switched to `fill-region-as-paragraph` inside a context that disables those code paths; the wrap drops out of the redisplay hot frame.  New defcustom `shipit-readme-fill-column` (default 80) controls the wrap column; nil opts into pure visual wrap.
+
+### Bug fixes
+
+- **Page nav in `all` scope is actually windowed.** `M-n` no longer accumulates: page-forward / back / first / last / goto-page in `all` scope clear the GitHub entries from the hash before fetching the new page so the buffer holds one page at a time, not N stacked.
+- **Auto-mark live preview walks group-by-repo trees.** `m r` (and the `m +` rule preview) now strike-through matching rows in group-by-repo mode, not just flat layout.
+- **Icon-leak fix runs on every hide.** Section icons no longer leak through invisibility overlays when collapsing via the magit level digits (`1` / `2` / ...) — the `:after` advice on `magit-section-hide` covers all hide paths, not only TAB.
+- **Activity row width cap is configurable** (`shipit-notifications-activity-line-width`).  Default `nil` tracks `window-body-width` so activity timestamps line up with the notification list above; an integer caps the target on wide windows.
+- **Buffer state survives rerenders.** Collapsed groups stay collapsed across an unrelated rerender (snooze, mark, poll); active region is deactivated before regeneration so the next redisplay doesn't crash with `(wrong-type-argument ... nil)` from a stale region pointing at sections that just got wiped.
+- **Async batch mark-as-read is resilient.** 404 / 410 from already-gone threads are tolerated; backend activities (Jira / RSS / GitLab) dispatch through their own backend's `:mark-notification-read` instead of being misdirected at the GitHub PR endpoint; the async error callback no longer errors when the HTTP status line is unparseable.
+
+---
+
 ## v1.5.2 (2026-04-29)
 
 ### Bug fixes

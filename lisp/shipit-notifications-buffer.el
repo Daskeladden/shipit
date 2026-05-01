@@ -393,14 +393,50 @@ NOCONFIRM are for compatibility with `revert-buffer'."
   (shipit-notifications-buffer--rerender)
   (message "Notifications refreshed"))
 
+(defun shipit-notifications-buffer--reapply-hidden-sections ()
+  "Walk the section tree and re-create invisibility overlays on hidden sections.
+`erase-buffer' drops overlays; magit's visibility cache restores
+the `hidden' slot on freshly-inserted sections but not the
+overlay that actually hides their content.  Without this, a
+group the user collapsed before a rerender shows up
+\"logically hidden, visually expanded\" -- the parent appears
+to spring open whenever an unrelated action (e.g. snooze)
+triggers a rerender."
+  (when (bound-and-true-p magit-root-section)
+    (cl-labels
+        ((walk (s)
+           (when (oref s hidden)
+             (let* ((beg (oref s content))
+                    (end (oref s end))
+                    (have-ov (and beg end (markerp beg) (markerp end)
+                                  (cl-some
+                                   (lambda (o) (eq (overlay-get o 'invisible) t))
+                                   (overlays-in (marker-position beg)
+                                                (marker-position end))))))
+               (unless have-ov
+                 ;; magit-section-hide creates the invisibility overlay.
+                 ;; Calling it on an already-hidden section is fine; it
+                 ;; just installs the overlay it expected to find.
+                 (magit-section-hide s))))
+           (dolist (c (oref s children)) (walk c))))
+      (walk magit-root-section))))
+
 (defun shipit-notifications-buffer--rerender ()
   "Re-render the notifications buffer without fetching new data."
   (let ((buf (shipit-notifications-buffer-create)))
     (with-current-buffer buf
       (let ((inhibit-read-only t)
             (pos (point)))
+        ;; Deactivate any active mark before regenerating: the
+        ;; region's saved positions point at sections that
+        ;; `erase-buffer' is about to wipe, and the next redisplay
+        ;; cycle's `redisplay--update-region-highlight' would call
+        ;; `magit-section-at' on those stale positions and crash
+        ;; with `(wrong-type-argument ... nil)'.
+        (deactivate-mark)
         (erase-buffer)
         (shipit-notifications-buffer--render)
+        (shipit-notifications-buffer--reapply-hidden-sections)
         (goto-char (min pos (point-max)))))))
 
 (defun shipit-notifications-buffer--snoozes-load ()

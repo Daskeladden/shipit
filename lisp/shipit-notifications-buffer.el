@@ -1874,17 +1874,47 @@ If a region is active, copy the region text instead (standard M-w behavior)."
             (call-interactively fallback)))))))
 
 (defun shipit-notifications-buffer-watch ()
-  "Open subscription transient for the repo of the notification at point."
+  "Open subscription transient for the repo / thread at point.
+On a `notification-repo' wrapper heading (group-by-repo) the
+transient is the repo-wide subscription only.  On a notification
+entry, additionally inject the entry's PR / Issue / Discussion
+context so the transient also surfaces the thread-subscription
+group -- the user can subscribe / ignore an individual issue or
+PR without leaving the notifications buffer.  Errors when no
+repo can be derived."
   (interactive)
-  (let ((activity (shipit-notifications-buffer--activity-at-point)))
-    (if activity
-        (let ((repo (cdr (assq 'repo activity))))
-          (if repo
-              (progn
-                (setq-local shipit-repo-buffer-repo repo)
-                (shipit-repo-subscription))
-            (user-error "No repo context for this notification")))
-      (user-error "No notification at point"))))
+  (let* ((activity (shipit-notifications-buffer--activity-at-point))
+         (group (and (not activity)
+                     (shipit-notifications-buffer--containing-repo-section)))
+         (repo (or (and activity (cdr (assq 'repo activity)))
+                   (and group (oref group value)))))
+    (cond
+     ((null repo)
+      (user-error "No repo at point"))
+     (t
+      (require 'shipit-repo-buffer)
+      (setq-local shipit-repo-buffer-repo repo)
+      (let ((type (and activity (cdr (assq 'type activity))))
+            (num (and activity (or (cdr (assq 'number activity))
+                                   (cdr (assq 'pr-number activity)))))
+            (subject (and activity (cdr (assq 'subject activity)))))
+        (cond
+         ((and (equal type "pr") (integerp num))
+          (let ((shipit-buffer-pr-number num)
+                (shipit-buffer-repo repo)
+                (shipit-buffer-pr-data (list (cons 'title subject))))
+            (shipit-repo-subscription)))
+         ((and (equal type "issue") (integerp num))
+          (let ((shipit-issue-buffer-number num)
+                (shipit-issue-buffer-repo repo)
+                (shipit-issue-buffer-data (list (cons 'title subject))))
+            (shipit-repo-subscription)))
+         ((and (equal type "discussion") (integerp num))
+          (let ((shipit-discussion-buffer-number num)
+                (shipit-discussion-buffer-repo repo)
+                (shipit-discussion-buffer-data (list (cons 'title subject))))
+            (shipit-repo-subscription)))
+         (t (shipit-repo-subscription))))))))
 
 (defun shipit-notifications-buffer--activity-at-point ()
   "Return the notification activity alist at point, or nil.

@@ -229,7 +229,7 @@ Returns plist with :json, :status, :headers for GitHub protocol compliance."
                                                     (signal (car err) (cdr err))))))))
                               (if (and status-code (>= status-code 200) (< status-code 300))
                                   (funcall success-callback json-data)
-                                (funcall error-callback (format "HTTP %d" status-code)))))
+                                (funcall error-callback (format "HTTP %s" (or status-code "?"))))))
                           (kill-buffer (current-buffer)))))))
 
 (defun shipit--url-retrieve-async-with-headers (url method headers data success-callback error-callback)
@@ -279,7 +279,7 @@ pagination."
                                       (signal (car err) (cdr err))))))))
                (if (and status-code (>= status-code 200) (< status-code 300))
                    (funcall success-callback json-data (nreverse response-headers))
-                 (funcall error-callback (format "HTTP %d" status-code)))))
+                 (funcall error-callback (format "HTTP %s" (or status-code "?"))))))
            (kill-buffer (current-buffer))))))))
 
 (defun shipit--parse-link-header-last-page (headers)

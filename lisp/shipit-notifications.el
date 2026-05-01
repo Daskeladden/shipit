@@ -2200,9 +2200,16 @@ batch so `shipit-pr--resolve-for-repo' isn't re-invoked per row."
          (notification-id
           (shipit--dispatch-mark-thread-read-async repo notification-id resolved-cache))
          (backend-id
-          ;; Backend (Jira/RSS/etc.) — typically in-memory only; sync.
-          (let* ((resolved (or (and resolved-cache (gethash repo resolved-cache))
-                               (ignore-errors (shipit-pr--resolve-for-repo repo))))
+          ;; Backend (Jira / RSS / GitLab) -- the issue backend's
+          ;; :mark-notification-read takes the activity itself
+          ;; (not a thread-id string), so resolve through
+          ;; `--resolve-backend-by-id' rather than the PR backend
+          ;; resolver -- otherwise we pass the activity alist
+          ;; into the GitHub PR mark fn and it ends up serialised
+          ;; into a /notifications/threads/<alist> URL.
+          (require 'shipit-issue-backends)
+          (let* ((resolved (ignore-errors
+                             (shipit--resolve-backend-by-id backend-id activity)))
                  (backend (car-safe resolved))
                  (config (cdr-safe resolved))
                  (mark-fn (and backend (plist-get backend :mark-notification-read))))

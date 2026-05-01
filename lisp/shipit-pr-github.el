@@ -1189,9 +1189,17 @@ Used for marking notifications as read, which returns 205 with empty body."
          (headers (remove nil headers)))
     (shipit--debug-log "API REQUEST (PATCH-NO-JSON): %s" url)
     (let ((status-code (shipit--url-retrieve-sync url "PATCH" headers nil t)))
-      (if (and status-code (>= status-code 200) (< status-code 300))
-          t
-        (error "API returned HTTP %s" status-code)))))
+      (cond
+       ((and status-code (>= status-code 200) (< status-code 300)) t)
+       ;; Mark-as-read is idempotent on the server; a 404 (or 410)
+       ;; means the thread is already gone, which is the desired
+       ;; end state.  Treat as success so a batch commit doesn't
+       ;; abort halfway through when a few stale items race the
+       ;; PATCH.
+       ((and status-code (memq status-code '(404 410)))
+        (shipit--debug-log "PATCH %s: HTTP %d (already gone)" url status-code)
+        t)
+       (t (error "API returned HTTP %s" status-code))))))
 
 (defun shipit-pr-github--api-request-patch-no-json-async (endpoint)
   "Fire-and-forget async variant of `--api-request-patch-no-json'.

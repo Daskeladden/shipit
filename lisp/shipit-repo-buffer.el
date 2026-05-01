@@ -111,6 +111,19 @@
 
 ;;; Buffer-local variables
 
+(defcustom shipit-readme-fill-column 80
+  "Hard-wrap column for the rendered repo README.
+An integer (default 80) hard-wraps via `shipit--wrap-text' so
+paragraphs read with proper indentation and continuation
+alignment.  nil skips the wrap and lets the display engine
+visual-wrap -- cheaper but reads less cleanly on long lines.
+The wrap path itself is fast now: `fill-region-as-paragraph'
+runs with adaptive-fill / change-hooks / paragraph-detection
+bypassed, so a long README doesn't show up as a redisplay hot
+path."
+  :type '(choice (const :tag "Visual wrap (no fill)" nil) integer)
+  :group 'shipit)
+
 (defvar-local shipit-repo-buffer-repo nil
   "Repository name (owner/repo) displayed in this buffer.")
 
@@ -220,6 +233,7 @@ Displays repository metadata and README.
   (setq-local revert-buffer-function #'shipit-repo-buffer-refresh)
   (setq-local buffer-read-only t)
   (setq-local truncate-lines nil)
+  (setq-local word-wrap t)
   (add-hook 'magit-section-set-visibility-hook
             #'shipit-repo-buffer--section-visibility nil t)
   (setq-local magit-root-section nil)
@@ -585,9 +599,20 @@ with :filename and :content keys (the format returned by backend
               (let* ((rendered (if (fboundp 'shipit--render-body)
                                    (shipit--render-body readme-text format)
                                  readme-text))
-                     (wrapped (if (fboundp 'shipit--wrap-text)
-                                  (shipit--strip-face-on-whitespace (shipit--wrap-text rendered 80 0))
-                                rendered)))
+                     ;; Hard-wrapping via `fill-region' was a ~25%
+                     ;; slice of redisplay profiles.  The buffer has
+                     ;; `truncate-lines' nil + `word-wrap' t (set in
+                     ;; the mode), so the display engine visual-wraps
+                     ;; long lines at zero allocation cost.  Set
+                     ;; `shipit-readme-fill-column' to a number to
+                     ;; opt back in to hard-wrap.
+                     (wrapped (cond
+                               ((and (numberp shipit-readme-fill-column)
+                                     (fboundp 'shipit--wrap-text))
+                                (shipit--strip-face-on-whitespace
+                                 (shipit--wrap-text
+                                  rendered shipit-readme-fill-column 0)))
+                               (t rendered))))
                 (cond
                  ((eq format 'org)
                   (shipit-repo-buffer--insert-org-as-sections wrapped 3))

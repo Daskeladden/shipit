@@ -1677,7 +1677,21 @@ every subsequent call reuses it via `erase-buffer'."
            (t
             (erase-buffer)
             (insert line)
-            (fill-region (point-min) (point-max))
+            ;; This loop runs once per input line.  Plain
+            ;; `fill-region' calls `fill-forward-paragraph' /
+            ;; `move-to-left-margin' per visual line, runs
+            ;; `adaptive-fill-mode' prefix detection, and fires
+            ;; before/after-change hooks -- all overhead we don't
+            ;; need for a single pre-extracted line.  Use the
+            ;; lower-level `fill-region-as-paragraph' (skips
+            ;; paragraph detection) inside a context that turns
+            ;; every other slow path off.
+            (let ((inhibit-modification-hooks t)
+                  (inhibit-point-motion-hooks t)
+                  (adaptive-fill-mode nil)
+                  (paragraph-start "\f\|[ \t]*$")
+                  (paragraph-separate "[ \t\f]*$"))
+              (fill-region-as-paragraph (point-min) (point-max)))
             (push (buffer-string) result))))))
     (mapconcat #'identity (nreverse result) "\n")))
 

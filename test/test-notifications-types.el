@@ -176,13 +176,15 @@ silently dropped like before)."
               (should (search-forward "v1.2.3" nil t))))
         (kill-buffer buf)))))
 
-(ert-deftest test-notifications-buffer-open-release-uses-browse-url ()
+(ert-deftest test-notifications-buffer-open-release-opens-releases-buffer ()
   "GIVEN a release notification at point
 WHEN `shipit-notifications-buffer-open' is invoked
-THEN browse-url is called with the activity's browse-url so the
-user lands on the repo releases page instead of getting
-\"Unknown notification type\"."
+THEN the in-Emacs releases buffer is opened for the activity's
+repo + tag, instead of falling back to a browser."
   (require 'shipit-notifications-buffer)
+  ;; Pre-require so the in-cond `require' doesn't reload the
+  ;; file mid-test and clobber the `cl-letf'-mocked function.
+  (require 'shipit-releases-buffer)
   (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
     (puthash "owner/repo:release:99"
              '((repo . "owner/repo")
@@ -194,17 +196,17 @@ user lands on the repo releases page instead of getting
                (updated-at . "2026-04-24T08:00:00Z"))
              shipit--notification-pr-activities)
     (let ((buf (shipit-notifications-buffer-create))
-          (opened-url nil))
+          (opened-args nil))
       (unwind-protect
-          (cl-letf (((symbol-function 'browse-url)
-                     (lambda (url &rest _) (setq opened-url url))))
+          (cl-letf (((symbol-function 'shipit-open-releases-buffer)
+                     (lambda (repo &optional tag &rest _)
+                       (setq opened-args (list repo tag)))))
             (shipit-notifications-buffer--rerender)
             (with-current-buffer buf
               (goto-char (point-min))
               (search-forward "v1.2.3")
               (shipit-notifications-buffer-open)
-              (should (equal "https://github.com/owner/repo/releases"
-                             opened-url))))
+              (should (equal '("owner/repo" "v1.2.3") opened-args))))
         (kill-buffer buf)))))
 
 (ert-deftest test-notifications-buffer-icon-type-for-deployment ()

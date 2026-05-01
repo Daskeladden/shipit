@@ -2059,6 +2059,10 @@ With prefix arg (C-u), show action menu instead."
              (if-let* ((url (cdr (assq 'browse-url activity))))
                  (browse-url url)
                (message "No browse URL for check suite")))
+            ("release"
+             (require 'shipit-releases-buffer)
+             (let ((tag (cdr (assq 'subject activity))))
+               (shipit-open-releases-buffer repo tag)))
             ("rss" (when-let* ((url (cdr (assq 'browse-url activity))))
                      (browse-url url)))
             (_

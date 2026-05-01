@@ -70,12 +70,33 @@ When a string, scroll to the release with that tag name.")
 
 ;;; Mode
 
+(defun shipit-releases-buffer-ret ()
+  "RET handler for the releases buffer.
+If point is on a markdown link (the rendered body propertizes
+the link text with `help-echo URL'), route through shipit's URL
+dispatcher: GitHub repo / blob / PR / issue / discussion URLs
+open in the corresponding shipit buffer; unrecognized URLs fall
+back to `browse-url'.  Otherwise delegate to
+`magit-section-toggle' so headings collapse / expand normally."
+  (interactive)
+  (let ((url (get-text-property (point) 'help-echo)))
+    (cond
+     ((and (stringp url) (string-match-p "\\`https?://" url))
+      (let ((classified (and (fboundp 'shipit--classify-url)
+                             (shipit--classify-url url))))
+        (cond
+         ((and classified (fboundp 'shipit--open-classified-url))
+          (shipit--open-classified-url classified))
+         (t (browse-url url)))))
+     (t (call-interactively #'magit-section-toggle)))))
+
 (defvar shipit-releases-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
     (define-key map (kbd "g") #'shipit-releases-buffer-refresh)
     (define-key map (kbd "r") #'shipit-releases-buffer-refresh)
     (define-key map (kbd "q") #'quit-window)
+    (define-key map (kbd "RET") #'shipit-releases-buffer-ret)
     map)
   "Keymap for `shipit-releases-mode'.")
 
@@ -214,16 +235,40 @@ SCROLL-TO, if `tags', scrolls to the Tags section."
       (shipit-releases--insert-assets assets))
     (insert "\n")))
 
+(defun shipit-releases--rendered-face-to-font-lock-face (str)
+  "Convert `face' to `font-lock-face' on STR, returning STR.
+The releases buffer enables `font-lock-mode' which clears the
+`face' property after insertion (font-lock owns that namespace).
+`font-lock-face' is the persistent equivalent that font-lock
+respects, so we copy each `face' run there before insertion."
+  (let ((i 0) (len (length str)))
+    (while (< i len)
+      (let ((next (next-single-property-change i 'face str len))
+            (face (get-text-property i 'face str)))
+        (when face
+          (put-text-property i next 'font-lock-face face str)
+          (remove-text-properties i next '(face nil) str))
+        (setq i next))))
+  str)
+
 (defun shipit-releases--insert-rendered-body (body)
-  "Insert BODY text, rendering markdown if available."
+  "Insert BODY text, rendering markdown if available.
+Preserves text properties on the rendered output (including
+clickable-link styling from the markdown renderer) by inserting
+the rendered string directly and switching `face' to
+`font-lock-face' so the buffer's `font-lock-mode' doesn't strip
+the styling on its first pass."
   (let* ((rendered (if (and (boundp 'shipit-render-markdown)
                             shipit-render-markdown
                             (fboundp 'shipit--render-body))
                        (shipit--render-body body)
                      body))
+         (rendered (shipit-releases--rendered-face-to-font-lock-face rendered))
          (lines (split-string rendered "\n")))
     (dolist (line lines)
-      (insert (format "    %s\n" line)))))
+      (insert "    ")
+      (insert line)
+      (insert "\n"))))
 
 (defun shipit-releases--insert-assets (assets)
   "Insert asset listing from ASSETS list."

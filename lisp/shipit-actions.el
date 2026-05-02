@@ -1143,26 +1143,6 @@ DISPLAY-STATUS is typically (or conclusion status) from the API."
 
 ;;; Timestamp gap coloring
 
-(defface shipit-timestamp-gap-mild-face
-  '((t :foreground "#d4a0a0"))
-  "Face for timestamps with a mild gap (>= 5s by default)."
-  :group 'shipit)
-
-(defface shipit-timestamp-gap-moderate-face
-  '((t :foreground "#e06060"))
-  "Face for timestamps with a moderate gap (>= 30s by default)."
-  :group 'shipit)
-
-(defface shipit-timestamp-gap-high-face
-  '((t :foreground "#ef3030"))
-  "Face for timestamps with a high gap (>= 5m by default)."
-  :group 'shipit)
-
-(defface shipit-timestamp-gap-extreme-face
-  '((t :foreground "#ff0000" :weight bold))
-  "Face for timestamps with an extreme gap (>= 30m by default)."
-  :group 'shipit)
-
 (defcustom shipit-actions-timestamp-gap-thresholds
   '((5 . shipit-timestamp-gap-mild-face)
     (30 . shipit-timestamp-gap-moderate-face)

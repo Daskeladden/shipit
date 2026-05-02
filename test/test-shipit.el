@@ -1825,6 +1825,28 @@ similar to how general comments render blockquotes."
              (blockquote-line (seq-find (lambda (line) (string-match-p "^>" line)) lines)))
         (should blockquote-line)))))
 
+(ert-deftest test-shipit--apply-blockquote-faces-uses-font-lock-face ()
+  "GIVEN a buffer with a >-prefixed blockquote line
+WHEN shipit--apply-blockquote-faces decorates the region
+THEN `shipit-blockquote-face' must live on the font-lock-face
+     property, not on face -- magit-section's font-lock-mode
+     strips arbitrary face values on its first refontification
+     pass.
+
+Also pins the contract that the blockquote color is taken from
+the named, customizable face (`shipit-blockquote-face') rather
+than a hardcoded `(:foreground ...)' literal."
+  (with-temp-buffer
+    (insert "> quoted text\n")
+    (shipit--apply-blockquote-faces (point-min) (point-max))
+    (let ((flf (get-text-property (point-min) 'font-lock-face))
+          (face (get-text-property (point-min) 'face)))
+      (should flf)
+      (should (or (eq flf 'shipit-blockquote-face)
+                  (and (listp flf)
+                       (memq 'shipit-blockquote-face flf))))
+      (should-not (and face (eq face 'shipit-blockquote-face))))))
+
 (ert-deftest test-shipit--diff-buffer-comment-blockquote-rendering ()
   "Test that blockquote text in diff buffer comments is rendered with markdown faces.
 Comments shown in diff buffers (via shipit--insert-comment-body-only) should preserve

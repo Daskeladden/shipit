@@ -506,19 +506,20 @@ Returns content with tables converted, or original content if no tables found."
 
 (defun shipit--apply-blockquote-faces (start end)
   "Apply blockquote styling to lines containing > in region START to END.
-This ensures blockquoted text in diff buffers has proper markdown styling."
+Writes the blue color to `font-lock-face' (via
+`shipit--prepend-font-lock-face') so magit-section's
+`font-lock-mode' doesn't strip it on refontification --
+`add-face-text-property' targets `face', which font-lock owns
+and clears."
   (save-excursion
     (goto-char start)
     (while (< (point) end)
       (let ((line-start (point))
             (line-text (thing-at-point 'line t))
             (line-end (progn (end-of-line) (point))))
-        ;; Check if this line contains a blockquote marker (>)
-        ;; It might be after thread-prefix and border-indicator
         (when (and line-text (string-match ">+" line-text))
-          ;; Use blue color for blockquotes to match general comments
-          ;; Use 'prepend to put this face first so it overrides the gray foreground
-          (add-face-text-property line-start line-end '(:foreground "#0366d6") 'prepend))
+          (shipit--prepend-font-lock-face
+           line-start line-end 'shipit-blockquote-face))
         (forward-line 1)))))
 
 (defun shipit--apply-strikethrough-faces (start end)
@@ -2497,10 +2498,19 @@ Must be called AFTER text is inserted into the final buffer."
     (condition-case err
       (let* ((explicit-bg (and (boundp 'shipit-code-block-background)
                                shipit-code-block-background))
-             ;; Get background from markdown-code-face if no explicit setting
-             (markdown-bg (and (not explicit-bg)
-                               (facep 'markdown-code-face)
-                               (face-background 'markdown-code-face nil 'default)))
+             ;; Get background from markdown-code-face if no explicit setting.
+             ;; `face-background' can return the symbolic "unspecified-bg"
+             ;; string on TTY frames or when the inheritance chain bottoms
+             ;; out without a concrete background -- treat that as no
+             ;; background to avoid `color-name-to-rgb' failing with
+             ;; "Unable to load color 'unspecified-bg'".
+             (markdown-bg-raw (and (not explicit-bg)
+                                   (facep 'markdown-code-face)
+                                   (face-background 'markdown-code-face nil 'default)))
+             (markdown-bg (and markdown-bg-raw
+                               (not (member markdown-bg-raw
+                                            '("unspecified-bg" "unspecified-fg")))
+                               markdown-bg-raw))
              ;; Always adjust the background slightly to distinguish from magit-section-highlight
              ;; which may have the same background as markdown-code-face
              ;; Lighten for dark themes, darken for light themes
@@ -5117,7 +5127,11 @@ in profiles.  Cache hits return the previously-built image object.")
 Automatically sets :background to the default face background if not specified.
 Memoized via `shipit--svg-lib-icon-cache' so repeated renders of the
 same icon do not re-parse the SVG XML each time."
-  (let* ((bg (face-background 'default nil 'default))
+  (let* ((bg-raw (face-background 'default nil 'default))
+         ;; Drop the symbolic "unspecified-bg" string svg-lib can't parse.
+         (bg (and bg-raw
+                  (not (member bg-raw '("unspecified-bg" "unspecified-fg")))
+                  bg-raw))
          (key (list name face-or-nil bg args))
          (cached (gethash key shipit--svg-lib-icon-cache)))
     (or cached

@@ -2259,21 +2259,6 @@ entry point to edit rules without dropping into M-x customize."
 
 ;;; Auto-mark rules editor
 
-(defface shipit-auto-mark-preview-face
-  '((t :inherit font-lock-warning-face :strike-through t))
-  "Face for notification rows previewed as auto-mark targets.
-Strike-through reinforces the visual that these rows would
-disappear once the rule fires."
-  :group 'shipit)
-
-(defface shipit-auto-mark-preview-match-face
-  '((t :inherit lazy-highlight :weight bold))
-  "Face for the actual characters that match the regex in a
-row that is being previewed as an auto-mark target.  Inherits
-from `lazy-highlight' so the visual cue is familiar from
-isearch — but bolded so it pops over the row's strike-through."
-  :group 'shipit)
-
 (defvar-local shipit-notifications-buffer--auto-mark-preview-overlays nil
   "Overlays placed on rows that match the regex being previewed.
 Buffer-local because preview is per-buffer, and torn down when

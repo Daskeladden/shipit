@@ -24,6 +24,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'auth-source)
+(require 'shipit-faces)
 
 ;; CRITICAL: Set system-time-locale globally to ensure HTTP date headers use ASCII.
 ;; This prevents "Multibyte text in HTTP request" errors from url.el using

@@ -147,11 +147,6 @@ Strategy:
       (string-match-p "comment" type)))
    (t (nth 4 (syntax-ppss pos)))))
 
-(defface shipit-code-refs-face
-  '((t :inherit link :underline t))
-  "Face applied to recognised issue-key references in code."
-  :group 'shipit-code-refs)
-
 (defvar shipit-code-refs-keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'shipit-code-refs-dwim)

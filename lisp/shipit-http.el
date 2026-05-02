@@ -4561,23 +4561,8 @@ BASE-FACE is the primary face, HELP-TEXT is the tooltip, COMMENT-KEYMAP is the k
           `(help-echo ,help-text))))))
 
 
-(defface shipit-comment-face
-  '((t :background "#f8f9fa" :foreground "black" :extend t)
-    (((class color) (background dark)) :background "#2d3748" :foreground "white"))
-  "Face for highlighting lines with GitHub comments."
-  :group 'shipit)
-
-(defface shipit-comment-indicator-face
-  '((t :foreground "#856404" :weight bold))
-  "Face for GitHub comment indicators."
-  :group 'shipit)
-
-(defface shipit-inline-comment-face
-  '((t :foreground "#ff8c00" :extend t)
-    (((class color) (background light)) :foreground "#d2691e")
-    (((class color) (background dark)) :foreground "#ff8c00"))
-  "Face for inline GitHub comment text with orange foreground."
-  :group 'shipit)
+;; Faces moved to shipit-faces.el (see `shipit-comment-face',
+;; `shipit-comment-indicator-face', `shipit-inline-comment-face').
 
 ;; Dynamic face functions for username and timestamp colors
 (defun shipit--get-username-color ()
@@ -4604,15 +4589,9 @@ BASE-FACE is the primary face, HELP-TEXT is the tooltip, COMMENT-KEYMAP is the k
       ("orange" (if (eq (frame-parameter nil 'background-mode) 'light) "#d2691e" "#ff8c00"))
       (_ "#6a737d"))))
 
-(defface shipit-inline-comment-username-face
-  '((t :foreground "#0366d6" :weight bold))
-  "Face for inline comment username highlighting (color is set dynamically)."
-  :group 'shipit)
-
-(defface shipit-inline-comment-timestamp-face
-  '((t :foreground "#6a737d" :slant italic))
-  "Face for inline comment timestamp highlighting (color is set dynamically)."
-  :group 'shipit)
+;; `shipit-inline-comment-username-face' / `-timestamp-face' moved to
+;; shipit-faces.el; their colors are still updated dynamically via
+;; `shipit--update-comment-face-colors' below.
 
 (defun shipit--update-comment-face-colors ()
   "Update inline comment face colors based on customization settings."
@@ -4639,34 +4618,6 @@ BASE-FACE is the primary face, HELP-TEXT is the tooltip, COMMENT-KEYMAP is the k
     (when filename-color
       (set-face-attribute 'shipit-filename-face nil
                           :foreground filename-color))))
-
-(defface shipit-inline-comment-body-face
-  '((t :foreground "black")
-    (((class color) (background light)) :foreground "black")
-    (((class color) (background dark)) :foreground "white"))
-  "Face for inline comment body text."
-  :group 'shipit)
-
-(defface shipit-comment-reactions-placeholder
-  '((t :foreground "#999999"
-       :weight normal))
-  "Face for dimmed reactions placeholder smiley when no reactions exist."
-  :group 'shipit)
-
-(defface shipit-username-face
-  '((t :foreground "#feacd0" :weight bold))
-  "Face for username highlighting throughout shipit (color is customizable)."
-  :group 'shipit)
-
-(defface shipit-timestamp-face
-  '((t :foreground "#00d3d0" :slant italic))
-  "Face for timestamp highlighting throughout shipit (color is customizable)."
-  :group 'shipit)
-
-(defface shipit-filename-face
-  '((t :foreground "#6ae4b9"))
-  "Face for filename highlighting throughout shipit (color is customizable)."
-  :group 'shipit)
 
 (defun shipit--apply-comment-face-selectively (text comment-face)
   "Apply COMMENT-FACE to TEXT but skip portions with protected faces."

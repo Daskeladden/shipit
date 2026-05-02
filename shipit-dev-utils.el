@@ -84,7 +84,10 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
            (makunbound sym))))
 
       ;; Load files in dependency order (core → specific modules)
-      (let ((load-files '("shipit-lib.el" "shipit-sections.el" "shipit-core.el" "shipit-cache.el" "shipit-comments.el"
+      ;; shipit-faces.el is a leaf (no requires) and must load before
+      ;; shipit-core.el, which requires it.
+      (let ((load-files '("shipit-faces.el"
+                          "shipit-lib.el" "shipit-sections.el" "shipit-core.el" "shipit-cache.el" "shipit-comments.el"
                           "shipit-worktree.el" "shipit-http.el" "shipit-gh-etag.el"
                           "shipit-issue-backends.el" "shipit-issue-titles.el"
                           "shipit-issue-github.el" "shipit-issue-jira.el" "shipit-issue-gitlab.el"

@@ -960,17 +960,31 @@ collapsed, and the result is truncated to 80 chars."
 `fields=comment&expand=changelog'.  Returns nil when neither
 stream has any entries.  The result is a plist:
   (:type comment|change :author NAME :timestamp ISO :summary STR)."
-  (let* ((fields (cdr (assq 'fields raw)))
+  (let* ((key (cdr (assq 'key raw)))
+         (fields (cdr (assq 'fields raw)))
          (comments (append (cdr (assq 'comments
                                       (cdr (assq 'comment fields))))
                            nil))
          (changelog (cdr (assq 'changelog raw)))
          (histories (append (cdr (assq 'histories changelog)) nil))
-         ;; Both arrays come back oldest-first; the last element is newest.
-         (last-comment (car (last comments)))
-         (last-history (car (last histories)))
+         ;; Don\='t trust the order Jira returns these in -- the
+         ;; agile/search endpoints serve histories newest-first while
+         ;; the issue endpoint serves them oldest-first.  Pick by
+         ;; `created' timestamp explicitly (string-> works on Jira\='s
+         ;; ISO8601 timestamps).
+         (newer-by-created (lambda (a b)
+                             (string> (or (cdr (assq 'created a)) "")
+                                      (or (cdr (assq 'created b)) ""))))
+         (last-comment (car (sort (copy-sequence comments) newer-by-created)))
+         (last-history (car (sort (copy-sequence histories) newer-by-created)))
          (c-time (and last-comment (cdr (assq 'created last-comment))))
          (h-time (and last-history (cdr (assq 'created last-history)))))
+    (shipit--debug-log
+     "Jira last-activity[%s]: comments=%d histories=%d c-time=%s h-time=%s last-history-author=%S"
+     key (length comments) (length histories)
+     c-time h-time
+     (and last-history (cdr (assq 'displayName
+                                   (cdr (assq 'author last-history))))))
     (cond
      ((and c-time h-time (string> c-time h-time))
       (list :type 'comment
@@ -1337,7 +1351,7 @@ CONFIG is the backend config plist."
   (let* ((since-time (shipit-issue-jira--notifications-since-time since))
          (jql (shipit-issue-jira--build-notifications-jql config since-time))
          (fields shipit-issue-jira--notifications-fields)
-         (path (format "/rest/api/3/search/jql?jql=%s&maxResults=50&fields=%s"
+         (path (format "/rest/api/3/search/jql?jql=%s&maxResults=50&fields=%s&expand=changelog"
                        (url-hexify-string jql) fields))
          (raw (shipit-issue-jira--api-request config path))
          (issues (append (cdr (assq 'issues raw)) nil)))
@@ -1354,7 +1368,7 @@ version.  CALLBACK is called with nil on error."
   (let* ((since-time (shipit-issue-jira--notifications-since-time since))
          (jql (shipit-issue-jira--build-notifications-jql config since-time))
          (fields shipit-issue-jira--notifications-fields)
-         (path (format "/rest/api/3/search/jql?jql=%s&maxResults=50&fields=%s"
+         (path (format "/rest/api/3/search/jql?jql=%s&maxResults=50&fields=%s&expand=changelog"
                        (url-hexify-string jql) fields)))
     (shipit-issue-jira--api-request-async
      config path
@@ -1407,7 +1421,9 @@ CONFIG provides context for display name."
                     (shipit--debug-log
                      "Jira involvement detection failed for %s: %S" key err)
                     "updated")))
-         (author (cdr (assq 'displayName (cdr (assq 'reporter fields)))))
+         (latest-activity (shipit-issue-jira--extract-last-activity issue))
+         (author (or (plist-get latest-activity :author)
+                     (cdr (assq 'displayName (cdr (assq 'reporter fields))))))
          (status-obj (cdr (assq 'status fields)))
          (status-name (cdr (assq 'name status-obj)))
          (status-category (cdr (assq 'key

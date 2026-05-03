@@ -1147,11 +1147,18 @@ Translates shipit transient args to Jira Query Language."
 
 (defun shipit-issue-jira--normalize-transitions (raw)
   "Normalize RAW Jira transitions response to list of alists.
-Each alist has (id . STRING) and (name . STRING)."
+Each alist has (id . STRING), (name . STRING), and
+(to . ((name . STRING) (id . STRING))) -- the latter is the
+status the transition leads to, needed by callers that route
+moves by destination status (e.g. the Atlassian dashboard\='s
+edit-mode commit walker)."
   (let ((transitions (append (cdr (assq 'transitions raw)) nil)))
     (mapcar (lambda (tr)
-              `((id . ,(cdr (assq 'id tr)))
-                (name . ,(cdr (assq 'name tr)))))
+              (let ((to (cdr (assq 'to tr))))
+                `((id . ,(cdr (assq 'id tr)))
+                  (name . ,(cdr (assq 'name tr)))
+                  (to . ((name . ,(cdr (assq 'name to)))
+                         (id . ,(cdr (assq 'id to))))))))
             transitions)))
 
 (defun shipit-issue-jira--get-transitions (config issue-id)

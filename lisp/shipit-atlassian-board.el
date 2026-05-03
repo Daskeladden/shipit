@@ -101,20 +101,53 @@ Returns a list of column alists: ((name . \"col\") (issues . (...)))."
     (shipit--debug-log "Board: %d columns, %d issues" (length columns) (length issues))
     (shipit-atlassian-board--group-by-column columns issues)))
 
+(defun shipit-atlassian-board--build-status-name-map (issues)
+  "Build an alist of status-id -> status-name from ISSUES.
+The Jira board-configuration API returns status objects as
+`((id . ID) (self . URL))' -- no `name' field.  We get the
+names from the issues themselves (which carry both `state-id'
+and `state' after normalisation) so consumers can route by
+name without an extra API call."
+  (let (acc)
+    (dolist (issue issues)
+      (let ((id (cdr (assq 'state-id issue)))
+            (name (cdr (assq 'state issue))))
+        (when (and id name (not (assoc id acc)))
+          (push (cons id name) acc))))
+    acc))
+
 (defun shipit-atlassian-board--group-by-column (columns issues)
   "Group ISSUES into COLUMNS based on status ID matching.
 COLUMNS is from the board configuration API.
-Returns list of ((name . col-name) (issues . filtered-issues))."
-  (let ((result nil))
+Returns list of ((name . col-name) (issues . filtered-issues)
+                  (statuses . list-of-status-names)).
+
+The board-configuration API\='s status objects expose only
+`{id, self}', so status names are resolved from the issues
+\(which carry `state' / `state-id' from the Jira issue
+normaliser).  Columns whose statuses don\='t appear on any
+fetched issue end up with an empty `statuses' list -- they
+still render, they just can\='t be routing targets until an
+issue with that status is in view."
+  (let ((status-names-by-id
+         (shipit-atlassian-board--build-status-name-map issues))
+        (result nil))
     (dolist (col columns)
       (let* ((col-name (cdr (assq 'name col)))
              (col-statuses (append (cdr (assq 'statuses col)) nil))
              (status-ids (mapcar (lambda (s) (cdr (assq 'id s))) col-statuses))
+             (status-names (delq nil
+                                 (mapcar (lambda (id)
+                                           (cdr (assoc id status-names-by-id)))
+                                         status-ids)))
              (col-issues (seq-filter
                           (lambda (issue)
                             (member (cdr (assq 'state-id issue)) status-ids))
                           issues)))
-        (push `((name . ,col-name) (issues . ,col-issues)) result)))
+        (push `((name . ,col-name)
+                (issues . ,col-issues)
+                (statuses . ,status-names))
+              result)))
     (nreverse result)))
 
 (provide 'shipit-atlassian-board)

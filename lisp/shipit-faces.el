@@ -161,6 +161,17 @@ from `lazy-highlight' so the visual cue is familiar from
 isearch -- but bolded so it pops over the row's strike-through."
   :group 'shipit)
 
+;; Atlassian dashboard -----------------------------------------------
+
+(shipit-defface shipit-atlassian-dashboard-pending-face
+  '((t :inherit (warning italic)))
+  "Face for the staged-transition arrow in the Atlassian dashboard.
+Edit-mode `M-n' / `M-p' append `-> TARGET' to an issue row so
+the user sees what would happen on `C-c C-c'.  Inherits from
+`warning' (theme-defined attention color) plus italic to read
+as \"this is provisional, not committed\"."
+  :group 'shipit-atlassian)
+
 ;; Code-refs face ----------------------------------------------------
 
 (shipit-defface shipit-code-refs-face

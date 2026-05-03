@@ -965,5 +965,108 @@ THEN the arg uses the literal \"unassigned\"."
                '(:assignee unassigned))))
     (should (member "--assignee=unassigned" args))))
 
+(ert-deftest test-atlassian-dashboard-match-transition-by-name ()
+  "GIVEN a list of transitions and a target status name
+WHEN matching by name (case-insensitive)
+THEN the transition whose `to.name\=' equals the target is
+     returned; nil if none match."
+  (let ((transitions '(((id . "11") (name . "Start Progress")
+                        (to . ((name . "In Progress"))))
+                       ((id . "21") (name . "Resolve")
+                        (to . ((name . "Done")))))))
+    (should (equal (cdr (assq 'id (shipit-atlassian-dashboard--match-transition
+                                    transitions "In Progress")))
+                   "11"))
+    (should (equal (cdr (assq 'id (shipit-atlassian-dashboard--match-transition
+                                    transitions "done")))
+                   "21"))
+    (should (null (shipit-atlassian-dashboard--match-transition
+                   transitions "Mythical")))))
+
+(ert-deftest test-atlassian-dashboard-find-issue-in-board-data ()
+  "GIVEN board data with an issue under one column
+WHEN `shipit-atlassian-dashboard--find-issue-in-board-data\=' is queried
+THEN the issue alist is returned (case-insensitive on the key)."
+  (let ((shipit-atlassian-dashboard--board-data
+         '(((name . "In Progress")
+            (issues . (((key . "PROJ-1") (status . "In Progress"))
+                       ((key . "PROJ-2") (status . "In Progress")))))
+           ((name . "Done")
+            (issues . (((key . "PROJ-3") (status . "Done"))))))))
+    (should (equal (cdr (assq 'key (shipit-atlassian-dashboard--find-issue-in-board-data
+                                      "PROJ-2")))
+                   "PROJ-2"))
+    (should (equal (cdr (assq 'key (shipit-atlassian-dashboard--find-issue-in-board-data
+                                      "proj-3")))
+                   "PROJ-3"))
+    (should (null (shipit-atlassian-dashboard--find-issue-in-board-data
+                   "PROJ-99")))))
+
+(ert-deftest test-atlassian-dashboard-pending-arrivals-into-column ()
+  "GIVEN pending transitions targeting various status columns
+WHEN `shipit-atlassian-dashboard--pending-arrivals-into-column\=' is queried
+THEN issues whose target matches the column (case-insensitive)
+     are returned with their issue alists."
+  (let ((shipit-atlassian-dashboard--pending-transitions
+         '(("PROJ-1" . "In Review")
+           ("PROJ-2" . "Done")
+           ("PROJ-3" . "In Review")))
+        (shipit-atlassian-dashboard--board-data
+         '(((name . "In Progress")
+            (issues . (((key . "PROJ-1") (status . "In Progress"))
+                       ((key . "PROJ-3") (status . "In Progress")))))
+           ((name . "Done")
+            (issues . (((key . "PROJ-2") (status . "Done"))))))))
+    (let ((arrivals (shipit-atlassian-dashboard--pending-arrivals-into-column
+                     "in review")))
+      (should (= (length arrivals) 2))
+      (should (cl-some (lambda (a) (equal "PROJ-1" (cdr (assq 'key a)))) arrivals))
+      (should (cl-some (lambda (a) (equal "PROJ-3" (cdr (assq 'key a)))) arrivals)))
+    ;; A column with no pending arrivals returns nil.
+    (should (null (shipit-atlassian-dashboard--pending-arrivals-into-column
+                   "Backlog")))))
+
+(ert-deftest test-atlassian-dashboard-column-name-for-status ()
+  "GIVEN board data where columns advertise their accepted statuses
+WHEN looking up which column accepts a given status name
+THEN the right column name is returned (case-insensitive),
+     even when the column name itself differs from the status.
+
+The lookup is what lets a canonical-order target like
+\"In Review\" route to a Jira board column named
+\"Code Review\" -- the link is the column\='s configured
+`statuses\=' list, not its display name."
+  (let ((shipit-atlassian-dashboard--board-data
+         '(((name . "Open") (statuses . ("Open" "Reopened")))
+           ((name . "Code Review") (statuses . ("In Review" "Awaiting Review")))
+           ((name . "Done") (statuses . ("Done" "Closed"))))))
+    (should (equal (shipit-atlassian-dashboard--column-name-for-status "in review")
+                   "Code Review"))
+    (should (equal (shipit-atlassian-dashboard--column-name-for-status "Closed")
+                   "Done"))
+    (should (null (shipit-atlassian-dashboard--column-name-for-status
+                   "Mythical")))))
+
+(ert-deftest test-atlassian-dashboard-pending-arrivals-routes-via-status-mapping ()
+  "GIVEN a pending transition whose target name doesn\='t equal any column name
+WHEN `shipit-atlassian-dashboard--pending-arrivals-into-column\=' is queried
+     for the column whose `statuses\=' include the target
+THEN the issue is included as an arrival -- routing happens
+     through the column\='s status list, not by literal
+     name match."
+  (let ((shipit-atlassian-dashboard--pending-transitions
+         '(("PROJ-1" . "In Review")))
+        (shipit-atlassian-dashboard--board-data
+         '(((name . "Open")
+            (statuses . ("Open"))
+            (issues . (((id . "PROJ-1") (number . "PROJ-1") (state . "Open")))))
+           ((name . "Code Review")
+            (statuses . ("In Review"))
+            (issues . ())))))
+    (let ((arrivals (shipit-atlassian-dashboard--pending-arrivals-into-column
+                     "Code Review")))
+      (should (= (length arrivals) 1))
+      (should (equal (cdr (assq 'number (car arrivals))) "PROJ-1")))))
+
 (provide 'test-shipit-atlassian-dashboard)
 ;;; test-shipit-atlassian-dashboard.el ends here

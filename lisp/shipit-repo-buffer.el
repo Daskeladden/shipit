@@ -1622,6 +1622,67 @@ not update local state or print a misleading success message."
              (if new-subscribed "Subscribed to" "Unsubscribed from")
              type number)))
 
+(defun shipit-repo-buffer--sub-toggle-mute-non-authored-pr-noise-thread ()
+  "Toggle the current PR thread in `shipit-notifications-mute-non-authored-pr-noise-threads\='.
+Uses the (REPO . NUMBER) pair from
+`shipit--subscription-transient-thread-ctx\='; only available
+when the watch transient was opened on a PR notification entry.
+Persists the new list and re-runs the auto-mark rules
+immediately so newly-matching unread items disappear."
+  (interactive)
+  (let* ((repo shipit--subscription-transient-repo)
+         (ctx shipit--subscription-transient-thread-ctx)
+         (number (and ctx (plist-get ctx :number)))
+         (key (and repo (integerp number) (cons repo number)))
+         (current shipit-notifications-mute-non-authored-pr-noise-threads)
+         (active (and key (member key current)))
+         (new (cond
+               ((null key) current)
+               (active (cl-remove key current :test #'equal))
+               (t (append current (list key))))))
+    (unless key
+      (user-error "No PR thread context in this transient"))
+    (customize-save-variable
+     'shipit-notifications-mute-non-authored-pr-noise-threads new)
+    (let ((marked (and (fboundp 'shipit--auto-mark-rules-apply)
+                       (shipit--auto-mark-rules-apply))))
+      (when (fboundp 'shipit--rerender-notifications-buffer-if-visible)
+        (shipit--rerender-notifications-buffer-if-visible))
+      (message "Mute non-authored noise on %s#%d: %s%s"
+               repo number
+               (if active "off" "on")
+               (if (and marked (> marked 0))
+                   (format " (marked %d unread as read)" marked)
+                 "")))))
+
+(defun shipit-repo-buffer--sub-toggle-mute-non-authored-pr-noise ()
+  "Toggle the current repo in `shipit-notifications-mute-non-authored-pr-noise-repos\='.
+Adds the repo if absent, removes it if present.  Persists the
+new list via `customize-save-variable\=' and immediately re-runs
+`shipit--auto-mark-rules-apply\=' so any newly-matching unread
+items disappear from the visible buffer."
+  (interactive)
+  (let* ((repo shipit--subscription-transient-repo)
+         (current shipit-notifications-mute-non-authored-pr-noise-repos)
+         (active (member repo current))
+         (new (if active
+                  (remove repo current)
+                (append current (list repo)))))
+    (unless repo
+      (user-error "No repo context in this transient"))
+    (customize-save-variable
+     'shipit-notifications-mute-non-authored-pr-noise-repos new)
+    (let ((marked (and (fboundp 'shipit--auto-mark-rules-apply)
+                       (shipit--auto-mark-rules-apply))))
+      (when (fboundp 'shipit--rerender-notifications-buffer-if-visible)
+        (shipit--rerender-notifications-buffer-if-visible))
+      (message "Mute non-authored PR noise for %s: %s%s"
+               repo
+               (if active "off" "on")
+               (if (and marked (> marked 0))
+                   (format " (marked %d unread as read)" marked)
+                 "")))))
+
 (defun shipit-repo-buffer--sub-toggle-star ()
   "Toggle star status for the current repo."
   (interactive)
@@ -1684,6 +1745,17 @@ not update local state or print a misleading success message."
                                   "Unstar repo"
                                 "Star repo")
                               'shipit-repo-buffer--sub-toggle-star))))))
+            ;; Per-repo noise-mute toggle.
+            (noise-entry
+             (let* ((repo shipit--subscription-transient-repo)
+                    (active (and repo
+                                 (member repo shipit-notifications-mute-non-authored-pr-noise-repos))))
+               (list (transient-parse-suffix
+                      transient--prefix
+                      (list "M"
+                            (format "Mute non-authored PR noise here [%s]"
+                                    (if active "on" "off"))
+                            'shipit-repo-buffer--sub-toggle-mute-non-authored-pr-noise)))))
             ;; Thread subscription suffixes (conditional on thread context)
             (thread-entries
              (when shipit--subscription-transient-thread-ctx
@@ -1691,8 +1763,13 @@ not update local state or print a misleading success message."
                       (type (plist-get ctx :type))
                       (number (plist-get ctx :number))
                       (subject (plist-get ctx :subject))
+                      (repo shipit--subscription-transient-repo)
                       (state shipit--subscription-transient-thread-state)
                       (subscribed (equal state "subscribed"))
+                      (thread-noise-active
+                       (and (equal type "pr") repo (integerp number)
+                            (member (cons repo number)
+                                    shipit-notifications-mute-non-authored-pr-noise-threads)))
                       (desc (format "This %s: #%d%s  [%s]"
                                     type
                                     number
@@ -1700,15 +1777,23 @@ not update local state or print a misleading success message."
                                         (format " %s" subject)
                                       "")
                                     (or state "unknown"))))
-                 (list (transient-parse-suffix
-                        transient--prefix
-                        (list :info desc))
-                       (transient-parse-suffix
-                        transient--prefix
-                        (list "t"
-                              (if subscribed "Unsubscribe" "Subscribe")
-                              'shipit-repo-buffer--sub-toggle-thread)))))))
-       (append sub-entries star-entry thread-entries)))]
+                 (append
+                  (list (transient-parse-suffix
+                         transient--prefix
+                         (list :info desc))
+                        (transient-parse-suffix
+                         transient--prefix
+                         (list "t"
+                               (if subscribed "Unsubscribe" "Subscribe")
+                               'shipit-repo-buffer--sub-toggle-thread)))
+                  (when (equal type "pr")
+                    (list (transient-parse-suffix
+                           transient--prefix
+                           (list "T"
+                                 (format "Mute non-authored noise on this PR [%s]"
+                                         (if thread-noise-active "on" "off"))
+                                 'shipit-repo-buffer--sub-toggle-mute-non-authored-pr-noise-thread)))))))))
+       (append sub-entries star-entry noise-entry thread-entries)))]
   (interactive)
   (let ((repo (shipit--current-buffer-repo)))
     (unless repo

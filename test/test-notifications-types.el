@@ -1368,6 +1368,190 @@ THEN only activities with that GitHub reason string match."
     (should-not (shipit--auto-mark-rule-matches-activity-p
                  rule '((reason . "mention"))))))
 
+(ert-deftest test-shipit--auto-mark-rule-i-am-author-true-matches-author ()
+  "GIVEN rule (:i-am-author t)
+WHEN matched
+THEN only activities with `is-author' = t match."
+  (let ((rule '(:i-am-author t)))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((type . "pr") (is-author . t))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr") (is-author . nil))))))
+
+(ert-deftest test-shipit--auto-mark-rule-i-am-author-nil-matches-non-author ()
+  "GIVEN rule (:i-am-author nil)
+WHEN matched
+THEN only activities with `is-author' explicitly nil match.
+Activities lacking the `is-author' field (enrichment couldn't
+determine it) MUST NOT match -- otherwise unknown-author PRs
+would be auto-marked as if the user were not the author."
+  (let ((rule '(:i-am-author nil)))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((type . "pr") (is-author . nil))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr") (is-author . t))))
+    ;; Missing is-author => unknown => must not match.
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((type . "pr"))))))
+
+(ert-deftest test-shipit--effective-auto-mark-rules-toggle-off ()
+  "GIVEN `shipit-notifications-mute-non-authored-pr-noise' nil
+WHEN `shipit--effective-auto-mark-rules' is called
+THEN it returns just the user-defined rules unchanged."
+  (let ((shipit-notifications-mute-non-authored-pr-noise nil)
+        (shipit-notifications-auto-mark-read-rules
+         '((:state merged))))
+    (should (equal (shipit--effective-auto-mark-rules)
+                   '((:state merged))))))
+
+(ert-deftest test-shipit--effective-auto-mark-rules-toggle-on-empty-user-rules ()
+  "GIVEN the firehose toggle enabled and no user rules
+WHEN the effective-rules helper is called
+THEN it returns just the two synthetic firehose-mute rules."
+  (let ((shipit-notifications-mute-non-authored-pr-noise t)
+        (shipit-notifications-auto-mark-read-rules nil))
+    (should (equal (shipit--effective-auto-mark-rules)
+                   shipit--non-authored-pr-noise-rules))))
+
+(ert-deftest test-shipit--effective-auto-mark-rules-toggle-on-with-user-rules ()
+  "GIVEN both user rules and the firehose toggle on
+WHEN effective-rules is computed
+THEN user rules come first, then the synthetic ones (so user
+intent wins on ordering, though apply-time semantics are OR)."
+  (let ((shipit-notifications-mute-non-authored-pr-noise t)
+        (shipit-notifications-auto-mark-read-rules
+         '((:state merged))))
+    (should (equal (shipit--effective-auto-mark-rules)
+                   (append '((:state merged))
+                           shipit--non-authored-pr-noise-rules)))))
+
+(ert-deftest test-shipit--non-authored-pr-noise-rules-for-repo ()
+  "GIVEN a repo string
+WHEN `shipit--non-authored-pr-noise-rules-for-repo' is called
+THEN it returns the two synthetic noise rules with `:repo'
+     glued onto each, so per-repo rules can be appended into
+     the effective-rules list."
+  (let ((rules (shipit--non-authored-pr-noise-rules-for-repo "owner/foo")))
+    (should (= (length rules) 2))
+    (dolist (rule rules)
+      (should (equal (plist-get rule :repo) "owner/foo"))
+      (should (equal (plist-get rule :type) "pr"))
+      (should (memq (plist-get rule :i-am-author) '(nil)))
+      (should (member (plist-get rule :reason) '("subscribed" "commented"))))))
+
+(ert-deftest test-shipit--effective-auto-mark-rules-includes-per-repo-entries ()
+  "GIVEN per-repo opt-in for two repos and global toggle off
+WHEN effective-rules is computed
+THEN user rules come first, then synthetic rules for each
+     opted-in repo (no global rules since the toggle is off)."
+  (let ((shipit-notifications-mute-non-authored-pr-noise nil)
+        (shipit-notifications-mute-non-authored-pr-noise-repos
+         '("alice/proj" "bob/lib"))
+        (shipit-notifications-auto-mark-read-rules
+         '((:state merged))))
+    (let ((eff (shipit--effective-auto-mark-rules)))
+      (should (equal (car eff) '(:state merged)))
+      ;; 1 user rule + 2*2 synthetic = 5 rules total
+      (should (= (length eff) 5))
+      (should (cl-some (lambda (r) (equal (plist-get r :repo) "alice/proj")) eff))
+      (should (cl-some (lambda (r) (equal (plist-get r :repo) "bob/lib")) eff)))))
+
+(ert-deftest test-shipit--effective-auto-mark-rules-global-and-per-repo-stack ()
+  "GIVEN both the global toggle and a per-repo entry
+WHEN effective-rules is computed
+THEN the user rules, the global rules, and the per-repo rules
+     all appear -- they compose via OR at apply time so dupes
+     are harmless."
+  (let ((shipit-notifications-mute-non-authored-pr-noise t)
+        (shipit-notifications-mute-non-authored-pr-noise-repos '("alice/proj"))
+        (shipit-notifications-auto-mark-read-rules nil))
+    (let ((eff (shipit--effective-auto-mark-rules)))
+      ;; 2 global + 2 per-repo
+      (should (= (length eff) 4))
+      ;; global rules -- no :repo
+      (should (cl-some (lambda (r) (and (equal (plist-get r :reason) "subscribed")
+                                         (null (plist-get r :repo)))) eff))
+      ;; per-repo rules -- have :repo
+      (should (cl-some (lambda (r) (equal (plist-get r :repo) "alice/proj")) eff)))))
+
+(ert-deftest test-shipit--auto-mark-rule-number-condition ()
+  "GIVEN rule (:number N)
+WHEN matched
+THEN only activities with that integer `number\=' field match.
+The :number predicate is the per-thread building block --
+combined with :repo and :type it pinpoints one PR / issue."
+  (let ((rule '(:number 42)))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((repo . "owner/foo") (type . "pr") (number . 42))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((repo . "owner/foo") (type . "pr") (number . 7))))))
+
+(ert-deftest test-shipit--non-authored-pr-noise-rules-for-thread ()
+  "GIVEN repo + number
+WHEN `shipit--non-authored-pr-noise-rules-for-thread\=' is called
+THEN it returns the two synthetic rules with :repo and :number
+     glued onto each so they pinpoint a single PR thread."
+  (let ((rules (shipit--non-authored-pr-noise-rules-for-thread "owner/foo" 42)))
+    (should (= (length rules) 2))
+    (dolist (rule rules)
+      (should (equal (plist-get rule :repo) "owner/foo"))
+      (should (= (plist-get rule :number) 42))
+      (should (equal (plist-get rule :type) "pr"))
+      (should (memq (plist-get rule :i-am-author) '(nil))))))
+
+(ert-deftest test-shipit--effective-auto-mark-rules-includes-per-thread ()
+  "GIVEN per-thread opt-in for two threads and global toggle off
+WHEN effective-rules is computed
+THEN four synthetic per-thread rules appear (two reasons x two
+     threads), each carrying :repo and :number."
+  (let ((shipit-notifications-mute-non-authored-pr-noise nil)
+        (shipit-notifications-mute-non-authored-pr-noise-repos nil)
+        (shipit-notifications-mute-non-authored-pr-noise-threads
+         '(("alice/proj" . 12) ("bob/lib" . 3)))
+        (shipit-notifications-auto-mark-read-rules nil))
+    (let ((eff (shipit--effective-auto-mark-rules)))
+      (should (= (length eff) 4))
+      (should (cl-some (lambda (r) (and (equal (plist-get r :repo) "alice/proj")
+                                         (= (plist-get r :number) 12))) eff))
+      (should (cl-some (lambda (r) (and (equal (plist-get r :repo) "bob/lib")
+                                         (= (plist-get r :number) 3))) eff)))))
+
+(ert-deftest test-shipit--auto-clean-muted-threads-removes-resolved ()
+  "GIVEN a muted-threads list and a set of resolved (closed/merged) PRs
+WHEN `shipit--auto-clean-muted-threads\=' runs
+THEN the resolved entries are removed and the variable is
+     persisted; entries for still-open PRs survive.
+
+The PR enrichment pass calls this whenever it sees state
+transitions to `closed\=' or `merged\='; otherwise the muted-threads
+list would grow without bound as users mute PRs that
+eventually ship."
+  (let ((shipit-notifications-mute-non-authored-pr-noise-threads
+         '(("alice/proj" . 12) ("bob/lib" . 3))))
+    (cl-letf (((symbol-function 'customize-save-variable)
+               (lambda (sym val) (set sym val))))
+      (let ((removed (shipit--auto-clean-muted-threads
+                      '(("alice/proj" . 12)))))
+        (should (= removed 1))
+        (should (equal shipit-notifications-mute-non-authored-pr-noise-threads
+                       '(("bob/lib" . 3))))))))
+
+(ert-deftest test-shipit--auto-mark-rule-firehose-on-non-authored-prs ()
+  "GIVEN rule (:reason \"subscribed\" :i-am-author nil)
+WHEN matched against various PR activities
+THEN the rule fires only on `subscribed' notifications for PRs
+the viewer did not author -- the cheap-version filter for
+muting the comment-firehose without losing @-mentions."
+  (let ((rule '(:reason "subscribed" :i-am-author nil)))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((reason . "subscribed") (is-author . nil))))
+    ;; Author of the PR -- keep notifications.
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((reason . "subscribed") (is-author . t))))
+    ;; Mention -- different reason, rule doesn't fire.
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((reason . "mention") (is-author . nil))))))
+
 (ert-deftest test-shipit--auto-mark-rule-title-regex ()
   "GIVEN rule (:title REGEX)
 WHEN matched

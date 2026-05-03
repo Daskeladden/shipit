@@ -1246,7 +1246,10 @@ Fetches all PR metadata in a single request grouped by repo."
 
 (defun shipit--build-pr-enrichment-query (pr-by-repo)
   "Build a GraphQL query to fetch PR metadata for all repos.
-PR-BY-REPO is a hash table of repo-name → list of PR numbers."
+PR-BY-REPO is a hash table of repo-name → list of PR numbers.
+Includes `viewer { login }' so `shipit--apply-pr-enrichment'
+can compute the per-activity `is-author' flag without an
+extra round-trip."
   (let ((repo-queries '())
         (repo-idx 0))
     (maphash
@@ -1264,13 +1267,22 @@ PR-BY-REPO is a hash table of repo-name → list of PR numbers."
                repo-queries)
          (setq repo-idx (1+ repo-idx))))
      pr-by-repo)
-    (format "{\n  %s\n}" (mapconcat #'identity (nreverse repo-queries) "\n  "))))
+    (format "{\n  viewer { login }\n  %s\n}"
+            (mapconcat #'identity (nreverse repo-queries) "\n  "))))
 
 (defun shipit--apply-pr-enrichment (result pr-by-repo)
   "Apply GraphQL RESULT to enrich notification activities.
 PR-BY-REPO maps repo names to PR number lists.
-RESULT contains repo aliases (r0, r1...) with PR aliases (p123...)."
-  (let ((repo-idx 0))
+RESULT contains repo aliases (r0, r1...) with PR aliases (p123...).
+
+Computes `is-author' (boolean) per activity by comparing the PR
+author's login to RESULT's `viewer.login'.  When either side is
+unknown, `is-author' is left unset so `:i-am-author' rules don't
+fire on incomplete data."
+  (let ((repo-idx 0)
+        (viewer-login (let ((v (cdr (assq 'viewer result))))
+                        (and v (cdr (assq 'login v)))))
+        (resolved-prs '()))
     (maphash
      (lambda (repo numbers)
        (let ((repo-data (cdr (assq (intern (format "r%d" repo-idx)) result))))
@@ -1291,9 +1303,19 @@ RESULT contains repo aliases (r0, r1...) with PR aliases (p123...)."
                    (push (cons 'pr-state (downcase (or state ""))) enriched)
                    (push (cons 'pr-author author) enriched)
                    (push (cons 'pr-avatar-url avatar-url) enriched)
-                   (puthash activity-key enriched shipit--notification-pr-activities)))))))
+                   (when (and viewer-login author)
+                     (push (cons 'is-author
+                                 (string-equal-ignore-case viewer-login author))
+                           enriched))
+                   (puthash activity-key enriched shipit--notification-pr-activities)))
+               ;; Track resolved PRs for muted-threads auto-clean.
+               (when (and pr-data state
+                          (member (downcase state) '("closed" "merged")))
+                 (push (cons repo number) resolved-prs))))))
        (setq repo-idx (1+ repo-idx)))
-     pr-by-repo)))
+     pr-by-repo)
+    (when resolved-prs
+      (shipit--auto-clean-muted-threads resolved-prs))))
 
 ;;; Auto-mark-read rules
 
@@ -1304,23 +1326,45 @@ must all match for the rule to fire.  Activities matching ANY rule
 are marked as read after each fetch + enrichment pass.
 
 Available condition keys:
-  :state    one of `merged'/`closed'/`open'/`draft' as symbol or
-            string.  PR-only — non-PR activities never match.
-  :draft    t or nil — match the activity's `draft' flag.
-  :type     activity type string (pr/issue/workflow/etc.).
-  :reason   GitHub reason string (subscribed, mention, etc.).
-  :title    regex tested against the activity's `subject'.
-  :repo     OWNER/REPO slug, case-insensitive.
-  :not      sub-rule plist; matches when the sub-rule does NOT match.
-            Example: (:not (:title \"mythos\")) auto-marks anything
-            whose title does not contain \"mythos\".  Composes with
-            sibling conditions: (:state merged :not (:title \"mythos\"))
-            auto-marks merged PRs whose title lacks \"mythos\".
+  :state         one of `merged'/`closed'/`open'/`draft' as symbol
+                 or string.  PR-only — non-PR activities never
+                 match.
+  :draft         t or nil — match the activity's `draft' flag.
+  :type          activity type string (pr/issue/workflow/etc.).
+  :reason        GitHub reason string (subscribed, mention, etc.).
+  :title         regex tested against the activity's `subject'.
+  :repo          OWNER/REPO slug, case-insensitive.
+  :i-am-author   t or nil — match PRs whose author IS / IS NOT
+                 the authenticated viewer (resolved during PR
+                 enrichment via `viewer.login' alongside the
+                 `pr-state' / `pr-author' fetch, no extra round
+                 trip).  Activities for which the author or
+                 viewer login is unknown never match either way
+                 -- so the filter doesn't fire on incomplete
+                 data.
+  :not           sub-rule plist; matches when the sub-rule does
+                 NOT match.  Example:
+                   (:not (:title \"mythos\"))
+                 auto-marks anything whose title does not contain
+                 \"mythos\".  Composes with sibling conditions:
+                   (:state merged :not (:title \"mythos\"))
+                 auto-marks merged PRs whose title lacks
+                 \"mythos\".
 
 Each rule's conditions are combined with AND; multiple rules act
 as OR — match any rule and the notification is marked.  Each
 refresh applies the rules after PR enrichment so state-based
-rules see fresh GraphQL data.  Set to nil to disable."
+rules see fresh GraphQL data.  Set to nil to disable.
+
+Common recipe: mute the comment-thread noise on PRs you did not
+author.
+
+  (setq shipit-notifications-auto-mark-read-rules
+        \\='((:type \"pr\" :reason \"subscribed\" :i-am-author nil)
+          (:type \"pr\" :reason \"commented\" :i-am-author nil)))
+
+@-mentions and review requests use different reasons and pass
+through unaffected."
   :type '(repeat (plist :key-type
                         (choice (const :state)
                                 (const :draft)
@@ -1328,9 +1372,138 @@ rules see fresh GraphQL data.  Set to nil to disable."
                                 (const :reason)
                                 (const :title)
                                 (const :repo)
+                                (const :number)
+                                (const :i-am-author)
                                 (const :not))
                         :value-type sexp))
   :group 'shipit)
+
+(defcustom shipit-notifications-mute-non-authored-pr-noise nil
+  "When non-nil, auto-mark notifications on PRs you did not author.
+Equivalent to adding two rules to
+`shipit-notifications-auto-mark-read-rules':
+
+  (:type \"pr\" :reason \"subscribed\" :i-am-author nil)
+  (:type \"pr\" :reason \"commented\" :i-am-author nil)
+
+\(GitHub auto-subscribes you when you comment, so every
+subsequent activity on that PR fires a notification with
+reason `subscribed' / `commented'.  The two rules above mark
+those as read on arrival.  @-mentions and review-requests
+arrive with different reasons and are NOT affected.)
+
+Toggle from the auto-mark transient (`p' under `Manage rules')
+or via `M-x customize-variable'.  Default nil so existing
+users see no behaviour change unless they opt in."
+  :type 'boolean
+  :group 'shipit)
+
+(defconst shipit--non-authored-pr-noise-rules
+  '((:type "pr" :reason "subscribed" :i-am-author nil)
+    (:type "pr" :reason "commented" :i-am-author nil))
+  "Synthetic rules injected when
+`shipit-notifications-mute-non-authored-pr-noise' is on.
+Defined as a `defconst' (rather than inlined) so tests can
+assert against it without duplicating the spec.")
+
+(defcustom shipit-notifications-mute-non-authored-pr-noise-repos nil
+  "List of repos for which to mute non-authored PR noise.
+Each entry is an `\"owner/name\"' string.  Equivalent to the
+two synthetic rules of `shipit-notifications-mute-non-authored-pr-noise'
+but scoped to a single repo via `:repo' instead of applying
+globally.
+
+Toggle the active repo in/out of this list from the watch
+transient (`w' on a repo heading or entry in the notifications
+buffer) -- the suffix shows `[on]' or `[off]' for the repo at
+point.  You can also edit the list directly via
+`M-x customize-variable'."
+  :type '(repeat string)
+  :group 'shipit)
+
+(defun shipit--non-authored-pr-noise-rules-for-repo (repo)
+  "Build the synthetic noise rules narrowed to REPO.
+Returns the rules from `shipit--non-authored-pr-noise-rules'
+with `:repo REPO' added to each, ready to be appended into the
+effective-rules list."
+  (mapcar (lambda (rule)
+            (append rule (list :repo repo)))
+          shipit--non-authored-pr-noise-rules))
+
+(defcustom shipit-notifications-mute-non-authored-pr-noise-threads nil
+  "List of (REPO . NUMBER) PR threads with non-authored noise muted.
+Each entry is a cons cell where REPO is an `\"owner/name\"' string
+and NUMBER is the PR number.  Equivalent to the per-repo /
+global toggles but pinned to a single PR -- so you can mute
+the firehose on one specific PR without affecting other
+notifications from the same repo.
+
+Toggle the PR at point in/out of this list from the watch
+transient (`w' on a notification-entry row that has thread
+context).  Auto-cleans during PR enrichment: when a PR\='s state
+becomes `merged' / `closed', its entry is removed from this
+list -- otherwise the list would grow indefinitely as PRs
+ship.
+
+Direct edits via `M-x customize-variable' are also supported."
+  :type '(repeat (cons string integer))
+  :group 'shipit)
+
+(defun shipit--non-authored-pr-noise-rules-for-thread (repo number)
+  "Build the synthetic noise rules narrowed to (REPO, NUMBER).
+Returns the rules from `shipit--non-authored-pr-noise-rules'
+with `:repo REPO :number NUMBER' added to each, ready to be
+appended into the effective-rules list."
+  (mapcar (lambda (rule)
+            (append rule (list :repo repo :number number)))
+          shipit--non-authored-pr-noise-rules))
+
+(defun shipit--auto-clean-muted-threads (resolved-prs)
+  "Remove entries from `shipit-notifications-mute-non-authored-pr-noise-threads'.
+RESOLVED-PRS is a list of (REPO . NUMBER) pairs whose PR state
+is now `closed' / `merged' -- their entries are dropped from
+the muted-threads list and the change is persisted via
+`customize-save-variable'.
+
+Returns the number of entries removed.  No-op (and no
+persistence call) when nothing matches."
+  (let* ((current shipit-notifications-mute-non-authored-pr-noise-threads)
+         (kept (cl-remove-if (lambda (entry)
+                               (member entry resolved-prs))
+                             current))
+         (removed (- (length current) (length kept))))
+    (when (> removed 0)
+      (customize-save-variable
+       'shipit-notifications-mute-non-authored-pr-noise-threads kept))
+    removed))
+
+(defun shipit--effective-auto-mark-rules ()
+  "Return the rules `shipit--auto-mark-rules-apply' should evaluate.
+Layers, in order:
+
+1. `shipit-notifications-auto-mark-read-rules' (user-configured).
+2. The global synthetic rules from
+   `shipit--non-authored-pr-noise-rules', if
+   `shipit-notifications-mute-non-authored-pr-noise' is on.
+3. Per-repo synthetic rules built via
+   `shipit--non-authored-pr-noise-rules-for-repo' for every
+   entry in `shipit-notifications-mute-non-authored-pr-noise-repos'.
+4. Per-thread synthetic rules built via
+   `shipit--non-authored-pr-noise-rules-for-thread' for every
+   entry in `shipit-notifications-mute-non-authored-pr-noise-threads'.
+
+Rules combine via OR at apply time so duplicate entries are
+harmless; the order above only affects which rule appears
+first in any list-rules UI."
+  (append shipit-notifications-auto-mark-read-rules
+          (when shipit-notifications-mute-non-authored-pr-noise
+            shipit--non-authored-pr-noise-rules)
+          (mapcan #'shipit--non-authored-pr-noise-rules-for-repo
+                  shipit-notifications-mute-non-authored-pr-noise-repos)
+          (mapcan (lambda (entry)
+                    (shipit--non-authored-pr-noise-rules-for-thread
+                     (car entry) (cdr entry)))
+                  shipit-notifications-mute-non-authored-pr-noise-threads)))
 
 (defun shipit--auto-mark-state-condition-matches-p (val activity)
   "Return non-nil when ACTIVITY satisfies a `:state' VAL condition.
@@ -1372,6 +1545,14 @@ activities whose title does not contain \"mythos\"."
             (cl-some (lambda (c)
                        (and (stringp c) (string-equal-ignore-case c val)))
                      comps))))
+    (:number (let ((number (cdr (assq 'number activity))))
+               (and (integerp number)
+                    (integerp val)
+                    (= number val))))
+    (:i-am-author
+     (let ((field (assq 'is-author activity)))
+       (and field
+            (eq (and val t) (and (cdr field) t)))))
     (:not (not (shipit--auto-mark-rule-matches-activity-p val activity)))
     (_ nil)))
 
@@ -1395,7 +1576,7 @@ on the server but their cache entry would still be removed, which
 would hide them from the `all' scope view.  No-op when the rules
 list is empty so adding the hook has zero cost for users who do
 not configure it."
-  (let ((rules shipit-notifications-auto-mark-read-rules)
+  (let ((rules (shipit--effective-auto-mark-rules))
         (count 0))
     (when (and rules
                (boundp 'shipit--notification-pr-activities)

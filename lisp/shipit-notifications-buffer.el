@@ -3088,6 +3088,35 @@ with rule edits made from the transient."
      shipit-notifications-buffer-auto-mark-menu)
     ("q" "Quit" transient-quit-one)]])
 
+(defun shipit-notifications-buffer-toggle-mute-non-authored-pr-noise ()
+  "Toggle `shipit-notifications-mute-non-authored-pr-noise'.
+Persists the new value via `customize-save-variable' (so it
+survives Emacs restarts) and immediately re-applies the
+auto-mark rules so any newly-matching unread items disappear
+from the buffer right away."
+  (interactive)
+  (let ((new (not shipit-notifications-mute-non-authored-pr-noise)))
+    (customize-save-variable
+     'shipit-notifications-mute-non-authored-pr-noise new)
+    (let ((marked (and (fboundp 'shipit--auto-mark-rules-apply)
+                       (shipit--auto-mark-rules-apply))))
+      (when (fboundp 'shipit--rerender-notifications-buffer-if-visible)
+        (shipit--rerender-notifications-buffer-if-visible))
+      (message "Mute non-authored PR noise: %s%s"
+               (if new "on" "off")
+               (if (and marked (> marked 0))
+                   (format " (marked %d unread as read)" marked)
+                 "")))))
+
+(defun shipit-notifications-buffer--mute-non-authored-pr-noise-description ()
+  "Description for the non-authored-PR-noise toggle in the auto-mark transient.
+Reflects the current value of
+`shipit-notifications-mute-non-authored-pr-noise' so the
+menu shows `[on]' or `[off]' inline."
+  (format "Mute non-authored PR noise [%s]"
+          (if shipit-notifications-mute-non-authored-pr-noise
+              "on" "off")))
+
 ;;;###autoload (autoload 'shipit-notifications-buffer-auto-mark-menu "shipit-notifications-buffer" nil t)
 (transient-define-prefix shipit-notifications-buffer-auto-mark-menu ()
   "Manage auto-mark-read rules without leaving the notifications buffer."
@@ -3102,7 +3131,9 @@ with rule edits made from the transient."
     ("d" "Remove a rule"
      shipit-notifications-buffer-remove-auto-mark-rule)
     ("X" "Clear all rules"
-     shipit-notifications-buffer-clear-auto-mark-rules)]
+     shipit-notifications-buffer-clear-auto-mark-rules)
+    ("p" shipit-notifications-buffer-toggle-mute-non-authored-pr-noise
+     :description shipit-notifications-buffer--mute-non-authored-pr-noise-description)]
    ["Advanced"
     ("c" "Open customize buffer"
      shipit-notifications-buffer-customize-auto-mark-rules)

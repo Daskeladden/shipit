@@ -1477,18 +1477,39 @@ persistence call) when nothing matches."
        'shipit-notifications-mute-non-authored-pr-noise-threads kept))
     removed))
 
+(defcustom shipit-notifications-auto-mute-own-activity t
+  "When non-nil, auto-mark notifications attributed to your own actions.
+Activities the viewer triggered (e.g. transitioning a Jira
+issue from the dashboard, or any action GitHub flags with
+reason `your_activity\=') get auto-marked-as-read so they don\='t
+clutter the inbox -- you already saw the action when you
+performed it.
+
+Defaults to non-nil because it\='s almost never what users want
+to be reminded of.  Flip to nil if you DO want a feed of your
+own actions (audit-log style)."
+  :type 'boolean
+  :group 'shipit)
+
+(defconst shipit--own-activity-rule
+  '(:reason "your_activity")
+  "Synthetic rule injected when
+`shipit-notifications-auto-mute-own-activity' is on.")
+
 (defun shipit--effective-auto-mark-rules ()
   "Return the rules `shipit--auto-mark-rules-apply' should evaluate.
 Layers, in order:
 
 1. `shipit-notifications-auto-mark-read-rules' (user-configured).
-2. The global synthetic rules from
+2. The own-activity rule (`:reason \"your_activity\"') if
+   `shipit-notifications-auto-mute-own-activity' is on.
+3. The global synthetic rules from
    `shipit--non-authored-pr-noise-rules', if
    `shipit-notifications-mute-non-authored-pr-noise' is on.
-3. Per-repo synthetic rules built via
+4. Per-repo synthetic rules built via
    `shipit--non-authored-pr-noise-rules-for-repo' for every
    entry in `shipit-notifications-mute-non-authored-pr-noise-repos'.
-4. Per-thread synthetic rules built via
+5. Per-thread synthetic rules built via
    `shipit--non-authored-pr-noise-rules-for-thread' for every
    entry in `shipit-notifications-mute-non-authored-pr-noise-threads'.
 
@@ -1496,6 +1517,8 @@ Rules combine via OR at apply time so duplicate entries are
 harmless; the order above only affects which rule appears
 first in any list-rules UI."
   (append shipit-notifications-auto-mark-read-rules
+          (when shipit-notifications-auto-mute-own-activity
+            (list shipit--own-activity-rule))
           (when shipit-notifications-mute-non-authored-pr-noise
             shipit--non-authored-pr-noise-rules)
           (mapcan #'shipit--non-authored-pr-noise-rules-for-repo

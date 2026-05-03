@@ -1394,11 +1394,26 @@ would be auto-marked as if the user were not the author."
     (should-not (shipit--auto-mark-rule-matches-activity-p
                  rule '((type . "pr"))))))
 
+(ert-deftest test-shipit--effective-auto-mark-rules-includes-own-activity ()
+  "GIVEN `shipit-notifications-auto-mute-own-activity\=' is on (the default)
+WHEN effective-rules is computed
+THEN the synthetic `(:reason \"your_activity\")\=' rule is appended
+     so notifications attributed to the viewer\='s own actions
+     get auto-marked-as-read."
+  (let ((shipit-notifications-auto-mute-own-activity t)
+        (shipit-notifications-mute-non-authored-pr-noise nil)
+        (shipit-notifications-mute-non-authored-pr-noise-repos nil)
+        (shipit-notifications-mute-non-authored-pr-noise-threads nil)
+        (shipit-notifications-auto-mark-read-rules nil))
+    (let ((eff (shipit--effective-auto-mark-rules)))
+      (should (member shipit--own-activity-rule eff)))))
+
 (ert-deftest test-shipit--effective-auto-mark-rules-toggle-off ()
   "GIVEN `shipit-notifications-mute-non-authored-pr-noise' nil
 WHEN `shipit--effective-auto-mark-rules' is called
 THEN it returns just the user-defined rules unchanged."
   (let ((shipit-notifications-mute-non-authored-pr-noise nil)
+        (shipit-notifications-auto-mute-own-activity nil)
         (shipit-notifications-auto-mark-read-rules
          '((:state merged))))
     (should (equal (shipit--effective-auto-mark-rules)
@@ -1409,6 +1424,7 @@ THEN it returns just the user-defined rules unchanged."
 WHEN the effective-rules helper is called
 THEN it returns just the two synthetic firehose-mute rules."
   (let ((shipit-notifications-mute-non-authored-pr-noise t)
+        (shipit-notifications-auto-mute-own-activity nil)
         (shipit-notifications-auto-mark-read-rules nil))
     (should (equal (shipit--effective-auto-mark-rules)
                    shipit--non-authored-pr-noise-rules))))
@@ -1419,6 +1435,7 @@ WHEN effective-rules is computed
 THEN user rules come first, then the synthetic ones (so user
 intent wins on ordering, though apply-time semantics are OR)."
   (let ((shipit-notifications-mute-non-authored-pr-noise t)
+        (shipit-notifications-auto-mute-own-activity nil)
         (shipit-notifications-auto-mark-read-rules
          '((:state merged))))
     (should (equal (shipit--effective-auto-mark-rules)
@@ -1447,6 +1464,7 @@ THEN user rules come first, then synthetic rules for each
   (let ((shipit-notifications-mute-non-authored-pr-noise nil)
         (shipit-notifications-mute-non-authored-pr-noise-repos
          '("alice/proj" "bob/lib"))
+        (shipit-notifications-auto-mute-own-activity nil)
         (shipit-notifications-auto-mark-read-rules
          '((:state merged))))
     (let ((eff (shipit--effective-auto-mark-rules)))
@@ -1464,6 +1482,7 @@ THEN the user rules, the global rules, and the per-repo rules
      are harmless."
   (let ((shipit-notifications-mute-non-authored-pr-noise t)
         (shipit-notifications-mute-non-authored-pr-noise-repos '("alice/proj"))
+        (shipit-notifications-auto-mute-own-activity nil)
         (shipit-notifications-auto-mark-read-rules nil))
     (let ((eff (shipit--effective-auto-mark-rules)))
       ;; 2 global + 2 per-repo
@@ -1508,6 +1527,7 @@ THEN four synthetic per-thread rules appear (two reasons x two
         (shipit-notifications-mute-non-authored-pr-noise-repos nil)
         (shipit-notifications-mute-non-authored-pr-noise-threads
          '(("alice/proj" . 12) ("bob/lib" . 3)))
+        (shipit-notifications-auto-mute-own-activity nil)
         (shipit-notifications-auto-mark-read-rules nil))
     (let ((eff (shipit--effective-auto-mark-rules)))
       (should (= (length eff) 4))

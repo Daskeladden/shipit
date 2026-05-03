@@ -990,6 +990,8 @@ stream has any entries.  The result is a plist:
       (list :type 'comment
             :author (cdr (assq 'displayName
                                (cdr (assq 'author last-comment))))
+            :author-id (cdr (assq 'accountId
+                                  (cdr (assq 'author last-comment))))
             :timestamp c-time
             :summary (shipit-issue-jira--summarize-comment-body
                       (cdr (assq 'body last-comment)))))
@@ -997,6 +999,8 @@ stream has any entries.  The result is a plist:
       (list :type 'change
             :author (cdr (assq 'displayName
                                (cdr (assq 'author last-history))))
+            :author-id (cdr (assq 'accountId
+                                  (cdr (assq 'author last-history))))
             :timestamp h-time
             :summary (shipit-issue-jira--summarize-history-items
                       (cdr (assq 'items last-history)))))
@@ -1004,6 +1008,8 @@ stream has any entries.  The result is a plist:
       (list :type 'comment
             :author (cdr (assq 'displayName
                                (cdr (assq 'author last-comment))))
+            :author-id (cdr (assq 'accountId
+                                  (cdr (assq 'author last-comment))))
             :timestamp c-time
             :summary (shipit-issue-jira--summarize-comment-body
                       (cdr (assq 'body last-comment)))))
@@ -1415,15 +1421,25 @@ CONFIG provides context for display name."
          (components-raw (append (cdr (assq 'components fields)) nil))
          (components (delq nil (mapcar (lambda (c) (cdr (assq 'name c)))
                                        components-raw)))
-         (reason (condition-case err
-                     (shipit-issue-jira--compute-involvement-reason config issue)
-                   (error
-                    (shipit--debug-log
-                     "Jira involvement detection failed for %s: %S" key err)
-                    "updated")))
          (latest-activity (shipit-issue-jira--extract-last-activity issue))
          (author (or (plist-get latest-activity :author)
                      (cdr (assq 'displayName (cdr (assq 'reporter fields))))))
+         (myself-id (ignore-errors (shipit-issue-jira--fetch-myself config)))
+         (latest-author-id (plist-get latest-activity :author-id))
+         (own-activity (and myself-id latest-author-id
+                            (string-equal myself-id latest-author-id)))
+         (reason
+          (cond
+           ;; Activities the viewer triggered themselves: tag them so
+           ;; default auto-mark rules can hide them; the user already
+           ;; saw the action when they fired it.
+           (own-activity "your_activity")
+           (t (condition-case err
+                  (shipit-issue-jira--compute-involvement-reason config issue)
+                (error
+                 (shipit--debug-log
+                  "Jira involvement detection failed for %s: %S" key err)
+                 "updated")))))
          (status-obj (cdr (assq 'status fields)))
          (status-name (cdr (assq 'name status-obj)))
          (status-category (cdr (assq 'key

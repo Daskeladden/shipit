@@ -189,13 +189,16 @@ Returns plist with :json, :status, :headers for GitHub protocol compliance."
       (error "Failed to retrieve URL: %s" url))))
 
 (defun shipit--url-retrieve-async (url method headers data success-callback error-callback)
-  "Asynchronous HTTP request using url.el."
-  ;; Set system-time-locale globally for async requests (runs outside let scope)
-  ;; Ensures HTTP date headers use ASCII instead of locale-specific characters
-  (setq system-time-locale "C")
+  "Asynchronous HTTP request using url.el.
+`system-time-locale' is `let\='-bound to \"C\" around `url-retrieve'
+so the request is constructed with ASCII date headers
+\(`If-Modified-Since' etc.) regardless of the user's locale --
+mutating the global value is fragile because other packages
+can reset it between polls."
   (let ((url-request-method method)
         (url-request-extra-headers headers)
-        (url-request-data (when data (encode-coding-string data 'utf-8))))
+        (url-request-data (when data (encode-coding-string data 'utf-8)))
+        (system-time-locale "C"))
     (url-retrieve url
                   (lambda (status)
                         (let* ((error-status (plist-get status :error)))
@@ -237,11 +240,14 @@ Returns plist with :json, :status, :headers for GitHub protocol compliance."
 SUCCESS-CALLBACK is called with two arguments: the parsed JSON body and
 an alist of response headers (name and value both strings).  Used by
 callers that need HTTP response metadata such as the Link header for
-pagination."
-  (setq system-time-locale "C")
+pagination.
+
+`system-time-locale' is `let\='-bound to \"C\" around `url-retrieve'
+so date headers stay ASCII regardless of the user's locale."
   (let ((url-request-method method)
         (url-request-extra-headers headers)
-        (url-request-data (when data (encode-coding-string data 'utf-8))))
+        (url-request-data (when data (encode-coding-string data 'utf-8)))
+        (system-time-locale "C"))
     (url-retrieve
      url
      (lambda (status)

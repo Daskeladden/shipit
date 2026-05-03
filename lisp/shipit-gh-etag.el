@@ -1134,12 +1134,12 @@ Result format is the same as shipit-gh-etag-get-json-with-refresh-cache."
   ;; Ensure persistent cache is loaded from disk
   (shipit-gh-etag--ensure-cache-loaded)
 
-  ;; CRITICAL: Set system-time-locale to "C" GLOBALLY for async requests
-  ;; Must be set globally because url-retrieve is async and runs outside let scope
-  ;; This ensures HTTP date headers (If-Modified-Since) use ASCII characters
-  ;; instead of locale-specific names (e.g., "sø." for Sunday in Norwegian)
-  ;; which cause "Multibyte text in HTTP request" errors
-  (setq system-time-locale "C")
+  ;; The HTTP request body is constructed synchronously inside
+  ;; `url-retrieve' (in `url-http-create-request' / `url-cache-extract'),
+  ;; so a `let'-bind around the call is enough to guarantee an ASCII
+  ;; `If-Modified-Since' header.  Avoid mutating the global value -- a
+  ;; `setq' here can lose to a downstream package that resets the
+  ;; locale back to the user's environment between polls.
 
   ;; CRITICAL FIX: Proactively clean up any problematic cache files before starting async request
   (shipit-gh-etag--proactive-cache-cleanup endpoint params)
@@ -1185,12 +1185,15 @@ Result format is the same as shipit-gh-etag-get-json-with-refresh-cache."
           (when (fboundp 'shipit--debug-log)
             (shipit--debug-log "🧹 FORCE-FRESH: Deleted url.el cache file: %s" cache-file)))))
 
-    ;; Make asynchronous request
-    (url-retrieve url
-                  (lambda (status)
-                    (shipit-gh-etag--handle-async-response 
-                     status endpoint params token callback cache-key stored-etag force-fresh))
-                  nil t t)))
+    ;; Make asynchronous request.  `let'-bind `system-time-locale'
+    ;; here so the request is constructed under the C locale even
+    ;; if some other package has set it locale-specific.
+    (let ((system-time-locale "C"))
+      (url-retrieve url
+                    (lambda (status)
+                      (shipit-gh-etag--handle-async-response
+                       status endpoint params token callback cache-key stored-etag force-fresh))
+                    nil t t))))
 
 (defun shipit-gh-etag--handle-async-response (status endpoint params token callback cache-key stored-etag force-fresh)
   "Handle asynchronous response from GitHub API.

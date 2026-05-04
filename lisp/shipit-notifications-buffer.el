@@ -2715,13 +2715,38 @@ Cleans up overlays on exit (confirm or abort)."
           (shipit-notifications-buffer--clear-auto-mark-preview))))
     result))
 
+(defconst shipit-notifications-buffer--known-reasons
+  '(;; GitHub notification reasons -- the full canonical list per
+    ;; https://docs.github.com/en/rest/activity/notifications.
+    "approval_requested" "assign" "author" "ci_activity" "comment"
+    "commented" "invitation" "manual" "member_feature_requested"
+    "mention" "push" "review_requested" "security_advisory_credit"
+    "security_alert" "state_change" "subscribed" "team_mention"
+    "your_activity"
+    ;; Shipit-internal / Jira-side reasons populated during
+    ;; activity construction (`shipit-issue-jira--compute-involvement-reason\=',
+    ;; `--issue-to-activity\=' for self-actions, etc.).
+    "assigned" "updated")
+  "Reasons surfaced as candidates in the auto-mark rule wizard.
+Combines GitHub\='s canonical notification reason set with the
+synthetic reasons shipit attaches during enrichment so the
+user can target reasons that aren\='t currently visible on any
+activity in the buffer.  Free-form input still works at the
+prompt -- this is just completion ammunition.")
+
 (defun shipit-notifications-buffer--candidate-reasons ()
-  "Return the sorted distinct list of reason strings in the hash."
+  "Return sorted distinct reason strings for completion.
+Combines reasons present on currently-loaded activities with
+`shipit-notifications-buffer--known-reasons\=' so users can
+target valid reasons that don\='t happen to be in the inbox right
+now (e.g. `mention\=' on a quiet day)."
   (let ((seen (make-hash-table :test 'equal)))
     (dolist (a (shipit-notifications-buffer--all-activities))
       (let ((r (cdr (assq 'reason a))))
         (when (and r (stringp r) (> (length r) 0))
           (puthash r t seen))))
+    (dolist (r shipit-notifications-buffer--known-reasons)
+      (puthash r t seen))
     (sort (hash-table-keys seen) #'string<)))
 
 (defun shipit-notifications--save-auto-mark-rules (new-list)
@@ -2800,6 +2825,8 @@ itself a single-condition sub-rule read recursively."
        (completing-read "Label: " cands nil nil)))
     (:i-am-author
      (intern (completing-read "I am the author? " '("t" "nil") nil t)))
+    (:reply-to-me
+     (intern (completing-read "Reply-to-me? " '("t" "nil") nil t)))
     (:number
      (read-number "Number: "))
     (:not
@@ -2813,7 +2840,7 @@ PROMPT is shown for the key choice.  When INCLUDE-NOT is non-nil,
 an inner condition (no further nesting)."
   (let* ((keys (append '(":state" ":type" ":repo" ":reason"
                          ":jira-component" ":label" ":title" ":draft"
-                         ":number" ":i-am-author")
+                         ":number" ":i-am-author" ":reply-to-me")
                        (and include-not '(":not"))))
          (chosen (completing-read (or prompt "Condition: ") keys nil t))
          (key (intern chosen))

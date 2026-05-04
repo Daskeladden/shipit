@@ -740,14 +740,23 @@ the change persists across sessions."
 (ert-deftest test-shipit-notifications-buffer--candidate-reasons-sorted-distinct ()
   "GIVEN activities with various reasons in the global hash
 WHEN `--candidate-reasons' runs
-THEN distinct reason strings are returned sorted ascending."
+THEN the result is sorted ascending, distinct, and includes both
+     reasons surfaced on activities AND the canonical reason set
+     in `shipit-notifications-buffer--known-reasons' (so users
+     can target reasons not currently visible)."
   (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
     (puthash "k1" '((reason . "subscribed")) shipit--notification-pr-activities)
     (puthash "k2" '((reason . "mention"))    shipit--notification-pr-activities)
     (puthash "k3" '((reason . "subscribed")) shipit--notification-pr-activities)
     (puthash "k4" '((reason . "team_mention")) shipit--notification-pr-activities)
-    (should (equal (shipit-notifications-buffer--candidate-reasons)
-                   '("mention" "subscribed" "team_mention")))))
+    (let ((result (shipit-notifications-buffer--candidate-reasons)))
+      (should (equal result (sort (copy-sequence result) #'string<)))
+      (should (equal (length result) (length (delete-dups (copy-sequence result)))))
+      (should (member "subscribed" result))
+      (should (member "mention" result))
+      (should (member "team_mention" result))
+      (should (member "review_requested" result))
+      (should (member "your_activity" result)))))
 
 (ert-deftest test-shipit-notifications-buffer--apply-auto-mark-preview-highlights-matches ()
   "GIVEN 3 PR notifications in the buffer (one whose subject matches REGEX)

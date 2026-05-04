@@ -1181,11 +1181,13 @@ and stutter."
 
     ;; Merge GitHub notifications into the global table (preserving backend entries)
     (shipit--merge-github-notifications activities)
-    ;; Apply auto-mark rules that don't depend on PR-state (type, reason,
-    ;; title, repo) immediately after merge.  State-dependent rules will
-    ;; be re-applied at the end of `shipit--apply-pr-enrichment'; the
-    ;; mark-read API is idempotent so the duplicate fire is harmless.
-    (shipit--auto-mark-rules-apply)
+    ;; Apply auto-mark rules that don't depend on PR-state / labels /
+    ;; is-author immediately after merge.  Enrichment-dependent rules
+    ;; would mis-fire here (e.g. `(:not (:label X))' matches a PR
+    ;; whose labels haven't loaded yet), so we filter them out via
+    ;; `phase=pre-enrichment'.  They re-run at the end of
+    ;; `shipit--apply-pr-enrichment' with full data.
+    (shipit--auto-mark-rules-apply 'pre-enrichment)
     ;; Enrichments are async — the GraphQL PR enrichment kicks off here and
     ;; rerenders on completion; workflow enrichment fires per-repo HTTP
     ;; requests that are also async and rerender on completion.
@@ -1249,9 +1251,11 @@ Fetches all PR metadata in a single request grouped by repo."
 PR-BY-REPO is a hash table of repo-name → list of PR numbers.
 Includes `viewer { login }' so `shipit--apply-pr-enrichment'
 can compute the per-activity `is-author' flag without an
-extra round-trip.  Also fetches `labels(first: 50)' so the
-`:label' auto-mark predicate works for GitHub PRs without a
-second round-trip per PR."
+extra round-trip.  Also fetches `labels(first: 50)' for the
+`:label' predicate, and `reviewThreads(first: 50)' with
+comment authors + timestamps for the `:reply-to-me' predicate
+\(detects review-thread replies where viewer authored a
+comment in the thread and a non-viewer posted later)."
   (let ((repo-queries '())
         (repo-idx 0))
     (maphash
@@ -1261,7 +1265,7 @@ second round-trip per PR."
               (name (cadr parts))
               (pr-fields (mapconcat
                           (lambda (num)
-                            (format "p%d: pullRequest(number: %d) { isDraft state author { login avatarUrl } labels(first: 50) { nodes { name } } }"
+                            (format "p%d: pullRequest(number: %d) { isDraft state author { login avatarUrl } labels(first: 50) { nodes { name } } reviewThreads(first: 50) { nodes { comments(first: 100) { nodes { author { login } createdAt } } } } }"
                                     num num))
                           numbers "\n    ")))
          (push (format "r%d: repository(owner: \"%s\", name: \"%s\") {\n    %s\n  }"
@@ -1271,6 +1275,40 @@ second round-trip per PR."
      pr-by-repo)
     (format "{\n  viewer { login }\n  %s\n}"
             (mapconcat #'identity (nreverse repo-queries) "\n  "))))
+
+(defun shipit--review-thread-reply-to-viewer-p (thread viewer-login)
+  "Return non-nil if THREAD has a non-viewer reply after a viewer comment.
+THREAD is a `reviewThreads.nodes\=' element with `comments.nodes\='
+in chronological order.  VIEWER-LOGIN is the authenticated
+user\='s GitHub login.
+
+Heuristic: viewer authored at least one comment in this thread,
+AND the newest comment was posted by someone else.  This is the
+robust read of \"someone replied to my review-thread comment\":
+GitHub\='s `replyToId\=' is sometimes empty (top-level review
+comments) or points at the thread root rather than the
+specific parent, so timestamp ordering plus authorship gives
+fewer false negatives than chasing `replyToId\='."
+  (let* ((comments (append (cdr (assq 'nodes (cdr (assq 'comments thread))))
+                           nil))
+         (sorted (sort (copy-sequence comments)
+                       (lambda (a b)
+                         (string<
+                          (or (cdr (assq 'createdAt a)) "")
+                          (or (cdr (assq 'createdAt b)) "")))))
+         (viewer-was-here
+          (cl-some (lambda (c)
+                     (let ((author (cdr (assq 'login
+                                              (cdr (assq 'author c))))))
+                       (and author
+                            (string-equal-ignore-case author viewer-login))))
+                   sorted))
+         (newest (car (last sorted)))
+         (newest-author (and newest
+                             (cdr (assq 'login (cdr (assq 'author newest)))))))
+    (and viewer-was-here
+         newest-author
+         (not (string-equal-ignore-case newest-author viewer-login)))))
 
 (defun shipit--apply-pr-enrichment (result pr-by-repo)
   "Apply GraphQL RESULT to enrich notification activities.
@@ -1300,6 +1338,17 @@ fire on incomplete data."
                     (labels (delq nil
                                   (mapcar (lambda (n) (cdr (assq 'name n)))
                                           (append label-nodes nil))))
+                    (review-threads
+                     (append (cdr (assq 'nodes
+                                        (cdr (assq 'reviewThreads pr-data))))
+                             nil))
+                    (reply-to-me
+                     (and viewer-login
+                          (cl-some
+                           (lambda (thread)
+                             (shipit--review-thread-reply-to-viewer-p
+                              thread viewer-login))
+                           review-threads)))
                     (activity-key (shipit--notification-activity-key repo "pr" number))
                     (activity (gethash activity-key shipit--notification-pr-activities)))
                (when (and activity pr-data)
@@ -1310,6 +1359,7 @@ fire on incomplete data."
                    (push (cons 'pr-author author) enriched)
                    (push (cons 'pr-avatar-url avatar-url) enriched)
                    (push (cons 'labels labels) enriched)
+                   (push (cons 'reply-to-me reply-to-me) enriched)
                    (when (and viewer-login author)
                      (push (cons 'is-author
                                  (string-equal-ignore-case viewer-login author))
@@ -1385,6 +1435,7 @@ through unaffected."
                                 (const :number)
                                 (const :label)
                                 (const :i-am-author)
+                                (const :reply-to-me)
                                 (const :not))
                         :value-type sexp))
   :group 'shipit)
@@ -1594,6 +1645,10 @@ activities whose title does not contain \"mythos\"."
      (let ((field (assq 'is-author activity)))
        (and field
             (eq (and val t) (and (cdr field) t)))))
+    (:reply-to-me
+     (let ((field (assq 'reply-to-me activity)))
+       (and field
+            (eq (and val t) (and (cdr field) t)))))
     (:not (not (shipit--auto-mark-rule-matches-activity-p val activity)))
     (_ nil)))
 
@@ -1605,26 +1660,65 @@ as a kill-switch when scoped behind another condition."
   (cl-loop for (key val) on rule by #'cddr
            always (shipit--auto-mark-condition-matches-p key val activity)))
 
-(defun shipit--auto-mark-rules-apply ()
+(defun shipit--auto-mark-rule-needs-enrichment-p (rule)
+  "Return non-nil if RULE references any field set by PR enrichment.
+Activities only carry `labels', `is-author', `pr-state', and
+`draft' after `--enrich-pr-notifications' completes; running
+rules that depend on those keys before then produces false
+positives.  Most notably `(:not (:label X))' matches unenriched
+activities (because `:label' returns nil before labels load,
+and `:not' flips that to t), so a PR carrying label X gets
+auto-marked anyway during the early apply.  Recurses into
+`:not' so a wrapping `:not' does not hide an inner enriched
+condition."
+  (cl-loop for (key val) on rule by #'cddr
+           thereis (or (memq key '(:label :i-am-author :reply-to-me
+                                   :state :draft))
+                       (and (eq key :not)
+                            (shipit--auto-mark-rule-needs-enrichment-p val)))))
+
+(defun shipit--auto-mark-rules-apply (&optional phase)
   "Mark every UNREAD activity matching any auto-mark rule as read.
+PHASE optional symbol controls which rules participate:
+- nil / `full' (default): all effective rules apply.
+- `pre-enrichment': skip rules that depend on enriched fields
+  (`labels', `is-author', `pr-state', `draft') -- those fields
+  arrive only after the GraphQL enrichment, and running such
+  rules early misses (or worse, mis-fires `:not\=' clauses,
+  e.g. `(:not (:label \"X\"))\=' incorrectly matches a PR
+  whose labels haven\='t loaded yet).
+
 Walks `shipit--notification-pr-activities', collects activities
-that match any rule in `shipit-notifications-auto-mark-read-rules',
-then marks each via `shipit--mark-notification-read'.  Returns the
-number of activities marked.
+that match any active rule, then marks each via
+`shipit--mark-notification-read'.  Returns the number of
+activities marked.
 
 Already-read items are skipped — re-marking them would be a no-op
 on the server but their cache entry would still be removed, which
 would hide them from the `all' scope view.  No-op when the rules
 list is empty so adding the hook has zero cost for users who do
 not configure it."
-  (let ((rules (shipit--effective-auto-mark-rules))
-        (count 0))
+  (let* ((all-rules (shipit--effective-auto-mark-rules))
+         (rules (if (eq phase 'pre-enrichment)
+                    (cl-remove-if
+                     #'shipit--auto-mark-rule-needs-enrichment-p
+                     all-rules)
+                  all-rules))
+         (count 0)
+         (scanned 0)
+         (unread-scanned 0))
     (when (and rules
                (boundp 'shipit--notification-pr-activities)
                shipit--notification-pr-activities)
+      (shipit--debug-log
+       "auto-mark/apply phase=%s: %d/%d rules across %d activities"
+       (or phase 'full)
+       (length rules) (length all-rules)
+       (hash-table-count shipit--notification-pr-activities))
       (let ((to-mark '()))
         (maphash
          (lambda (_k activity)
+           (cl-incf scanned)
            (let* ((notification (cdr (assq 'notification activity)))
                   (unread (if notification
                               ;; GitHub: `unread' is t or :json-false; only
@@ -1637,6 +1731,7 @@ not configure it."
                             ;; `shipit--mark-notification-read' removes the
                             ;; entry on mark.
                             t)))
+             (when unread (cl-incf unread-scanned))
              (when (and unread
                         (cl-some (lambda (rule)
                                    (shipit--auto-mark-rule-matches-activity-p
@@ -1644,6 +1739,9 @@ not configure it."
                                  rules))
                (push activity to-mark))))
          shipit--notification-pr-activities)
+        (shipit--debug-log
+         "auto-mark/apply: scanned=%d unread=%d to-mark=%d"
+         scanned unread-scanned (length to-mark))
         (dolist (a to-mark)
           (let ((number (or (cdr (assq 'number a))
                             (cdr (assq 'pr-number a))))

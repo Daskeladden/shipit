@@ -339,16 +339,27 @@ buffer-local overrides so the issue fetches use the correct backend
                  (with-current-buffer target-buffer
                    (shipit-issue--update-description-reactions-display
                     issue-number)))))))
-        ;; Fetch activity events asynchronously — the buffer rendered
-        ;; with a "Loading activity…" placeholder which we replace when
-        ;; the events payload arrives.
-        (let ((target-buffer (current-buffer)))
-          (shipit-issues--fetch-timeline-async
-           repo issue-number
-           (lambda (changelog)
-             (when (buffer-live-p target-buffer)
-               (with-current-buffer target-buffer
-                 (shipit-issue--refresh-activity-section changelog))))))
+        ;; Fetch activity events asynchronously when the backend exposes
+        ;; a timeline method.  Backends like Jira embed the changelog in
+        ;; the issue payload itself (`expand=changelog'), so the initial
+        ;; render is already correct and there's nothing to refresh --
+        ;; calling the dispatch unconditionally would overwrite the good
+        ;; render with the "no method registered" sentinel (nil ->
+        ;; "No activity yet").
+        (let* ((backend-for-timeline (shipit-issue--get-backend))
+               (has-timeline-fetch (and backend-for-timeline
+                                        (or (plist-get backend-for-timeline
+                                                       :fetch-timeline-async)
+                                            (plist-get backend-for-timeline
+                                                       :fetch-timeline)))))
+          (when has-timeline-fetch
+            (let ((target-buffer (current-buffer)))
+              (shipit-issues--fetch-timeline-async
+               repo issue-number
+               (lambda (changelog)
+                 (when (buffer-live-p target-buffer)
+                   (with-current-buffer target-buffer
+                     (shipit-issue--refresh-activity-section changelog))))))))
         ;; Fetch pinned comment async and insert before comments section
         (let ((target-buffer (current-buffer)))
           (shipit-issues--fetch-pinned-comment-async

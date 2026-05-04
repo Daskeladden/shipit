@@ -22,6 +22,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'seq)
 (require 'shipit-issue-jira)
 
@@ -34,6 +35,41 @@
 Uses the Jira-agile max page size (100) to cut round trips in half."
   (format "/rest/agile/1.0/board/%d/issue?maxResults=100&startAt=%d&fields=key,summary,status,priority,issuetype,assignee"
           board-id start-at))
+
+(defun shipit-atlassian-board--statuses-path ()
+  "Path for the instance-wide list of Jira statuses (id + name)."
+  "/rest/api/2/status")
+
+(defun shipit-atlassian-board--statuses-to-name-map (raw)
+  "Convert RAW (a vector / list of `{id, name, ...}' status alists) to id->name.
+Tolerates RAW being nil or an empty vector so a 401 / network
+fallback simply leaves the map empty -- the issue-derived map
+still covers every column that has at least one visible issue,
+which is the previous behaviour."
+  (let (acc)
+    (dolist (s (append (or raw nil) nil))
+      (let ((id (cdr (assq 'id s)))
+            (name (cdr (assq 'name s))))
+        (when (and id name)
+          (push (cons id name) acc))))
+    acc))
+
+(defun shipit-atlassian-board--fetch-status-names (config)
+  "Fetch the Jira instance status catalogue, return id->name alist.
+Synchronous variant used by `shipit-atlassian-board--fetch'."
+  (shipit-atlassian-board--statuses-to-name-map
+   (shipit-issue-jira--api-request
+    config (shipit-atlassian-board--statuses-path))))
+
+(defun shipit-atlassian-board--fetch-status-names-async (config callback)
+  "Async variant of `--fetch-status-names'.
+CALLBACK is invoked with the id->name alist (possibly empty if
+the request fails)."
+  (shipit-issue-jira--api-request-async
+   config (shipit-atlassian-board--statuses-path)
+   (lambda (raw)
+     (funcall callback
+              (shipit-atlassian-board--statuses-to-name-map raw)))))
 
 (defun shipit-atlassian-board--fetch-all-issues (config board-id)
   "Fetch all board issues for BOARD-ID using CONFIG with pagination."
@@ -73,33 +109,48 @@ complete list of raw issues."
 
 (defun shipit-atlassian-board--fetch-async (config board-id callback)
   "Async version of `shipit-atlassian-board--fetch'.
-Fires the board-config request, then paginated issues, and finally
-calls CALLBACK with the grouped columns list."
+Fires the board-config request, the instance status catalogue,
+and the paginated issues request, then calls CALLBACK with the
+grouped columns list.  The catalogue lets columns that have no
+visible issue (e.g. empty `Review & Test') still expose a
+status name, which `--board-target-status' needs to stage a
+forward / backward move."
   (shipit-issue-jira--api-request-async
    config (shipit-atlassian-board--config-path board-id)
    (lambda (board-config)
      (let ((columns (append (cdr (assq 'columns
                                        (cdr (assq 'columnConfig board-config)))) nil)))
-       (shipit-atlassian-board--fetch-all-issues-async
-        config board-id
-        (lambda (raw-issues)
-          (let ((issues (mapcar #'shipit-issue-jira--normalize-issue raw-issues)))
-            (shipit--debug-log "Board async: %d columns, %d issues"
-                               (length columns) (length issues))
-            (funcall callback
-                     (shipit-atlassian-board--group-by-column columns issues)))))))))
+       (shipit-atlassian-board--fetch-status-names-async
+        config
+        (lambda (status-name-map)
+          (shipit-atlassian-board--fetch-all-issues-async
+           config board-id
+           (lambda (raw-issues)
+             (let ((issues (mapcar #'shipit-issue-jira--normalize-issue raw-issues)))
+               (shipit--debug-log "Board async: %d columns, %d issues, %d status-names"
+                                  (length columns) (length issues)
+                                  (length status-name-map))
+               (funcall callback
+                        (shipit-atlassian-board--group-by-column
+                         columns issues status-name-map)))))))))))
 
 (defun shipit-atlassian-board--fetch (config board-id)
   "Fetch board configuration and issues for BOARD-ID using CONFIG.
-Returns a list of column alists: ((name . \"col\") (issues . (...)))."
+Returns a list of column alists: ((name . \"col\") (issues . (...))).
+Also pulls the instance status catalogue so empty columns still
+resolve their status IDs to names -- otherwise advancing into a
+zero-issue column fails with `No forward column' even though the
+column exists in the board configuration."
   (let* ((board-config (shipit-issue-jira--api-request
                         config (shipit-atlassian-board--config-path board-id)))
          (columns (append (cdr (assq 'columns
                                      (cdr (assq 'columnConfig board-config)))) nil))
+         (status-name-map (shipit-atlassian-board--fetch-status-names config))
          (raw-issues (shipit-atlassian-board--fetch-all-issues config board-id))
          (issues (mapcar #'shipit-issue-jira--normalize-issue raw-issues)))
-    (shipit--debug-log "Board: %d columns, %d issues" (length columns) (length issues))
-    (shipit-atlassian-board--group-by-column columns issues)))
+    (shipit--debug-log "Board: %d columns, %d issues, %d status-names"
+                       (length columns) (length issues) (length status-name-map))
+    (shipit-atlassian-board--group-by-column columns issues status-name-map)))
 
 (defun shipit-atlassian-board--build-status-name-map (issues)
   "Build an alist of status-id -> status-name from ISSUES.
@@ -116,29 +167,44 @@ name without an extra API call."
           (push (cons id name) acc))))
     acc))
 
-(defun shipit-atlassian-board--group-by-column (columns issues)
+(defun shipit-atlassian-board--group-by-column (columns issues &optional extra-status-names)
   "Group ISSUES into COLUMNS based on status ID matching.
 COLUMNS is from the board configuration API.
 Returns list of ((name . col-name) (issues . filtered-issues)
                   (statuses . list-of-status-names)).
 
 The board-configuration API\='s status objects expose only
-`{id, self}', so status names are resolved from the issues
-\(which carry `state' / `state-id' from the Jira issue
-normaliser).  Columns whose statuses don\='t appear on any
-fetched issue end up with an empty `statuses' list -- they
-still render, they just can\='t be routing targets until an
-issue with that status is in view."
-  (let ((status-names-by-id
-         (shipit-atlassian-board--build-status-name-map issues))
-        (result nil))
+`{id, self}', so status names are resolved from two sources:
+
+1. The fetched ISSUES (each carries `state' + `state-id' after
+   normalisation).
+2. EXTRA-STATUS-NAMES -- an optional id->name alist supplied by
+   the caller, typically via
+   `shipit-atlassian-board--fetch-status-names'.  This covers
+   columns whose statuses don\='t appear on any visible issue
+   (e.g. an empty `Review & Test' column), so the column still
+   advertises a usable target name for forward / backward moves.
+
+If neither source resolves a column\='s status IDs, that column
+ends up with an empty `statuses' list -- it still renders, but
+edit-mode advancement skips past it."
+  (let* ((status-names-by-id
+          (shipit-atlassian-board--build-status-name-map issues))
+         ;; Issue-derived map wins: `state' / `state-id' from the
+         ;; live issue is the canonical name as displayed.  Extra
+         ;; map fills the gaps.
+         (merged (append status-names-by-id
+                         (cl-remove-if
+                          (lambda (entry) (assoc (car entry) status-names-by-id))
+                          (or extra-status-names nil))))
+         (result nil))
     (dolist (col columns)
       (let* ((col-name (cdr (assq 'name col)))
              (col-statuses (append (cdr (assq 'statuses col)) nil))
              (status-ids (mapcar (lambda (s) (cdr (assq 'id s))) col-statuses))
              (status-names (delq nil
                                  (mapcar (lambda (id)
-                                           (cdr (assoc id status-names-by-id)))
+                                           (cdr (assoc id merged)))
                                          status-ids)))
              (col-issues (seq-filter
                           (lambda (issue)

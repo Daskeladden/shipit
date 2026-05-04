@@ -379,6 +379,55 @@ THEN empty columns appear with zero issues."
       (should (= 0 (length (cdr (assq 'issues (nth 1 grouped))))))
       (should (= 0 (length (cdr (assq 'issues (nth 2 grouped)))))))))
 
+(ert-deftest test-atlassian-board-group-resolves-empty-column-via-extra-map ()
+  "GIVEN production-shape board columns where status objects expose only `{id, self}'
+  AND one column (`Review & Test') has no visible issue, so the issue-derived
+  id->name map can\\='t supply its status name
+WHEN `--group-by-column' runs with EXTRA-STATUS-NAMES from
+     `--fetch-status-names' (the instance status catalogue)
+THEN the empty column still advertises a usable status name --
+     so `--board-target-status' can stage `In Progress' -> `Review & Test'
+     forward without falling back to `No forward column'."
+  (let ((columns '(((name . "To Do")
+                    (statuses . [((self . "x") (id . "1"))]))
+                   ((name . "In Progress")
+                    (statuses . [((self . "x") (id . "3"))]))
+                   ((name . "Review & Test")
+                    (statuses . [((self . "x") (id . "5"))]))
+                   ((name . "Done")
+                    (statuses . [((self . "x") (id . "6"))]))))
+        (issues '(((id . "P-2") (state . "In Progress") (state-id . "3"))))
+        (extra '(("1" . "To Do")
+                 ("3" . "In Progress")
+                 ("5" . "Review & Test")
+                 ("6" . "Done"))))
+    (let* ((grouped (shipit-atlassian-board--group-by-column columns issues extra))
+           (review (cl-find-if (lambda (c)
+                                 (equal (cdr (assq 'name c)) "Review & Test"))
+                               grouped))
+           (todo (cl-find-if (lambda (c)
+                               (equal (cdr (assq 'name c)) "To Do"))
+                             grouped)))
+      (should review)
+      (should (equal '("Review & Test") (cdr (assq 'statuses review))))
+      (should todo)
+      (should (equal '("To Do") (cdr (assq 'statuses todo)))))))
+
+(ert-deftest test-atlassian-board-group-issue-name-wins-over-extra ()
+  "GIVEN production-shape columns AND an issue carrying status `In Progress'
+  AND EXTRA-STATUS-NAMES naming the same id `Different Name'
+WHEN `--group-by-column' merges the two maps
+THEN the issue-derived name wins (live state is canonical) so the
+     existing `--column-for-status' lookup keeps matching against
+     the same string the issue currently displays."
+  (let ((columns '(((name . "In Progress")
+                    (statuses . [((self . "x") (id . "3"))]))))
+        (issues '(((id . "P-2") (state . "In Progress") (state-id . "3"))))
+        (extra '(("3" . "Different Name"))))
+    (let* ((grouped (shipit-atlassian-board--group-by-column columns issues extra)))
+      (should (equal '("In Progress")
+                     (cdr (assq 'statuses (car grouped))))))))
+
 (ert-deftest test-atlassian-board-fetch ()
   "GIVEN mock board configuration and issues API responses
 WHEN fetching board data
@@ -391,6 +440,9 @@ THEN issues are grouped into columns."
                                                   (statuses . [((id . "1"))]))
                                                 ((name . "Done")
                                                   (statuses . [((id . "4"))]))])))))
+                ((string-match-p "/rest/api/2/status" path)
+                 [((id . "1") (name . "Open"))
+                  ((id . "4") (name . "Done"))])
                 ((string-match-p "issue" path)
                  '((total . 1)
                    (issues . [((key . "P-1")

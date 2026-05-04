@@ -535,6 +535,36 @@ Supports both single tilde ~text~ and double tilde ~~text~~ (GFM syntax)."
         ;; Apply strikethrough face to the entire match including tildes
         (add-face-text-property match-start match-end '(:strike-through t))))))
 
+(defun shipit--apply-comment-body-decorations (body-start body-end &optional repo pr-number)
+  "Apply markdown body decorations to the region between BODY-START and BODY-END.
+Bundles the post-insertion pass shared by every comment-body
+renderer: blockquote face, strikethrough face, code-block
+backgrounds, PR/commit/user-mention overlays (when REPO is
+provided -- PR-NUMBER additionally enables `#NN' references),
+Jira mention overlays, custom URL patterns, and generic URL
+overlays.  Centralising the calls means new renderers
+(activity-event bodies, etc.) get the same styling as inline
+comments without copy-pasting the list of post-processing steps."
+  (when (and (integer-or-marker-p body-start)
+             (integer-or-marker-p body-end)
+             (< body-start body-end))
+    (shipit--apply-blockquote-faces body-start body-end)
+    (shipit--apply-strikethrough-faces body-start body-end)
+    (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
+      (shipit--apply-code-block-backgrounds-in-region body-start body-end))
+    (when (and repo pr-number (fboundp 'shipit--create-pr-reference-overlays))
+      (shipit--create-pr-reference-overlays repo pr-number body-start body-end))
+    (when (and repo (fboundp 'shipit--create-commit-sha-overlays))
+      (shipit--create-commit-sha-overlays repo body-start body-end))
+    (when (and repo (fboundp 'shipit--create-user-mention-overlays))
+      (shipit--create-user-mention-overlays repo body-start body-end))
+    (when (fboundp 'shipit--create-jira-mention-overlays)
+      (shipit--create-jira-mention-overlays body-start body-end))
+    (when (fboundp 'shipit--create-custom-url-overlays)
+      (shipit--create-custom-url-overlays body-start body-end))
+    (when (fboundp 'shipit--create-generic-url-overlays)
+      (shipit--create-generic-url-overlays body-start body-end))))
+
 (defconst shipit--suggestion-placeholder-prefix "SHIPITSUGGESTBLOCK"
   "Prefix for suggestion placeholders in comment body processing.")
 

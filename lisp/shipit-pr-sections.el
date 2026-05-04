@@ -4056,7 +4056,14 @@ This function adds 3 to create child indent (default 0 → margin 3)."
       (when has-body
         (magit-insert-section-body
           ;; Insert activity body with support for markdown tables and GFM details blocks
-          (shipit--insert-body-with-details body (+ (or indent 0) 3))))
+          (let ((body-start (point)))
+            (shipit--insert-body-with-details body (+ (or indent 0) 3))
+            ;; Apply the same decorations comment bodies get -- blockquote /
+            ;; strikethrough faces, code-block backgrounds, PR / commit /
+            ;; user-mention / Jira / URL overlays.  Without this the activity
+            ;; body renders as raw text (no `>'-line styling, no link
+            ;; overlays).
+            (shipit--apply-comment-body-decorations body-start (point) repo pr-number))))
 
       ;; Add text properties for navigation
       (add-text-properties start (point)

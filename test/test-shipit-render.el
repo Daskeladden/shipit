@@ -953,5 +953,33 @@ THEN one overlay covers the visible chars on each line, skipping the
         (should (= 14 (car l2)))
         (should (= end (cdr l2)))))))
 
+(ert-deftest test-shipit--apply-comment-body-decorations-blockquote ()
+  "GIVEN a buffer with a `> '-prefixed blockquote line
+WHEN `shipit--apply-comment-body-decorations' decorates the region
+THEN `shipit-blockquote-face' lives on `font-lock-face' across the
+     line -- so activity-body callers (notifications buffer,
+     PR-buffer activity timeline) get the same blockquote styling
+     the comment renderer applies."
+  (with-temp-buffer
+    (insert "> quoted text\nplain\n")
+    (shipit--apply-comment-body-decorations (point-min) (point-max))
+    (let ((flf (get-text-property (point-min) 'font-lock-face)))
+      (should flf)
+      (should (or (eq flf 'shipit-blockquote-face)
+                  (and (listp flf)
+                       (memq 'shipit-blockquote-face flf)))))))
+
+(ert-deftest test-shipit--apply-comment-body-decorations-noop-empty-region ()
+  "GIVEN BODY-START equal to BODY-END (e.g. activity body inserted nothing)
+WHEN `shipit--apply-comment-body-decorations' is invoked
+THEN it returns silently without touching the buffer or signalling --
+     decorators must tolerate empty bodies for activity events that
+     have no body text (label, assigned, force-pushed, ...)."
+  (with-temp-buffer
+    (insert "untouched\n")
+    (let ((before (buffer-string)))
+      (shipit--apply-comment-body-decorations (point-min) (point-min))
+      (should (string= before (buffer-string))))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

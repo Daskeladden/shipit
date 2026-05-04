@@ -3803,6 +3803,22 @@ EXTRA-PROPS-FN is called at point on the reactions line and returns extra props 
        (message "Failed to fetch repository labels: %s" (error-message-string err))
        nil))))
 
+(defun shipit--fetch-github-repo-label-names (repo)
+  "Return the list of label names defined on GitHub REPO (\"owner/name\").
+Cached via the etag helper so repeated calls within a poll
+cycle (e.g. during completion across many repos) reuse the
+HTTP response body."
+  (let ((endpoint (format "/repos/%s/labels?per_page=100" repo)))
+    (condition-case err
+        (let* ((result (shipit-gh-etag-get-json-with-refresh-cache
+                        endpoint nil shipit-github-token))
+               (json (and result (plist-get result :json))))
+          (delq nil (mapcar (lambda (l) (cdr (assq 'name l))) json)))
+      (error
+       (when (fboundp 'shipit--debug-log)
+         (shipit--debug-log "fetch-github-repo-label-names %s failed: %S" repo err))
+       nil))))
+
 (defun shipit--add-label-to-pr (pr-number label-name)
   "Add LABEL-NAME to PR with PR-NUMBER."
   (unless (shipit--ensure-repository)

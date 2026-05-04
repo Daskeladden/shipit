@@ -1249,7 +1249,9 @@ Fetches all PR metadata in a single request grouped by repo."
 PR-BY-REPO is a hash table of repo-name → list of PR numbers.
 Includes `viewer { login }' so `shipit--apply-pr-enrichment'
 can compute the per-activity `is-author' flag without an
-extra round-trip."
+extra round-trip.  Also fetches `labels(first: 50)' so the
+`:label' auto-mark predicate works for GitHub PRs without a
+second round-trip per PR."
   (let ((repo-queries '())
         (repo-idx 0))
     (maphash
@@ -1259,7 +1261,7 @@ extra round-trip."
               (name (cadr parts))
               (pr-fields (mapconcat
                           (lambda (num)
-                            (format "p%d: pullRequest(number: %d) { isDraft state author { login avatarUrl } }"
+                            (format "p%d: pullRequest(number: %d) { isDraft state author { login avatarUrl } labels(first: 50) { nodes { name } } }"
                                     num num))
                           numbers "\n    ")))
          (push (format "r%d: repository(owner: \"%s\", name: \"%s\") {\n    %s\n  }"
@@ -1294,6 +1296,10 @@ fire on incomplete data."
                     (author-obj (cdr (assq 'author pr-data)))
                     (author (when author-obj (cdr (assq 'login author-obj))))
                     (avatar-url (when author-obj (cdr (assq 'avatarUrl author-obj))))
+                    (label-nodes (cdr (assq 'nodes (cdr (assq 'labels pr-data)))))
+                    (labels (delq nil
+                                  (mapcar (lambda (n) (cdr (assq 'name n)))
+                                          (append label-nodes nil))))
                     (activity-key (shipit--notification-activity-key repo "pr" number))
                     (activity (gethash activity-key shipit--notification-pr-activities)))
                (when (and activity pr-data)
@@ -1303,6 +1309,7 @@ fire on incomplete data."
                    (push (cons 'pr-state (downcase (or state ""))) enriched)
                    (push (cons 'pr-author author) enriched)
                    (push (cons 'pr-avatar-url avatar-url) enriched)
+                   (push (cons 'labels labels) enriched)
                    (when (and viewer-login author)
                      (push (cons 'is-author
                                  (string-equal-ignore-case viewer-login author))
@@ -1334,6 +1341,9 @@ Available condition keys:
   :reason        GitHub reason string (subscribed, mention, etc.).
   :title         regex tested against the activity's `subject'.
   :repo          OWNER/REPO slug, case-insensitive.
+  :label         match if the activity\='s labels include the
+                 given string (case-insensitive).  Activities
+                 without any labels never match.
   :i-am-author   t or nil — match PRs whose author IS / IS NOT
                  the authenticated viewer (resolved during PR
                  enrichment via `viewer.login' alongside the
@@ -1373,6 +1383,7 @@ through unaffected."
                                 (const :title)
                                 (const :repo)
                                 (const :number)
+                                (const :label)
                                 (const :i-am-author)
                                 (const :not))
                         :value-type sexp))
@@ -1568,6 +1579,13 @@ activities whose title does not contain \"mythos\"."
             (cl-some (lambda (c)
                        (and (stringp c) (string-equal-ignore-case c val)))
                      comps))))
+    (:label
+     (let ((labels (cdr (assq 'labels activity))))
+       (and labels
+            (stringp val)
+            (cl-some (lambda (l)
+                       (and (stringp l) (string-equal-ignore-case l val)))
+                     labels))))
     (:number (let ((number (cdr (assq 'number activity))))
                (and (integerp number)
                     (integerp val)

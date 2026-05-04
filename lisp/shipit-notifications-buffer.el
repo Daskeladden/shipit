@@ -2795,6 +2795,13 @@ itself a single-condition sub-rule read recursively."
      (shipit-notifications-buffer--read-title-regex-with-preview))
     (:draft
      (intern (completing-read "Draft: " '("t" "nil") nil t)))
+    (:label
+     (let ((cands (shipit-notifications-buffer--candidate-labels)))
+       (completing-read "Label: " cands nil nil)))
+    (:i-am-author
+     (intern (completing-read "I am the author? " '("t" "nil") nil t)))
+    (:number
+     (read-number "Number: "))
     (:not
      (shipit-notifications-buffer--read-auto-mark-condition
       "Negate condition: " nil))))
@@ -2805,7 +2812,8 @@ PROMPT is shown for the key choice.  When INCLUDE-NOT is non-nil,
 `:not' is offered as a key option; selecting it recursively reads
 an inner condition (no further nesting)."
   (let* ((keys (append '(":state" ":type" ":repo" ":reason"
-                         ":jira-component" ":title" ":draft")
+                         ":jira-component" ":label" ":title" ":draft"
+                         ":number" ":i-am-author")
                        (and include-not '(":not"))))
          (chosen (completing-read (or prompt "Condition: ") keys nil t))
          (key (intern chosen))
@@ -2813,53 +2821,65 @@ an inner condition (no further nesting)."
     (list key value)))
 
 (defun shipit-notifications-buffer-add-auto-mark-rule ()
-  "Add an auto-mark rule via a guided minibuffer flow.
-Prompts for one condition at a time and keeps prompting (with a
-y-or-n confirmation) until you decline; all collected conditions
-end up in the same rule plist and are combined with AND when the
-matcher evaluates the rule.
+  "Add one or more auto-mark rules via a guided minibuffer flow.
+Inner loop: prompt for conditions one at a time and keep
+prompting (with a y-or-n confirmation) until you decline; all
+collected conditions end up in the same rule plist and are
+AND-combined.
 
-Per-condition keys: `:state', `:type', `:repo', `:reason', `:title',
-`:draft', `:not'.  Choosing `:not' recursively prompts for an inner
-condition (one level deep), producing a sub-form like
-\(:not (:title \"mythos\")) that matches activities where the
-inner condition does NOT match.  For `:title' the regex input
-shows live overlay preview in the notifications buffer.
+Outer loop: when the inner loop finishes a rule, ask whether
+to add another rule (OR-combined with the rest) -- because
+auto-mark rules at the top of the list combine via OR at apply
+time, sibling rules let you express \"missing label A OR
+missing label B\" cleanly without nesting.
 
-Saves the rule and applies it immediately so any matching
-notifications are marked as read in this buffer without waiting
-for the next poll."
+Per-condition keys: `:state\=', `:type\=', `:repo\=', `:reason\=',
+`:title\=', `:draft\=', `:label\=', `:jira-component\=', `:i-am-author\=',
+`:number\=', `:not\='.  `:not\=' recursively reads an inner
+condition (one level deep), producing
+`(:not (:title \"mythos\"))\=' style sub-forms.  For `:title\='
+the regex input shows live strike-through preview in the
+notifications buffer.
+
+Saves the new rule(s) and applies them immediately so any
+matching notifications get marked as read without waiting for
+the next poll cycle."
   (interactive)
-  (let ((conds nil)
-        (more t)
-        (n 0))
-    (while more
-      (cl-incf n)
-      (let* ((prompt (if (= n 1) "Condition: "
-                       (format "Condition #%d: " n)))
-             (cond (shipit-notifications-buffer--read-auto-mark-condition
-                    prompt t))
-             (k (car cond))
-             (v (cadr cond)))
-        (when (or v (eq k :draft) (eq k :not))
-          (setq conds (append conds cond)))
-        (setq more (y-or-n-p "Add another condition (AND)? "))))
-    (when conds
+  (let ((added '())
+        (more-rules t))
+    (while more-rules
+      (let ((conds nil)
+            (more-conds t)
+            (n 0))
+        (while more-conds
+          (cl-incf n)
+          (let* ((prompt (if (= n 1) "Condition: "
+                           (format "Condition #%d: " n)))
+                 (cond (shipit-notifications-buffer--read-auto-mark-condition
+                        prompt t))
+                 (k (car cond))
+                 (v (cadr cond)))
+            (when (or v (eq k :draft) (eq k :not))
+              (setq conds (append conds cond)))
+            (setq more-conds (y-or-n-p "Add another condition (AND)? "))))
+        (when conds (push conds added)))
+      (setq more-rules (y-or-n-p "Add another rule (OR with the previous)? ")))
+    (setq added (nreverse added))
+    (when added
       (let ((existing shipit-notifications-auto-mark-read-rules))
         (shipit-notifications--save-auto-mark-rules
-         (append existing (list conds)))
-        ;; Apply immediately so the user sees the rule take effect
-        ;; without waiting for the next poll cycle.
+         (append existing added))
         (let ((n (and (fboundp 'shipit--auto-mark-rules-apply)
                       (shipit--auto-mark-rules-apply))))
-          (message "Added auto-mark rule: %S (%s)"
-                   conds
+          (message "Added %d auto-mark rule%s (%s): %S"
+                   (length added) (if (= (length added) 1) "" "s")
                    (cond
                     ((and n (> n 0))
                      (format "marked %d notification%s as read"
                              n (if (= n 1) "" "s")))
                     (n "no notifications matched yet")
-                    (t "saved"))))
+                    (t "saved"))
+                   added))
         (when (fboundp 'shipit--rerender-notifications-buffer-if-visible)
           (shipit--rerender-notifications-buffer-if-visible))
         (when (get-buffer-window "*shipit-auto-mark-rules*" t)
@@ -3565,6 +3585,41 @@ With prefix ARG, instead clear the repo exclusion list."
     (setq shipit-notifications-buffer--current-page 1)
     (message "Repo selector cleared")
     (shipit-notifications-buffer-refresh))))
+
+(defun shipit-notifications-buffer--candidate-labels ()
+  "Return sorted distinct labels for completion.
+Combines two sources:
+1. Labels present on currently-loaded activities (any backend).
+2. The full per-repo label list fetched from GitHub for every
+   distinct GitHub repo represented in the inbox -- so labels
+   the user has DEFINED but no current notification carries
+   still appear as candidates.
+Jira doesn\='t expose a project-wide label-enumeration API,
+so Jira labels only contribute via source #1.  Free-form input
+remains accepted at the prompt."
+  (let ((seen (make-hash-table :test 'equal)))
+    ;; 1. Labels currently visible on any activity (cheap, no I/O).
+    (dolist (a (shipit-notifications-buffer--all-activities))
+      (dolist (l (cdr (assq 'labels a)))
+        (when (and (stringp l) (> (length l) 0))
+          (puthash l t seen))))
+    ;; 2. GitHub repo label dictionaries.  Walk distinct repos with
+    ;; a github-shaped activity (no `source\=' marker = github by
+    ;; convention; jira/rss/... activities set `source\=' explicitly).
+    (when (fboundp 'shipit--fetch-github-repo-label-names)
+      (let ((repos (make-hash-table :test 'equal)))
+        (dolist (a (shipit-notifications-buffer--all-activities))
+          (let ((repo (cdr (assq 'repo a)))
+                (source (cdr (assq 'source a))))
+            (when (and repo (null source))
+              (puthash repo t repos))))
+        (maphash
+         (lambda (repo _)
+           (dolist (name (shipit--fetch-github-repo-label-names repo))
+             (when (and (stringp name) (> (length name) 0))
+               (puthash name t seen))))
+         repos)))
+    (sort (hash-table-keys seen) #'string<)))
 
 (defun shipit-notifications-buffer--candidate-jira-components ()
   "Return sorted distinct Jira component names for completion.

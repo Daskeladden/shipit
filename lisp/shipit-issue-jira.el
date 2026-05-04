@@ -1253,12 +1253,13 @@ Returns plist (:type issue :number KEY) or nil."
 ;;; Notification Polling
 
 (defconst shipit-issue-jira--notifications-fields
-  "key,summary,status,updated,components,assignee,reporter,comment,description"
+  "key,summary,status,updated,components,labels,assignee,reporter,comment,description"
   "JQL `fields=' value used by notification polls.
-`components' enables component-based filtering; `assignee',
-`comment' and `description' feed involvement detection so each
-activity gets a real reason (mention/comment/assigned/updated);
-`reporter' surfaces the author in the expanded body.")
+`components' / `labels' enable component- / label-based
+filtering; `assignee', `comment' and `description' feed
+involvement detection so each activity gets a real reason
+(mention/comment/assigned/updated); `reporter' surfaces the
+author in the expanded body.")
 
 (defvar shipit-issue-jira--myself-cache (make-hash-table :test 'equal)
   "Cache mapping Jira base-url to the current user's account-id.
@@ -1421,6 +1422,7 @@ CONFIG provides context for display name."
          (components-raw (append (cdr (assq 'components fields)) nil))
          (components (delq nil (mapcar (lambda (c) (cdr (assq 'name c)))
                                        components-raw)))
+         (labels (append (cdr (assq 'labels fields)) nil))
          (latest-activity (shipit-issue-jira--extract-last-activity issue))
          (author (or (plist-get latest-activity :author)
                      (cdr (assq 'displayName (cdr (assq 'reporter fields))))))
@@ -1459,6 +1461,7 @@ CONFIG provides context for display name."
       (backend-id . jira)
       (backend-config . ,config)
       (jira-components . ,components)
+      (labels . ,labels)
       (author . ,author)
       (state . ,status-name)
       (status-category . ,status-category)

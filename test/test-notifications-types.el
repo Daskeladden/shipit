@@ -1358,6 +1358,47 @@ THEN only activities with that internal type match."
     (should-not (shipit--auto-mark-rule-matches-activity-p
                  rule '((type . "pr"))))))
 
+(ert-deftest test-shipit--auto-mark-rule-label-condition ()
+  "GIVEN rule (:label \"firmware\")
+WHEN matched against an activity carrying that label
+THEN the match fires (case-insensitive); activities without
+     the label, or without any labels at all, do not match."
+  (let ((rule '(:label "firmware")))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((labels . ("Firmware" "Bug")))))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((labels . ("FIRMWARE")))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((labels . ("Bug")))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p rule '()))))
+
+(ert-deftest test-shipit--auto-mark-rule-label-absence-via-not ()
+  "GIVEN rule (:not (:label \"review\"))
+WHEN matched against activities with various label sets
+THEN it fires when the label is absent and is silent when
+     present.  Combined with sibling conditions in the same
+     rule (AND) the user can require multiple labels missing."
+  (let ((rule '(:not (:label "review"))))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((labels . ("bug")))))
+    (should (shipit--auto-mark-rule-matches-activity-p rule '()))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((labels . ("review")))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((labels . ("bug" "review"))))))
+  ;; Compose: hide noise on PRs that lack BOTH "blocker" and "hotfix".
+  (let ((rule '(:reason "subscribed"
+                :not (:label "blocker")
+                :not (:label "hotfix"))))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((reason . "subscribed") (labels . ("docs")))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((reason . "subscribed") (labels . ("blocker")))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((reason . "subscribed") (labels . ("hotfix")))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((reason . "mention") (labels . ("docs")))))))
+
 (ert-deftest test-shipit--auto-mark-rule-reason-condition ()
   "GIVEN a :reason rule
 WHEN matched

@@ -99,6 +99,33 @@ Returns non-nil if state was restored."
   "Clear saved draft state for current buffer."
   (remhash (shipit-issue-create--draft-key) shipit-issue-create--drafts))
 
+(defun shipit-issue-create--apply-defaults ()
+  "Pre-fill any unset draft fields from `:create-defaults\=' on the resolved config.
+Reads an alist of (FIELD-NAME . VALUE) keyed off the buffer\='s
+backend-config plist.  Skips fields that already carry a value
+\(from draft restoration or earlier in this session) so the
+user\='s in-progress edits never get overwritten.  Recognised
+field names: `title\=', `body\=', `issue-type\=', `labels\=',
+`assignees\=', `components\='."
+  (let ((defaults (plist-get shipit-issue-create--config :create-defaults)))
+    (when defaults
+      (dolist (entry defaults)
+        (let ((name (car entry))
+              (value (cdr entry)))
+          (pcase name
+            ('title (unless shipit-issue-create--title
+                      (setq shipit-issue-create--title value)))
+            ('body (unless shipit-issue-create--body
+                     (setq shipit-issue-create--body value)))
+            ('issue-type (unless shipit-issue-create--issue-type
+                           (setq shipit-issue-create--issue-type value)))
+            ('labels (unless shipit-issue-create--labels
+                       (setq shipit-issue-create--labels value)))
+            ('assignees (unless shipit-issue-create--assignees
+                          (setq shipit-issue-create--assignees value)))
+            ('components (unless shipit-issue-create--components
+                           (setq shipit-issue-create--components value)))))))))
+
 ;;; Mode and keymap
 
 (defvar shipit-issue-create-mode-map nil
@@ -486,6 +513,7 @@ return the wrong context."
             shipit-issue-create--config config
             shipit-issue-create--field-descriptors fields)
       (shipit-issue-create--restore-draft)
+      (shipit-issue-create--apply-defaults)
       (shipit-issue-create--refresh))
     (switch-to-buffer buf-name)))
 

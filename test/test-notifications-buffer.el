@@ -737,6 +737,233 @@ the change persists across sessions."
       (should (equal shipit-notifications-auto-mark-read-rules
                      '((:state merged) (:title "x")))))))
 
+(ert-deftest test-shipit-notifications-buffer--candidate-paths ()
+  "GIVEN activities carrying `files\=' lists from PR enrichment
+WHEN `--candidate-paths\=' runs
+THEN the result is sorted distinct, includes every literal file
+     path AND a leading-directory anchor for each (so the user
+     can pick `^fpga/\=' or `^src/\=' from completion without
+     typing the regex from scratch)."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "k1"
+             '((files . ("fpga/foo.v" "fpga/bar.sv" "doc/x.md")))
+             shipit--notification-pr-activities)
+    (puthash "k2"
+             '((files . ("src/main.cpp" "src/util.cpp")))
+             shipit--notification-pr-activities)
+    (puthash "k3" '() shipit--notification-pr-activities)
+    (let ((result (shipit-notifications-buffer--candidate-paths)))
+      (should (equal result (sort (copy-sequence result) #'string<)))
+      (should (equal (length result)
+                     (length (delete-dups (copy-sequence result)))))
+      (should (member "fpga/foo.v" result))
+      (should (member "src/main.cpp" result))
+      (should (member "doc/x.md" result))
+      (should (member "^fpga/" result))
+      (should (member "^src/" result))
+      (should (member "^doc/" result)))))
+
+(ert-deftest test-shipit-notifications-buffer--candidate-paths-empty-when-unenriched ()
+  "GIVEN activities without a `files\=' alist key (unenriched / non-PR)
+  AND no GitHub repo dirs surface from the network stub
+WHEN `--candidate-paths\=' runs
+THEN an empty list is returned -- the regex prompt still accepts
+     free-form input, but completion offers nothing rather than
+     surfacing irrelevant activity fields."
+  (cl-letf (((symbol-function 'shipit--fetch-github-repo-toplevel-dirs)
+             (lambda (_repo) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+      (puthash "k1" '((repo . "x/y") (reason . "subscribed"))
+               shipit--notification-pr-activities)
+      (should (null (shipit-notifications-buffer--candidate-paths))))))
+
+(ert-deftest test-shipit-notifications-buffer--candidate-paths-from-github-repo-dirs ()
+  "GIVEN activities scoped to a GitHub repo (no `source\=' marker)
+  AND `shipit--fetch-github-repo-toplevel-dirs\=' returns the repo\='s
+     top-level directories
+WHEN `--candidate-paths\=' runs
+THEN every returned directory shows up as an `^NAME/\=' anchor in
+     candidates, even if no current PR enrichment touched it --
+     so users authoring a fresh `:path\=' rule can pick `fpga/\=' /
+     `firmware/\=' even when those areas aren\='t under any open PR."
+  (cl-letf (((symbol-function 'shipit--fetch-github-repo-toplevel-dirs)
+             (lambda (_repo) '("fpga" "firmware" "common" "src"))))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+      (puthash "k1" '((repo . "owner/r") (reason . "subscribed"))
+               shipit--notification-pr-activities)
+      (let ((result (shipit-notifications-buffer--candidate-paths)))
+        (should (member "^fpga/" result))
+        (should (member "^firmware/" result))
+        (should (member "^common/" result))
+        (should (member "^src/" result))
+        (should (equal result (sort (copy-sequence result) #'string<)))))))
+
+(ert-deftest test-shipit-notifications-buffer--candidate-paths-skip-non-github ()
+  "GIVEN a Jira-source activity (carries `(source . jira)\=')
+WHEN `--candidate-paths\=' runs
+THEN no GitHub fetch is attempted for it -- Jira issues don\='t
+     have a path tree to enumerate."
+  (let (calls)
+    (cl-letf (((symbol-function 'shipit--fetch-github-repo-toplevel-dirs)
+               (lambda (repo) (push repo calls) nil)))
+      (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+        (puthash "k1" '((repo . "PRJ") (source . jira)
+                       (reason . "updated"))
+                 shipit--notification-pr-activities)
+        (shipit-notifications-buffer--candidate-paths)
+        (should-not calls)))))
+
+(ert-deftest test-shipit-notifications-buffer--path-input->dir-extracts-anchored-path ()
+  "GIVEN INPUT strings the user typed in the `:path\=' completing-read
+WHEN `--path-input->dir\=' parses them
+THEN only `^DIR/\=' / `^DIR/SUB/\=' inputs return the path the GitHub
+     drill-down should enumerate.  Free-form regex (`\\\\.fpga/\=', `src\=',
+     anything missing the trailing slash) returns nil so we don\='t
+     pelt the API with bogus paths."
+  (should (equal "common"
+                 (shipit-notifications-buffer--path-input->dir "^common/")))
+  (should (equal "common/foo"
+                 (shipit-notifications-buffer--path-input->dir "^common/foo/")))
+  (should (null (shipit-notifications-buffer--path-input->dir "common/")))
+  (should (null (shipit-notifications-buffer--path-input->dir "^common")))
+  (should (null (shipit-notifications-buffer--path-input->dir "")))
+  (should (null (shipit-notifications-buffer--path-input->dir "\\.fpga/"))))
+
+(ert-deftest test-shipit-notifications-buffer--path-drilldown-cands-fetches-and-caches ()
+  "GIVEN an INPUT of `^common/\=' and a REPO-FILTER
+WHEN `--path-drilldown-cands\=' runs twice with the same CACHE
+THEN the GitHub fetch is invoked exactly once (second call hits
+     cache) and the candidate list is `^common/SUB/\=' for every
+     directory under common."
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'shipit--fetch-github-repo-subdirs)
+               (lambda (_repo path)
+                 (cl-incf calls)
+                 (cond ((equal path "common") '("foo" "bar"))
+                       (t nil)))))
+      (let ((cache (make-hash-table :test 'equal)))
+        (let ((first (shipit-notifications-buffer--path-drilldown-cands
+                      "^common/" "owner/r" cache)))
+          (should (member "^common/foo/" first))
+          (should (member "^common/bar/" first)))
+        (let ((second (shipit-notifications-buffer--path-drilldown-cands
+                       "^common/" "owner/r" cache)))
+          (should (member "^common/foo/" second))
+          (should (= calls 1)))))))
+
+(ert-deftest test-shipit-notifications-buffer--path-drilldown-skips-without-repo-filter ()
+  "GIVEN no REPO-FILTER (multi-repo inbox / unscoped rule)
+WHEN `--path-drilldown-cands\=' is invoked
+THEN no fetch happens -- there is no canonical repo to query."
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'shipit--fetch-github-repo-subdirs)
+               (lambda (&rest _args) (cl-incf calls) nil)))
+      (let ((cache (make-hash-table :test 'equal)))
+        (should (null (shipit-notifications-buffer--path-drilldown-cands
+                       "^common/" nil cache)))
+        (should (= calls 0))))))
+
+(ert-deftest test-shipit-notifications-buffer--read-path-via-consult-fd-returns-relative ()
+  "GIVEN `consult-fd\=' is bound and a repo checkout is located
+WHEN the user picks a file via `consult-fd\=' (simulated by
+     calling `find-file\=' with an absolute path inside ROOT)
+THEN `--read-path-via-consult-fd\=' returns the path RELATIVE to
+     ROOT -- so the captured value is suitable as a `:path\='
+     regex anchor (`src/main.cpp\=', not the absolute checkout
+     prefix)."
+  (let ((tmp (make-temp-file "shipit-fd-test" t)))
+    (unwind-protect
+        (let ((picked-abs (expand-file-name "src/main.cpp" tmp)))
+          (cl-letf (((symbol-function 'consult-fd)
+                     (lambda (&optional _root &rest _)
+                       (find-file picked-abs)))
+                    ((symbol-function
+                      'shipit-notifications-buffer--locate-repo-checkout)
+                     (lambda (_repo) tmp)))
+            (let ((shipit-notifications-buffer-path-picker-prefer-consult-fd t))
+              (should
+               (equal "src/main.cpp"
+                      (shipit-notifications-buffer--read-path-via-consult-fd
+                       "owner/r"))))))
+      (delete-directory tmp t))))
+
+(ert-deftest test-shipit-notifications-buffer--read-path-via-consult-fd-disabled-returns-nil ()
+  "GIVEN the user opts out via the customisation flag
+WHEN `--read-path-via-consult-fd\=' is invoked
+THEN nil is returned without invoking `consult-fd\=' -- so the
+     wizard falls through to the static drill-down flow."
+  (let ((called nil))
+    (cl-letf (((symbol-function 'consult-fd)
+               (lambda (&rest _) (setq called t))))
+      (let ((shipit-notifications-buffer-path-picker-prefer-consult-fd nil))
+        (should (null (shipit-notifications-buffer--read-path-via-consult-fd
+                       "owner/r")))
+        (should-not called)))))
+
+(ert-deftest test-shipit-notifications-buffer--read-path-via-consult-fd-no-fboundp ()
+  "GIVEN `consult-fd\=' isn\='t bound
+WHEN `--read-path-via-consult-fd\=' is invoked
+THEN nil is returned and no error fires -- the wizard falls
+     through cleanly to the static flow."
+  (cl-letf (((symbol-function 'fboundp)
+             (lambda (sym) (and (not (eq sym 'consult-fd))
+                                (funcall (symbol-function 'fboundp) sym)))))
+    nil)
+  (should (null (shipit-notifications-buffer--read-path-via-consult-fd
+                 "nonexistent-repo-no-clone-zzz"))))
+
+(ert-deftest test-shipit-notifications-buffer--candidate-paths-repo-filter ()
+  "GIVEN multiple GitHub repos in the inbox carrying enrichment files
+WHEN `--candidate-paths\=' is called with REPO-FILTER set to one of them
+THEN ONLY that repo\='s top-level dirs are fetched and ONLY its
+     activity files contribute candidates -- so the wizard\='s
+     `:path\=' completion stays focused on the repo the rule pinned
+     via `:repo\='."
+  (let ((fetched-for nil))
+    (cl-letf (((symbol-function 'shipit--fetch-github-repo-toplevel-dirs)
+               (lambda (repo)
+                 (push repo fetched-for)
+                 (cond ((string= repo "owner/a") '("alpha" "beta"))
+                       ((string= repo "owner/b") '("gamma" "delta"))))))
+      (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+        (puthash "k1" '((repo . "owner/a") (files . ("alpha/foo.c")))
+                 shipit--notification-pr-activities)
+        (puthash "k2" '((repo . "owner/b") (files . ("gamma/bar.c")))
+                 shipit--notification-pr-activities)
+        (let ((result (shipit-notifications-buffer--candidate-paths "owner/a")))
+          (should (member "^alpha/" result))
+          (should (member "^beta/" result))
+          (should (member "alpha/foo.c" result))
+          (should-not (member "^gamma/" result))
+          (should-not (member "^delta/" result))
+          (should-not (member "gamma/bar.c" result))
+          (should (equal fetched-for '("owner/a"))))))))
+
+(ert-deftest test-shipit-notifications-buffer--candidate-labels-repo-filter ()
+  "GIVEN multiple GitHub repos in the inbox carrying activity labels
+WHEN `--candidate-labels\=' is called with REPO-FILTER for one repo
+THEN both the activity label sweep and the repo-label-name fetch
+     are scoped to that repo -- avoiding leak from sibling repos
+     when the rule already pins `:repo\='."
+  (let ((fetched-for nil))
+    (cl-letf (((symbol-function 'shipit--fetch-github-repo-label-names)
+               (lambda (repo)
+                 (push repo fetched-for)
+                 (cond ((string= repo "owner/a") '("a-only" "shared"))
+                       ((string= repo "owner/b") '("b-only" "shared"))))))
+      (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+        (puthash "k1" '((repo . "owner/a") (labels . ("a-activity")))
+                 shipit--notification-pr-activities)
+        (puthash "k2" '((repo . "owner/b") (labels . ("b-activity")))
+                 shipit--notification-pr-activities)
+        (let ((result (shipit-notifications-buffer--candidate-labels "owner/a")))
+          (should (member "a-only" result))
+          (should (member "shared" result))
+          (should (member "a-activity" result))
+          (should-not (member "b-only" result))
+          (should-not (member "b-activity" result))
+          (should (equal fetched-for '("owner/a"))))))))
+
 (ert-deftest test-shipit-notifications-buffer--candidate-reasons-sorted-distinct ()
   "GIVEN activities with various reasons in the global hash
 WHEN `--candidate-reasons' runs

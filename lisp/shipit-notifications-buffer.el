@@ -2795,56 +2795,94 @@ or the third-party `visual-regexp' package."
         (with-current-buffer original-buffer
           (shipit-notifications-buffer--clear-auto-mark-preview))))))
 
-(defun shipit-notifications-buffer--read-auto-mark-value (key)
+(defun shipit-notifications-buffer--partial-rule-repo (partial-rule)
+  "Return the `:repo' value already chosen in PARTIAL-RULE, or nil.
+PARTIAL-RULE is the flat plist of conditions accumulated so far
+in the wizard.  Used by `--read-auto-mark-value' to scope
+follow-on `:label' / `:path' completion to the repository the
+rule has already pinned -- otherwise candidates from sibling
+repos in the inbox drown out the relevant options."
+  (when partial-rule
+    (let ((repo (plist-get partial-rule :repo)))
+      (and (stringp repo) (> (length repo) 0) repo))))
+
+(defun shipit-notifications-buffer--read-auto-mark-value (key &optional partial-rule)
   "Read a value for condition KEY with key-appropriate completion.
 Returns the value (correctly typed for the rule plist).  KEY is
 one of the auto-mark condition keywords.  For `:not' the value is
-itself a single-condition sub-rule read recursively."
-  (pcase key
-    (:state
-     (intern (completing-read
-              "State: " '("merged" "closed" "open" "draft") nil t)))
-    (:type
-     (let ((cands (shipit-notifications-buffer--candidate-types)))
-       (completing-read "Type: " cands nil t)))
-    (:repo
-     (let ((cands (shipit-notifications-buffer--candidate-repos)))
-       (completing-read "Repo: " cands nil t)))
-    (:reason
-     (let ((cands (shipit-notifications-buffer--candidate-reasons)))
-       (completing-read "Reason: " cands nil t)))
-    (:jira-component
-     (let ((cands (shipit-notifications-buffer--candidate-jira-components)))
-       (completing-read "Jira component: " cands nil nil)))
-    (:title
-     (shipit-notifications-buffer--read-title-regex-with-preview))
-    (:draft
-     (intern (completing-read "Draft: " '("t" "nil") nil t)))
-    (:label
-     (let ((cands (shipit-notifications-buffer--candidate-labels)))
-       (completing-read "Label: " cands nil nil)))
-    (:i-am-author
-     (intern (completing-read "I am the author? " '("t" "nil") nil t)))
-    (:reply-to-me
-     (intern (completing-read "Reply-to-me? " '("t" "nil") nil t)))
-    (:number
-     (read-number "Number: "))
-    (:not
-     (shipit-notifications-buffer--read-auto-mark-condition
-      "Negate condition: " nil))))
+itself a single-condition sub-rule read recursively.
 
-(defun shipit-notifications-buffer--read-auto-mark-condition (prompt include-not)
+When PARTIAL-RULE is non-nil it carries the conditions already
+chosen in this wizard pass; readers that benefit from
+repo-scoped completion (`:label\\=', `:path\\=') consult its
+`:repo\\=' to narrow candidates."
+  (let ((repo-filter
+         (shipit-notifications-buffer--partial-rule-repo partial-rule)))
+    (pcase key
+      (:state
+       (intern (completing-read
+                "State: " '("merged" "closed" "open" "draft") nil t)))
+      (:type
+       (let ((cands (shipit-notifications-buffer--candidate-types)))
+         (completing-read "Type: " cands nil t)))
+      (:repo
+       (let ((cands (shipit-notifications-buffer--candidate-repos)))
+         (completing-read "Repo: " cands nil t)))
+      (:reason
+       (let ((cands (shipit-notifications-buffer--candidate-reasons)))
+         (completing-read "Reason: " cands nil t)))
+      (:jira-component
+       (let ((cands (shipit-notifications-buffer--candidate-jira-components)))
+         (completing-read "Jira component: " cands nil nil)))
+      (:title
+       (shipit-notifications-buffer--read-title-regex-with-preview))
+      (:draft
+       (intern (completing-read "Draft: " '("t" "nil") nil t)))
+      (:label
+       (let* ((cands (shipit-notifications-buffer--candidate-labels repo-filter))
+              (prompt (if repo-filter
+                          (format "Label (in %s): " repo-filter)
+                        "Label: ")))
+         (completing-read prompt cands nil nil)))
+      (:path
+       (or (shipit-notifications-buffer--read-path-via-consult-fd repo-filter)
+           (let* ((static (shipit-notifications-buffer--candidate-paths repo-filter))
+                  (table (shipit-notifications-buffer--path-completion-table
+                          static repo-filter))
+                  (prompt
+                   (if repo-filter
+                       (format "Path regex (in %s; TAB drills down): "
+                               repo-filter)
+                     "Path regex (TAB drills down; free-form regex OK): ")))
+             (completing-read prompt table nil nil))))
+      (:i-am-author
+       (intern (completing-read "I am the author? " '("t" "nil") nil t)))
+      (:reply-to-me
+       (intern (completing-read "Reply-to-me? " '("t" "nil") nil t)))
+      (:number
+       (read-number "Number: "))
+      (:not
+       (shipit-notifications-buffer--read-auto-mark-condition
+        "Negate condition: " nil partial-rule)))))
+
+(defun shipit-notifications-buffer--read-auto-mark-condition (prompt include-not &optional partial-rule)
   "Read one (KEY VALUE) condition from the minibuffer and return it as a list.
 PROMPT is shown for the key choice.  When INCLUDE-NOT is non-nil,
 `:not' is offered as a key option; selecting it recursively reads
-an inner condition (no further nesting)."
+an inner condition (no further nesting).
+
+PARTIAL-RULE is the rule plist accumulated so far in this wizard
+pass -- forwarded to `--read-auto-mark-value' so value readers
+can scope completion (e.g. `:label\\=' candidates filtered by an
+already-set `:repo\\=')."
   (let* ((keys (append '(":state" ":type" ":repo" ":reason"
-                         ":jira-component" ":label" ":title" ":draft"
+                         ":jira-component" ":label" ":path" ":title" ":draft"
                          ":number" ":i-am-author" ":reply-to-me")
                        (and include-not '(":not"))))
          (chosen (completing-read (or prompt "Condition: ") keys nil t))
          (key (intern chosen))
-         (value (shipit-notifications-buffer--read-auto-mark-value key)))
+         (value (shipit-notifications-buffer--read-auto-mark-value
+                 key partial-rule)))
     (list key value)))
 
 (defun shipit-notifications-buffer-add-auto-mark-rule ()
@@ -2883,7 +2921,7 @@ the next poll cycle."
           (let* ((prompt (if (= n 1) "Condition: "
                            (format "Condition #%d: " n)))
                  (cond (shipit-notifications-buffer--read-auto-mark-condition
-                        prompt t))
+                        prompt t conds))
                  (k (car cond))
                  (v (cadr cond)))
             (when (or v (eq k :draft) (eq k :not))
@@ -3613,7 +3651,179 @@ With prefix ARG, instead clear the repo exclusion list."
     (message "Repo selector cleared")
     (shipit-notifications-buffer-refresh))))
 
-(defun shipit-notifications-buffer--candidate-labels ()
+(defcustom shipit-notifications-buffer-path-picker-prefer-consult-fd t
+  "Whether the `:path\=' wizard prefers `consult-fd\=' when available.
+When non-nil and `consult-fd\=' is bound, picking `:path\=' opens
+`consult-fd\=' rooted in a local clone of the rule\='s `:repo\=' (or
+falls back to `default-directory\=' when no clone is located).
+Set to nil to always use the static `completion-table-dynamic\='
+flow regardless of consult availability."
+  :type 'boolean
+  :group 'shipit)
+
+(defun shipit-notifications-buffer--locate-repo-checkout (repo)
+  "Return a local clone directory for REPO (\"owner/name\"), or nil.
+Walks magit\='s known-repos list and matches the first directory
+whose `origin\=' remote URL contains REPO.  Returns nil when
+REPO is empty, when magit isn\='t loaded, or when no clone
+matches."
+  (when (and (stringp repo) (> (length repo) 0)
+             (fboundp 'magit-list-repos))
+    (let ((dirs (magit-list-repos)))
+      (cl-find-if
+       (lambda (dir)
+         (and (file-directory-p dir)
+              (with-temp-buffer
+                (let ((default-directory dir))
+                  (and (zerop (call-process "git" nil t nil
+                                            "remote" "get-url" "origin"))
+                       (string-match-p
+                        (regexp-quote repo) (buffer-string)))))))
+       dirs))))
+
+(defun shipit-notifications-buffer--read-path-via-consult-fd (repo-filter)
+  "Run `consult-fd\=' to pick a path; return the chosen path or nil.
+Locates a local checkout of REPO-FILTER via
+`--locate-repo-checkout\=' (defaults to `default-directory\=' when
+none is found).  Captures the chosen path by intercepting
+`find-file\=' -- `consult-fd\=' opens the file by default, but
+we just want the path string.  Returns nil on quit / cancel.
+No-op when `consult-fd\=' isn\='t available or when the user
+disabled the integration via
+`shipit-notifications-buffer-path-picker-prefer-consult-fd\='."
+  (when (and shipit-notifications-buffer-path-picker-prefer-consult-fd
+             (fboundp 'consult-fd))
+    (let ((root
+           (or (shipit-notifications-buffer--locate-repo-checkout repo-filter)
+               (and (file-directory-p default-directory) default-directory))))
+      (when root
+        (let ((picked nil))
+          (condition-case nil
+              (cl-letf (((symbol-function 'find-file)
+                         (lambda (path &rest _)
+                           (setq picked path)
+                           (throw 'shipit-path-picked path))))
+                (catch 'shipit-path-picked
+                  (let ((default-directory root))
+                    (consult-fd root))))
+            (quit nil))
+          (when (stringp picked)
+            (let ((rel (file-relative-name picked root)))
+              (if (string-prefix-p "../" rel) picked rel))))))))
+
+(defun shipit-notifications-buffer--path-input->dir (input)
+  "Return the directory portion of INPUT for `:path\=' drill-down, or nil.
+INPUT is the user\='s current `completing-read\=' text in the
+`:path\=' regex prompt.  When it matches `^DIR(/SUB)*/\=' (anchored
+at start, ending in slash), return DIR(/SUB)* with both anchors
+stripped -- that\='s the path whose contents should be enumerated
+on GitHub for the next drill-down level.  Returns nil for
+non-anchored regex input or input without a trailing slash."
+  (when (and (stringp input)
+             (string-match "\\`\\^\\([A-Za-z0-9_./-]+\\)/\\'" input))
+    (match-string 1 input)))
+
+(defun shipit-notifications-buffer--path-drilldown-cands (input repo-filter cache)
+  "Return drill-down `^PATH/SUB/\=' anchors for INPUT under REPO-FILTER.
+Looks up INPUT\='s directory via
+`--path-input->dir\='; if non-nil, fetches subdirectories via
+`shipit--fetch-github-repo-subdirs\=' (etag-cached) and returns
+each as `^DIR/SUB/\='.  CACHE is a per-completion-table hash that
+short-circuits repeat fetches when the user is just rotating
+through candidates.  No-op without REPO-FILTER -- multi-repo
+inboxes don\='t have a single repo to drill into."
+  (when (and repo-filter
+             (fboundp 'shipit--fetch-github-repo-subdirs))
+    (let ((dir (shipit-notifications-buffer--path-input->dir input)))
+      (when dir
+        (or (gethash dir cache)
+            (let* ((subdirs (shipit--fetch-github-repo-subdirs
+                             repo-filter dir))
+                   (cands (mapcar (lambda (sub)
+                                    (concat "^" dir "/" sub "/"))
+                                  subdirs)))
+              (puthash dir cands cache)
+              cands))))))
+
+(defun shipit-notifications-buffer--path-completion-table (static repo-filter)
+  "Return a dynamic completion table for `:path\=' drill-down.
+STATIC is the base candidate list (top-level dirs + activity
+files).  When the user types `^DIR/\=' the GitHub contents API
+is queried for DIR\='s subdirectories under REPO-FILTER and
+the next-level anchors are added to candidates -- so progressive
+typing walks the repo tree without blowing the wallet on a
+recursive fetch up front.  Per-prefix fetches are cached, so
+hitting TAB repeatedly at the same level re-uses the response."
+  (let ((cache (make-hash-table :test 'equal)))
+    (completion-table-dynamic
+     (lambda (input)
+       (let ((extras
+              (shipit-notifications-buffer--path-drilldown-cands
+               input repo-filter cache)))
+         (if extras
+             (append static extras)
+           static))))))
+
+(defun shipit-notifications-buffer--candidate-paths (&optional repo-filter)
+  "Return sorted distinct path candidates for the `:path\=' regex prompt.
+Combines three sources, in roughly decreasing usefulness:
+
+1. Per-repo top-level directory anchors fetched from GitHub
+   (e.g. `^src/\=', `^fpga/\=', `^common/\=') -- so users can pick
+   a generic path-area filter for the whole repo, not just paths
+   touched by currently-loaded PRs.  This is the dominant source
+   when authoring a fresh `:path\=' rule, since the relevant area
+   may not be touched by any open PR right now.
+2. Leading-directory anchors derived from PR-enrichment files
+   (`^auto-merge/\=' etc.) for any directories the GitHub
+   contents API didn\='t return (rare, but covers nested paths).
+3. Literal file paths from PR enrichment (handy when the user
+   wants to target a specific file rather than a directory).
+
+When REPO-FILTER (\"owner/name\") is non-nil, only that repo\='s
+top-level dirs are fetched and only activities matching it
+contribute file paths -- so the `:path\=' prompt stays
+focused when the rule has already pinned `:repo\='.
+
+Free-form regex remains accepted at the prompt; this is just
+completion ammunition.  GitHub fetch failures are silent --
+the function still returns whatever local data it has."
+  (let ((seen (make-hash-table :test 'equal))
+        (gh-repos (make-hash-table :test 'equal)))
+    ;; Per-repo top-level directory fetch (one HTTP call per repo,
+    ;; etag-cached).  REPO-FILTER short-circuits the survey.
+    (cond
+     (repo-filter
+      (puthash repo-filter t gh-repos))
+     (t
+      (dolist (a (shipit-notifications-buffer--all-activities))
+        (let ((repo (cdr (assq 'repo a)))
+              (source (cdr (assq 'source a))))
+          (when (and repo (null source))
+            (puthash repo t gh-repos))))))
+    (when (fboundp 'shipit--fetch-github-repo-toplevel-dirs)
+      (maphash
+       (lambda (repo _)
+         (dolist (dir (shipit--fetch-github-repo-toplevel-dirs repo))
+           (when (and (stringp dir) (> (length dir) 0))
+             (puthash (concat "^" dir "/") t seen))))
+       gh-repos))
+    ;; Activity-survey: literal file paths + their leading-directory
+    ;; anchors.  Filtered by REPO-FILTER when supplied.
+    (dolist (a (shipit-notifications-buffer--all-activities))
+      (when (or (null repo-filter)
+                (let ((repo (cdr (assq 'repo a))))
+                  (and (stringp repo)
+                       (string-equal-ignore-case repo repo-filter))))
+        (dolist (p (cdr (assq 'files a)))
+          (when (and (stringp p) (> (length p) 0))
+            (puthash p t seen)
+            (let ((slash (and (string-match "/" p) (match-end 0))))
+              (when slash
+                (puthash (concat "^" (substring p 0 slash)) t seen)))))))
+    (sort (hash-table-keys seen) #'string<)))
+
+(defun shipit-notifications-buffer--candidate-labels (&optional repo-filter)
   "Return sorted distinct labels for completion.
 Combines two sources:
 1. Labels present on currently-loaded activities (any backend).
@@ -3622,24 +3832,44 @@ Combines two sources:
    the user has DEFINED but no current notification carries
    still appear as candidates.
 Jira doesn\='t expose a project-wide label-enumeration API,
-so Jira labels only contribute via source #1.  Free-form input
-remains accepted at the prompt."
+so Jira labels only contribute via source #1.
+
+When REPO-FILTER (\"owner/name\") is non-nil, BOTH sources are
+narrowed to that repo: only activities matching it contribute
+labels, and only that repo\='s GitHub label dictionary is
+fetched.  This keeps the wizard\='s `:label\=' completion
+relevant when the rule already pins `:repo\=' to a specific
+repository -- otherwise candidates from unrelated repos drown
+out the actual options.
+
+Free-form input remains accepted at the prompt."
   (let ((seen (make-hash-table :test 'equal)))
-    ;; 1. Labels currently visible on any activity (cheap, no I/O).
+    ;; 1. Labels currently visible on activities (cheap, no I/O).
+    ;;    Filtered by REPO-FILTER when supplied.
     (dolist (a (shipit-notifications-buffer--all-activities))
-      (dolist (l (cdr (assq 'labels a)))
-        (when (and (stringp l) (> (length l) 0))
-          (puthash l t seen))))
+      (when (or (null repo-filter)
+                (let ((repo (cdr (assq 'repo a))))
+                  (and (stringp repo)
+                       (string-equal-ignore-case repo repo-filter))))
+        (dolist (l (cdr (assq 'labels a)))
+          (when (and (stringp l) (> (length l) 0))
+            (puthash l t seen)))))
     ;; 2. GitHub repo label dictionaries.  Walk distinct repos with
     ;; a github-shaped activity (no `source\=' marker = github by
     ;; convention; jira/rss/... activities set `source\=' explicitly).
+    ;; When REPO-FILTER is set, fetch ONLY that repo\='s dictionary so
+    ;; we don\='t leak labels from sibling repos in the inbox.
     (when (fboundp 'shipit--fetch-github-repo-label-names)
       (let ((repos (make-hash-table :test 'equal)))
-        (dolist (a (shipit-notifications-buffer--all-activities))
-          (let ((repo (cdr (assq 'repo a)))
-                (source (cdr (assq 'source a))))
-            (when (and repo (null source))
-              (puthash repo t repos))))
+        (cond
+         (repo-filter
+          (puthash repo-filter t repos))
+         (t
+          (dolist (a (shipit-notifications-buffer--all-activities))
+            (let ((repo (cdr (assq 'repo a)))
+                  (source (cdr (assq 'source a))))
+              (when (and repo (null source))
+                (puthash repo t repos))))))
         (maphash
          (lambda (repo _)
            (dolist (name (shipit--fetch-github-repo-label-names repo))

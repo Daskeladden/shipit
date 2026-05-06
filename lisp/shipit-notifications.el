@@ -21,6 +21,7 @@
 
 ;;; Code:
 (require 'cl-lib)
+(require 'seq)
 (eval-when-compile
   (require 'transient))
 
@@ -1252,10 +1253,14 @@ PR-BY-REPO is a hash table of repo-name → list of PR numbers.
 Includes `viewer { login }' so `shipit--apply-pr-enrichment'
 can compute the per-activity `is-author' flag without an
 extra round-trip.  Also fetches `labels(first: 50)' for the
-`:label' predicate, and `reviewThreads(first: 50)' with
-comment authors + timestamps for the `:reply-to-me' predicate
-\(detects review-thread replies where viewer authored a
-comment in the thread and a non-viewer posted later)."
+`:label' predicate, `reviewThreads(first: 50)' with comment
+authors + timestamps for `:reply-to-me' (detects review-thread
+replies where viewer authored a comment in the thread and a
+non-viewer posted later), and `files(first: 100)' for the
+`:path' predicate (regex-matches against any changed file in
+the PR -- useful to keep `review_requested' notifications when
+a PR touches paths the viewer cares about, even if a broader
+mute rule would otherwise apply)."
   (let ((repo-queries '())
         (repo-idx 0))
     (maphash
@@ -1265,7 +1270,7 @@ comment in the thread and a non-viewer posted later)."
               (name (cadr parts))
               (pr-fields (mapconcat
                           (lambda (num)
-                            (format "p%d: pullRequest(number: %d) { isDraft state author { login avatarUrl } labels(first: 50) { nodes { name } } reviewThreads(first: 50) { nodes { comments(first: 100) { nodes { author { login } createdAt } } } } }"
+                            (format "p%d: pullRequest(number: %d) { isDraft state author { login avatarUrl } labels(first: 50) { nodes { name } } reviewThreads(first: 50) { nodes { comments(first: 100) { nodes { author { login } createdAt } } } } files(first: 100) { nodes { path } } }"
                                     num num))
                           numbers "\n    ")))
          (push (format "r%d: repository(owner: \"%s\", name: \"%s\") {\n    %s\n  }"
@@ -1349,6 +1354,10 @@ fire on incomplete data."
                              (shipit--review-thread-reply-to-viewer-p
                               thread viewer-login))
                            review-threads)))
+                    (file-nodes (cdr (assq 'nodes (cdr (assq 'files pr-data)))))
+                    (files (delq nil
+                                 (mapcar (lambda (n) (cdr (assq 'path n)))
+                                         (append file-nodes nil))))
                     (activity-key (shipit--notification-activity-key repo "pr" number))
                     (activity (gethash activity-key shipit--notification-pr-activities)))
                (when (and activity pr-data)
@@ -1360,6 +1369,7 @@ fire on incomplete data."
                    (push (cons 'pr-avatar-url avatar-url) enriched)
                    (push (cons 'labels labels) enriched)
                    (push (cons 'reply-to-me reply-to-me) enriched)
+                   (push (cons 'files files) enriched)
                    (when (and viewer-login author)
                      (push (cons 'is-author
                                  (string-equal-ignore-case viewer-login author))
@@ -1434,6 +1444,7 @@ through unaffected."
                                 (const :repo)
                                 (const :number)
                                 (const :label)
+                                (const :path)
                                 (const :i-am-author)
                                 (const :reply-to-me)
                                 (const :not))
@@ -1637,6 +1648,13 @@ activities whose title does not contain \"mythos\"."
             (cl-some (lambda (l)
                        (and (stringp l) (string-equal-ignore-case l val)))
                      labels))))
+    (:path
+     (let ((files (cdr (assq 'files activity))))
+       (and files
+            (stringp val)
+            (cl-some (lambda (p)
+                       (and (stringp p) (string-match-p val p)))
+                     files))))
     (:number (let ((number (cdr (assq 'number activity))))
                (and (integerp number)
                     (integerp val)
@@ -1673,7 +1691,7 @@ auto-marked anyway during the early apply.  Recurses into
 condition."
   (cl-loop for (key val) on rule by #'cddr
            thereis (or (memq key '(:label :i-am-author :reply-to-me
-                                   :state :draft))
+                                   :path :state :draft))
                        (and (eq key :not)
                             (shipit--auto-mark-rule-needs-enrichment-p val)))))
 
@@ -1882,6 +1900,110 @@ without waiting for the next refresh."
                  "Auto-mark rules: nothing matched"
                (format "Auto-mark rules: marked %d notification%s as read"
                        n (if (= n 1) "" "s"))))))
+
+(defun shipit--auto-mark-first-failing-condition (rule activity)
+  "Return (KEY VAL) of the first failing condition in RULE for ACTIVITY, or nil.
+A nil return means every condition in RULE matched (the rule
+would fire).  Used by `shipit-notifications-explain-auto-mark'
+to surface why each unread activity didn\\='t get marked."
+  (cl-loop for (key val) on rule by #'cddr
+           unless (shipit--auto-mark-condition-matches-p key val activity)
+           return (list key val)))
+
+(defun shipit--auto-mark-activity-summary (activity)
+  "Return a one-line summary of ACTIVITY\\='s match-relevant fields.
+Lists every key the rule grammar can target, plus their current
+values, so the user can compare against their rules at a glance."
+  (let* ((repo (cdr (assq 'repo activity)))
+         (type (cdr (assq 'type activity)))
+         (number (or (cdr (assq 'number activity))
+                     (cdr (assq 'pr-number activity))))
+         (reason (cdr (assq 'reason activity)))
+         (subject (cdr (assq 'subject activity)))
+         (state (cdr (assq 'pr-state activity)))
+         (draft (cdr (assq 'draft activity)))
+         (labels (cdr (assq 'labels activity)))
+         (jira-comps (cdr (assq 'jira-components activity)))
+         (files-cell (assq 'files activity))
+         (files (cdr files-cell))
+         (is-author-cell (assq 'is-author activity))
+         (reply-cell (assq 'reply-to-me activity)))
+    (format
+     "%s/%s#%s reason=%s state=%s draft=%s labels=%S jira-components=%S is-author=%s reply-to-me=%s files=%s title=%S"
+     (or repo "?") (or type "?") (or number "?")
+     (or reason "?")
+     (or state "(unenriched)")
+     (if draft "t" "nil")
+     (or labels '())
+     (or jira-comps '())
+     (if is-author-cell (if (cdr is-author-cell) "t" "nil") "(unenriched)")
+     (if reply-cell (if (cdr reply-cell) "t" "nil") "(unenriched)")
+     (cond ((null files-cell) "(unenriched)")
+           ((null files) "()")
+           (t (format "(%d: %s%s)"
+                      (length files)
+                      (mapconcat #'identity (seq-take files 5) " ")
+                      (if (> (length files) 5) " ..." ""))))
+     (or subject ""))))
+
+(defun shipit-notifications-explain-auto-mark ()
+  "Open a buffer explaining why each unread activity didn\\='t get auto-marked.
+For every unread entry in `shipit--notification-pr-activities':
+- Print the activity\\='s match-relevant fields (a one-liner over
+  every key the rule grammar can target).
+- For each effective rule, print whether it matched -- and if it
+  didn\\='t, the first failing (KEY VAL) condition.
+This is the inverse of the `auto-mark/apply' debug log: instead
+of `to-mark=N' it tells you which rules tried which activity and
+where they bounced.  Use it when you expected something to be
+marked but it stayed unread."
+  (interactive)
+  (let* ((rules (shipit--effective-auto-mark-rules))
+         (buf (get-buffer-create "*shipit-auto-mark-explain*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (special-mode)
+        (insert (format "Effective auto-mark rules (%d):\n" (length rules)))
+        (cl-loop for r in rules
+                 for i from 1
+                 do (insert (format "  [%d] %S\n" i r)))
+        (insert "\n")
+        (let ((unread-count 0)
+              (would-mark 0))
+          (when (and (boundp 'shipit--notification-pr-activities)
+                     shipit--notification-pr-activities)
+            (maphash
+             (lambda (_k activity)
+               (let* ((notification (cdr (assq 'notification activity)))
+                      (unread
+                       (if notification
+                           (let ((u (cdr (assq 'unread notification))))
+                             (and u (not (eq u :json-false))))
+                         t)))
+                 (when unread
+                   (cl-incf unread-count)
+                   (insert (format "Activity: %s\n"
+                                   (shipit--auto-mark-activity-summary
+                                    activity)))
+                   (let ((any-matched nil))
+                     (cl-loop
+                      for r in rules
+                      for i from 1
+                      do (let ((fail (shipit--auto-mark-first-failing-condition
+                                      r activity)))
+                           (if fail
+                               (insert (format "  [%d] no match -- failed at %s %S\n"
+                                               i (car fail) (cadr fail)))
+                             (setq any-matched t)
+                             (insert (format "  [%d] MATCH (would mark)\n" i)))))
+                     (when any-matched (cl-incf would-mark)))
+                   (insert "\n"))))
+             shipit--notification-pr-activities))
+          (insert (format "Summary: %d unread activities, %d would be marked.\n"
+                          unread-count would-mark)))
+        (goto-char (point-min))))
+    (display-buffer buf)))
 
 (defun shipit--handle-new-notifications (count)
   "Handle new notifications - update visual indicators."

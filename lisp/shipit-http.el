@@ -3819,6 +3819,45 @@ HTTP response body."
          (shipit--debug-log "fetch-github-repo-label-names %s failed: %S" repo err))
        nil))))
 
+(defun shipit--fetch-github-repo-toplevel-dirs (repo)
+  "Return top-level directory names for GitHub REPO (\"owner/name\").
+Hits `/repos/REPO/contents/' (default branch) and filters to
+entries with `type = dir', returning a list of directory names
+like \\='(\"src\" \"fpga\" \"common\")\\='.  Etag-cached so
+completion calls within a session reuse the response body.
+Returns nil on error -- callers fall back to whatever local
+data they have (e.g. file paths from PR enrichment)."
+  (shipit--fetch-github-repo-subdirs repo nil))
+
+(defun shipit--fetch-github-repo-subdirs (repo path)
+  "Return subdirectory names at PATH inside GitHub REPO (\"owner/name\").
+PATH is a slash-separated relative path (e.g. \"src/main\") or
+nil/\"\" for the repository root.  Hits
+`/repos/REPO/contents/PATH' and filters to entries with
+`type = dir'.  Etag-cached.  Returns nil on error."
+  (let ((endpoint
+         (if (and path (stringp path) (> (length path) 0))
+             (format "/repos/%s/contents/%s"
+                     repo
+                     (mapconcat #'url-hexify-string
+                                (split-string path "/" t)
+                                "/"))
+           (format "/repos/%s/contents/" repo))))
+    (condition-case err
+        (let* ((result (shipit-gh-etag-get-json-with-refresh-cache
+                        endpoint nil shipit-github-token))
+               (json (and result (plist-get result :json))))
+          (delq nil
+                (mapcar (lambda (e)
+                          (and (equal (cdr (assq 'type e)) "dir")
+                               (cdr (assq 'name e))))
+                        json)))
+      (error
+       (when (fboundp 'shipit--debug-log)
+         (shipit--debug-log
+          "fetch-github-repo-subdirs %s/%s failed: %S" repo path err))
+       nil))))
+
 (defun shipit--add-label-to-pr (pr-number label-name)
   "Add LABEL-NAME to PR with PR-NUMBER."
   (unless (shipit--ensure-repository)

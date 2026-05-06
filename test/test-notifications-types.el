@@ -1399,6 +1399,39 @@ THEN it fires when the label is absent and is silent when
     (should-not (shipit--auto-mark-rule-matches-activity-p
                  rule '((reason . "mention") (labels . ("docs")))))))
 
+(ert-deftest test-shipit--auto-mark-rule-path-condition ()
+  "GIVEN rule (:path REGEX)
+WHEN matched against an activity whose `files\\=' list has any
+     path matching REGEX
+THEN the rule fires.  Activities with no `files\\=' (unenriched
+     PRs / non-PR activities), or whose paths don\\='t match,
+     don\\='t fire -- so a rule like `(:not (:path \"^fpga/\"))\\='
+     targets PRs that DON\\='T touch fpga code without false-
+     positiving on activities lacking enrichment data."
+  (let ((rule '(:path "^fpga/")))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((files . ("fpga/foo.v" "doc/x.md")))))
+    (should (shipit--auto-mark-rule-matches-activity-p
+             rule '((files . ("doc/x.md" "fpga/bar.sv")))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((files . ("doc/x.md" "common/y.cpp")))))
+    (should-not (shipit--auto-mark-rule-matches-activity-p rule '()))
+    (should-not (shipit--auto-mark-rule-matches-activity-p
+                 rule '((files . ()))))))
+
+(ert-deftest test-shipit--auto-mark-rule-path-needs-enrichment ()
+  "GIVEN any rule mentioning `:path\\='
+WHEN passed to `shipit--auto-mark-rule-needs-enrichment-p\\='
+THEN it returns non-nil so the pre-enrichment apply pass skips
+     it -- otherwise `(:not (:path \"...\"))\\=' would falsely
+     fire on every PR before the GraphQL enrichment fills in
+     the file list (mirrors the `:label\\=' phase-gate)."
+  (should (shipit--auto-mark-rule-needs-enrichment-p '(:path "^src/")))
+  (should (shipit--auto-mark-rule-needs-enrichment-p
+           '(:repo "owner/r" :path "^src/")))
+  (should (shipit--auto-mark-rule-needs-enrichment-p
+           '(:not (:path "^src/")))))
+
 (ert-deftest test-shipit--auto-mark-rule-reason-condition ()
   "GIVEN a :reason rule
 WHEN matched

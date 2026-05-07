@@ -32,13 +32,18 @@
         :browse-url #'ignore))
 
 (defmacro test-sub--with-mock-github (&rest body)
-  "Run BODY with GitHub backend and standard test bindings."
+  "Run BODY with GitHub backend and standard test bindings.
+Resets the repo-status cache up front so each test sees a clean
+slate -- the production cache survives across `let'-bindings,
+and reuse between tests would mask the mocked `--api-request'."
   (declare (indent 0))
   `(let ((shipit-pr-backends nil)
          (shipit-pr-backend 'github)
          (shipit-pr-backend-config nil)
          (shipit-github-token "test-token")
          (shipit-current-repo "owner/repo"))
+     (when (boundp 'shipit-pr-github--repo-status-cache)
+       (clrhash shipit-pr-github--repo-status-cache))
      ,@body))
 
 ;;; Tests — get-repo-subscription

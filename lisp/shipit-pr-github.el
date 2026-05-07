@@ -950,13 +950,73 @@ Returns the JSON alist from GET /repos/{owner}/{repo}."
     (shipit--debug-log "GitHub PR backend: fetching repo info for %s" repo)
     (shipit--api-request endpoint)))
 
+(defcustom shipit-pr-github-repo-status-cache-ttl 300
+  "Seconds to cache `--get-repo-subscription' / `--get-repo-starred' results.
+Both endpoints fork sync HTTP on every PR buffer render and
+return state that rarely changes (user actions on GitHub, not
+PR data).  At 300s (5 min) the cache is fresh enough to pick
+up legitimate external changes within a few buffer reloads
+while saving ~45ms of round-trip time on every buffer render
+in the meantime.  Invalidated automatically when the user
+toggles via `--set-repo-subscription' / `--set-repo-starred'."
+  :type 'number
+  :group 'shipit)
+
+(defvar shipit-pr-github--repo-status-cache (make-hash-table :test 'equal)
+  "Hash of (REPO . KIND) -> (TIMESTAMP . VALUE).
+KIND is `:subscription' or `:starred'.  Cleared by
+`shipit-clear-all-caches'.")
+
+(defun shipit-pr-github--repo-status-cache-key (repo kind)
+  "Return the cache key for REPO + KIND."
+  (cons repo kind))
+
+(defun shipit-pr-github--repo-status-cache-get (repo kind)
+  "Return cached VALUE for REPO + KIND if fresh, else `shipit--miss'."
+  (let* ((entry (gethash (shipit-pr-github--repo-status-cache-key repo kind)
+                         shipit-pr-github--repo-status-cache))
+         (now (float-time)))
+    (cond
+     ((and entry
+           (< (- now (car entry))
+              (max 0 shipit-pr-github-repo-status-cache-ttl)))
+      (cdr entry))
+     (t 'shipit--miss))))
+
+(defun shipit-pr-github--repo-status-cache-put (repo kind value)
+  "Store VALUE in the repo-status cache for REPO + KIND."
+  (puthash (shipit-pr-github--repo-status-cache-key repo kind)
+           (cons (float-time) value)
+           shipit-pr-github--repo-status-cache))
+
+(defun shipit-pr-github--repo-status-cache-invalidate (repo &optional kind)
+  "Drop cached repo-status entries for REPO.  When KIND given, only that one."
+  (cond
+   (kind
+    (remhash (shipit-pr-github--repo-status-cache-key repo kind)
+             shipit-pr-github--repo-status-cache))
+   (t
+    (dolist (k '(:subscription :starred))
+      (remhash (shipit-pr-github--repo-status-cache-key repo k)
+               shipit-pr-github--repo-status-cache)))))
+
 (defun shipit-pr-github--get-repo-subscription (config)
   "Get subscription for repo in CONFIG.
-Returns subscription alist or nil if not subscribed (404)."
+Returns subscription alist or nil if not subscribed (404).
+Cached for `shipit-pr-github-repo-status-cache-ttl' seconds; the
+cache is invalidated on `--set-repo-subscription'."
   (let* ((repo (plist-get config :repo))
-         (endpoint (format "/repos/%s/subscription" repo)))
-    (shipit--debug-log "GitHub PR backend: fetching subscription for %s" repo)
-    (shipit--api-request endpoint)))
+         (cached (shipit-pr-github--repo-status-cache-get repo :subscription)))
+    (cond
+     ((not (eq cached 'shipit--miss)) cached)
+     (t
+      (let* ((endpoint (format "/repos/%s/subscription" repo))
+             (result (progn
+                       (shipit--debug-log
+                        "GitHub PR backend: fetching subscription for %s" repo)
+                       (shipit--api-request endpoint))))
+        (shipit-pr-github--repo-status-cache-put repo :subscription result)
+        result)))))
 
 (defun shipit-pr-github--set-repo-subscription (config state)
   "Set subscription STATE for repo in CONFIG.
@@ -964,6 +1024,7 @@ STATE is \"watching\", \"participating\", or \"ignoring\"."
   (let* ((repo (plist-get config :repo))
          (endpoint (format "/repos/%s/subscription" repo)))
     (shipit--debug-log "GitHub PR backend: setting subscription for %s to %s" repo state)
+    (shipit-pr-github--repo-status-cache-invalidate repo :subscription)
     (cond
      ((equal state "watching")
       (shipit--api-request-post endpoint
@@ -1056,17 +1117,26 @@ SUBSCRIBED is t to subscribe, nil to unsubscribe."
 
 (defun shipit-pr-github--get-repo-starred (config)
   "Check if repo in CONFIG is starred by the current user.
-Returns t if starred (HTTP 204), nil if not (HTTP 404)."
+Returns t if starred (HTTP 204), nil if not (HTTP 404).
+Cached for `shipit-pr-github-repo-status-cache-ttl' seconds; the
+cache is invalidated on `--set-repo-starred'."
   (let* ((repo (plist-get config :repo))
-         (url (concat shipit-api-url (format "/user/starred/%s" repo)))
-         (headers (list (shipit--get-auth-header)
-                        (cons "Accept" "application/vnd.github.v3+json"))))
-    (shipit--debug-log "GitHub PR backend: checking star status for %s" repo)
-    (condition-case nil
-        (let* ((result (shipit--url-retrieve-sync url "GET" headers nil))
-               (status (cdr result)))
-          (eq status 204))
-      (error nil))))
+         (cached (shipit-pr-github--repo-status-cache-get repo :starred)))
+    (cond
+     ((not (eq cached 'shipit--miss)) cached)
+     (t
+      (let* ((url (concat shipit-api-url (format "/user/starred/%s" repo)))
+             (headers (list (shipit--get-auth-header)
+                            (cons "Accept" "application/vnd.github.v3+json")))
+             (result (condition-case nil
+                         (let* ((res (shipit--url-retrieve-sync
+                                      url "GET" headers nil))
+                                (status (cdr res)))
+                           (eq status 204))
+                       (error nil))))
+        (shipit--debug-log "GitHub PR backend: checking star status for %s" repo)
+        (shipit-pr-github--repo-status-cache-put repo :starred result)
+        result)))))
 
 (defun shipit-pr-github--set-repo-starred (config starred)
   "Star or unstar repo in CONFIG.
@@ -1078,6 +1148,7 @@ STARRED is t to star, nil to unstar."
                         (cons "Accept" "application/vnd.github.v3+json"))))
     (shipit--debug-log "GitHub PR backend: %s star for %s"
                        (if starred "setting" "removing") repo)
+    (shipit-pr-github--repo-status-cache-invalidate repo :starred)
     (shipit--url-retrieve-sync url method headers nil)))
 
 (defconst shipit-pr-github--watched-repos-graphql

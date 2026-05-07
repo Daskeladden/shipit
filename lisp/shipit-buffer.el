@@ -103,6 +103,8 @@ Each function is called with SECTION. Return non-nil if handled.")
 (declare-function shipit--fetch-review-decision-async "shipit-http")
 (declare-function shipit-comment--fetch-reactions-batch "shipit-comments")
 (declare-function shipit--fetch-pr-reactions-sync "shipit-http")
+(declare-function shipit--fetch-pr-reactions-async "shipit-http")
+(declare-function shipit--update-pr-reactions-display "shipit-http")
 (declare-function shipit--fetch-inline-comments "shipit-http")
 (declare-function shipit--fetch-more-files-async "shipit-http")
 (declare-function shipit--get-notification-source-icon "shipit-render")
@@ -996,9 +998,19 @@ REPO is the repository, PR-NUMBER is the PR number."
       (shipit--time-operation "insert title section"
         (shipit--insert-pr-title-section repo pr-data pr-number))
 
-      ;; Fetch PR reactions so they show on the description
-      (shipit--time-operation "fetch PR reactions"
-        (shipit--fetch-pr-reactions-sync repo pr-number))
+      ;; PR reactions: render the description with whatever is in the
+      ;; local cache right now (cheap), then kick off an async refetch
+      ;; that updates just the reactions line in place when the
+      ;; response arrives.  Avoids a ~150ms sync HTTP block on every
+      ;; first-time PR open.  `shipit--update-pr-reactions-display'
+      ;; locates the reactions line via text properties and replaces
+      ;; only that line, so the rest of the buffer keeps its scroll /
+      ;; point position.
+      (shipit--time-operation "kick off async PR reactions fetch"
+        (shipit--fetch-pr-reactions-async
+         repo pr-number
+         (lambda (_reactions)
+           (shipit--update-pr-reactions-display pr-number))))
 
       ;; Fetch inline comments early so file comment counts are available
       (when (condition-case nil (shipit-comment--get-backend) (error nil))

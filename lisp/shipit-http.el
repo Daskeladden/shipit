@@ -6052,23 +6052,93 @@ then falls back to async PR fetch if needed (requires API token)."
         ;; Reactions will appear on the next natural refresh (no forced refresh)
         )))))
 
+(defcustom shipit-reaction-cache-fresh-seconds 60
+  "Skip the sync reactions HTTP fetch when cache is fresher than this.
+Even with ETag-based 304 responses the network round-trip costs
+~150ms and runs synchronously during PR buffer construction.
+On rapid re-opens of the same PR (and across sub-helpers that
+all call into the same fetch) returning the locally-cached
+reactions without going to the network is a big UX win.  Set
+to 0 to always re-fetch."
+  :type 'number
+  :group 'shipit)
+
+(defun shipit--fetch-pr-reactions-async (repo pr-number callback)
+  "Async variant of `shipit--fetch-pr-reactions-sync\\='.
+Calls `shipit-gh-etag-get-json-async\\=' for the reactions
+endpoint of the active PR backend; on response, populates
+the local reaction cache (so subsequent renders pick it up
+without re-fetching) and calls CALLBACK with the reactions
+list.  No-op when no fetch URL can be derived."
+  (when (and repo pr-number)
+    (let* ((cache-key (format "pr-%s" pr-number))
+           (resolved (shipit-pr--resolve-for-repo repo))
+           (config (cdr resolved))
+           (config-repo (or (and config (plist-get config :repo)) repo))
+           (endpoint (format "/repos/%s/issues/%s/reactions"
+                             config-repo pr-number)))
+      (shipit-gh-etag-get-json-async
+       endpoint nil shipit-github-token
+       (lambda (result)
+         (let* ((reactions (or (and result (plist-get result :json)) '())))
+           (puthash cache-key reactions shipit--reaction-cache)
+           (puthash cache-key (float-time)
+                    shipit--reaction-cache-fetch-time)
+           (when (fboundp 'shipit--debug-log)
+             (shipit--debug-log
+              "Async reactions fetch for PR #%s -> %d entries"
+              pr-number (length reactions)))
+           (when callback
+             (condition-case err
+                 (funcall callback reactions)
+               (error
+                (when (fboundp 'shipit--debug-log)
+                  (shipit--debug-log
+                   "Reactions async callback error: %S" err)))))))))))
+
+(defvar shipit--reaction-cache-fetch-time (make-hash-table :test 'equal)
+  "Hash of cache-key -> `float-time' of last `--fetch-pr-reactions-sync'.
+Used by the freshness skip in conjunction with
+`shipit-reaction-cache-fresh-seconds'.  Cleared by
+`shipit-clear-all-caches'.")
+
 (defun shipit--fetch-pr-reactions-sync (repo pr-number)
   "Fetch reactions for PR with PR-NUMBER synchronously and cache the result.
 REPO is the repository name (owner/repo format).
 Dispatches to the active PR backend's :fetch-reactions.
-Returns the fetched reactions list."
+Returns the fetched reactions list.
+
+Skips the HTTP round-trip entirely when the cached entry is
+fresher than `shipit-reaction-cache-fresh-seconds' -- the bulk
+of repeated calls during one PR buffer construction (multiple
+description / comment renders) hit this fast path."
   (when (and repo pr-number)
     (let* ((cache-key (format "pr-%s" pr-number))
-           (resolved (shipit-pr--resolve-for-repo repo))
-           (backend (car resolved))
-           (config (cdr resolved))
-           (fetch-fn (plist-get backend :fetch-reactions))
-           (reactions (when fetch-fn (funcall fetch-fn config pr-number))))
-      (shipit--debug-log "Fetched %d PR reactions for PR #%s"
-                         (if reactions (length reactions) 0) pr-number)
-      ;; Cache the result
-      (puthash cache-key (or reactions '()) shipit--reaction-cache)
-      (or reactions '()))))
+           (now (float-time))
+           (cached-time (gethash cache-key
+                                 shipit--reaction-cache-fetch-time))
+           (cached-reactions (gethash cache-key shipit--reaction-cache))
+           (fresh (and cached-time
+                       cached-reactions
+                       (< (- now cached-time)
+                          (max 0 shipit-reaction-cache-fresh-seconds)))))
+      (cond
+       (fresh
+        (shipit--debug-log "Reaction cache fresh hit for PR #%s (age=%.1fs)"
+                           pr-number (- now cached-time))
+        cached-reactions)
+       (t
+        (let* ((resolved (shipit-pr--resolve-for-repo repo))
+               (backend (car resolved))
+               (config (cdr resolved))
+               (fetch-fn (plist-get backend :fetch-reactions))
+               (reactions (when fetch-fn
+                            (funcall fetch-fn config pr-number))))
+          (shipit--debug-log "Fetched %d PR reactions for PR #%s"
+                             (if reactions (length reactions) 0) pr-number)
+          (puthash cache-key (or reactions '()) shipit--reaction-cache)
+          (puthash cache-key now shipit--reaction-cache-fetch-time)
+          (or reactions '())))))))
 
 (defun shipit--user-has-reaction (comment-id reaction-type is-inline)
   "Check if the current user has already reacted with REACTION-TYPE to comment COMMENT-ID."

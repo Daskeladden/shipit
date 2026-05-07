@@ -1620,6 +1620,8 @@ Shows status (in-sync, out-of-sync, none), path, and last synced time."
                           ('in-sync "✓")
                           ('out-of-sync "⚠")
                           ('different-repo "⭕"))))
+         (progress (and (fboundp 'shipit-worktree--progress-get)
+                        (shipit-worktree--progress-get pr-repo pr-number)))
          (status-text (pcase status
                         ('none "No worktree checked out")
                         ('in-sync (concat (propertize "In Sync" 'font-lock-face '(:foreground "green" :weight bold))
@@ -1650,43 +1652,89 @@ Shows status (in-sync, out-of-sync, none), path, and last synced time."
                                                shipit-pr-number ,pr-number
                                                shipit-repo ,pr-repo)))
       (magit-insert-section-body
-        (let ((body-start (point)))
-          (insert (format "   Status: %s\n" status-text))
-          (when worktree-path
-            ;; Insert path with link styling
-            (insert "   Path: ")
-            (let ((path-start (point))
-                  (relative-path (file-relative-name worktree-path (shipit--get-repo-root))))
-              (insert relative-path)
-              (let ((path-end (point)))
-                ;; Add keymap and face for path
-                (let ((path-keymap (make-sparse-keymap)))
-                  (define-key path-keymap (kbd "RET")
-                    (lambda () (interactive)
-                      (if (file-directory-p worktree-path)
-                          (dired worktree-path)
-                        (user-error "Worktree path not found: %s" worktree-path))))
-                  (put-text-property path-start path-end 'font-lock-face 'shipit-filename-face)
-                  (put-text-property path-start path-end 'keymap path-keymap)))
-              (insert "\n"))
-            ;; Insert timestamp with proper formatting and styling
-            (when-let* ((pr-info (shipit--get-pr-info-from-worktree worktree-path)))
-              (when-let* ((created-at (plist-get pr-info :created-at)))
-                (insert "   Created: ")
-                (let ((timestamp-start (point))
-                      (formatted-ts (if (fboundp 'shipit--format-timestamp)
-                                        (shipit--format-timestamp created-at)
-                                      created-at)))
-                  (insert formatted-ts)
-                  (let ((timestamp-end (point)))
-                    (put-text-property timestamp-start timestamp-end 'font-lock-face 'shipit-timestamp-face))
-                  (insert "\n")))))
-          (add-text-properties body-start (point)
-                               `(shipit-worktree t
-                                                 shipit-pr-data ,pr-data
-                                                 shipit-pr-number ,pr-number
-                                                 shipit-repo ,pr-repo))
-          (insert "\n"))))))
+        (shipit--insert-worktree-body
+         pr-data status status-text worktree-path progress
+         pr-number pr-repo)))))
+
+(defun shipit--insert-worktree-body
+    (pr-data status status-text worktree-path progress pr-number pr-repo)
+  "Insert the body content of the Worktree section.
+Extracted from `shipit--insert-worktree-section\=' so the body
+can be re-rendered in place by
+`shipit-worktree--refresh-section-in-buffer\=' without
+disturbing the surrounding magit-section identity (which the
+section navigator relies on -- a full section recreate
+strands the old object in the parent\='s children list and
+breaks `n\=' / `p\=')."
+  (let ((body-start (point)))
+    ;; Phase line is rendered by an overlay (see
+    ;; `shipit-worktree--progress-render') so this body insertion
+    ;; doesn't have to know whether a progress operation is in flight.
+    (insert (format "   Status: %s\n" status-text))
+    (when worktree-path
+      (insert "   Path: ")
+      (let ((path-start (point))
+            (relative-path (file-relative-name worktree-path (shipit--get-repo-root))))
+        (insert relative-path)
+        (let ((path-end (point)))
+          (let ((path-keymap (make-sparse-keymap)))
+            (define-key path-keymap (kbd "RET")
+              (lambda () (interactive)
+                (if (file-directory-p worktree-path)
+                    (dired worktree-path)
+                  (user-error "Worktree path not found: %s" worktree-path))))
+            (put-text-property path-start path-end 'font-lock-face 'shipit-filename-face)
+            (put-text-property path-start path-end 'keymap path-keymap)))
+        (insert "\n"))
+      (when-let* ((pr-info (shipit--get-pr-info-from-worktree worktree-path)))
+        (when-let* ((created-at (plist-get pr-info :created-at)))
+          (insert "   Created: ")
+          (let ((timestamp-start (point))
+                (formatted-ts (if (fboundp 'shipit--format-timestamp)
+                                  (shipit--format-timestamp created-at)
+                                created-at)))
+            (insert formatted-ts)
+            (let ((timestamp-end (point)))
+              (put-text-property timestamp-start timestamp-end
+                                 'font-lock-face 'shipit-timestamp-face))
+            (insert "\n"))))
+      ;; Skip the LFS indicator while a `pulling-lfs' phase is in
+      ;; flight: `shipit-worktree--lfs-status' shells out to
+      ;; `git lfs ls-files' synchronously, and on a 3000+ file repo
+      ;; that's a 0.5-1s blocking call.  Combined with a 200ms
+      ;; refresh throttle from the progress filter it would freeze
+      ;; the UI and let re-entrant refreshes corrupt the section.
+      ;; The Phase line already shows live counters during the pull.
+      (when (and (boundp 'shipit-worktree-show-lfs-indicator)
+                 shipit-worktree-show-lfs-indicator
+                 (fboundp 'shipit-worktree--lfs-status)
+                 (not (and progress
+                           (eq (plist-get progress :phase) 'pulling-lfs))))
+        (when-let* ((lfs (shipit-worktree--lfs-status worktree-path)))
+          (let* ((total (plist-get lfs :total))
+                 (present (plist-get lfs :present))
+                 (icon (cond ((zerop present) "\u26a0")
+                             ((= present total) "\u2713")
+                             (t "\u26a0")))
+                 (label-face (cond ((zerop present) 'font-lock-warning-face)
+                                   ((= present total)
+                                    '(:foreground "green" :weight bold))
+                                   (t 'font-lock-warning-face))))
+            (insert (format "   LFS: %s %s%s\n"
+                            icon
+                            (propertize
+                             (format "%d/%d materialised" present total)
+                             'font-lock-face label-face)
+                            (cond ((zerop present)
+                                   " -- press l to pull changed paths")
+                                  (t ""))))))))
+    (add-text-properties body-start (point)
+                         `(shipit-worktree t
+                                           shipit-pr-data ,pr-data
+                                           shipit-pr-number ,pr-number
+                                           shipit-repo ,pr-repo))
+    (insert "\n")))
+
 
 (provide 'shipit-buffer)
 ;;; shipit-buffer.el ends here

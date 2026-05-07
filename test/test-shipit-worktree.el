@@ -403,5 +403,48 @@ directory\"."
         (should pr-file-opened)
         (should-not commit-file-opened)))))
 
+(ert-deftest test-shipit--worktree--commit-present-p-true-when-cat-file-zero ()
+  "GIVEN a REPO-ROOT directory and a SHA
+WHEN `git cat-file -e SHA^{commit}\=' exits 0 (commit is local)
+THEN `shipit--worktree--commit-present-p\=' returns t -- so the
+     fetch step in `shipit--create-worktree-pr\=' can be skipped
+     on warm caches."
+  (let ((tmp (make-temp-file "shipit-wt-test" t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-file)
+                   (lambda (program _infile _buffer _display &rest args)
+                     (cond
+                      ((and (equal program "git")
+                            (equal args '("cat-file" "-e" "deadbeef^{commit}")))
+                       0)
+                      (t 128)))))
+          (should (shipit--worktree--commit-present-p tmp "deadbeef")))
+      (delete-directory tmp t))))
+
+(ert-deftest test-shipit--worktree--commit-present-p-false-when-cat-file-nonzero ()
+  "GIVEN `git cat-file -e\=' exits non-zero (commit not present)
+WHEN `--commit-present-p\=' is invoked
+THEN nil is returned -- so the caller fetches the ref."
+  (let ((tmp (make-temp-file "shipit-wt-test" t)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'process-file)
+                   (lambda (&rest _args) 128)))
+          (should-not (shipit--worktree--commit-present-p tmp "abc123")))
+      (delete-directory tmp t))))
+
+(ert-deftest test-shipit--worktree--commit-present-p-validates-inputs ()
+  "GIVEN bad inputs (nil REPO-ROOT, missing dir, nil/empty SHA)
+WHEN `--commit-present-p\=' is invoked
+THEN nil is returned without invoking git -- the helper guards
+     its own preconditions so the caller doesn\='t need to."
+  (let ((git-called nil))
+    (cl-letf (((symbol-function 'process-file)
+               (lambda (&rest _args) (setq git-called t) 0)))
+      (should-not (shipit--worktree--commit-present-p nil "abc123"))
+      (should-not (shipit--worktree--commit-present-p "/nonexistent/dir-zzz" "abc123"))
+      (should-not (shipit--worktree--commit-present-p "/tmp" nil))
+      (should-not (shipit--worktree--commit-present-p "/tmp" ""))
+      (should-not git-called))))
+
 (provide 'test-shipit-worktree)
 ;;; test-shipit-worktree.el ends here

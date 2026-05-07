@@ -333,24 +333,57 @@ For nested paths (e.g. gitlab.com:org/subgroup/project), returns the full path."
         path))
      (t nil))))
 
+(defvar shipit--repo-from-remote-cache (make-hash-table :test 'equal)
+  "Hash of `default-directory' -> cached `owner/name' repo string.
+The remote URL of a git working tree doesn\='t change during a
+session; caching avoids re-shelling-out to `git config' on
+every PR-buffer render and section refresh (the profile showed
+multiple calls per buffer construction).  Cleared by
+`shipit-clear-all-caches'.")
+
+(defvar shipit--detect-backend-cache (make-hash-table :test 'equal)
+  "Hash of `default-directory' -> cached PR backend symbol.
+Same rationale as `shipit--repo-from-remote-cache' -- pure
+function of the git remote URL, safe to memoise per
+working directory.")
+
 (defun shipit--get-repo-from-remote ()
-  "Extract repository owner/name from git remote URL."
-  (let ((remote-url (shell-command-to-string "git config --get remote.origin.url")))
-    (shipit--parse-repo-from-url remote-url)))
+  "Extract repository owner/name from git remote URL.
+Cached per `default-directory'; the remote URL doesn\='t change
+during a session."
+  (let* ((dir (or default-directory ""))
+         (cached (gethash dir shipit--repo-from-remote-cache 'shipit--miss)))
+    (cond
+     ((not (eq cached 'shipit--miss)) cached)
+     (t
+      (let* ((remote-url (shell-command-to-string
+                          "git config --get remote.origin.url"))
+             (result (shipit--parse-repo-from-url remote-url)))
+        (puthash dir result shipit--repo-from-remote-cache)
+        result)))))
 
 (defun shipit--detect-backend-from-remote ()
   "Detect PR backend symbol from the git remote URL.
 Iterates registered PR backends looking for a `:detect-url-pattern'
-match.  Falls back to `github' when no pattern matches."
-  (let ((url (string-trim
-              (shell-command-to-string
-               "git config --get remote.origin.url 2>/dev/null"))))
-    (or (when (boundp 'shipit-pr-backends)
-          (cl-loop for (id . plist) in (symbol-value 'shipit-pr-backends)
-                   when (let ((pat (plist-get plist :detect-url-pattern)))
-                          (and pat (string-match-p pat url)))
-                   return id))
-        'github)))
+match.  Falls back to `github' when no pattern matches.
+Cached per `default-directory'."
+  (let* ((dir (or default-directory ""))
+         (cached (gethash dir shipit--detect-backend-cache 'shipit--miss)))
+    (cond
+     ((not (eq cached 'shipit--miss)) cached)
+     (t
+      (let* ((url (string-trim
+                   (shell-command-to-string
+                    "git config --get remote.origin.url 2>/dev/null")))
+             (result (or (when (boundp 'shipit-pr-backends)
+                           (cl-loop
+                            for (id . plist) in (symbol-value 'shipit-pr-backends)
+                            when (let ((pat (plist-get plist :detect-url-pattern)))
+                                   (and pat (string-match-p pat url)))
+                            return id))
+                         'github)))
+        (puthash dir result shipit--detect-backend-cache)
+        result)))))
 
 (defun shipit--ensure-repository ()
   "Ensure shipit-current-repo is set.

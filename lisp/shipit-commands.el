@@ -1292,6 +1292,9 @@ Works in PR listings, notifications, and status sections."
   ["Worktree Actions"
    ("c" "Checkout in worktree" shipit--checkout-pr-worktree)
    ("s" "Sync worktree" shipit--sync-pr-worktree)
+   ("l" "Pull LFS for PR-changed paths" shipit--lfs-pull-pr-worktree)
+   ("L" "Pull all LFS in worktree (full)" shipit--lfs-pull-all-worktree)
+   ("i" "Pull LFS interactively (pick paths/globs)" shipit--lfs-pull-prompted-worktree)
    ("d" "Delete worktree" shipit--delete-pr-worktree)
    ("o" "Open worktree directory" shipit--open-pr-worktree-directory)])
 
@@ -1304,7 +1307,12 @@ Works in PR listings, notifications, and status sections."
   (get-text-property (point) 'shipit-pr-head-sha))
 
 (defun shipit--checkout-pr-worktree ()
-  "Checkout current PR in a new git worktree."
+  "Checkout current PR in a new git worktree (async).
+Returns immediately; the Worktree section in the originating
+PR buffer shows live phase updates (\"\u23f3 Fetching ...\",
+\"\u23f3 Creating worktree ...\") via
+`shipit-worktree--progress\=' and refreshes itself when the
+operation completes or fails."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
          (pr-data (get-text-property (point) 'shipit-pr-data))
@@ -1313,17 +1321,10 @@ Works in PR listings, notifications, and status sections."
          (pr-head-sha (cdr (assq 'sha (cdr (assq 'head pr-data))))))
     (unless pr-number
       (user-error "No PR at point"))
-
     (shipit--validate-pr-repo pr-repo)
-
-    (message "Creating worktree for PR #%d..." pr-number)
-    (let ((result (shipit--create-worktree-pr pr-number branch-name pr-head-sha)))
-      (if result
-          (progn
-            (message "Worktree created at: %s" (car result))
-            (when (y-or-n-p "Open worktree directory? ")
-              (shipit--open-worktree-directory (car result))))
-        (message "Failed to create worktree. See debug log for details")))))
+    (message "Creating worktree for PR #%d in the background..." pr-number)
+    (shipit--create-worktree-pr-async
+     pr-number branch-name pr-head-sha (current-buffer))))
 
 (defun shipit--sync-pr-worktree ()
   "Sync current PR worktree with latest changes."
@@ -1349,6 +1350,126 @@ Works in PR listings, notifications, and status sections."
           (when (derived-mode-p 'shipit-mode)
             (shipit-buffer-refresh)))
       (message "Failed to sync worktree. See debug log for details"))))
+
+(defun shipit--lfs-pull-all-worktree ()
+  "Pull ALL LFS files into the current PR's worktree (async).
+Useful when you want to actually build / run the code -- the
+LFS-tracked binaries the code reads typically weren't modified
+by the PR diff, so `l' (PR-changed only) would be a no-op.
+This pulls the full LFS set into the worktree so tests and
+tooling can find every fixture / asset they expect."
+  (interactive)
+  (let* ((pr-number (shipit--get-current-pr-number))
+         (pr-data (get-text-property (point) 'shipit-pr-data))
+         (pr-repo (cdr (assq 'full_name
+                             (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
+         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo))
+         (repo (shipit--get-repo-from-remote)))
+    (unless pr-number
+      (user-error "No PR at point"))
+    (unless worktree-path
+      (user-error "No worktree found for PR #%d" pr-number))
+    (message "Pulling all LFS files into worktree in the background...")
+    (shipit--lfs-pull-all-worktree-async
+     pr-number repo worktree-path (current-buffer))))
+
+(defun shipit--lfs-pull-prompted-worktree ()
+  "Prompt for one or more LFS path / glob patterns and pull them.
+Lets you decide exactly which LFS files to materialise -- the
+right tool when neither `l\=' (PR-changed paths only) nor `L\='
+(everything) fits.  Typical reasons to use this: pulling just
+the fixtures a particular test suite needs, grabbing a single
+asset to inspect, etc.
+
+Candidates are sourced from
+`shipit-worktree--lfs-glob-candidates\=' -- every literal LFS
+path in the worktree plus a `<dir>/**\=' anchor per directory
+and a `**/*.<ext>\=' anchor per extension.  Free-form globs
+work too (`git lfs pull --include\=' uses gitattributes-style
+glob patterns: `*\=', `**\=', `?\='; comma-separated for
+multiple).  Selection uses
+`completing-read-multiple\=' so vertico / consult / ido / ivy
+all work transparently with their usual filtering UI."
+  (interactive)
+  (let* ((pr-number (shipit--get-current-pr-number))
+         (pr-data (get-text-property (point) 'shipit-pr-data))
+         (pr-repo (cdr (assq 'full_name
+                             (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
+         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo))
+         (repo (shipit--get-repo-from-remote)))
+    (unless pr-number
+      (user-error "No PR at point"))
+    (unless worktree-path
+      (user-error "No worktree found for PR #%d" pr-number))
+    (let* ((cands (shipit-worktree--lfs-glob-candidates worktree-path))
+           (selected
+            (completing-read-multiple
+             "LFS path(s) / glob(s) to pull (comma-separated): "
+             cands)))
+      (cond
+       ((null selected)
+        (message "Nothing selected; not pulling"))
+       (t
+        (message "Pulling LFS for %d pattern%s in the background..."
+                 (length selected)
+                 (if (= 1 (length selected)) "" "s"))
+        (shipit--lfs-pull-pr-worktree-async
+         pr-number repo worktree-path selected (current-buffer)))))))
+
+(defun shipit--lfs-pull-pr-worktree ()
+  "Pull LFS files only for paths changed in this PR (async).
+Diffs `BASE_SHA..HEAD\=' inside the worktree to enumerate the
+PR-changed paths, then runs `git lfs pull --include=<csv>\=' as
+an async `make-process\='.  The Worktree section shows a live
+\"\u23f3 Pulling LFS ...\" phase line via
+`shipit-worktree--progress\=' and refreshes itself when the
+fetch completes or fails -- the natural companion to
+`shipit-worktree-skip-lfs\='."
+  (interactive)
+  (let* ((pr-number (shipit--get-current-pr-number))
+         (pr-data (get-text-property (point) 'shipit-pr-data))
+         (pr-repo (cdr (assq 'full_name
+                             (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
+         (base-sha (cdr (assq 'sha (cdr (assq 'base pr-data)))))
+         (base-branch (cdr (assq 'ref (cdr (assq 'base pr-data)))))
+         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo))
+         (repo (shipit--get-repo-from-remote)))
+    (unless pr-number
+      (user-error "No PR at point"))
+    (unless worktree-path
+      (user-error "No worktree found for PR #%d" pr-number))
+    (unless base-sha
+      (user-error "PR data missing base SHA"))
+    (shipit--debug-log
+     "lfs-pull-pr: pr=%s repo=%s worktree=%s base-sha=%s base-branch=%s"
+     pr-number repo worktree-path base-sha base-branch)
+    (let* ((all-changed (shipit--worktree-changed-paths-since
+                         worktree-path base-sha base-branch))
+           (lfs-set (let ((h (make-hash-table :test 'equal)))
+                      (dolist (p (shipit-worktree--lfs-tracked-paths
+                                  worktree-path))
+                        (puthash p t h))
+                      h))
+           (lfs-paths (cl-remove-if-not
+                       (lambda (p) (gethash p lfs-set))
+                       all-changed))
+           (total-changed (length all-changed))
+           (n (length lfs-paths)))
+      (shipit--debug-log
+       "lfs-pull-pr: %d changed path%s, %d LFS-tracked"
+       total-changed (if (= total-changed 1) "" "s") n)
+      (cond
+       ((zerop total-changed)
+        (message "No changed paths between %s..HEAD; nothing to pull"
+                 (substring base-sha 0 (min 7 (length base-sha)))))
+       ((zerop n)
+        (message "PR touches %d path%s, none LFS-tracked; nothing to pull"
+                 total-changed (if (= total-changed 1) "" "s")))
+       (t
+        (message "Pulling LFS for %d LFS-tracked path%s (of %d changed) in the background..."
+                 n (if (= n 1) "" "s") total-changed)
+        (shipit--lfs-pull-pr-worktree-async
+         pr-number repo worktree-path lfs-paths (current-buffer)))))))
 
 (defun shipit--delete-pr-worktree ()
   "Delete the worktree for current PR."

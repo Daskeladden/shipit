@@ -6063,7 +6063,7 @@ to 0 to always re-fetch."
   :type 'number
   :group 'shipit)
 
-(defun shipit--fetch-pr-reactions-async (repo pr-number callback)
+(defun shipit--fetch-pr-reactions-async-with-callback (repo pr-number callback)
   "Async variant of `shipit--fetch-pr-reactions-sync\\='.
 Calls `shipit-gh-etag-get-json-async\\=' for the reactions
 endpoint of the active PR backend; on response, populates

@@ -103,7 +103,7 @@ Each function is called with SECTION. Return non-nil if handled.")
 (declare-function shipit--fetch-review-decision-async "shipit-http")
 (declare-function shipit-comment--fetch-reactions-batch "shipit-comments")
 (declare-function shipit--fetch-pr-reactions-sync "shipit-http")
-(declare-function shipit--fetch-pr-reactions-async "shipit-http")
+(declare-function shipit--fetch-pr-reactions-async-with-callback "shipit-http")
 (declare-function shipit--update-pr-reactions-display "shipit-http")
 (declare-function shipit--fetch-inline-comments "shipit-http")
 (declare-function shipit--fetch-more-files-async "shipit-http")
@@ -1007,7 +1007,7 @@ REPO is the repository, PR-NUMBER is the PR number."
       ;; only that line, so the rest of the buffer keeps its scroll /
       ;; point position.
       (shipit--time-operation "kick off async PR reactions fetch"
-        (shipit--fetch-pr-reactions-async
+        (shipit--fetch-pr-reactions-async-with-callback
          repo pr-number
          (lambda (_reactions)
            (shipit--update-pr-reactions-display pr-number))))

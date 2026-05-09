@@ -226,6 +226,8 @@ This function should be called before accessing any cache to prevent nil errors.
     (clrhash shipit--reaction-cache-fetch-time))
   (when (boundp 'shipit-pr-github--repo-status-cache)
     (clrhash shipit-pr-github--repo-status-cache))
+  (when (boundp 'shipit-review-history--path-chain-cache)
+    (clrhash shipit-review-history--path-chain-cache))
   ;; Clear inline comments cache
   (when (boundp 'shipit--cached-inline-comments)
     (setq shipit--cached-inline-comments nil)

@@ -40,6 +40,7 @@
 (require 'magit-section)
 
 ;; Forward declarations — functions
+(declare-function shipit-review--resolve-base-sha "shipit-review-mode")
 (declare-function shipit--debug-log "shipit-core")
 (declare-function shipit--get-comment-type-icon "shipit-render")
 (declare-function shipit--get-comment-icon "shipit-render")
@@ -1923,11 +1924,28 @@ For PR files, shows PR diff with comments."
 Returns t if:
 1. A worktree exists for this PR
 2. The worktree is in-sync with current PR head"
-  (when (and (fboundp 'shipit--find-worktree-for-pr)
-             (fboundp 'shipit--worktree-in-sync-p))
+  (cond
+   ((not (and (fboundp 'shipit--find-worktree-for-pr)
+              (fboundp 'shipit--worktree-in-sync-p)))
+    (shipit--debug-log
+     "review-mode? helpers missing (find-worktree=%s in-sync=%s)"
+     (fboundp 'shipit--find-worktree-for-pr)
+     (fboundp 'shipit--worktree-in-sync-p))
+    nil)
+   ((not (integerp pr-number))
+    (shipit--debug-log
+     "review-mode? pr-number not integer (got %S type=%s); cannot search"
+     pr-number (type-of pr-number))
+    nil)
+   (t
     (let ((worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
+      (shipit--debug-log
+       "review-mode? pr=%s repo=%s head=%s worktree=%s"
+       pr-number pr-repo
+       (and pr-head-sha (substring pr-head-sha 0 (min 7 (length pr-head-sha))))
+       (or worktree-path "nil"))
       (and worktree-path
-           (shipit--worktree-in-sync-p worktree-path pr-head-sha)))))
+           (shipit--worktree-in-sync-p worktree-path pr-head-sha))))))
 
 (defun shipit--open-file-in-review-mode (file-path worktree-path pr-number pr-repo pr-head-sha pr-data)
   "Open FILE-PATH from WORKTREE-PATH in review mode with PR context.
@@ -1950,7 +1968,10 @@ PR-DATA is the full PR data object."
         ;; Store PR context in buffer-local variables for review mode
         (setq-local shipit-review--pr-data pr-data)
         (setq-local shipit-review--head-sha pr-head-sha)
-        (setq-local shipit-review--base-sha (cdr (assq 'sha (cdr (assq 'base pr-data)))))
+        (setq-local shipit-review--base-sha
+                    (if (fboundp 'shipit-review--resolve-base-sha)
+                        (shipit-review--resolve-base-sha pr-data worktree-path)
+                      (cdr (assq 'sha (cdr (assq 'base pr-data))))))
         ;; Copy cached comments from the source buffer (magit status buffer)
         (when comments-from-source
           (setq-local shipit--cached-inline-comments comments-from-source)

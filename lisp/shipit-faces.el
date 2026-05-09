@@ -179,6 +179,30 @@ as \"this is provisional, not committed\"."
   "Face applied to recognised issue-key references in code."
   :group 'shipit-code-refs)
 
+;; Per-file commit timeline faces ------------------------------------
+
+(shipit-defface shipit-review-history-pr-marker-face
+  '((t :foreground "yellow" :weight bold))
+  "Face for the in-PR group heading and PR-commit dots in the file timeline."
+  :group 'shipit)
+
+(shipit-defface shipit-review-history-stats-face
+  '((t :inherit shadow))
+  "Face for `+X -Y' line stats in the file timeline buffer."
+  :group 'shipit)
+
+(shipit-defface shipit-review-history-current-face
+  '((t :inherit highlight :extend t))
+  "Face for the row matching the file buffer's currently-displayed SHA.
+Updates as `n' / `p' / range commands change the displayed
+revision, so the timeline acts as a live position indicator."
+  :group 'shipit)
+
+(shipit-defface shipit-review-history-meta-face
+  '((t :inherit shadow))
+  "Face for the expanded body lines under each commit row in the timeline."
+  :group 'shipit)
+
 (provide 'shipit-faces)
 
 ;;; shipit-faces.el ends here

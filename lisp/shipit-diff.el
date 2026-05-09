@@ -401,7 +401,10 @@ If LINE-NUMBER is provided, position cursor on that line."
                ;; Enable review mode with PR context
                (setq-local shipit-review--pr-data pr-data)
                (setq-local shipit-review--head-sha pr-head-sha)
-               (setq-local shipit-review--base-sha (cdr (assq 'sha (cdr (assq 'base pr-data)))))
+               (setq-local shipit-review--base-sha
+                           (if (fboundp 'shipit-review--resolve-base-sha)
+                               (shipit-review--resolve-base-sha pr-data worktree-path)
+                             (cdr (assq 'sha (cdr (assq 'base pr-data))))))
                (when (fboundp 'shipit-review-mode)
                  (shipit-review-mode 1))
                (when line-number

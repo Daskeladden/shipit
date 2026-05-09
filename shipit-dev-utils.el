@@ -278,6 +278,23 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
             (error (message "Error refreshing shipit buffer %s: %s"
                           (buffer-name) (error-message-string err)))))))
 
+    ;; 9. Re-engage shipit-review-mode in any worktree file buffers so they
+    ;; pick up freshly-loaded function definitions.  Killing the buffer
+    ;; would lose unsaved edits; toggling the minor mode off + on re-runs
+    ;; the setup hooks (overlay refresh, side-frame header update) with
+    ;; the new code.  Buffer-local PR context (`shipit-review--pr-data',
+    ;; `--head-sha', `--base-sha') is preserved across the toggle.
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (and (bound-and-true-p shipit-review-mode)
+                   (buffer-file-name))
+          (condition-case err
+              (progn
+                (shipit-review-mode -1)
+                (shipit-review-mode 1))
+            (error (message "Error re-engaging review-mode in %s: %s"
+                            (buffer-name) (error-message-string err)))))))
+
     (message "Shipit reloaded successfully!"))))
 
 ;;;###autoload

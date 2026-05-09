@@ -291,19 +291,67 @@ Returns t if in sync, nil otherwise."
            (shipit--debug-log "⚠️ Error checking worktree sync at %s: %s" worktree-path err)
            nil))))))
 
+(defun shipit--main-worktree-root ()
+  "Return the main worktree\='s root directory, even from a linked worktree.
+`shipit--get-repo-root\=' returns whichever working tree the
+caller is currently in -- inside a linked worktree, that\='s
+the worktree itself, not the main repo.  But the
+`.worktrees/\=' subtree (where shipit creates PR worktrees)
+lives in the MAIN worktree, so callers that need to enumerate
+existing PR worktrees must resolve the main root.
+
+Uses `git rev-parse --git-common-dir\=' (returns the shared
+`.git\='); the main worktree is one directory above that.
+Returns nil when not in a git working tree."
+  (with-temp-buffer
+    (when (zerop (process-file "git" nil t nil
+                               "rev-parse" "--git-common-dir"))
+      (let* ((common (string-trim (buffer-string)))
+             (gitdir (directory-file-name (expand-file-name common))))
+        (and gitdir
+             (string-suffix-p ".git" gitdir)
+             (file-name-as-directory (file-name-directory gitdir)))))))
+
 (defun shipit--find-worktree-for-pr (pr-number _pr-repo)
   "Find worktree directory for PR-NUMBER.
-Returns path if found, nil otherwise."
-  (let* ((repo-root (shipit--get-repo-root))
-         (worktrees-dir (expand-file-name shipit-worktree-directory repo-root)))
-    (when (file-directory-p worktrees-dir)
-      (let ((pattern (format "pr-%d-" pr-number)))
-        (condition-case nil
-            (car (seq-filter
-                  (lambda (dir)
-                    (string-prefix-p pattern (file-name-nondirectory dir)))
-                  (directory-files worktrees-dir t "^pr-")))
-          (error nil))))))
+Returns path if found, nil otherwise.  Tolerant of PR-NUMBER as
+an integer or a numeric string."
+  (let* ((pr-num (cond ((integerp pr-number) pr-number)
+                       ((and (stringp pr-number)
+                             (string-match-p "^[0-9]+$" pr-number))
+                        (string-to-number pr-number))
+                       (t nil)))
+         ;; Always use the MAIN worktree's root -- the `.worktrees/'
+         ;; subtree lives there, not in linked worktrees.  Falls back
+         ;; to `shipit--get-repo-root' when not in a git working tree
+         ;; at all (so the helper still works in tests / non-git
+         ;; contexts).
+         (repo-root (or (shipit--main-worktree-root)
+                        (shipit--get-repo-root)))
+         (worktrees-dir (and repo-root
+                             (expand-file-name shipit-worktree-directory
+                                               repo-root))))
+    (shipit--debug-log
+     "find-worktree-for-pr: pr=%S repo-root=%s worktrees-dir=%s exists=%s"
+     pr-number (or repo-root "nil") (or worktrees-dir "nil")
+     (and worktrees-dir (file-directory-p worktrees-dir)))
+    (when (and pr-num worktrees-dir (file-directory-p worktrees-dir))
+      (let ((pattern (format "pr-%d-" pr-num)))
+        (condition-case err
+            (let ((hit (car (seq-filter
+                             (lambda (dir)
+                               (string-prefix-p pattern
+                                                (file-name-nondirectory dir)))
+                             (directory-files worktrees-dir t "^pr-")))))
+              (shipit--debug-log
+               "find-worktree-for-pr: pattern=%s -> %s"
+               pattern (or hit "no match"))
+              hit)
+          (error
+           (shipit--debug-log
+            "find-worktree-for-pr: error scanning %s: %S"
+            worktrees-dir err)
+           nil))))))
 
 (defun shipit--get-worktree-status (pr-number pr-head-sha pr-repo)
   "Get worktree status for PR-NUMBER.

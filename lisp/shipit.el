@@ -80,7 +80,6 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   ;; Load review mode modules
   (require 'shipit-review-mode)
   (require 'shipit-review-revision)
-  (require 'shipit-review-side-frame)
   (require 'shipit-debug)
   (require 'shipit-editor)  ; Comment/description editor with live preview
   ;; Pluggable backend registries + GitHub implementations

@@ -78,10 +78,14 @@ moves."
   :group 'shipit)
 
 (shipit-defface shipit-inline-comment-body-face
-  '((t :foreground "black")
-    (((class color) (background light)) :foreground "black")
-    (((class color) (background dark)) :foreground "white"))
-  "Face for inline comment body text."
+  '((((class color) (background light)) :foreground "black")
+    (((class color) (background dark)) :foreground "white")
+    (t :inherit default))
+  "Face for inline comment body text.
+The conditional clauses come *before* the `t' fallback so the
+dark-background variant actually applies on dark themes -- the
+first matching display wins, so a leading `(t ...)' would
+short-circuit every more-specific clause below it."
   :group 'shipit)
 
 (shipit-defface shipit-comment-reactions-placeholder

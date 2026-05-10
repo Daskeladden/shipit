@@ -19,6 +19,7 @@
 (require 'subr-x)
 (require 'shipit-core)
 (require 'shipit-render)
+(require 'shipit-rounded-section)
 (require 'vc-git)
 (require 'transient nil t)
 
@@ -681,14 +682,63 @@ rendering had no equivalent before this)."
                (cons (cons 'is_resolved (and resolved t)) c)))
            filtered))))))
 
+(defun shipit-review--rounded-after-string (lines)
+  "Wrap LINES with rounded SVG edges + filled background.
+LINES is a list of strings without trailing newlines.
+
+Mirrors the magit-section rounded-pill treatment from
+`shipit-rounded--apply-bg' but for the
+`after-string' overlay path used by file-view inline
+comments.  Magit\='s implementation walks buffer text and
+applies `line-prefix' / overlays per line; an after-string
+isn\='t in the buffer, so we instead build the SVG edges
+straight into the after-string content and append a
+`:background ... :extend t' face to each line via
+`add-face-text-property' (priority APPEND so existing
+username / timestamp / body faces compose).
+
+Falls back to a plain newline-joined string in non-graphic
+displays where SVGs can\='t render."
+  (cond
+   ((not (display-graphic-p))
+    (mapconcat #'identity lines "\n"))
+   (t
+    (let* ((bg-color shipit-rounded-section-bg-color)
+           (char-height (frame-char-height))
+           (radius 10)
+           (count (length lines))
+           (last-idx (1- count))
+           (parts '()))
+      (cl-loop for line in lines
+               for idx from 0
+               do
+               (let* ((position (cond
+                                 ((and (= idx 0) (= idx last-idx)) 'single)
+                                 ((= idx 0) 'top)
+                                 ((= idx last-idx) 'bottom)
+                                 (t 'middle)))
+                      (edge (shipit-rounded--make-edge-svg
+                             char-height radius bg-color position 'left))
+                      (edge-prefix (propertize " " 'display edge))
+                      (line-bg (copy-sequence line)))
+                 (add-face-text-property 0 (length line-bg)
+                                         `(:background ,bg-color :extend t)
+                                         t line-bg)
+                 (push (concat edge-prefix line-bg) parts)))
+      (mapconcat #'identity (nreverse parts) "\n")))))
+
 (defun shipit-review--render-inline-comment (comment)
   "Build the multi-line `after-string' for an inline COMMENT overlay.
+Renders with the same rounded SVG-pill background the magit
+PR-buffer view uses (via `shipit-rounded--apply-bg'),
+adapted for the after-string path.  Falls back to plain
+text on non-graphic displays.
+
 When COMMENT carries `(is_resolved . t)' (set by
 `--inline-comments-for-file' from the magit buffer\='s
-resolved-threads cache), append a `✓ resolved' chip after
-the timestamp and dim the body via `shadow' face appended
-to the existing body face -- so resolved threads are
-visibly de-emphasised without disappearing."
+resolved-threads cache), append a `<svg-check> resolved'
+chip after the timestamp and dim the body via `shadow'
+face appended to the existing body face."
   (let* ((user (cdr (assq 'login (cdr (assq 'user comment)))))
          (body (or (cdr (assq 'body comment)) ""))
          (timestamp (cdr (assq 'created_at comment)))
@@ -711,18 +761,20 @@ visibly de-emphasised without disappearing."
                      (propertize timestamp
                                  'face 'shipit-inline-comment-timestamp-face)))
            resolved-chip))
-         (body-lines
-          (mapconcat (lambda (l) (concat "     " l))
-                     (split-string body "\n")
-                     "\n"))
-         (body-rendered (copy-sequence body-lines)))
-    (add-face-text-property 0 (length body-rendered)
-                            'shipit-inline-comment-body-face
-                            t body-rendered)
-    (when resolved
-      (add-face-text-property 0 (length body-rendered)
-                              'shadow t body-rendered))
-    (concat "\n" header "\n" body-rendered "\n")))
+         (body-line-strings
+          (mapcar (lambda (l)
+                    (let ((s (copy-sequence (concat "     " l))))
+                      (add-face-text-property 0 (length s)
+                                              'shipit-inline-comment-body-face
+                                              t s)
+                      (when resolved
+                        (add-face-text-property 0 (length s)
+                                                'shadow t s))
+                      s))
+                  (split-string body "\n")))
+         (all-lines (cons header body-line-strings))
+         (rendered (shipit-review--rounded-after-string all-lines)))
+    (concat "\n" rendered "\n")))
 
 (defun shipit-review--show-inline-comments ()
   "Create overlays for PR inline comments in the current file buffer."

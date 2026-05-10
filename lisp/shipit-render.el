@@ -5088,7 +5088,14 @@ The returned string does not include a trailing newline."
                             (shipit--create-avatar-display user avatar-url 16)
                           ""))
          (avatar-space (if (and shipit-show-avatars avatar-url) " " ""))
-         (resolved-suffix (if is-resolved " [RESOLVED]" ""))
+         (resolved-suffix
+          (if is-resolved
+              (concat " "
+                      (shipit--get-pr-field-icon "resolved" "✓")
+                      (propertize " resolved"
+                                  'font-lock-face '(:inherit shadow
+                                                             :weight bold)))
+            ""))
          (outdated-suffix (if is-outdated " [OUTDATED]" ""))
          (header-without-suffixes (format "%s%s%s%s (%s)"
                                          (or icon "")
@@ -5489,6 +5496,7 @@ Returns (octicon . color) or nil."
     ("pin" '("pin" . "#0366d6"))                                     ; Blue - Pinned comment
     ("linked-issue" '("link" . "#8250df"))                           ; Purple - PR to tracker issue link
     ("video" '("play" . "#0366d6"))                                  ; Blue - Video play button
+    ("resolved" '("check-circle-fill" . "#28a745"))                  ; Green - Resolved review thread
     (_ nil)))
 
 (defun shipit--get-pr-field-icon (field-type emoji-fallback)

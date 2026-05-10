@@ -642,7 +642,14 @@ currently displayed.")
   "Return PR inline comments matching the current file (non-outdated only).
 Looks them up by walking the buffer-list for any buffer whose
 `shipit--cached-inline-comments' is set -- typically the
-PR's magit buffer."
+PR\='s magit buffer.
+
+Each returned comment is tagged with `(is_resolved . t/nil)'
+based on the magit buffer\='s
+`shipit--cached-resolved-threads' so the overlay renderer
+can surface the resolved state in the file view (the magit
+view already shows a `[RESOLVED]' suffix; the overlay
+rendering had no equivalent before this)."
   (let* ((file (buffer-file-name))
          (root (and file (shipit--get-repo-root)))
          (rel (and file root (file-relative-name file root)))
@@ -652,18 +659,49 @@ PR's magit buffer."
              (buffer-local-value 'shipit--cached-inline-comments b))
            (buffer-list))))
     (when (and magit-buf rel)
-      (cl-remove-if-not
-       (lambda (c)
-         (let ((path (cdr (assq 'path c)))
-               (outdated (cdr (assq 'outdated c))))
-           (and path (string= path rel) (not outdated))))
-       (buffer-local-value 'shipit--cached-inline-comments magit-buf)))))
+      (let ((filtered
+             (cl-remove-if-not
+              (lambda (c)
+                (let ((path (cdr (assq 'path c)))
+                      (outdated (cdr (assq 'outdated c))))
+                  (and path (string= path rel) (not outdated))))
+              (buffer-local-value 'shipit--cached-inline-comments
+                                  magit-buf))))
+        ;; Tag each comment with resolved status looked up in
+        ;; the magit buffer\='s resolved-threads cache.  The
+        ;; lookup MUST run inside the magit buffer because
+        ;; `shipit--cached-resolved-threads' is `defvar-local'.
+        (with-current-buffer magit-buf
+          (mapcar
+           (lambda (c)
+             (let* ((id (cdr (assq 'id c)))
+                    (resolved (and id
+                                   (shipit--is-comment-in-resolved-thread
+                                    id))))
+               (cons (cons 'is_resolved (and resolved t)) c)))
+           filtered))))))
 
 (defun shipit-review--render-inline-comment (comment)
-  "Build the multi-line `after-string' for an inline COMMENT overlay."
+  "Build the multi-line `after-string' for an inline COMMENT overlay.
+When COMMENT carries `(is_resolved . t)' (set by
+`--inline-comments-for-file' from the magit buffer\='s
+resolved-threads cache), append a `✓ resolved' chip after
+the timestamp and dim the body via `shadow' face appended
+to the existing body face -- so resolved threads are
+visibly de-emphasised without disappearing."
   (let* ((user (cdr (assq 'login (cdr (assq 'user comment)))))
          (body (or (cdr (assq 'body comment)) ""))
          (timestamp (cdr (assq 'created_at comment)))
+         (resolved (cdr (assq 'is_resolved comment)))
+         (resolved-chip
+          (when resolved
+            (concat " "
+                    (if (fboundp 'shipit--get-pr-field-icon)
+                        (shipit--get-pr-field-icon "resolved" "✓")
+                      "✓")
+                    (propertize " resolved"
+                                'face '(:inherit shadow
+                                                 :weight bold)))))
          (header
           (concat
            (propertize (format "  💬 %s" (or user "?"))
@@ -671,15 +709,20 @@ PR's magit buffer."
            (when (and timestamp (stringp timestamp))
              (concat " "
                      (propertize timestamp
-                                 'face 'shipit-inline-comment-timestamp-face)))))
+                                 'face 'shipit-inline-comment-timestamp-face)))
+           resolved-chip))
          (body-lines
           (mapconcat (lambda (l) (concat "     " l))
                      (split-string body "\n")
-                     "\n")))
-    (concat "\n" header "\n"
-            (propertize body-lines
-                        'face 'shipit-inline-comment-body-face)
-            "\n")))
+                     "\n"))
+         (body-rendered (copy-sequence body-lines)))
+    (add-face-text-property 0 (length body-rendered)
+                            'shipit-inline-comment-body-face
+                            t body-rendered)
+    (when resolved
+      (add-face-text-property 0 (length body-rendered)
+                              'shadow t body-rendered))
+    (concat "\n" header "\n" body-rendered "\n")))
 
 (defun shipit-review--show-inline-comments ()
   "Create overlays for PR inline comments in the current file buffer."

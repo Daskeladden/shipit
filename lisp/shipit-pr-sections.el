@@ -2774,7 +2774,10 @@ The total count shown should be the sum of all comments (active + outdated + res
                                 (format " 🕐 %d" outdated-count)
                               ""))
         (resolved-indicator (if (and resolved-count (> resolved-count 0))
-                                (format " ✅ %d" resolved-count)
+                                (format " %s %d"
+                                        (shipit--get-pr-field-icon
+                                         "resolved" "✅")
+                                        resolved-count)
                               "")))
     (concat active-indicator outdated-indicator resolved-indicator)))
 

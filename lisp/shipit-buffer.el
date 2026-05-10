@@ -1309,6 +1309,45 @@ REPO is the repository, PR-NUMBER is the PR number."
           (shipit--fetch-file-viewed-states-async
            repo pr-number target-buffer))
 
+        ;; Fetch resolved review-threads async via GraphQL.  The
+        ;; incremental path doesn\='t fetch these by default --
+        ;; only the older `parallel-sync' path did -- so the
+        ;; `[RESOLVED]' suffix on inline comments was always
+        ;; missing.  Fire in parallel with the other fetches and
+        ;; on callback (a) cache, (b) invalidate the resolved-
+        ;; comments hash, (c) re-render the files section if its
+        ;; data is already in `shipit-buffer-pr-data' so the
+        ;; resolved markers appear without a manual refresh.
+        (when (and repo pr-number)
+          (let* ((owner-repo (split-string repo "/"))
+                 (owner (car owner-repo))
+                 (repo-name (cadr owner-repo)))
+            (when (and owner repo-name (fboundp 'shipit--fetch-resolved-threads-graphql))
+              (shipit--fetch-resolved-threads-graphql
+               owner repo-name pr-number
+               (lambda (threads)
+                 (shipit--debug-log
+                  "INCREMENTAL: Resolved threads callback with %d threads"
+                  (if (sequencep threads) (length threads) 0))
+                 (when (buffer-live-p target-buffer)
+                   (with-current-buffer target-buffer
+                     (setq shipit--cached-resolved-threads
+                           (or threads '()))
+                     (setq shipit--resolved-comments-hash nil)
+                     ;; Re-render the files section if files data
+                     ;; landed already.  When resolved-threads
+                     ;; arrives first, the next files render reads
+                     ;; the populated cache automatically.
+                     (let ((files (and shipit-buffer-pr-data
+                                       (alist-get 'files
+                                                  shipit-buffer-pr-data))))
+                       (when files
+                         (let ((magit-root-section
+                                (or magit-root-section root-section)))
+                           (shipit--replace-files-section-with-content
+                            repo pr-data-copy pr-number files
+                            shipit-buffer-files-truncated)))))))))))
+
         ;; Fetch checks async - pass pr-data to avoid extra API call
         (shipit--fetch-checks-async
          repo pr-number pr-data-copy

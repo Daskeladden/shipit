@@ -280,11 +280,33 @@ first expansion of the surrounding section."
                        (substring sha 0 (min 7 (length sha))))
                'font-lock-face 'shipit-review-history-meta-face))))))
 
-(defun shipit-review-history--insert-commit (commit in-pr-p current-sha)
+(defun shipit-review-history--sha-matches-p (sha target)
+  "Return non-nil when SHA and TARGET refer to the same commit.
+Tolerates short / long mismatches by checking both prefixes."
+  (and sha target
+       (or (string= sha target)
+           (string-prefix-p sha target)
+           (string-prefix-p target sha))))
+
+(defun shipit-review-history--insert-commit (commit in-pr-p current-shas)
   "Insert one COMMIT as a collapsible magit-section.
-IN-PR-P controls the PR-marker glyph.  When the commit's SHA
-matches CURRENT-SHA the heading row is rendered with
-`shipit-review-history-current-face' and prefixed with `\u25b6'.
+IN-PR-P controls the PR-marker glyph.
+
+CURRENT-SHAS is a cons (SOURCE-SHA . SIDE-SHA) from
+`--current-shas-from': SOURCE-SHA marks the B / HEAD side,
+SIDE-SHA marks the A / prev side.  Either may be nil.  The
+heading\\='s cursor glyph encodes which buffer(s) point at
+this commit:
+
+  `AB ' -- both A and B (same commit, e.g. when H is off
+           or when M-n/M-p stepped A to source\\='s SHA)
+  `A  ' -- only A (H side\\='s prev-change commit)
+  `B  ' -- only B (source\\='s displayed commit)
+  `   ' -- neither buffer is at this row
+
+When either matches, the row also gets
+`shipit-review-history-current-face' applied so the row
+visually pops alongside the marker.
 
 Each commit row is its own `magit-insert-section', so TAB
 toggles between the one-line heading and an expanded body that
@@ -299,14 +321,22 @@ section starts collapsed."
          (subject (plist-get commit :subject))
          (added (plist-get commit :added))
          (removed (plist-get commit :removed))
-         (current-p (and current-sha sha
-                         (or (string= current-sha sha)
-                             (string-prefix-p sha current-sha)
-                             (string-prefix-p current-sha sha))))
-         (cursor (if current-p
-                     (propertize "\u25b6 " 'font-lock-face
-                                 'shipit-review-history-current-face)
-                   "  "))
+         (source-sha (car-safe current-shas))
+         (side-sha (cdr-safe current-shas))
+         (b-match (shipit-review-history--sha-matches-p sha source-sha))
+         (a-match (shipit-review-history--sha-matches-p sha side-sha))
+         (current-p (or a-match b-match))
+         (marker-face '(:weight bold
+                                :inherit
+                                shipit-review-history-current-face))
+         (cursor (cond
+                  ((and a-match b-match)
+                   (propertize "AB " 'font-lock-face marker-face))
+                  (a-match
+                   (propertize "A  " 'font-lock-face marker-face))
+                  (b-match
+                   (propertize "B  " 'font-lock-face marker-face))
+                  (t "   ")))
          (dot (if in-pr-p
                   (propertize "\u25cf " 'font-lock-face
                               'shipit-review-history-pr-marker-face)
@@ -355,7 +385,7 @@ section starts collapsed."
 
 (defun shipit-review-history--render
     (buffer worktree-path file-path commits pr-shas source-buffer
-            &optional current-sha)
+            &optional current-shas)
   "Populate BUFFER with the parsed COMMITS for FILE-PATH.
 PR-SHAS is the set of full SHAs that belong to the PR; commits
 whose SHA matches go in the `In PR' group, all others in
@@ -382,8 +412,17 @@ file-affecting in-PR commit, so the timeline always shows
       (setq-local shipit-review-history--source-buffer source-buffer)
       (setq-local shipit-review-history--commits commits)
       (setq-local shipit-review-history--pr-shas pr-shas)
-      (setq-local shipit-review-history--current-sha current-sha)
-      (let* ((pr-shas-set (let ((h (make-hash-table :test 'equal)))
+      ;; Backward compat: callers may still pass a plain SHA string.
+      ;; Promote to (source-sha . nil) so downstream code uses the
+      ;; cons form uniformly.
+      (when (stringp current-shas)
+        (setq current-shas (cons current-shas nil)))
+      (let* ((source-sha (car-safe current-shas))
+             (side-sha   (cdr-safe current-shas))
+             (current-sha (or side-sha source-sha)))
+        (setq-local shipit-review-history--current-sha current-sha))
+      (let* ((source-sha (car-safe current-shas))
+             (pr-shas-set (let ((h (make-hash-table :test 'equal)))
                             (dolist (s pr-shas) (puthash s t h))
                             h))
              (in-pr (cl-remove-if-not
@@ -398,15 +437,25 @@ file-affecting in-PR commit, so the timeline always shows
                        (seq-take rest shipit-review-history-pre-pr-limit)
                      rest))
              (current-matches
-              (and current-sha
+              (and source-sha
                    (cl-some (lambda (c)
-                              (string= (plist-get c :sha) current-sha))
+                              (string= (plist-get c :sha) source-sha))
                             commits)))
-             (effective-current
+             ;; Effective B-side fallback: pin to newest commit when
+             ;; source-sha doesn\='t match any file-affecting commit.
+             (effective-source
               (cond
-               (current-matches current-sha)
+               (current-matches source-sha)
                (commits (plist-get (car commits) :sha))
-               (t nil))))
+               (t nil)))
+             ;; Pass both source + side as the cons to insert-commit.
+             ;; No fallback on the A side -- if side-sha doesn\='t
+             ;; match a commit row, just don\='t render an A marker.
+             (effective-shas (cons effective-source
+                                   (cdr-safe current-shas)))
+             ;; Bound for the post-render scroll lookup below.
+             (effective-current effective-source)
+             (current-sha source-sha))
         ;; Display oldest -> newest, top -> bottom, so `n' (= newer)
         ;; reads as moving down and `p' (= older) as moving up.
         ;; "Before PR" group sits above "In PR" because the pre-PR
@@ -438,7 +487,7 @@ file-affecting in-PR commit, so the timeline always shows
                            (if (= 1 (length rest-asc)) "commit" "commits"))
                    'font-lock-face 'bold))
                 (dolist (c rest-asc)
-                  (shipit-review-history--insert-commit c nil effective-current))
+                  (shipit-review-history--insert-commit c nil effective-shas))
                 (insert "\n")))
              ((not in-pr-asc)
               (insert (propertize
@@ -453,7 +502,7 @@ file-affecting in-PR commit, so the timeline always shows
                            (if (= 1 (length in-pr-asc)) "commit" "commits"))
                    'font-lock-face 'shipit-review-history-pr-marker-face))
                 (dolist (c in-pr-asc)
-                  (shipit-review-history--insert-commit c t effective-current))))))
+                  (shipit-review-history--insert-commit c t effective-shas))))))
         (when (fboundp 'shipit--debug-log)
           (shipit--debug-log
            "TIMELINE-RENDER-PRE: current-sha=%s current-matches=%s effective-current=%s commits=%d in-pr=%d rest=%d"
@@ -848,11 +897,11 @@ Read-only, with the same major mode the live file uses."
   "Return the SHA the active side is currently displaying, or nil.
 When `--active-history-side' is \\='history and the H side
 buffer is alive, returns the side\\='s `--side-prev-sha';
-otherwise returns the source\\='s `--displayed-sha'.  The
-timeline highlights whichever commit the user is stepping
-through -- if they\\='re walking A (H side), the highlight
-follows A\\='s SHA; if walking B (source), it follows
-source\\='s SHA."
+otherwise returns the source\\='s `--displayed-sha'.
+
+Kept for callers that want a single active SHA; the
+timeline renderer uses `--current-shas-from' to mark both
+buffers\\=' positions with `A' / `B' instead."
   (when (buffer-live-p source-buffer)
     (with-current-buffer source-buffer
       (cond
@@ -866,6 +915,29 @@ source\\='s SHA."
        (t
         (and (boundp 'shipit-review--displayed-sha)
              shipit-review--displayed-sha))))))
+
+(defun shipit-review-history--current-shas-from (source-buffer)
+  "Return `(SOURCE-SHA . SIDE-SHA)' -- where each buffer points.
+SOURCE-SHA is the source review buffer\\='s `--displayed-sha'
+(the B / HEAD side); SIDE-SHA is the H side buffer\\='s
+`--side-prev-sha' (the A / prev side), or nil when H is
+off.  Either may be nil.
+
+The timeline renderer uses these to mark each buffer\\='s
+current commit with an `A' or `B' glyph -- the user sees
+at a glance where both buffers point in history."
+  (when (buffer-live-p source-buffer)
+    (with-current-buffer source-buffer
+      (cons
+       (and (boundp 'shipit-review--displayed-sha)
+            shipit-review--displayed-sha)
+       (and (boundp 'shipit-review--history-shown)
+            shipit-review--history-shown
+            (boundp 'shipit-review--history-side-buffer)
+            shipit-review--history-side-buffer
+            (buffer-live-p shipit-review--history-side-buffer)
+            (buffer-local-value 'shipit-review--side-prev-sha
+                                shipit-review--history-side-buffer))))))
 
 (defun shipit-review-history--launch (worktree file source &optional reuse-buffer)
   "Common launcher: fetch + render into REUSE-BUFFER (or a new one)."
@@ -884,7 +956,7 @@ source\\='s SHA."
        (shipit-review-history--render
         buf worktree file commits
         (shipit-review-history--pr-shas source) source
-        (shipit-review-history--current-sha-from source))))))
+        (shipit-review-history--current-shas-from source))))))
 
 ;;;###autoload
 (defun shipit-review-history-buffer-for-file (file-path)
@@ -924,17 +996,20 @@ re-running `git log', so the refresh is essentially free."
         (when (fboundp 'shipit--debug-log)
           (shipit--debug-log "REHIGHLIGHT: timeline buffer dead for file=%s" file)))
        (t
-        (let ((current (shipit-review-history--current-sha-from source-buffer))
+        (let ((current (shipit-review-history--current-shas-from source-buffer))
               (commits (buffer-local-value 'shipit-review-history--commits buf))
               (pr-shas (buffer-local-value 'shipit-review-history--pr-shas buf)))
           (cond
            (commits
             (when (fboundp 'shipit--debug-log)
-              (shipit--debug-log
-               "REHIGHLIGHT: rendering buf=%s file=%s current=%s commits=%d"
-               (buffer-name buf) file
-               (if current (substring current 0 7) "nil")
-               (length commits)))
+              (let ((src (car-safe current))
+                    (side (cdr-safe current)))
+                (shipit--debug-log
+                 "REHIGHLIGHT: rendering buf=%s file=%s B=%s A=%s commits=%d"
+                 (buffer-name buf) file
+                 (if src (substring src 0 (min 7 (length src))) "nil")
+                 (if side (substring side 0 (min 7 (length side))) "nil")
+                 (length commits))))
             (shipit-review-history--render
              buf worktree file commits pr-shas source-buffer current))
            (t

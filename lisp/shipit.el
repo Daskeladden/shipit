@@ -78,6 +78,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   (require 'shipit-checks)   ; Load CI checks
   (require 'shipit-notifications)
   ;; Load review mode modules
+  (require 'shipit-review-history)  ; H side window helpers, ediff
   (require 'shipit-review-mode)
   (require 'shipit-review-revision)
   (require 'shipit-debug)

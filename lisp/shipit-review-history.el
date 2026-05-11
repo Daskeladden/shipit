@@ -845,11 +845,27 @@ Read-only, with the same major mode the live file uses."
           (cons worktree (file-relative-name file worktree)))))))
 
 (defun shipit-review-history--current-sha-from (source-buffer)
-  "Return the SHA the SOURCE-BUFFER review-mode buffer is showing, or nil."
+  "Return the SHA the active side is currently displaying, or nil.
+When `--active-history-side' is \\='history and the H side
+buffer is alive, returns the side\\='s `--side-prev-sha';
+otherwise returns the source\\='s `--displayed-sha'.  The
+timeline highlights whichever commit the user is stepping
+through -- if they\\='re walking A (H side), the highlight
+follows A\\='s SHA; if walking B (source), it follows
+source\\='s SHA."
   (when (buffer-live-p source-buffer)
     (with-current-buffer source-buffer
-      (and (boundp 'shipit-review--displayed-sha)
-           shipit-review--displayed-sha))))
+      (cond
+       ((and (boundp 'shipit-review--active-history-side)
+             (eq shipit-review--active-history-side 'history)
+             (boundp 'shipit-review--history-side-buffer)
+             shipit-review--history-side-buffer
+             (buffer-live-p shipit-review--history-side-buffer))
+        (buffer-local-value 'shipit-review--side-prev-sha
+                            shipit-review--history-side-buffer))
+       (t
+        (and (boundp 'shipit-review--displayed-sha)
+             shipit-review--displayed-sha))))))
 
 (defun shipit-review-history--launch (worktree file source &optional reuse-buffer)
   "Common launcher: fetch + render into REUSE-BUFFER (or a new one)."

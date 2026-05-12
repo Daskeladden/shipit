@@ -2450,33 +2450,33 @@ itself).  `default-directory' must already be a worktree root."
                   :subject subject)))))))
 
 (defun shipit-review--history-chain (rel-path range)
-  "List of plists for ALL commits that touched RANGE in REL-PATH.
+  "List of plists for ALL commits that touched REL-PATH.
 Newest-first, walking from `shipit-review--head-sha' /
-HEAD backwards (NOT from BASE) so the PR\='s own commits
-are part of the chain too -- a PR with N intermediate
-commits affecting a file should let the reviewer walk
-those commits via `M-n' / `M-p' before stepping into
-pre-PR history.  Drives `M-n' / `M-p' navigation through
-previous changes in the side window.
+HEAD backwards.  RANGE is accepted for signature symmetry
+with `--previous-change-info' / future extensions but
+currently unused -- the chain itself is FILE-level
+(`git log --follow' on REL-PATH, no `-L' restriction).
+
+A previous line-restricted version made M-n / M-p on the
+A side run out almost immediately for hunks with sparse
+history (the `I am stuck at the oldest commit (outside
+PR commits)' report).  File-level lets the user walk the
+file''s full pre-PR history while initial H placement
+stays hunk-aware: `--previous-change-info' still finds
+the line-touching commit, and the caller positions the
+chain index there via `cl-position'.
 
 Same plist shape as `--previous-change-info'
-(`:sha :short :author :time :ago :subject').
-
-`git log -L' interleaves a metadata line per commit with
-the diff body for that commit.  We filter the output to
-metadata lines (4 tab-separated fields where field 0 is a
-40-char hex SHA) and ignore the diff content."
-  (let* ((start (car range))
-         (end (cdr range))
-         (head (or shipit-review--head-sha "HEAD"))
+(`:sha :short :author :time :ago :subject')."
+  (ignore range)
+  (let* ((head (or shipit-review--head-sha "HEAD"))
          (output
           (with-temp-buffer
             (when (zerop (process-file
                           "git" nil (list t nil) nil
-                          "log"
+                          "log" "--follow"
                           "--format=%H%x09%an%x09%at%x09%s"
-                          (format "-L%d,%d:%s" start end rel-path)
-                          head))
+                          head "--" rel-path))
               (buffer-string)))))
     (when (and output (not (string-empty-p output)))
       (let (chain)

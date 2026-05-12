@@ -124,6 +124,7 @@ Each function is called with SECTION. Return non-nil if handled.")
 ;; Forward declarations for shipit command functions
 (declare-function shipit-dwim "shipit-commands")
 (declare-function shipit-comment "shipit-commands")
+(declare-function shipit-worktree "shipit-commands")
 (declare-function shipit-approve "shipit-commands")
 (declare-function shipit-suggestion-or-approve "shipit-pr-actions")
 (declare-function shipit-merge "shipit-pr-actions")
@@ -598,6 +599,9 @@ section and search for the child by name."
     (define-key map (kbd "M") #'shipit-mark-all-files-viewed)
     ;; Merge
     (define-key map (kbd "M-m") #'shipit-merge)
+    ;; Worktree actions transient (`Z' to mirror magit\\='s
+    ;; worktree-popup binding).
+    (define-key map (kbd "Z") #'shipit-worktree)
     ;; Subscription
     (define-key map (kbd "w") #'shipit-repo-subscription)
     (define-key map (kbd "+") 'shipit-load-more-files)

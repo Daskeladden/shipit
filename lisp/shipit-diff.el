@@ -425,13 +425,28 @@ If LINE-NUMBER is provided, position cursor on that line."
            ("from worktree (may differ from PR)"
             (let ((full-path (expand-file-name file-path worktree-path)))
               (shipit--debug-log "Opening file from out-of-sync worktree: %s" full-path)
-              (if (file-exists-p full-path)
-                  (progn
-                    (find-file full-path)
-                    (when line-number
-                      (goto-char (point-min))
-                      (forward-line (1- line-number))))
-                (user-error "File not found in worktree: %s" file-path))))
+              (cond
+               ((file-exists-p full-path)
+                (find-file full-path)
+                ;; Worktree is out-of-sync but the buffer\\='s file
+                ;; IS a real worktree file, so review mode is just
+                ;; as relevant -- enable it so the user gets the
+                ;; legend / overlays.  Diff overlays will compare
+                ;; the (possibly stale) worktree against PR
+                ;; HEAD..BASE, which is the right reference
+                ;; regardless of worktree freshness.
+                (setq-local shipit-review--pr-data pr-data)
+                (setq-local shipit-review--head-sha pr-head-sha)
+                (setq-local shipit-review--base-sha
+                            (if (fboundp 'shipit-review--resolve-base-sha)
+                                (shipit-review--resolve-base-sha pr-data worktree-path)
+                              (cdr (assq 'sha (cdr (assq 'base pr-data))))))
+                (when (fboundp 'shipit-review-mode)
+                  (shipit-review-mode 1))
+                (when line-number
+                  (goto-char (point-min))
+                  (forward-line (1- line-number))))
+               (t (user-error "File not found in worktree: %s" file-path)))))
            ("at PR revision (read-only)"
             (shipit--open-file-at-revision file-path pr-head-sha line-number worktree-path pr-repo))
            ("sync worktree first"
@@ -439,13 +454,24 @@ If LINE-NUMBER is provided, position cursor on that line."
               (let ((branch (cdr (assq 'ref (cdr (assq 'head pr-data))))))
                 (if (shipit--sync-worktree worktree-path branch)
                     (let ((full-path (expand-file-name file-path worktree-path)))
-                      (if (file-exists-p full-path)
-                          (progn
-                            (find-file full-path)
-                            (when line-number
-                              (goto-char (point-min))
-                              (forward-line (1- line-number))))
-                        (user-error "File not found in worktree: %s" file-path)))
+                      (cond
+                       ((file-exists-p full-path)
+                        (find-file full-path)
+                        ;; Worktree is now in-sync -- enable review
+                        ;; mode the same way the 'in-sync branch
+                        ;; above does.
+                        (setq-local shipit-review--pr-data pr-data)
+                        (setq-local shipit-review--head-sha pr-head-sha)
+                        (setq-local shipit-review--base-sha
+                                    (if (fboundp 'shipit-review--resolve-base-sha)
+                                        (shipit-review--resolve-base-sha pr-data worktree-path)
+                                      (cdr (assq 'sha (cdr (assq 'base pr-data))))))
+                        (when (fboundp 'shipit-review-mode)
+                          (shipit-review-mode 1))
+                        (when line-number
+                          (goto-char (point-min))
+                          (forward-line (1- line-number))))
+                       (t (user-error "File not found in worktree: %s" file-path))))
                   (user-error "Failed to sync worktree"))))))))
 
       (_

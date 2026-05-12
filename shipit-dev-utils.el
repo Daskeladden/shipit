@@ -278,6 +278,25 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
             (error (message "Error refreshing shipit buffer %s: %s"
                           (buffer-name) (error-message-string err)))))))
 
+    ;; 8b. Kill cached display buffers whose CONTENTS are baked from the
+    ;; reloaded code (legend layout, etc.).  Without this the buffer
+    ;; survives the reload with stale text even though every
+    ;; function-cell is fresh -- user-facing symptom: \"I don't see
+    ;; the new changes\" after a layout commit.
+    (dolist (name (list "*shipit diff actions*"))
+      (when-let ((buf (get-buffer name)))
+        (let ((win (get-buffer-window buf t)))
+          (when (window-live-p win)
+            (condition-case nil (delete-window win) (error nil))))
+        (condition-case nil (kill-buffer buf) (error nil))))
+    ;; 8c. Reset cross-session toggles that `defvar' won't touch on
+    ;; reload (defvar only initialises unbound vars).  Without this
+    ;; the user is stuck on whichever expand state was last toggled
+    ;; via `?', and a layout edit to the minimal view never seems
+    ;; to take effect because the var is t from a prior session.
+    (when (boundp 'shipit-review--actions-legend-expanded)
+      (setq shipit-review--actions-legend-expanded nil))
+
     ;; 9. Re-engage shipit-review-mode in any worktree file buffers so they
     ;; pick up freshly-loaded function definitions.  Killing the buffer
     ;; would lose unsaved edits; toggling the minor mode off + on re-runs

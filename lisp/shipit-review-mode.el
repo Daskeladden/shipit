@@ -441,6 +441,11 @@ active side."
     (define-key map (kbd "r")   #'shipit-review-menu)
     ;; Swap which window M-n / M-p navigate when H is active
     (define-key map (kbd "s")   #'shipit-review-toggle-active-side)
+    ;; Inline comments (add / edit / reply / react)
+    (define-key map (kbd "c")   #'shipit-review-add-inline-comment)
+    (define-key map (kbd "C")   #'shipit-review-edit-comment-at-point)
+    (define-key map (kbd "y")   #'shipit-review-reply-to-comment-at-point)
+    (define-key map (kbd "+")   #'shipit-review-react-to-comment-at-point)
     ;; Toggle minimal / full legend (ediff `?' convention)
     (define-key map (kbd "?")   #'shipit-review--actions-legend-toggle-expand)
     ;; Quit review session (ediff-style: tear down all temp buffers
@@ -470,20 +475,28 @@ the minimal one-line legend, mirroring ediff\\='s control
 panel which only expands the long menu on demand.")
 
 (defun shipit-review--actions-legend-minimal ()
-  "Build the minimal one-line legend (ediff-style default)."
+  "Build the minimal one-line legend (ediff-style default).
+Keeps the essentials -- hunk nav, commit walk, H, quit --
+and reserves visible space for the `Press ? to expand'
+hint so first-time users know where to find the rest."
   (let ((key-face '(:weight bold :inherit font-lock-keyword-face)))
     (concat
      "\n  "
-     (propertize "n" 'face key-face) " next  "
-     (propertize "p" 'face key-face) " prev   "
-     (propertize "M-n/M-p" 'face key-face) " walk commits  "
-     (propertize "s" 'face key-face) " swap side   "
-     (propertize "H" 'face key-face) " side  "
-     (propertize "?" 'face key-face) " more  "
-     (propertize "q" 'face key-face) " quit\n")))
+     (propertize "n" 'face key-face) " next   "
+     (propertize "p" 'face key-face) " prev    "
+     (propertize "M-n/M-p" 'face key-face) " walk commits    "
+     (propertize "H" 'face key-face) " side    "
+     (propertize "q" 'face key-face) " quit\n  "
+     (propertize "Press " 'face 'shadow)
+     (propertize "?" 'face key-face)
+     (propertize " to expand menu" 'face 'shadow)
+     "\n")))
 
 (defun shipit-review--actions-legend-full ()
-  "Build the full multi-line legend (~7 content rows)."
+  "Build the full multi-line legend with grouped sections.
+Four column groups (Navigate, Overlays, Drill down,
+Comments) plus a trailing row for session-level actions
+(`s' swap, `?' contract, `q' quit)."
   (let ((key-face '(:weight bold :inherit font-lock-keyword-face))
         (sect (lambda (label)
                 (propertize label 'face
@@ -497,23 +510,29 @@ panel which only expands the long menu on demand.")
      (funcall sect "Overlays ")
      "            "
      (funcall sect "Drill down")
+     "         "
+     (funcall sect "Comments")
      "\n"
      "  "
      (propertize "n"   'face key-face) " next hunk    "
      (propertize "o"   'face key-face) " diff overlays   "
-     (propertize "t"   'face key-face) " toggle timeline\n"
+     (propertize "t"   'face key-face) " toggle timeline    "
+     (propertize "c"   'face key-face) " add\n"
      "  "
      (propertize "p"   'face key-face) " prev hunk    "
      (propertize "i"   'face key-face) " inline comments "
-     (propertize "b"   'face key-face) " toggle blame\n"
+     (propertize "b"   'face key-face) " toggle blame       "
+     (propertize "C"   'face key-face) " edit\n"
      "  "
      (propertize "M-n" 'face key-face) " newer cmt   "
      (propertize "m"   'face key-face) " commit message  "
-     (propertize "e"   'face key-face) " ediff vs H side\n"
+     (propertize "e"   'face key-face) " ediff vs H side    "
+     (propertize "y"   'face key-face) " reply\n"
      "  "
      (propertize "M-p" 'face key-face) " older cmt   "
      (propertize "H"   'face key-face) " previous change "
-     (propertize "r"   'face key-face) " review menu\n"
+     (propertize "r"   'face key-face) " review menu        "
+     (propertize "+"   'face key-face) " react\n"
      "  "
      (propertize "s" 'face key-face)
      " swap active side (M-n/M-p target: A or B)    "
@@ -540,7 +559,7 @@ panel and the expanded view doesn\\='t scroll off the top."
         (set-buffer-modified-p nil))
       (let ((win (get-buffer-window buf t))
             (target-height
-             (if shipit-review--actions-legend-expanded 7 3)))
+             (if shipit-review--actions-legend-expanded 8 4)))
         (when (window-live-p win)
           (with-selected-window win
             (let ((window-min-height 1))
@@ -558,16 +577,39 @@ binding which expands / contracts its control-panel menu."
   (shipit-review--render-actions-legend))
 
 (defun shipit-review--actions-legend-buffer ()
-  "Return the legend buffer, creating it if needed."
-  (or (get-buffer shipit-review--actions-buffer-name)
-      (with-current-buffer (get-buffer-create
-                            shipit-review--actions-buffer-name)
-        (shipit-review-actions-mode)
-        (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (shipit-review--actions-legend-content)))
-        (set-buffer-modified-p nil)
-        (current-buffer))))
+  "Return the legend buffer, creating + always refreshing it.
+Re-inserts the formatted content on every call (cheap --
+just a buffer erase + string concat) so reloads / source
+edits to the legend builders show up immediately without
+the user having to kill the legend buffer manually.  The
+buffer name and major mode are preserved across refreshes."
+  (let ((buf (or (get-buffer shipit-review--actions-buffer-name)
+                 (get-buffer-create
+                  shipit-review--actions-buffer-name))))
+    (with-current-buffer buf
+      (unless (derived-mode-p 'shipit-review-actions-mode)
+        (shipit-review-actions-mode))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (shipit-review--actions-legend-content)))
+      (set-buffer-modified-p nil))
+    buf))
+
+(defun shipit-review-refresh-legend ()
+  "Force-rebuild the diff-actions legend buffer.
+Kills any cached `*shipit diff actions*' buffer and re-pops
+it so freshly-loaded `--actions-legend-content' /
+`--actions-legend-minimal' / `--actions-legend-full' code
+is used.  Useful after a `shipit-reload' when the legend
+window\='s text appears stale even though the function
+cells were refreshed."
+  (interactive)
+  (when-let ((buf (get-buffer shipit-review--actions-buffer-name)))
+    (let ((win (get-buffer-window buf t)))
+      (when (window-live-p win)
+        (delete-window win)))
+    (kill-buffer buf))
+  (shipit-review--show-actions-legend))
 
 (defvar shipit-review--saved-window-config nil
   "Window configuration captured at review-session start.
@@ -596,7 +638,7 @@ not the layout after the H side window opened."
       (unless shipit-review--saved-window-config
         (setq shipit-review--saved-window-config
               (current-window-configuration)))
-      (let ((height (if shipit-review--actions-legend-expanded 7 3)))
+      (let ((height (if shipit-review--actions-legend-expanded 8 4)))
         (display-buffer
          buf
          `((display-buffer-in-side-window)
@@ -1149,12 +1191,13 @@ face appended to the existing body face."
                                                  :weight bold)))))
          (header
           (concat
-           (propertize (format "  💬 %s" (or user "?"))
-                       'face 'shipit-inline-comment-username-face)
+           "  💬 "
+           (propertize (or user "?")
+                       'face 'shipit-username-face)
            (when (and timestamp (stringp timestamp))
-             (concat " "
+             (concat (propertize " • " 'face 'shadow)
                      (propertize timestamp
-                                 'face 'shipit-inline-comment-timestamp-face)))
+                                 'face 'shipit-timestamp-face)))
            resolved-chip))
          (body-line-strings
           (mapcar (lambda (l)
@@ -3038,6 +3081,167 @@ up."
                           shipit-review--history-chain))))
       (when info
         (shipit-review--apply-history-overlay info)))))
+
+(defun shipit-review--locate-magit-buffer ()
+  "Return the magit PR buffer that owns this review session, or nil.
+Identified by holding `shipit-buffer-pr-number' equal to
+the source review buffer\='s PR.  Used as the
+`:source-buffer' for the shipit-editor so live preview
+renders into the PR buffer\='s comment section."
+  (let ((target-pr
+         (and (boundp 'shipit-review--pr-data)
+              shipit-review--pr-data
+              (cdr (assq 'number shipit-review--pr-data)))))
+    (and target-pr
+         (cl-loop for buf in (buffer-list)
+                  when (and (buffer-local-value 'shipit-buffer-pr-number buf)
+                            (equal (buffer-local-value
+                                    'shipit-buffer-pr-number buf)
+                                   target-pr))
+                  return buf))))
+
+(defun shipit-review--pr-repo ()
+  "Return the `owner/repo' slug for the current review buffer."
+  (or (and shipit-review--pr-data
+           (cdr (assq 'full_name
+                      (cdr (assq 'repo
+                                 (cdr (assq 'base shipit-review--pr-data)))))))
+      (shipit--get-repo-from-remote)))
+
+(defun shipit-review--inline-comments-at-line (line)
+  "Return inline comments in the source file whose `line' equals LINE."
+  (cl-remove-if-not
+   (lambda (c) (equal (cdr (assq 'line c)) line))
+   (or (shipit-review--inline-comments-for-file) '())))
+
+(defun shipit-review--pick-comment-at-line (line prompt)
+  "Pick one inline comment on LINE via PROMPT, or return nil."
+  (let ((comments (shipit-review--inline-comments-at-line line)))
+    (cond
+     ((null comments) nil)
+     ((= 1 (length comments)) (car comments))
+     (t
+      (let* ((labels
+              (mapcar
+               (lambda (c)
+                 (let* ((user (or (cdr (assq 'login
+                                             (cdr (assq 'user c))))
+                                  "?"))
+                        (body (or (cdr (assq 'body c)) ""))
+                        (first-line
+                         (car (split-string body "\n" t)))
+                        (snippet
+                         (truncate-string-to-width
+                          (or first-line "(empty)") 60 nil nil "...")))
+                   (cons (format "%s: %s" user snippet) c)))
+               comments))
+             (choice (completing-read prompt labels nil t)))
+        (cdr (assoc choice labels)))))))
+
+(defun shipit-review--editor-context (extras)
+  "Build the shipit-editor context for the source review buffer.
+EXTRAS is a plist appended after the common base fields
+(`:source-buffer', `:pr-number', `:repo', `:file-path').
+The base buffer is the magit PR buffer when available so
+the editor\='s live preview renders into the comment
+section; otherwise the file review buffer itself."
+  (let* ((file (buffer-file-name))
+         (root (and file (shipit--get-repo-root)))
+         (rel (and file root (file-relative-name file root)))
+         (pr-number (and shipit-review--pr-data
+                         (cdr (assq 'number shipit-review--pr-data))))
+         (repo (shipit-review--pr-repo))
+         (magit-buf (shipit-review--locate-magit-buffer)))
+    (unless (and rel pr-number repo)
+      (user-error
+       "Cannot resolve comment context (rel=%s pr=%s repo=%s)"
+       rel pr-number repo))
+    (append (list :source-buffer (or magit-buf (current-buffer))
+                  :pr-number pr-number
+                  :repo repo
+                  :file-path rel)
+            extras)))
+
+(defun shipit-review-add-inline-comment ()
+  "Add a new inline comment at the current source line.
+Opens the shipit-editor.  On `C-c C-c' the backend\='s
+add-inline-comment endpoint posts the body and the PR
+buffer refreshes its inline-comments cache; the file
+overlay picks up the new comment on the next `i' toggle."
+  (interactive)
+  (shipit-review--with-source-buffer
+   (lambda ()
+     (shipit-editor-open
+      (shipit-review--editor-context
+       (list :type 'inline-comment
+             :line-number (line-number-at-pos)
+             :side "RIGHT"))))))
+
+(defun shipit-review-reply-to-comment-at-point ()
+  "Reply to an inline comment on the current line.
+Prompts for which comment when multiple exist on the line."
+  (interactive)
+  (shipit-review--with-source-buffer
+   (lambda ()
+     (let* ((line (line-number-at-pos))
+            (target (shipit-review--pick-comment-at-line
+                     line "Reply to comment: ")))
+       (unless target
+         (user-error "No inline comment on line %d to reply to" line))
+       (shipit-editor-open
+        (shipit-review--editor-context
+         (list :type 'reply
+               :line-number line
+               :parent-comment-id (cdr (assq 'id target)))))))))
+
+(defun shipit-review-edit-comment-at-point ()
+  "Edit one of the inline comments on the current line.
+Prompts for which when multiple exist."
+  (interactive)
+  (shipit-review--with-source-buffer
+   (lambda ()
+     (let* ((line (line-number-at-pos))
+            (target (shipit-review--pick-comment-at-line
+                     line "Edit comment: ")))
+       (unless target
+         (user-error "No inline comment on line %d to edit" line))
+       (shipit-editor-open
+        (shipit-review--editor-context
+         (list :type 'inline-comment
+               :line-number line
+               :comment-id (cdr (assq 'id target))
+               :initial-content (or (cdr (assq 'body target)) ""))))))))
+
+(defun shipit-review-react-to-comment-at-point ()
+  "Toggle a reaction on an inline comment at the current line.
+Prompts for the reaction emoji name and then for which
+comment if multiple exist on the line."
+  (interactive)
+  (shipit-review--with-source-buffer
+   (lambda ()
+     (let* ((line (line-number-at-pos))
+            (target (shipit-review--pick-comment-at-line
+                     line "React to comment: "))
+            (repo (shipit-review--pr-repo)))
+       (unless target
+         (user-error "No inline comment on line %d to react to" line))
+       (let* ((reaction
+               (completing-read
+                "Reaction: "
+                '("+1" "-1" "laugh" "hooray"
+                  "confused" "heart" "rocket" "eyes")
+                nil t))
+              (resolved (shipit-comment--resolve-for-repo repo))
+              (backend (car resolved))
+              (config (cdr resolved))
+              (fn (plist-get backend :toggle-reaction)))
+         (unless fn
+           (user-error "Comment backend does not support reactions"))
+         (funcall fn config (cdr (assq 'id target)) reaction t)
+         (message "Toggled %s on comment by %s"
+                  reaction
+                  (or (cdr (assq 'login (cdr (assq 'user target))))
+                      "?")))))))
 
 (defun shipit-review-toggle-active-side ()
   "Swap which side `M-n' / `M-p' navigate.

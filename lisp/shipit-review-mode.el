@@ -1097,14 +1097,53 @@ rendering had no equivalent before this)."
              (buffer-local-value 'shipit--cached-inline-comments b))
            (buffer-list))))
     (when (and magit-buf rel)
-      (let ((filtered
-             (cl-remove-if-not
-              (lambda (c)
-                (let ((path (cdr (assq 'path c)))
-                      (outdated (cdr (assq 'outdated c))))
-                  (and path (string= path rel) (not outdated))))
-              (buffer-local-value 'shipit--cached-inline-comments
-                                  magit-buf))))
+      (let* ((effective-sha (or shipit-review--displayed-sha
+                                shipit-review--head-sha))
+             (worktree (file-name-as-directory
+                        (or (shipit--get-repo-root) default-directory)))
+             ;; Per-call cache for `git merge-base --is-ancestor'
+             ;; lookups -- a typical PR has many comments but only a
+             ;; handful of distinct anchor SHAs, so caching saves
+             ;; tens of git calls when toggling `i'.
+             (anc-cache (make-hash-table :test 'equal))
+             (in-range-p
+              (lambda (anchor)
+                (cond
+                 ;; Defensive show: missing data on either side.
+                 ((null effective-sha) t)
+                 ((null anchor)        t)
+                 (t
+                  (let* ((key (cons anchor effective-sha))
+                         (cached (gethash key anc-cache 'shipit-uncached)))
+                    (cond
+                     ((not (eq cached 'shipit-uncached)) cached)
+                     (t
+                      (let* ((default-directory worktree)
+                             (rc (process-file
+                                  "git" nil nil nil
+                                  "merge-base" "--is-ancestor"
+                                  anchor effective-sha))
+                             (result (zerop rc)))
+                        (puthash key result anc-cache)
+                        result))))))))
+             (filtered
+              (cl-remove-if-not
+               (lambda (c)
+                 (let* ((path (cdr (assq 'path c)))
+                        (outdated (cdr (assq 'outdated c)))
+                        (commit-id (cdr (assq 'commit_id c)))
+                        (orig-id (cdr (assq 'original_commit_id c)))
+                        ;; `original_commit_id' is where the comment
+                        ;; was added (the relevant anchor for
+                        ;; \"is this comment\='s commit reachable
+                        ;; from the displayed SHA\").  Fall back to
+                        ;; `commit_id' when the original is missing.
+                        (anchor (or orig-id commit-id)))
+                   (and path (string= path rel)
+                        (not outdated)
+                        (funcall in-range-p anchor))))
+               (buffer-local-value 'shipit--cached-inline-comments
+                                   magit-buf))))
         ;; Tag each comment with resolved status looked up in
         ;; the magit buffer\='s resolved-threads cache.  The
         ;; lookup MUST run inside the magit buffer because
@@ -1240,6 +1279,15 @@ face appended to the existing body face."
   (dolist (ov shipit-review--inline-comment-overlays)
     (when (overlayp ov) (delete-overlay ov)))
   (setq-local shipit-review--inline-comment-overlays nil))
+
+(defun shipit-review--refresh-inline-comments-if-shown ()
+  "Re-render inline-comment overlays if they were visible.
+No-op when the user has them hidden.  Called after navigation
+that changes `--displayed-sha' so the per-commit filter in
+`--inline-comments-for-file' re-applies."
+  (when shipit-review--inline-comment-overlays
+    (shipit-review--hide-inline-comments)
+    (shipit-review--show-inline-comments)))
 
 (defun shipit-review-toggle-inline-comments ()
   "Toggle the display of PR inline comments overlaid on this file.
@@ -1385,7 +1433,17 @@ TARGET-SHA should be a git SHA. DESCRIPTION is for logging."
   (setq-local shipit-review--range-start-index nil)
   (setq-local shipit-review--range-end-index nil)
   (let ((sha (cdr (assq 'sha commit))))
-    (shipit-review--set-comparison-target sha (format "commit %d" (1+ index)))))
+    ;; Track which PR commit we\\='re viewing in `--displayed-sha'
+    ;; too, not just `--comparison-target' / `--current-commit-
+    ;; index'.  The inline-comment filter and the timeline
+    ;; highlight both key off `--displayed-sha', so without this
+    ;; M-n / M-p on B-side PR commits would leave them stuck at
+    ;; the PR-HEAD anchor.
+    (setq-local shipit-review--displayed-sha sha)
+    (shipit-review--set-comparison-target sha (format "commit %d" (1+ index))))
+  ;; Refresh inline-comment overlays (if visible) so the per-
+  ;; commit `commit_id' / `original_commit_id' filter re-applies.
+  (shipit-review--refresh-inline-comments-if-shown))
 
 (defcustom shipit-review-pre-pr-history-limit nil
   "Max number of commits to include in `n'/`p' file-history navigation.
@@ -1517,6 +1575,7 @@ historical commit, so we want the lines THIS commit changed."
         (shipit-review-history-rehighlight-for-source (current-buffer)))
       (shipit-review--update-revision-preview sha)
       (shipit-review--apply-commit-message-overlay)
+      (shipit-review--refresh-inline-comments-if-shown)
       (shipit--debug-log "Pre-PR navigation to %s -- %s"
                          (substring sha 0 7) (or msg ""))))))
 

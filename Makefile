@@ -85,6 +85,7 @@ test-unit: compile
 		-l test/test-shipit-pulse-nav.el \
 		-l test/test-shipit-expand-pr-files.el \
 		-l test/test-shipit-pr-linked-issue.el \
+		-l test/test-shipit-actions-check-suite.el \
 		-f ert-run-tests-batch-and-exit
 
 # Run integration tests

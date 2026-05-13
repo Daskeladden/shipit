@@ -183,12 +183,19 @@ Case-insensitive substring match.  Nil or empty FILTER-TEXT matches all."
 ;;; Entry point
 
 ;;;###autoload
-(defun shipit-open-actions-list (repo &optional run-id)
+(defun shipit-open-actions-list (repo &optional run-id workflow-name-filter)
   "Open a shipit buffer listing Actions workflows for REPO.
 REPO should be in \"owner/name\" format.  When RUN-ID is non-nil,
 after the first render the buffer tries to expand and move point
 to the run with that id — useful when opening from a GitHub
 WorkflowRun notification whose subject URL carries the run id.
+When WORKFLOW-NAME-FILTER is non-nil, pre-sets the buffer's
+workflow-name filter to that text so only matching workflows are
+visible.  Useful when opening from a CheckSuite notification:
+GitHub's notification gives us a title like \"NAME workflow run
+failed for BRANCH branch\" -- the NAME is verbatim, so filtering
+the list to that name is deterministic, leaving the user to pick
+the actual run.
 Creates or reuses a buffer named *shipit-actions: REPO*."
   (interactive
    (list (or (ignore-errors (shipit--get-repo-from-remote))
@@ -198,6 +205,10 @@ Creates or reuses a buffer named *shipit-actions: REPO*."
     (if existing
         (progn
           (switch-to-buffer existing)
+          (when workflow-name-filter
+            (with-current-buffer existing
+              (setq shipit-actions-list--filter-text workflow-name-filter)
+              (shipit-actions-list--finalize-render repo)))
           (when run-id
             (with-current-buffer existing
               (unless (shipit-actions-list--navigate-to-run run-id)
@@ -209,6 +220,7 @@ Creates or reuses a buffer named *shipit-actions: REPO*."
           (shipit-actions-list-mode)
           (setq shipit-actions-list--repo repo)
           (setq shipit-actions-list--pending-run-id run-id)
+          (setq shipit-actions-list--filter-text workflow-name-filter)
           (shipit-actions-list--fetch-and-render))
         (switch-to-buffer buffer)
         buffer))))
@@ -218,6 +230,146 @@ Creates or reuses a buffer named *shipit-actions: REPO*."
 Returns non-nil on success, nil if the run is not present."
   (goto-char (point-min))
   (shipit-actions-list--find-and-expand-run run-id nil))
+
+(defun shipit-actions--run-id-from-check-run-url (url)
+  "Return the Actions run-id from a check-run details URL, or nil.
+GitHub's check-runs API exposes `details_url' like
+`https://github.com/owner/repo/actions/runs/N' (optionally with
+`/job/M' or `/attempts/K' suffixes) for Actions-backed checks.
+Non-Actions checks point at the third-party tool's UI instead,
+in which case there's no run-id to extract."
+  (when (and url (string-match "/actions/runs/\\([0-9]+\\)" url))
+    (string-to-number (match-string 1 url))))
+
+(defun shipit-actions--api-endpoint-from-url (url)
+  "Strip `https://api.github.com' from URL, leaving the REL endpoint.
+Returns nil when URL is nil or doesn't have the expected prefix --
+the caller falls back to other lookup strategies in that case."
+  (let ((prefix "https://api.github.com"))
+    (when (and url (stringp url) (string-prefix-p prefix url))
+      (substring url (length prefix)))))
+
+(defun shipit-actions--parse-workflow-failure-title (title)
+  "Parse a CheckSuite notification TITLE.
+GitHub formats CheckSuite notification titles as
+\"NAME workflow run STATUS for BRANCH branch\" (e.g.
+\"FPGA Diamond workflow run failed for main branch\").
+Returns a plist (:name NAME :status STATUS :branch BRANCH) on
+match, nil otherwise.  Used to recover when `subject.url' is
+null (a known GitHub quirk for some CheckSuite notifications)."
+  (when (and title
+             (string-match
+              "\\`\\(.+?\\) workflow run \\([a-z]+\\) for \\(.+\\) branch\\'"
+              title))
+    (list :name (match-string 1 title)
+          :status (match-string 2 title)
+          :branch (match-string 3 title))))
+
+;;;###autoload
+(defun shipit-open-actions-for-check-suite-subject
+    (repo subject-url fallback-url)
+  "Open the workflow run for the check suite at SUBJECT-URL in REPO.
+SUBJECT-URL is the GitHub API URL from the notification's
+`subject.url' field (e.g.
+`https://api.github.com/repos/owner/repo/check-suites/N').
+
+Resolution path:
+  1. GET SUBJECT-URL -- authoritative check-suite resource, gives
+     us the real `id' and `head_sha' (parsing the URL's
+     `/check-suites/N' segment is fragile when GitHub returns
+     null URLs or non-standard paths).
+  2. Try `/repos/REPO/actions/runs?check_suite_id=ID' for the
+     workflow run filter.
+  3. On empty: `/repos/REPO/check-suites/ID/check-runs' and
+     extract the run-id from the first check-run's `details_url'.
+On success opens the run in `shipit-open-actions-list'.  When
+none of the steps yield an Actions run-id (non-Actions
+integration, deleted suite, etc.), falls back to FALLBACK-URL
+in a browser."
+  (let ((endpoint (shipit-actions--api-endpoint-from-url subject-url)))
+    (cond
+     (endpoint
+      (shipit--api-request
+       endpoint nil
+       (lambda (suite)
+         (cond
+          ((and suite (cdr (assq 'id suite)))
+           (shipit-actions--open-run-for-suite
+            repo (cdr (assq 'id suite)) fallback-url))
+          (fallback-url
+           (message "Check-suite resource %s not accessible; opening browser"
+                    subject-url)
+           (browse-url fallback-url))
+          (t
+           (message "Check-suite resource %s not accessible"
+                    subject-url))))))
+     (fallback-url
+      (message "No API URL for check suite; opening browser")
+      (browse-url fallback-url))
+     (t
+      (message "No subject URL on check-suite notification")))))
+
+;;;###autoload
+(defun shipit-open-actions-for-check-suite
+    (repo check-suite-id &optional fallback-url)
+  "Open the workflow run associated with CHECK-SUITE-ID in REPO.
+Direct-id entry point.  Prefer the notification-driven
+`shipit-open-actions-for-check-suite-subject' when calling from a
+notification context -- thread-id fallback means the activity\'s
+`number' is not always a valid check-suite-id, so following the
+notification\'s `subject.url' is more reliable."
+  (shipit-actions--open-run-for-suite repo check-suite-id fallback-url))
+
+(defun shipit-actions--open-run-for-suite
+    (repo check-suite-id fallback-url)
+  "Resolve and open the workflow run for CHECK-SUITE-ID in REPO.
+Tries `/actions/runs?check_suite_id=ID' first, then
+`/check-suites/ID/check-runs' with details_url extraction.
+Falls back to FALLBACK-URL when no Actions run-id is found."
+  (let ((endpoint (format "/repos/%s/actions/runs" repo)))
+    (shipit--api-request
+     endpoint
+     `(("check_suite_id" ,check-suite-id))
+     (lambda (data)
+       (let* ((runs (append (cdr (assq 'workflow_runs data)) nil))
+              (run (car runs))
+              (run-id (and run (cdr (assq 'id run)))))
+         (cond
+          (run-id
+           (shipit-open-actions-list repo run-id))
+          (t
+           (shipit-actions--lookup-run-via-check-runs
+            repo check-suite-id fallback-url))))))))
+
+(defun shipit-actions--lookup-run-via-check-runs
+    (repo check-suite-id fallback-url)
+  "Resolve REPO's CHECK-SUITE-ID run by inspecting check-runs.
+Used as a fallback when the `/actions/runs?check_suite_id=' query
+returns no results -- for re-runs / older suites whose workflow
+run isn't surfaced by the filter, the check-run's `details_url'
+still carries the run-id.  Falls back to FALLBACK-URL when no
+Actions-style details URL is found."
+  (let ((endpoint (format "/repos/%s/check-suites/%s/check-runs"
+                          repo check-suite-id)))
+    (shipit--api-request
+     endpoint nil
+     (lambda (data)
+       (let* ((check-runs (append (cdr (assq 'check_runs data)) nil))
+              (run-id (cl-some
+                       (lambda (cr)
+                         (shipit-actions--run-id-from-check-run-url
+                          (cdr (assq 'details_url cr))))
+                       check-runs)))
+         (cond
+          (run-id
+           (shipit-open-actions-list repo run-id))
+          (fallback-url
+           (message "No Actions runs for check suite %s; opening in browser"
+                    check-suite-id)
+           (browse-url fallback-url))
+          (t
+           (message "No workflow runs found for check suite %s"
+                    check-suite-id))))))))
 
 ;;; API fetching
 

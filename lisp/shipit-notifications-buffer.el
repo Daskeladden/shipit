@@ -38,6 +38,9 @@
 (declare-function shipit--get-notification-type-icon "shipit-render")
 (declare-function shipit--get-notification-source-icon "shipit-render")
 (declare-function shipit-open-actions-list "shipit-actions-list")
+(declare-function shipit-open-actions-for-check-suite "shipit-actions-list")
+(declare-function shipit-open-actions-for-check-suite-subject "shipit-actions-list")
+(declare-function shipit-actions--parse-workflow-failure-title "shipit-actions-list")
 (declare-function shipit--debug-log "shipit-core")
 (declare-function shipit--render-markdown "shipit-render")
 (declare-function shipit--render-body "shipit-render")
@@ -2056,9 +2059,25 @@ With prefix arg (C-u), show action menu instead."
                 (url (browse-url url))
                 (t (message "No browse URL for workflow run")))))
             ("check"
-             (if-let* ((url (cdr (assq 'browse-url activity))))
-                 (browse-url url)
-               (message "No browse URL for check suite")))
+             ;; CheckSuite notifications carry no authoritative URL --
+             ;; `subject.url' and `latest_comment_url' are routinely
+             ;; null.  All we get is the title text.  Read the workflow
+             ;; name straight off the title (\"NAME workflow run
+             ;; STATUS for BRANCH branch\") and open the actions list
+             ;; with that name as a filter; the user picks the actual
+             ;; run from the visible list.  No run-id guessing.
+             (let* ((title (cdr (assq 'subject activity)))
+                    (parsed (and title
+                                 (shipit-actions--parse-workflow-failure-title
+                                  title)))
+                    (workflow-name (and parsed (plist-get parsed :name)))
+                    (browse (cdr (assq 'browse-url activity))))
+               (cond
+                (repo
+                 (require 'shipit-actions-list)
+                 (shipit-open-actions-list repo nil workflow-name))
+                (browse (browse-url browse))
+                (t (message "No browse URL for check suite")))))
             ("release"
              (require 'shipit-releases-buffer)
              (let ((tag (cdr (assq 'subject activity))))

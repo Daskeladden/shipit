@@ -85,9 +85,21 @@ Returns the color string or nil."
 
 (defun shipit-rounded--icon-color-to-bg (icon-color)
   "Derive a subtle dark background color from ICON-COLOR.
-Blends the icon color with the default background at ~12% opacity."
-  (let* ((bg (face-background 'default nil 'default))
-         (bg-rgb (color-name-to-rgb (or bg "#000000")))
+Blends the icon color with the default background at ~12% opacity.
+
+`face-background' can return the symbolic strings
+\"unspecified-bg\" / \"unspecified-fg\" on TTY frames or
+when the inheritance chain bottoms out without a concrete
+background -- `color-name-to-rgb' then fails with \"Unable
+to load color\".  Filter those out (same trick used in
+`shipit-render') and fall back to black so the computation
+always produces a valid colour."
+  (let* ((bg-raw (face-background 'default nil 'default))
+         (bg (if (or (null bg-raw)
+                     (member bg-raw '("unspecified-bg" "unspecified-fg")))
+                 "#000000"
+               bg-raw))
+         (bg-rgb (color-name-to-rgb bg))
          (fg-rgb (color-name-to-rgb icon-color))
          (blend 0.12))
     (format "#%02x%02x%02x"

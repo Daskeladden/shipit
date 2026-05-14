@@ -235,9 +235,19 @@ Returns the full repo name (owner/repo format), or nil if unable to determine."
 (defun shipit--validate-pr-repo (pr-repo)
   "Validate that PR-REPO matches the current repository.
 Returns t if they match, raises user-error with clear message if not.
-Handles the case where current repo can't be determined.
-Comparison is case-insensitive since GitHub repository names are case-insensitive."
-  (let ((current-repo (shipit--get-current-repo)))
+
+When the call site is inside a shipit PR buffer, the buffer-local
+`shipit-buffer-repo' is the authoritative answer -- it was
+captured at buffer-creation time and never drifts.  Trusting it
+first avoids spurious \"different repository\" errors when the
+buffer\\='s `default-directory' has been changed by something
+unrelated (e.g.  `shipit-reload\\=' from inside the shipit project
+itself).  Only when there\\='s no buffer-local context do we fall
+back to querying `git remote' via `shipit--get-current-repo'.
+
+Comparison is case-insensitive since GitHub repository names are."
+  (let* ((buf-repo (and (boundp 'shipit-buffer-repo) shipit-buffer-repo))
+         (current-repo (or buf-repo (shipit--get-current-repo))))
     (cond
      ((not current-repo)
       (user-error "Cannot determine current repository from git remote"))

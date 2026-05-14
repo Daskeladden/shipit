@@ -370,38 +370,41 @@ Called from `after-change-functions'."
         (when (and (buffer-live-p source-buf)
                    overlay
                    (overlay-buffer overlay))
-          (shipit--debug-log "EDITOR: Preview update - content length: %d, has-code-block: %s"
-                             (length content) (string-match-p "```" content))
-          ;; Log code fence lines to debug language detection
-          (when (string-match "```\\([a-zA-Z0-9_+-]*\\)" content)
-            (shipit--debug-log "EDITOR: Code fence in content, captured language: '%s'"
-                               (match-string 1 content)))
-          ;; Replace content in the overlay region and apply code block backgrounds
-          (with-current-buffer source-buf
-            (let ((inhibit-read-only t)
-                  (start (overlay-start overlay))
-                  (end (overlay-end overlay)))
-              ;; Delete old content
-              (delete-region start end)
-              ;; Insert rendered markdown
-              (goto-char start)
-              (let ((rendered (shipit-editor--render-preview-content content type parent-depth)))
-                (insert rendered)
-                (let ((new-end (point))
-                      (section (overlay-get overlay 'shipit-section)))
-                  ;; Move overlay to cover new content
-                  (move-overlay overlay start new-end)
-                  ;; NOTE: Do NOT update section's end marker here!
-                  ;; The section end includes blank line + reactions which are
-                  ;; outside the preview overlay. Updating it would break collapse.
-                  ;; Apply code block backgrounds in the new region
-                  (shipit--debug-log "EDITOR: Applying code blocks in region %d-%d, rendered has ```: %s"
-                                     start new-end
-                                     (string-match-p "```" (buffer-substring-no-properties start new-end)))
-                  (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
-                    (shipit--apply-code-block-backgrounds-in-region start new-end))
-                  ;; Scroll source buffer to show end of preview
-                  (shipit-editor--ensure-preview-visible source-buf new-end))))))))))
+          (cond
+           ;; After-string overlay (review-mode file buffer): just
+           ;; refresh the overlay's `after-string'.  No buffer
+           ;; mutation, no region delete + reinsert, no code-block
+           ;; backgrounds -- the draft sits next to the file's
+           ;; actual line, not inside a magit section.
+           ((eq (overlay-get overlay 'shipit-editor-preview-style)
+                'after-string)
+            (with-current-buffer source-buf
+              (overlay-put overlay 'after-string
+                           (shipit-editor--render-inline-comment-draft
+                            content))))
+           (t
+            (shipit--debug-log "EDITOR: Preview update - content length: %d, has-code-block: %s"
+                               (length content) (string-match-p "```" content))
+            (when (string-match "```\\([a-zA-Z0-9_+-]*\\)" content)
+              (shipit--debug-log "EDITOR: Code fence in content, captured language: '%s'"
+                                 (match-string 1 content)))
+            (with-current-buffer source-buf
+              (let ((inhibit-read-only t)
+                    (start (overlay-start overlay))
+                    (end (overlay-end overlay)))
+                (delete-region start end)
+                (goto-char start)
+                (let ((rendered (shipit-editor--render-preview-content content type parent-depth)))
+                  (insert rendered)
+                  (let ((new-end (point))
+                        (section (overlay-get overlay 'shipit-section)))
+                    (move-overlay overlay start new-end)
+                    (shipit--debug-log "EDITOR: Applying code blocks in region %d-%d, rendered has ```: %s"
+                                       start new-end
+                                       (string-match-p "```" (buffer-substring-no-properties start new-end)))
+                    (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
+                      (shipit--apply-code-block-backgrounds-in-region start new-end))
+                    (shipit-editor--ensure-preview-visible source-buf new-end))))))))))))
 
 (defun shipit-editor--ensure-preview-visible (buffer pos)
   "Ensure position POS in BUFFER is visible in its window.
@@ -513,7 +516,7 @@ Returns a plist with :overlay, :start, :end or nil if setup fails."
         ('preview-file-comment
          (shipit-editor--setup-preview-file-comment-preview context))
         ('inline-comment
-         (shipit-editor--setup-inline-comment-preview comment-id section-marker))
+         (shipit-editor--setup-inline-comment-preview comment-id section-marker context))
         ('reply
          (shipit-editor--setup-reply-preview parent-comment-id section-marker))
         ('issue-comment
@@ -904,16 +907,80 @@ Returns plist with :overlay :start :end or nil."
                   :start body-text-start
                   :end body-text-end)))))))
 
-(defun shipit-editor--setup-inline-comment-preview (comment-id section-marker)
+(defun shipit-editor--setup-inline-comment-preview (comment-id section-marker
+                                                              &optional context)
   "Set up preview overlay for inline comment editing.
-COMMENT-ID is used when editing existing comment, nil for new comment.
-SECTION-MARKER is the position where new comments should appear.
-Returns plist with :overlay :start :end or nil."
-  (if comment-id
-      ;; Editing existing comment - find the magit section
-      (shipit-editor--find-inline-comment-section comment-id)
-    ;; New inline comment - create a draft comment magit section
-    (shipit-editor--create-draft-comment-section section-marker)))
+COMMENT-ID is used when editing existing comment, nil for
+new comment.  SECTION-MARKER is the position where new
+comments should appear in a magit section view.  CONTEXT
+carries the full editor context so we can route review-mode
+file buffers to an after-string overlay instead of trying
+to insert a magit section into a plain file.  Returns plist
+with :overlay :start :end or nil."
+  (cond
+   ;; review-mode file buffer: there\\='s no magit section to splice
+   ;; the draft into; place an after-string overlay at the target
+   ;; line instead so the comment text floats next to the code.
+   ((bound-and-true-p shipit-review-mode)
+    (shipit-editor--setup-inline-comment-file-buffer-preview context))
+   (comment-id
+    ;; Editing existing comment - find the magit section.
+    (shipit-editor--find-inline-comment-section comment-id))
+   (t
+    ;; New inline comment - create a draft magit section.
+    (shipit-editor--create-draft-comment-section section-marker))))
+
+(defun shipit-editor--render-inline-comment-draft (content)
+  "Build the after-string preview rendering for CONTENT.
+Shows a `📝 (draft)' header above the typed body, wrapped
+with the same SVG rounded-pill background the live `i'
+overlays use so the draft visually matches the comments
+the reviewer is already seeing."
+  (let* ((key-face '(:weight bold :inherit shipit-comment-indicator-face))
+         (header (concat "  📝 "
+                         (propertize "(draft)" 'face key-face)))
+         (body (or content ""))
+         (rendered-body
+          (if (string-empty-p body)
+              (list "     "
+                    (propertize "     (start typing in the editor...)"
+                                'face 'shadow))
+            (mapcar (lambda (l) (concat "     " l))
+                    (split-string body "\n"))))
+         (all-lines (cons header rendered-body)))
+    (concat "\n"
+            (shipit-review--rounded-after-string all-lines)
+            "\n")))
+
+(defun shipit-editor--setup-inline-comment-file-buffer-preview (context)
+  "Place an after-string overlay at the target line of CONTEXT.
+CONTEXT\\='s `:line-number' picks the line; an overlay with a
+zero-width region at EOL holds the draft text via
+`after-string'.  The overlay is tagged with
+`shipit-editor-preview-style 'after-string' so the editor\\='s
+update + cleanup paths route to the after-string code path
+rather than buffer-text mutations.  Returns the standard
+preview-info plist."
+  (let ((line (plist-get context :line-number)))
+    (cond
+     ((not line)
+      (shipit--debug-log "EDITOR: file-buffer preview -- no line in context")
+      nil)
+     (t
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line (1- line))
+        (let* ((eol (line-end-position))
+               (ov (make-overlay eol eol)))
+          (overlay-put ov 'shipit-editor-preview t)
+          (overlay-put ov 'shipit-editor-preview-style 'after-string)
+          (overlay-put ov 'priority 100)
+          (overlay-put ov 'after-string
+                       (shipit-editor--render-inline-comment-draft ""))
+          (shipit--debug-log
+           "EDITOR: file-buffer inline-comment preview at line %d (pos=%d)"
+           line eol)
+          (list :overlay ov :start eol :end eol)))))))
 
 (defun shipit-editor--find-inline-comment-section (comment-id)
   "Find the magit section for inline COMMENT-ID and create an overlay.
@@ -1266,6 +1333,17 @@ If KEEP-CONTENT is non-nil, keeps the preview content in place (for save)."
                      (if overlay "YES" "NO")
                      (if original-content (length original-content) "NIL")
                      (if keep-content "YES" "NO"))
+  ;; After-string overlays (review-mode file buffer) carry no
+  ;; buffer text -- nothing to restore or keep, just delete the
+  ;; overlay.  Real comment fetch + `i' overlay refresh handles
+  ;; the post-save rendering separately.
+  (when (and overlay
+             (overlay-buffer overlay)
+             (eq (overlay-get overlay 'shipit-editor-preview-style)
+                 'after-string))
+    (shipit--debug-log "EDITOR: cleanup -- deleting after-string preview overlay")
+    (delete-overlay overlay)
+    (setq overlay nil))
   (when (and overlay (overlay-buffer overlay))
     (let ((start (overlay-start overlay))
           (end (overlay-end overlay))

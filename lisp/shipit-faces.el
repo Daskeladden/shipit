@@ -207,6 +207,15 @@ revision, so the timeline acts as a live position indicator."
   "Face for the expanded body lines under each commit row in the timeline."
   :group 'shipit)
 
+(shipit-defface shipit-review-edit-line-face
+  '((((background dark))  :background "#3a2e1e" :extend t)
+    (((background light)) :background "#fff3c4" :extend t))
+  "Highlight for lines the reviewer has edited in a review-mode buffer.
+Distinct from the PR-diff line faces (which mark hunks from
+the PR itself) -- this marks the reviewer\\='s own unsaved
+modifications, the source for `c s' suggestion comments."
+  :group 'shipit)
+
 (provide 'shipit-faces)
 
 ;;; shipit-faces.el ends here

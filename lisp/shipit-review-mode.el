@@ -95,6 +95,23 @@ a usable answer.  Logs which source matched so the next
 (defvar-local shipit-review--comparison-target nil
   "Current comparison target SHA. If nil, defaults to base-sha.")
 
+(defvar-local shipit-review--showing-historical-sha nil
+  "Non-nil when this buffer is showing `git show SHA:path' content.
+Set by `shipit-review--present-content-at-sha' when the user
+navigates to a SHA other than the worktree HEAD; cleared when
+they navigate back.  While non-nil the buffer is forced
+read-only so an accidental save can't write historical
+content to the worktree file.")
+
+(defvar-local shipit-review--in-content-swap nil
+  "Non-nil while the buffer is mid-`erase-buffer' / `insert' swap.
+Set by `shipit-review--swap-to-historical-content' and
+`--restore-worktree-content' to suppress the
+`after-change-functions' edit-tracking hook -- without it,
+every line of the swapped-in content gets marked as a
+user edit and the post-command sweep then clears them on
+every nav step, making commit walks visibly stutter.")
+
 (defvar-local shipit-review--current-commit-index nil
   "Current commit index when navigating through PR commits (1-indexed).")
 
@@ -118,6 +135,20 @@ a usable answer.  Logs which source matched so the next
 
 (defvar-local shipit-review--displayed-sha nil
   "SHA of the current commit being displayed in the file buffer.")
+
+;; Mark the PR-context locals as `permanent-local' so they survive
+;; `revert-buffer' / major-mode re-runs.  Without this, reverting
+;; the file kills the PR data and the next `n' / `c a' fails with
+;; \"Cannot find the review-mode buffer for this PR\".  The hooks
+;; on shipit-review-mode itself need a separate `change-major-mode-
+;; hook' guard, but for the data slots this property is enough.
+(dolist (sym '(shipit-review--pr-data
+               shipit-review--head-sha
+               shipit-review--base-sha
+               shipit-review--comparison-target
+               shipit-review--showing-historical-sha
+               shipit-review--displayed-sha))
+  (put sym 'permanent-local t))
 
 (defvar-local shipit-review--diff-overlays-hidden nil
   "Non-nil suppresses the PR-range diff overlays in this buffer.
@@ -265,6 +296,38 @@ the file has no changes in the current comparison range)."
     (when start (push (cons start last) hunks))
     (nreverse hunks)))
 
+(defvar-local shipit-review--nav-indicator-overlay nil
+  "Buffer-local overlay marking the line of the last navigation jump.
+Sticky -- stays until the next jump (or mode teardown) so
+the user can look away from the source window and still
+find their place.")
+
+(defun shipit-review--pulse-current-line ()
+  "Place a sticky fringe indicator on the current line.
+Replaces the previous indicator in this buffer so only the
+most recent jump is marked.  A momentary pulse was tried
+first but PR-range diff overlays kept washing it out on
+changed lines (the exact lines you most need to find); a
+fringe arrow lives in the fringe column where shipit draws
+nothing, so it can\\='t be obscured, and being sticky means
+there\\='s no fade-timer race -- the user can scroll, switch
+windows, and still come back to a visible marker.
+
+The function name keeps `pulse' for backward compatibility
+with existing call sites; the implementation is now a
+permanent fringe arrow rather than a momentary face flash."
+  (when (and shipit-review--nav-indicator-overlay
+             (overlayp shipit-review--nav-indicator-overlay))
+    (delete-overlay shipit-review--nav-indicator-overlay))
+  (let ((ov (make-overlay (line-beginning-position)
+                          (line-beginning-position))))
+    (overlay-put ov 'before-string
+                 (propertize " " 'display
+                             '(left-fringe right-triangle
+                                           shipit-comment-indicator-face)))
+    (overlay-put ov 'shipit-review-nav-indicator t)
+    (setq shipit-review--nav-indicator-overlay ov)))
+
 (defun shipit-review--goto-line (line)
   "Move point to the start of LINE, refresh sticky overlays, recenter.
 The commit-message overlay (when toggled on) is re-anchored at
@@ -272,10 +335,22 @@ the new line so it floats next to the freshly-navigated hunk
 instead of staying behind at the previous position.  The
 recenter is deferred to the next idle tick so it survives the
 transient prefix's own redisplay (same trick the timeline
-buffer uses for its indicator)."
+buffer uses for its indicator).
+
+`set-window-point' is called unconditionally on every window
+showing this buffer so the deferred `with-selected-window'
+recenter doesn't snap point back to the window's STALE
+saved position -- without this, navigating from the legend
+buffer would update the source buffer's point but the later
+`with-selected-window' would restore the old window-point,
+leaving the next n/p (or c n / c p) reading from line 1
+again and looking like the jump didn't advance."
   (goto-char (point-min))
   (forward-line (1- line))
+  (dolist (win (get-buffer-window-list (current-buffer) nil t))
+    (set-window-point win (point)))
   (shipit-review--apply-commit-message-overlay)
+  (shipit-review--pulse-current-line)
   ;; Don\='t rebuild the H side buffer on every B-hunk nav --
   ;; the user found it confusing that A\='s revision changed
   ;; every time they pressed n/p on B.  Just scroll A\='s
@@ -341,6 +416,63 @@ BASE..HEAD hunks, the original behaviour)."
          (buffer-live-p shipit-review--history-side-buffer))
     shipit-review--history-side-buffer)
    (t (current-buffer))))
+
+(defun shipit-review--with-active-window (fn)
+  "Run FN with the active-side window selected.
+Resolves the source buffer via
+`shipit-review--with-source-buffer', picks the active side
+(source or H) via `shipit-review--active-hunk-buffer', and
+runs FN inside that buffer's window so commands like
+`recenter' / `scroll-up-command' / `scroll-down-command'
+operate on the buffer the user is actually navigating
+rather than on the legend window."
+  (shipit-review--with-source-buffer
+   (lambda ()
+     (let* ((buf (shipit-review--active-hunk-buffer))
+            (win (and (buffer-live-p buf)
+                      (get-buffer-window buf t))))
+       (cond
+        ((window-live-p win)
+         (with-selected-window win (funcall fn)))
+        (t (message "No window for active side")))))))
+
+(defun shipit-review-recenter-active ()
+  "Recenter the active-side buffer (source or H) via `C-l'."
+  (interactive)
+  (shipit-review--with-active-window #'recenter))
+
+(defun shipit-review-scroll-active-up ()
+  "Page the active-side buffer up (toward older lines, ediff `V')."
+  (interactive)
+  (shipit-review--with-active-window #'scroll-down-command))
+
+(defun shipit-review-scroll-active-down ()
+  "Page the active-side buffer down (toward newer lines, ediff `v')."
+  (interactive)
+  (shipit-review--with-active-window #'scroll-up-command))
+
+(defun shipit-review-next-line-active ()
+  "Move point down one line in the active-side buffer.
+Drops the fringe nav indicator on the new line so the
+cursor position is visible from the legend window even
+with `cursor-in-non-selected-windows' off.  Wrapped in
+`ignore-errors' so hitting beginning / end of buffer
+doesn't abort the legend command."
+  (interactive)
+  (shipit-review--with-active-window
+   (lambda ()
+     (ignore-errors (next-line 1))
+     (shipit-review--pulse-current-line))))
+
+(defun shipit-review-prev-line-active ()
+  "Move point up one line in the active-side buffer.
+Drops the fringe nav indicator; see
+`shipit-review-next-line-active'."
+  (interactive)
+  (shipit-review--with-active-window
+   (lambda ()
+     (ignore-errors (previous-line 1))
+     (shipit-review--pulse-current-line))))
 
 (defun shipit-review--next-diff-hunk ()
   "Move point to the next diff hunk in the ACTIVE side\\='s buffer.
@@ -433,7 +565,10 @@ active side."
     (define-key map (kbd "o")   #'shipit-review-toggle-diff-overlays)
     (define-key map (kbd "i")   #'shipit-review-toggle-inline-comments)
     (define-key map (kbd "m")   #'shipit-review-toggle-commit-message)
-    (define-key map (kbd "H")   #'shipit-review-toggle-previous-change)
+    ;; `|' (mirrors ediff's vert-split toggle) opens / closes the
+    ;; A side window showing the previous change.  Was `H'; renamed
+    ;; for muscle-memory consistency with ediff control panels.
+    (define-key map (kbd "|")   #'shipit-review-toggle-previous-change)
     ;; Drill down
     (define-key map (kbd "t")   #'shipit-review-toggle-timeline)
     (define-key map (kbd "b")   #'shipit-review--blame-live)
@@ -441,12 +576,34 @@ active side."
     (define-key map (kbd "r")   #'shipit-review-menu)
     ;; Swap which window M-n / M-p navigate when H is active
     (define-key map (kbd "s")   #'shipit-review-toggle-active-side)
-    ;; Inline comments (add / edit / reply / react)
-    (define-key map (kbd "c")   #'shipit-review-add-inline-comment)
-    (define-key map (kbd "C")   #'shipit-review-edit-comment-at-point)
-    (define-key map (kbd "y")   #'shipit-review-reply-to-comment-at-point)
-    (define-key map (kbd "+")   #'shipit-review-react-to-comment-at-point)
-    ;; Toggle minimal / full legend (ediff `?' convention)
+    ;; Inline comments live under the `c' chord (c a / c e / c r /
+    ;; c R for actions, c n / c p for navigation).  Grouping them
+    ;; behind a prefix frees the top-level letters that were
+    ;; previously consumed (C / y / +) and makes the legend's
+    ;; Comments column readable at a glance.
+    (let ((cmap (make-sparse-keymap)))
+      (define-key cmap (kbd "n") #'shipit-review-next-comment)
+      (define-key cmap (kbd "p") #'shipit-review-prev-comment)
+      (define-key cmap (kbd "a") #'shipit-review-add-inline-comment)
+      (define-key cmap (kbd "e") #'shipit-review-edit-comment-at-point)
+      (define-key cmap (kbd "r") #'shipit-review-reply-to-comment-at-point)
+      (define-key cmap (kbd "R") #'shipit-review-react-to-comment-at-point)
+      (define-key cmap (kbd "s") #'shipit-review-suggest-from-edits)
+      (define-key map  (kbd "c") cmap))
+    ;; Recenter / page the M-n / M-p target buffer.  `C-l' matches
+    ;; vanilla Emacs; `v' / `V' match ediff's scroll-down / scroll-up
+    ;; convention so the user doesn't have to focus the source / H
+    ;; window manually just to scroll.
+    (define-key map (kbd "C-l") #'shipit-review-recenter-active)
+    (define-key map (kbd "C-n") #'shipit-review-next-line-active)
+    (define-key map (kbd "C-p") #'shipit-review-prev-line-active)
+    (define-key map (kbd "v")   #'shipit-review-scroll-active-down)
+    (define-key map (kbd "V")   #'shipit-review-scroll-active-up)
+    ;; Toggle between the minimal one-line legend and the full
+    ;; grouped view (ediff `?' convention).  Hiding the legend
+    ;; entirely is intentionally NOT supported -- the legend's
+    ;; keymap is where every action lives, so a hidden legend
+    ;; means no keys.
     (define-key map (kbd "?")   #'shipit-review--actions-legend-toggle-expand)
     ;; Quit review session (ediff-style: tear down all temp buffers
     ;; + restore pre-review window layout)
@@ -464,83 +621,208 @@ legend was invoked from."
   (setq buffer-read-only t)
   (setq cursor-type nil)
   (setq mode-line-format
+        ;; Keep `?' and `q' hints in the mode line so they remain
+        ;; visible even when the legend collapses to just the mode-
+        ;; line row -- discoverability for "how do I bring the menu
+        ;; back / quit" without any content row.
         '(" " (:propertize "shipit diff actions"
                            face shipit-comment-indicator-face)
-          "  -- press q to quit review session")))
+          "  -- "
+          (:propertize "?" face (:weight bold
+                                         :inherit font-lock-keyword-face))
+          " toggle menu  "
+          (:propertize "q" face (:weight bold
+                                         :inherit font-lock-keyword-face))
+          " quit review session")))
 
 (defvar shipit-review--actions-legend-expanded nil
-  "Non-nil when the legend shows its full menu.
-Toggled by `?' on the legend buffer.  Default (nil) shows
-the minimal one-line legend, mirroring ediff\\='s control
-panel which only expands the long menu on demand.")
+  "Non-nil when the legend shows its full grouped menu.
+Toggled by `?' on the legend buffer.  Default (nil) shows a
+single-line minimal legend with the most-used keys plus a
+`? expand menu' hint -- enough to stay productive without
+filling a third of the frame.  The expanded view is the
+ediff-style multi-column layout built from
+`shipit-review--actions-legend-sections'.")
 
 (defun shipit-review--actions-legend-minimal ()
-  "Build the minimal one-line legend (ediff-style default).
+  "Build the minimal one-line legend.
 Keeps the essentials -- hunk nav, commit walk, H, quit --
-and reserves visible space for the `Press ? to expand'
-hint so first-time users know where to find the rest."
-  (let ((key-face '(:weight bold :inherit font-lock-keyword-face)))
+on a SINGLE row with the `? expand' hint inline so the
+signpost to the full menu travels with the shortcuts and
+can't be cropped by a short side-window."
+  (let ((key-face '(:weight bold :inherit font-lock-keyword-face))
+        (hint-face '(:inherit shadow)))
     (concat
-     "\n  "
+     "  "
      (propertize "n" 'face key-face) " next   "
-     (propertize "p" 'face key-face) " prev    "
-     (propertize "M-n/M-p" 'face key-face) " walk commits    "
-     (propertize "H" 'face key-face) " side    "
-     (propertize "q" 'face key-face) " quit\n  "
-     (propertize "Press " 'face 'shadow)
+     (propertize "p" 'face key-face) " prev   "
+     (propertize "M-n/M-p" 'face key-face) " walk commits   "
+     (propertize "|" 'face key-face) " prev side   "
+     (propertize "q" 'face key-face) " quit   "
      (propertize "?" 'face key-face)
-     (propertize " to expand menu" 'face 'shadow)
+     (propertize " expand menu" 'face hint-face)
      "\n")))
 
+;; `defconst' rather than `defvar' so every reload re-evaluates
+;; the table -- otherwise editing a key/label here and running
+;; `shipit-reload' silently keeps the old version of the legend
+;; (a `defvar' with an existing binding is a no-op on load).
+(defconst shipit-review--actions-legend-sections
+  '(("Navigate"
+     ("n"   "next hunk")
+     ("p"   "prev hunk")
+     ("M-n" "newer commit")
+     ("M-p" "older commit")
+     ("|"   "toggle A/B split"))
+    ("View"
+     ("v"   "page down")
+     ("V"   "page up")
+     ("C-n" "next line")
+     ("C-p" "prev line")
+     ("C-l" "recenter")
+     ("s"   "active A/B"))
+    ("Toggle"
+     ("o"   "diff overlays")
+     ("i"   "inline comments")
+     ("m"   "commit message")
+     ("b"   "blame")
+     ("t"   "timeline"))
+    ("Other"
+     ("e"   "ediff A vs B")
+     ("r"   "review menu")
+     ("?"   "compact")
+     ("q"   "quit"))
+    ("Comments"
+     ("c n" "next comment")
+     ("c p" "prev comment")
+     ("c a" "add")
+     ("c e" "edit")
+     ("c r" "reply")
+     ("c R" "react")
+     ("c s" "suggest edits")))
+  "Sections shown in the full legend.
+Each entry is (HEADING (KEY DESC) ...).  Adding a new
+action means appending one (KEY DESC) pair to the relevant
+section -- the renderer recomputes column widths so layout
+stays aligned.  Add a whole new section by appending another
+top-level (HEADING ...) entry.")
+
+(defun shipit-review--actions-legend-expanded-height ()
+  "Window height needed for the expanded legend.
+2 chrome rows (heading + `===' rule) plus the longest
+section\\='s entry count, plus 1 for the buffer\\='s trailing
+blank line and 1 for the mode line.  Computed from the
+sections data so growing a column doesn\\='t need a hardcoded
+height bump."
+  (+ (apply #'max
+            (mapcar (lambda (s) (length (cdr s)))
+                    shipit-review--actions-legend-sections))
+     4))
+
+(defun shipit-review--actions-legend-section-width (section)
+  "Return the rendered column width (in chars) for SECTION.
+Width = max-key + 2 (space + dash) + max-desc.  Used by the
+header padding and `===' separator so each column is exactly
+its content's width."
+  (let* ((entries (cdr section))
+         (key-w (if entries
+                    (apply #'max (mapcar (lambda (e) (length (car e))) entries))
+                  0))
+         (desc-w (if entries
+                     (apply #'max (mapcar (lambda (e) (length (cadr e))) entries))
+                   0)))
+    (+ key-w 2 desc-w)))
+
+(defun shipit-review--actions-legend-format-section (section key-face)
+  "Format SECTION (HEADING (KEY DESC)...) into a list of row strings.
+The list starts with two header rows (centred heading +
+`===' underline) followed by one row per entry in the ediff
+`KEY -DESC' style with KEY right-padded to the widest key
+in the section.  Trailing blanks are NOT appended here --
+that\='s left to the caller which knows the global section
+height and pads with blank strings of the same width so
+column zipping stays trivial."
+  (let* ((heading (car section))
+         (entries (cdr section))
+         (key-w (if entries
+                    (apply #'max (mapcar (lambda (e) (length (car e))) entries))
+                  0))
+         (desc-w (if entries
+                     (apply #'max (mapcar (lambda (e) (length (cadr e))) entries))
+                   0))
+         (col-w (+ key-w 2 desc-w))
+         ;; Centre the heading inside col-w.  Floor of the left pad so
+         ;; an odd remainder leans right (matches ediff visually).
+         (heading-pad-l (max 0 (/ (- col-w (length heading)) 2)))
+         (heading-pad-r (max 0 (- col-w (length heading) heading-pad-l)))
+         (header-line
+          (concat (make-string heading-pad-l ?\s)
+                  (propertize heading 'face
+                              '(:weight bold
+                                        :inherit
+                                        shipit-comment-indicator-face))
+                  (make-string heading-pad-r ?\s)))
+         (rule-line
+          (propertize (make-string col-w ?=) 'face 'shadow)))
+    (cons header-line
+          (cons rule-line
+                (mapcar
+                 (lambda (e)
+                   (let* ((k (car e))
+                          (d (cadr e))
+                          (key-pad (make-string (- key-w (length k)) ?\s))
+                          (desc-pad (make-string (max 0 (- desc-w (length d))) ?\s)))
+                     (concat key-pad
+                             (propertize k 'face key-face)
+                             " -"
+                             d
+                             desc-pad)))
+                 entries)))))
+
 (defun shipit-review--actions-legend-full ()
-  "Build the full multi-line legend with grouped sections.
-Four column groups (Navigate, Overlays, Drill down,
-Comments) plus a trailing row for session-level actions
-(`s' swap, `?' contract, `q' quit)."
-  (let ((key-face '(:weight bold :inherit font-lock-keyword-face))
-        (sect (lambda (label)
-                (propertize label 'face
-                            '(:weight bold
-                                      :inherit
-                                      shipit-comment-indicator-face)))))
+  "Build the full multi-line legend from `--actions-legend-sections'.
+Renders ediff-style: each column has a centred heading, an
+`=' rule, and right-aligned `KEY -DESC' rows.  Columns are
+separated by a faint `|' divider, mirroring ediff\='s control
+panel layout.  Layout is data-driven from the sections
+variable so adding actions or columns doesn't require
+touching the renderer."
+  (let* ((key-face '(:weight bold :inherit font-lock-keyword-face))
+         (sections shipit-review--actions-legend-sections)
+         (col-widths (mapcar #'shipit-review--actions-legend-section-width
+                             sections))
+         (formatted (mapcar (lambda (s)
+                              (shipit-review--actions-legend-format-section
+                               s key-face))
+                            sections))
+         (max-rows (apply #'max (mapcar #'length formatted)))
+         ;; Use a Unicode `│' (U+2502) for the column divider so the
+         ;; ASCII `|' bound to `previous change' isn't visually
+         ;; indistinguishable from the column-separator glyph.
+         (separator (propertize " │ " 'face 'shadow)))
+    ;; Pad shorter sections with blank strings of the same width so
+    ;; columns can be zipped without per-section length checks.
+    (setq formatted
+          (cl-mapcar
+           (lambda (col w)
+             (let ((need (- max-rows (length col)))
+                   (blank (make-string w ?\s)))
+               (append col (make-list need blank))))
+           formatted col-widths))
     (concat
-     "  "
-     (funcall sect "Navigate ")
-     "    "
-     (funcall sect "Overlays ")
-     "            "
-     (funcall sect "Drill down")
-     "         "
-     (funcall sect "Comments")
-     "\n"
-     "  "
-     (propertize "n"   'face key-face) " next hunk    "
-     (propertize "o"   'face key-face) " diff overlays   "
-     (propertize "t"   'face key-face) " toggle timeline    "
-     (propertize "c"   'face key-face) " add\n"
-     "  "
-     (propertize "p"   'face key-face) " prev hunk    "
-     (propertize "i"   'face key-face) " inline comments "
-     (propertize "b"   'face key-face) " toggle blame       "
-     (propertize "C"   'face key-face) " edit\n"
-     "  "
-     (propertize "M-n" 'face key-face) " newer cmt   "
-     (propertize "m"   'face key-face) " commit message  "
-     (propertize "e"   'face key-face) " ediff vs H side    "
-     (propertize "y"   'face key-face) " reply\n"
-     "  "
-     (propertize "M-p" 'face key-face) " older cmt   "
-     (propertize "H"   'face key-face) " previous change "
-     (propertize "r"   'face key-face) " review menu        "
-     (propertize "+"   'face key-face) " react\n"
-     "  "
-     (propertize "s" 'face key-face)
-     " swap active side (M-n/M-p target: A or B)    "
-     (propertize "?" 'face key-face) " less    "
-     (propertize "q" 'face key-face) " quit\n")))
+     " "
+     (mapconcat
+      (lambda (i)
+        (mapconcat (lambda (col) (nth i col)) formatted separator))
+      (number-sequence 0 (1- max-rows))
+      "\n ")
+     "\n")))
 
 (defun shipit-review--actions-legend-content ()
-  "Build the formatted legend string for the current expand state."
+  "Build the formatted legend string for the current expand state.
+Minimal (one row + inline `? expand' hint) by default; full
+grouped layout when `shipit-review--actions-legend-expanded'
+is non-nil.  Toggled by `?'."
   (if shipit-review--actions-legend-expanded
       (shipit-review--actions-legend-full)
     (shipit-review--actions-legend-minimal)))
@@ -556,25 +838,63 @@ panel and the expanded view doesn\\='t scroll off the top."
         (let ((inhibit-read-only t))
           (erase-buffer)
           (insert (shipit-review--actions-legend-content)))
-        (set-buffer-modified-p nil))
+        (set-buffer-modified-p nil)
+        ;; After insert, point sits at end-of-buffer -- if the window
+        ;; is shorter than the content the heading + rule rows at
+        ;; the top get scrolled out of view.  Reset point and the
+        ;; window-start below so the heading is always visible.
+        (goto-char (point-min)))
       (let ((win (get-buffer-window buf t))
             (target-height
-             (if shipit-review--actions-legend-expanded 8 4)))
+             ;; Expanded: heading + rule + max(section entries)
+             ;; (Comments has 6) + 1 trailing blank = 9 rows of
+             ;; content, so the side window needs 9 lines for the
+             ;; mode line to land below.
+             ;; Minimal: a single content row + mode line = 2 rows.
+             (if shipit-review--actions-legend-expanded
+                 (shipit-review--actions-legend-expanded-height)
+               2)))
         (when (window-live-p win)
+          ;; `window-resize' on a side window often no-ops because the
+          ;; original `window-height' from `display-buffer-alist'
+          ;; sticks and `window-size-fixed' protects it.  Clear the
+          ;; lock + use `fit-window-to-buffer' with explicit min/max
+          ;; so the window snaps to the exact target.  Without this
+          ;; the minimal layout sat in a 9-line window with eight
+          ;; rows of empty space underneath it.
           (with-selected-window win
+            (setq window-size-fixed nil)
             (let ((window-min-height 1))
-              (window-resize win
-                             (- target-height (window-height win))
-                             nil))))))))
+              (fit-window-to-buffer win target-height target-height)))
+          (set-window-point win (point-min))
+          (set-window-start win (point-min)))))))
 
 (defun shipit-review--actions-legend-toggle-expand ()
   "Toggle the legend between the minimal and expanded views.
-Bound to `?' on the legend buffer.  Mirrors ediff\\='s `?'
-binding which expands / contracts its control-panel menu."
+Bound to `?' on the legend buffer.  Side windows resist
+`window-resize' and `fit-window-to-buffer', so re-rendering
+in place left the minimal layout sitting inside a 9-line
+window.  Instead, delete the existing window and let
+`--show-actions-legend' re-display it with the new
+`window-height' alist parameter -- side windows honour
+that on creation."
   (interactive)
   (setq shipit-review--actions-legend-expanded
         (not shipit-review--actions-legend-expanded))
-  (shipit-review--render-actions-legend))
+  (let ((win (get-buffer-window shipit-review--actions-buffer-name t)))
+    (when (window-live-p win)
+      (delete-window win)))
+  (shipit-review--show-actions-legend))
+
+;; Compatibility alias: an earlier iteration of this work named the
+;; visibility toggle `shipit-review-toggle-actions-legend' and left
+;; that symbol embedded in the existing keymap object.  `defvar'
+;; doesn\\='t reset a bound keymap, so a partially-reloaded session
+;; otherwise raises `Wrong type argument: commandp,
+;; shipit-review-toggle-actions-legend' when the user hits `?'.
+;; Alias keeps stale bindings working until the next clean reload.
+(defalias 'shipit-review-toggle-actions-legend
+  'shipit-review--actions-legend-toggle-expand)
 
 (defun shipit-review--actions-legend-buffer ()
   "Return the legend buffer, creating + always refreshing it.
@@ -592,7 +912,12 @@ buffer name and major mode are preserved across refreshes."
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert (shipit-review--actions-legend-content)))
-      (set-buffer-modified-p nil))
+      (set-buffer-modified-p nil)
+      ;; Reset point so the subsequent `display-buffer' starts the
+      ;; window at the top of the legend, not at end-of-buffer
+      ;; where `insert' just left it -- without this the heading +
+      ;; `===' rule scroll out of view on first display.
+      (goto-char (point-min)))
     buf))
 
 (defun shipit-review-refresh-legend ()
@@ -638,19 +963,31 @@ not the layout after the H side window opened."
       (unless shipit-review--saved-window-config
         (setq shipit-review--saved-window-config
               (current-window-configuration)))
-      (let ((height (if shipit-review--actions-legend-expanded 8 4)))
+      (let ((height (if shipit-review--actions-legend-expanded
+                       (shipit-review--actions-legend-expanded-height)
+                     2)))
         (display-buffer
          buf
          `((display-buffer-in-side-window)
            (side . bottom)
            (slot . 1)
            (window-height . ,height)
-           (preserve-size . (nil . t))
+           ;; Don't preserve-size: it blocks the subsequent
+           ;; window-resize that fires when the user toggles
+           ;; between the minimal and full legend with `?', leaving
+           ;; the expanded layout's heading + rule rows scrolled
+           ;; off the top.
            (window-parameters
             (no-other-window . nil)
             (no-delete-other-windows . t))))))
     (let ((win (get-buffer-window buf t)))
       (when (window-live-p win)
+        ;; Snap the window to point-min so the heading + `===' rule
+        ;; are visible on first display.  `display-buffer' may leave
+        ;; window-start wherever point happened to be in the buffer,
+        ;; which after `insert' is end-of-buffer.
+        (set-window-start win (point-min))
+        (set-window-point win (point-min))
         (select-window win)))))
 
 (defun shipit-review-quit ()
@@ -706,12 +1043,17 @@ cleanly while shipit\\='s own state is still consistent."
         (when (fboundp 'shipit-review--clear-history-overlay)
           (shipit-review--clear-history-overlay))
         (shipit-review-mode -1)))
-    ;; Sweep any orphaned history side buffers left behind.
+    ;; Sweep any orphaned history side buffers + file-history
+    ;; (timeline) buffers left behind.  Both are review-session
+    ;; transients -- keeping them around past `q' clutters the
+    ;; buffer list and they\\='ll be wrong against the next session
+    ;; anyway since they bind to a specific file + range.
     (dolist (buf (buffer-list))
-      (when (and (buffer-name buf)
-                 (string-prefix-p "*shipit-review previous: "
-                                  (buffer-name buf)))
-        (kill-buffer buf)))
+      (let ((name (buffer-name buf)))
+        (when (and name
+                   (or (string-prefix-p "*shipit-review previous: " name)
+                       (string-prefix-p "*shipit-file-history: " name)))
+          (kill-buffer buf))))
     ;; Kill the legend.
     (when-let ((buf (get-buffer shipit-review--actions-buffer-name)))
       (when (buffer-live-p buf)
@@ -831,7 +1173,7 @@ between the two revisions."
      (cond
       ((not shipit-review--history-shown)
        (user-error
-        "Previous change (`H') is not active -- toggle H first"))
+        "A/B split not active -- press `|' to open the prev side first"))
       (t
        (let* ((file (buffer-file-name))
               (root (and file (shipit--get-repo-root)))
@@ -978,6 +1320,130 @@ place).  Set to t to bring the auto-pop back."
   "Return the dedicated preview buffer name for FILE-REL."
   (format "*shipit-review preview: %s*" file-rel))
 
+(defun shipit-review--present-content-at-sha (sha)
+  "Swap the source buffer's content to show the file at SHA.
+When SHA is nil or matches `shipit-review--head-sha', restore
+the on-disk worktree file content (the buffer\\='s normal,
+editable state).  Otherwise replace the content with `git show
+SHA:historical-path' (rename-following via
+`shipit-review-history--historical-path') and mark the buffer
+read-only so an accidental save can\\='t clobber the worktree.
+
+`shipit-review--showing-historical-sha' tracks the swapped
+state so navigation back to HEAD knows to restore the worktree
+file rather than re-fetch the same SHA."
+  (let ((head-sha shipit-review--head-sha)
+        (file (buffer-file-name))
+        (root (and (fboundp 'shipit--get-repo-root)
+                   (shipit--get-repo-root))))
+    (cond
+     ((or (null sha) (and head-sha (string= sha head-sha)))
+      (when shipit-review--showing-historical-sha
+        (shipit-review--restore-worktree-content)))
+     ((and file root)
+      (shipit-review--swap-to-historical-content sha file root)))
+    ;; Keep B's header label in sync with the swapped state --
+    ;; `--apply-source-header-line' reads
+    ;; `--showing-historical-sha' to decide between `@ SHA' and
+    ;; `Head'.
+    (shipit-review--apply-source-header-line)))
+
+(defun shipit-review--swap-to-historical-content (sha file root)
+  "Replace this buffer's content with `git show SHA:historical-path'.
+FILE is the buffer\\='s visited file (used to compute the
+worktree-relative path); ROOT is the worktree root.  After
+the swap, `buffer-read-only' is set so accidental saves can\\='t
+write historical content over the worktree file."
+  (let* ((rel (file-relative-name file root))
+         (saved-line (line-number-at-pos))
+         (saved-col (current-column))
+         ;; Capture the on-screen row of point in each window
+         ;; showing the buffer, so we can recenter point to the
+         ;; same row after the swap.  Without this, the swap
+         ;; lands point on the right line but at a different
+         ;; vertical position, making walks feel like the file
+         ;; is jumping up / down in the window.
+         (saved-rows
+          (mapcar (lambda (win)
+                    (cons win
+                          (with-selected-window win
+                            (max 0 (count-screen-lines
+                                    (window-start) (point))))))
+                  (get-buffer-window-list (current-buffer) nil t)))
+         (from-sha (or shipit-review--showing-historical-sha
+                       shipit-review--head-sha))
+         (target-line
+          (cond
+           ((or (null from-sha) (string= from-sha sha)) saved-line)
+           (t
+            (let ((default-directory (file-name-as-directory root)))
+              (shipit-review--map-head-to-prev
+               saved-line
+               (shipit-review--diff-hunks sha from-sha rel))))))
+         (inhibit-read-only t)
+         (shipit-review--in-content-swap t))
+    (shipit-review--clear-edit-overlays)
+    (erase-buffer)
+    (shipit-review-history-insert-file-at-sha sha rel root)
+    (set-buffer-modified-p nil)
+    (setq shipit-review--showing-historical-sha sha)
+    (setq buffer-read-only t)
+    (goto-char (point-min))
+    (forward-line (1- target-line))
+    (move-to-column saved-col)
+    (dolist (entry saved-rows)
+      (let ((win (car entry)) (row (cdr entry)))
+        (when (window-live-p win)
+          (set-window-point win (point))
+          (with-selected-window win (recenter row)))))))
+
+(defun shipit-review--restore-worktree-content ()
+  "Restore the on-disk worktree file content into this buffer.
+Re-reads the file from disk, clears
+`shipit-review--showing-historical-sha', and re-enables
+editing.  Called when the user navigates back to HEAD after
+viewing one or more historical revisions."
+  (let* ((file (buffer-file-name))
+         (root (and file (shipit--get-repo-root)))
+         (rel (and file root (file-relative-name file root)))
+         (saved-line (line-number-at-pos))
+         (saved-col (current-column))
+         (saved-rows
+          (mapcar (lambda (win)
+                    (cons win
+                          (with-selected-window win
+                            (max 0 (count-screen-lines
+                                    (window-start) (point))))))
+                  (get-buffer-window-list (current-buffer) nil t)))
+         (from-sha shipit-review--showing-historical-sha)
+         (to-sha shipit-review--head-sha)
+         (target-line
+          (cond
+           ((or (null from-sha) (null to-sha) (null rel))
+            saved-line)
+           (t
+            (let ((default-directory (file-name-as-directory root)))
+              (shipit-review--map-head-to-prev
+               saved-line
+               (shipit-review--diff-hunks to-sha from-sha rel))))))
+         (inhibit-read-only t)
+         (shipit-review--in-content-swap t))
+    (shipit-review--clear-edit-overlays)
+    (when (and file (file-exists-p file))
+      (erase-buffer)
+      (insert-file-contents file)
+      (set-buffer-modified-p nil))
+    (setq shipit-review--showing-historical-sha nil)
+    (setq buffer-read-only nil)
+    (goto-char (point-min))
+    (forward-line (1- target-line))
+    (move-to-column saved-col)
+    (dolist (entry saved-rows)
+      (let ((win (car entry)) (row (cdr entry)))
+        (when (window-live-p win)
+          (set-window-point win (point))
+          (with-selected-window win (recenter row)))))))
+
 (defun shipit-review--update-revision-preview (sha &optional force-display)
   "Refresh the revision preview buffer for the current file at SHA.
 The preview is a single buffer per file (named via
@@ -1099,6 +1565,23 @@ rendering had no equivalent before this)."
     (when (and magit-buf rel)
       (let* ((effective-sha (or shipit-review--displayed-sha
                                 shipit-review--head-sha))
+             ;; When the displayed SHA is one of the PR's own
+             ;; commits, skip the per-comment ancestor check
+             ;; entirely -- comments belong to "the PR" and
+             ;; should stay visible while walking through PR
+             ;; commits even when the comment's anchor SHA
+             ;; (`commit_id' = PR head) is *newer* than the
+             ;; commit we're standing on, or when
+             ;; `original_commit_id' got force-pushed away.
+             (pr-commit-shas
+              (let ((h (make-hash-table :test 'equal)))
+                (dolist (c (cdr (assq 'commits shipit-review--pr-data)))
+                  (let ((s (cdr (assq 'sha c))))
+                    (when s (puthash s t h))))
+                h))
+             (displayed-in-pr
+              (and effective-sha
+                   (gethash effective-sha pr-commit-shas)))
              (worktree (file-name-as-directory
                         (or (shipit--get-repo-root) default-directory)))
              ;; Per-call cache for `git merge-base --is-ancestor'
@@ -1132,16 +1615,25 @@ rendering had no equivalent before this)."
                  (let* ((path (cdr (assq 'path c)))
                         (outdated (cdr (assq 'outdated c)))
                         (commit-id (cdr (assq 'commit_id c)))
-                        (orig-id (cdr (assq 'original_commit_id c)))
-                        ;; `original_commit_id' is where the comment
-                        ;; was added (the relevant anchor for
-                        ;; \"is this comment\='s commit reachable
-                        ;; from the displayed SHA\").  Fall back to
-                        ;; `commit_id' when the original is missing.
-                        (anchor (or orig-id commit-id)))
+                        (orig-id (cdr (assq 'original_commit_id c))))
+                   ;; Show the comment when EITHER anchor is
+                   ;; reachable from the displayed SHA.  GitHub
+                   ;; updates `commit_id' to the current PR head
+                   ;; on every push; `original_commit_id' is where
+                   ;; the comment was first added.  When the PR
+                   ;; gets force-pushed, the original commit may
+                   ;; no longer exist locally -- the
+                   ;; `merge-base --is-ancestor' check then exits
+                   ;; non-zero \("unknown commit\"), which we don\='t
+                   ;; want to conflate with \"not in range\".
+                   ;; Falling back to `commit_id' (always pointing
+                   ;; at a live PR commit) recovers the rebased /
+                   ;; force-pushed case.
                    (and path (string= path rel)
                         (not outdated)
-                        (funcall in-range-p anchor))))
+                        (or displayed-in-pr
+                            (funcall in-range-p orig-id)
+                            (funcall in-range-p commit-id)))))
                (buffer-local-value 'shipit--cached-inline-comments
                                    magit-buf))))
         ;; Tag each comment with resolved status looked up in
@@ -1216,7 +1708,6 @@ resolved-threads cache), append a `<svg-check> resolved'
 chip after the timestamp and dim the body via `shadow'
 face appended to the existing body face."
   (let* ((user (cdr (assq 'login (cdr (assq 'user comment)))))
-         (body (or (cdr (assq 'body comment)) ""))
          (timestamp (cdr (assq 'created_at comment)))
          (resolved (cdr (assq 'is_resolved comment)))
          (resolved-chip
@@ -1238,9 +1729,17 @@ face appended to the existing body face."
                      (propertize timestamp
                                  'face 'shipit-timestamp-face)))
            resolved-chip))
+         ;; Body rendering is delegated to `shipit--render-comment-body'
+         ;; (the same code path the PR-buffer view uses).  That handles
+         ;; the CR/CRLF stripping that was leaking `^M' into overlays,
+         ;; the line wrapping at `shipit-render-wrap-column', markdown
+         ;; rendering, and indentation in one place -- previously this
+         ;; function reinvented a less capable subset (raw split, no
+         ;; wrap, no clean).
+         (rendered-body (shipit--render-comment-body comment 5))
          (body-line-strings
           (mapcar (lambda (l)
-                    (let ((s (copy-sequence (concat "     " l))))
+                    (let ((s (copy-sequence l)))
                       (add-face-text-property 0 (length s)
                                               'shipit-inline-comment-body-face
                                               t s)
@@ -1248,7 +1747,7 @@ face appended to the existing body face."
                         (add-face-text-property 0 (length s)
                                                 'shadow t s))
                       s))
-                  (split-string body "\n")))
+                  (split-string rendered-body "\n")))
          (all-lines (cons header body-line-strings))
          (rendered (shipit-review--rounded-after-string all-lines)))
     (concat "\n" rendered "\n")))
@@ -1440,6 +1939,7 @@ TARGET-SHA should be a git SHA. DESCRIPTION is for logging."
     ;; M-n / M-p on B-side PR commits would leave them stuck at
     ;; the PR-HEAD anchor.
     (setq-local shipit-review--displayed-sha sha)
+    (shipit-review--present-content-at-sha sha)
     (shipit-review--set-comparison-target sha (format "commit %d" (1+ index))))
   ;; Refresh inline-comment overlays (if visible) so the per-
   ;; commit `commit_id' / `original_commit_id' filter re-applies.
@@ -1559,6 +2059,7 @@ historical commit, so we want the lines THIS commit changed."
       (setq-local shipit-review--range-start-index nil)
       (setq-local shipit-review--range-end-index nil)
       (setq-local shipit-review--displayed-sha sha)
+      (shipit-review--present-content-at-sha sha)
       (let ((parent (shipit-review--git-parent-sha sha))
             (file (buffer-file-name)))
         (cond
@@ -1818,6 +2319,100 @@ regardless of how the buffer was opened."
            (substring (or shipit-review--base-sha "?") 0 7)
            (substring (or shipit-review--head-sha "?") 0 7)))))))
 
+(defvar-local shipit-review--edit-line-overlays nil
+  "Overlays marking reviewer-edited lines in this review buffer.
+Populated by `shipit-review--mark-edited-line' from
+`after-change-functions'; cleared on save and on the
+content-swap revert path.  Non-nil means there are pending
+edits the user can turn into a `c s' suggestion comment.")
+
+(defun shipit-review--mark-edited-line (beg end _len)
+  "After-change hook: overlay every line touched by the change.
+Skipped while showing historical content (the buffer is
+read-only there) so the swap itself isn't mistaken for an
+edit.  When the change brings the buffer back to its
+on-disk state (e.g.  full undo), every edit overlay is
+dropped -- without that, undoing wouldn't clear the
+highlight.  Partial undos (some lines reverted, others
+not) still leave overlays in place; line-level diff
+tracking would be needed to fully reconcile that, and it
+hasn't bitten enough yet to justify the cost."
+  (unless (or shipit-review--showing-historical-sha
+              shipit-review--in-content-swap)
+    (cond
+     ((not (buffer-modified-p))
+      (shipit-review--clear-edit-overlays))
+     (t
+      (save-excursion
+        (goto-char beg)
+        (let ((line-beg (line-beginning-position))
+              (stop-line (progn (goto-char end) (line-number-at-pos))))
+          (goto-char line-beg)
+          (while (<= (line-number-at-pos) stop-line)
+            (let* ((lb (line-beginning-position))
+                   (le (line-beginning-position 2))
+                   (existing (cl-find-if
+                              (lambda (ov)
+                                (and (= (overlay-start ov) lb)
+                                     (overlay-get ov 'shipit-review-edit-line)))
+                              (overlays-at lb))))
+              (unless existing
+                (let ((ov (make-overlay lb le nil t nil)))
+                  (overlay-put ov 'face 'shipit-review-edit-line-face)
+                  (overlay-put ov 'shipit-review-edit-line t)
+                  (overlay-put ov 'priority 5)
+                  (push ov shipit-review--edit-line-overlays))))
+            (forward-line 1))))))))
+
+(defun shipit-review--clear-edit-overlays ()
+  "Remove every edit-line overlay from this buffer."
+  (dolist (ov shipit-review--edit-line-overlays)
+    (when (overlayp ov) (delete-overlay ov)))
+  (setq shipit-review--edit-line-overlays nil))
+
+(defun shipit-review--after-revert ()
+  "Restore review-mode overlays after a `revert-buffer'.
+`revert-buffer' nukes every overlay in the buffer
+(`remove-overlays' with no predicate), so the PR-range
+diff tints + inline-comment overlays vanish until the
+next toggle.  Re-run the diff-overlay update so the
+green/red hunks come back, and drop the edit-overlay list
+(the buffer now matches disk -- there are no pending
+edits) so a stale list can't hand back overlays that no
+longer exist."
+  (setq shipit-review--edit-line-overlays nil)
+  (when (fboundp 'shipit-review--update-diff-overlays)
+    (shipit-review--update-diff-overlays))
+  (when shipit-review--inline-comment-overlays
+    ;; Comment overlays were live before revert; re-render so
+    ;; the user doesn't have to press `i' twice after each
+    ;; revert.
+    (setq shipit-review--inline-comment-overlays nil)
+    (shipit-review--show-inline-comments)))
+
+(defun shipit-review--maybe-clear-edits-on-unmodify ()
+  "Drop edit-line overlays when the buffer returns to unmodified state.
+`after-change-functions' doesn't reliably fire when `undo'
+restores the buffer-modified flag (the bookkeeping path
+sets the flag directly without running after-change), so
+checking inside that hook alone misses the \"undo back to
+disk\" case.  Run from `post-command-hook' instead -- it's
+a cheap modified-p read on every command and we only do
+work when there are stale overlays to clear."
+  (when (and shipit-review--edit-line-overlays
+             (not shipit-review--in-content-swap)
+             (not (buffer-modified-p)))
+    (shipit-review--clear-edit-overlays)))
+
+(defun shipit-review--edit-line-numbers ()
+  "Return the sorted unique list of edited line numbers."
+  (sort (delete-dups
+         (mapcar (lambda (ov)
+                   (line-number-at-pos (overlay-start ov)))
+                 (cl-remove-if-not #'overlay-buffer
+                                   shipit-review--edit-line-overlays)))
+        #'<))
+
 (defun shipit-review-mode--setup ()
   "Initialize shipit review mode for current buffer.
 Enables diff-hl and configures it to show PR changes (base..head)."
@@ -1845,6 +2440,32 @@ Enables diff-hl and configures it to show PR changes (base..head)."
   ;; windows.
   (shipit-review--apply-source-header-line)
 
+  ;; Track reviewer edits so a) the changed lines are visually
+  ;; obvious (background highlight via
+  ;; `shipit-review-edit-line-face') and b) `c s' can pull the
+  ;; modified content into a suggestion comment.  Cleared on save
+  ;; -- once the change is on disk it's committed work, no longer
+  ;; a pending suggestion.
+  (add-hook 'after-change-functions
+            #'shipit-review--mark-edited-line nil t)
+  (add-hook 'after-save-hook
+            #'shipit-review--clear-edit-overlays nil t)
+  (add-hook 'post-command-hook
+            #'shipit-review--maybe-clear-edits-on-unmodify nil t)
+  ;; Tell `revert-buffer' to keep major + minor modes (and
+  ;; therefore the buffer-local hooks below) intact, so reverting
+  ;; the file doesn\\='t kill the review-mode session.  Combined
+  ;; with the `permanent-local' flags on the PR-context vars
+  ;; (`--pr-data', `--head-sha', ...) this means a revert leaves
+  ;; the buffer indistinguishable from before the revert except
+  ;; for the wiped overlays -- which `--after-revert' restores.
+  ;; The variable is Emacs 28+; older versions just skip this
+  ;; (the permanent-local flags alone keep nav from blowing up).
+  (when (boundp 'revert-buffer-preserve-modes)
+    (setq-local revert-buffer-preserve-modes t))
+  (add-hook 'after-revert-hook
+            #'shipit-review--after-revert nil t)
+
   (when (bound-and-true-p diff-hl-mode)
     (shipit--debug-log "Review mode setup complete - diff-hl is active")))
 
@@ -1855,7 +2476,13 @@ face' when this buffer is the M-n/M-p target (the default,
 or after `s' swap when H is off), and dims to `shadow' face
 when the H side buffer holds focus.  The active-side
 indicator is the user-facing way to tell which buffer
-M-n/M-p will affect without having to remember state."
+M-n/M-p will affect without having to remember state.
+
+When the content has been swapped to a historical SHA via
+`shipit-review--present-content-at-sha', the title shows that
+SHA (e.g. `@ f02312b6') instead of the fixed `Head' label so
+B\\='s header tracks the actual revision the buffer is
+showing."
   (let* ((pr-number (and shipit-review--pr-data
                          (cdr (assq 'number shipit-review--pr-data))))
          (file-name (or (and buffer-file-name
@@ -1872,7 +2499,11 @@ M-n/M-p will affect without having to remember state."
                                    :inherit
                                    shipit-comment-indicator-face)
                        'shadow))
-         (marker (if active-p "▶" " ")))
+         (marker (if active-p "▶" " "))
+         (sha shipit-review--showing-historical-sha)
+         (label (if sha
+                    (format "@ %s" (substring sha 0 (min 7 (length sha))))
+                  "Head")))
     (setq-local header-line-format
                 (list
                  " "
@@ -1880,8 +2511,8 @@ M-n/M-p will affect without having to remember state."
                  (propertize " B: " 'face '(:weight bold))
                  (propertize "│ " 'face 'shadow)
                  (propertize
-                  (format "*PR#%s Head: %s*"
-                          (or pr-number "?") file-name)
+                  (format "*PR#%s %s: %s*"
+                          (or pr-number "?") label file-name)
                   'face title-face)
                  "    "
                  (propertize "Type ? for help"
@@ -2764,38 +3395,38 @@ responsible for checking `shipit-review--history-shown'."
               (cond
                (pinned-info pinned-info)
                (t
-                ;; Initial display: use the same lookup as the
-                ;; pre-chain-extension behaviour (`--previous-change-
-                ;; info'): the most-recent commit at or before BASE
-                ;; that touched these lines.  Then BUILD the chain
-                ;; from HEAD so M-n / M-p can walk forward into PR
-                ;; commits or further back, and locate the initial
-                ;; SHA\='s position so the cursor starts on it.
-                (let* ((initial-info
-                        (shipit-review--previous-change-info rel range))
-                       (chain (shipit-review--history-chain rel range))
+                ;; File-level pick of the A-side initial commit:
+                ;; the most recent commit on this file that\='s NOT
+                ;; in the PR (= the last commit before the PR
+                ;; touched the file).  When the chain is entirely
+                ;; inside the PR (file was added by this PR), fall
+                ;; back to the oldest in-PR commit -- that\='s the
+                ;; commit that introduced the file, the natural
+                ;; \"before\" reference for review.
+                (let* ((chain (shipit-review--history-chain rel range))
+                       (pr-shas
+                        (let ((h (make-hash-table :test 'equal)))
+                          (dolist (c (cdr (assq 'commits
+                                                shipit-review--pr-data)))
+                            (let ((s (cdr (assq 'sha c))))
+                              (when s (puthash s t h))))
+                          h))
+                       (initial-info
+                        (or (cl-find-if
+                             (lambda (e)
+                               (not (gethash (plist-get e :sha) pr-shas)))
+                             chain)
+                            (car (last chain))))
                        (initial-sha (and initial-info
                                          (plist-get initial-info :sha)))
-                       (idx
-                        (cond
-                         ((and chain initial-sha)
-                          (or (cl-position
-                               initial-sha chain
-                               :key (lambda (e) (plist-get e :sha))
-                               :test 'string=)
-                              ;; Initial SHA not in HEAD-rooted chain
-                              ;; (shouldn\='t happen normally); fall
-                              ;; back to chain[0].
-                              0))
-                         (chain
-                          ;; No `--previous-change-info' (file new in
-                          ;; PR): land on chain[1] if available --
-                          ;; chain[0] is what source shows.
-                          (if (>= (length chain) 2) 1 nil))
-                         (t nil))))
+                       (idx (and chain initial-sha
+                                 (cl-position
+                                  initial-sha chain
+                                  :key (lambda (e) (plist-get e :sha))
+                                  :test 'string=))))
                   (setq-local shipit-review--history-chain chain)
                   (setq-local shipit-review--history-index idx)
-                  (or initial-info (and chain idx (nth idx chain))))))))
+                  initial-info)))))
         (cond
          ((null info)
           (let ((short (if shipit-review--base-sha
@@ -3065,7 +3696,7 @@ Errors out clearly when:
      (cond
       ((not shipit-review--history-shown)
        (user-error
-        "Previous change (`H') is not active -- nothing to step through"))
+        "A/B split not active -- press `|' to open the prev side first"))
       ((null shipit-review--history-chain)
        (user-error
         "No history chain loaded -- press n/p to land on a hunk first"))
@@ -3215,11 +3846,127 @@ section; otherwise the file review buffer itself."
       (user-error
        "Cannot resolve comment context (rel=%s pr=%s repo=%s)"
        rel pr-number repo))
-    (append (list :source-buffer (or magit-buf (current-buffer))
+    ;; In review-mode the user is looking at the FILE buffer, not
+    ;; the magit PR view -- the live-preview overlay should land
+    ;; in the file so they can see where the comment will appear.
+    ;; Outside review-mode (e.g. acting on a magit section
+    ;; directly) keep the existing preference for the magit buffer.
+    (append (list :source-buffer (if (bound-and-true-p shipit-review-mode)
+                                     (current-buffer)
+                                   (or magit-buf (current-buffer)))
                   :pr-number pr-number
                   :repo repo
                   :file-path rel)
             extras)))
+
+(defun shipit-review--inline-comment-lines ()
+  "Return the sorted list of distinct lines with inline comments.
+Used by `shipit-review-next-comment' /
+`shipit-review-prev-comment' to jump between comments.
+Reads from `shipit-review--inline-comments-for-file' so the
+same filtering (path, outdated, ancestor / in-PR) that drives
+the `i' toggle also drives navigation -- no \"jump to a
+comment that isn\='t even visible at this SHA\"."
+  (sort (delete-dups
+         (delq nil
+               (mapcar (lambda (c) (cdr (assq 'line c)))
+                       (shipit-review--inline-comments-for-file))))
+        #'<))
+
+(defun shipit-review-next-comment ()
+  "Move point to the next inline comment after the current line.
+Wraps to the first comment when past the last.  Reads the
+same comment set the `i' overlay uses, so navigation tracks
+visibility-at-displayed-SHA without surprises.  Routes
+through `shipit-review--goto-line' so the destination is
+recentered and the fringe nav indicator follows."
+  (interactive)
+  (shipit-review--with-source-buffer
+   (lambda ()
+     (let* ((lines (shipit-review--inline-comment-lines))
+            (cur (line-number-at-pos))
+            (next (cl-find-if (lambda (l) (> l cur)) lines))
+            (target (or next (car lines))))
+       (cond
+        ((null lines)
+         (message "No inline comments in this file"))
+        (t
+         (shipit-review--goto-line target)
+         (message "Comment %d/%d on line %d"
+                  (1+ (cl-position target lines))
+                  (length lines) target)))))))
+
+(defun shipit-review-prev-comment ()
+  "Move point to the inline comment before the current line.
+Wraps to the last comment when above the first.  Routes
+through `shipit-review--goto-line' so the destination is
+recentered and the fringe nav indicator follows."
+  (interactive)
+  (shipit-review--with-source-buffer
+   (lambda ()
+     (let* ((lines (shipit-review--inline-comment-lines))
+            (cur (line-number-at-pos))
+            (prev (cl-find-if (lambda (l) (< l cur))
+                              (reverse lines)))
+            (target (or prev (car (last lines)))))
+       (cond
+        ((null lines)
+         (message "No inline comments in this file"))
+        (t
+         (shipit-review--goto-line target)
+         (message "Comment %d/%d on line %d"
+                  (1+ (cl-position target lines))
+                  (length lines) target)))))))
+
+(defun shipit-review-suggest-from-edits ()
+  "Open the inline-comment editor with a `suggestion' block.
+Pulls the active region's lines (or the current line when
+no region is active) out of the buffer's current edited
+state and pre-populates the editor body with a GitHub
+suggestion block.  On submit GitHub turns the comment into
+a clickable \"Apply suggestion\" affordance for the PR
+author.
+
+Errors out when the buffer has no pending edits and no
+region -- in that case there's nothing to suggest changing,
+and `c a' is the right tool for a plain comment."
+  (interactive)
+  (shipit-review--with-source-buffer
+   (lambda ()
+     (let* ((has-region (use-region-p))
+            (start-line (if has-region
+                            (line-number-at-pos (region-beginning))
+                          (line-number-at-pos)))
+            (end-line (if has-region
+                          (save-excursion
+                            (goto-char (region-end))
+                            (if (and (> (region-end) (region-beginning))
+                                     (bolp))
+                                (1- (line-number-at-pos))
+                              (line-number-at-pos)))
+                        start-line))
+            (lines (cl-loop for n from start-line to end-line
+                            collect
+                            (save-excursion
+                              (goto-char (point-min))
+                              (forward-line (1- n))
+                              (buffer-substring-no-properties
+                               (line-beginning-position)
+                               (line-end-position))))))
+       (when (and (null shipit-review--edit-line-overlays)
+                  (not has-region))
+         (user-error
+          "No pending edits -- press `c a' for a plain comment instead"))
+       (shipit-editor-open
+        (shipit-review--editor-context
+         (list :type 'inline-comment
+               :line-number end-line
+               :old-line-number start-line
+               :side "RIGHT"
+               :initial-content
+               (concat "```suggestion\n"
+                       (mapconcat #'identity lines "\n")
+                       "\n```\n\n")))))))) 
 
 (defun shipit-review-add-inline-comment ()
   "Add a new inline comment at the current source line.
@@ -3319,7 +4066,7 @@ persistent visual cue beyond the echo-area message."
       ((not shipit-review--history-shown)
        (setq-local shipit-review--active-history-side 'source)
        (shipit-review--refresh-active-side-headers)
-       (message "Active side: B (HEAD) -- only side (H is off)"))
+       (message "Active side: B (HEAD) -- prev side not open (`|' to open)"))
       (t
        (setq-local shipit-review--active-history-side
                    (if (eq shipit-review--active-history-side 'source)
@@ -3329,8 +4076,8 @@ persistent visual cue beyond the echo-area message."
        (message
         "Active side: %s"
         (if (eq shipit-review--active-history-side 'source)
-            "B (HEAD, source)"
-          "A (prev, H side)")))))))
+            "B (HEAD)"
+          "A (prev)")))))))
 
 (defun shipit-review--timeline-buffer-name ()
   "Return the timeline buffer name for the current source file.
@@ -3487,7 +4234,14 @@ auto-show behaviour."
   "Cleanup shipit review mode when disabled."
   (shipit--debug-log "Tearing down shipit-review-mode from buffer: %s" (buffer-name))
   ;; Remove all review-related overlays
-  (remove-overlays (point-min) (point-max) 'shipit-review-change t))
+  (remove-overlays (point-min) (point-max) 'shipit-review-change t)
+  (remove-overlays (point-min) (point-max) 'shipit-review-nav-indicator t)
+  (setq shipit-review--nav-indicator-overlay nil)
+  ;; If the buffer was showing a historical SHA via content swap,
+  ;; restore the worktree file so the user isn't left with stale
+  ;; read-only content after toggling review-mode off.
+  (when shipit-review--showing-historical-sha
+    (shipit-review--restore-worktree-content)))
 
 (provide 'shipit-review-mode)
 ;;; shipit-review-mode.el ends here

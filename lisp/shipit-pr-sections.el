@@ -638,20 +638,28 @@ Returns a list of inline comments from the cache that have matching
 
 (defun shipit--insert-review-inline-comments (review-id repo pr-number)
   "Insert inline comments for REVIEW-ID using nested magit-sections.
-REPO and PR-NUMBER provide context for rendering.
-Uses the same hierarchical threading as general comments."
+REPO and PR-NUMBER provide context for rendering.  Uses the
+same hierarchical threading as general comments.  Each
+iteration is wrapped in `condition-case' so a failing
+render (e.g.  unspecified-bg during icon generation on a
+single comment) drops just that one entry instead of
+aborting the loop and skipping every remaining inline."
   (let ((inline-comments (shipit--get-inline-comments-for-review review-id)))
     (when inline-comments
-      ;; Group by API replies (in_reply_to_id) for proper threading
       (let* ((threads (shipit--group-comments-by-api-replies inline-comments))
              (root-comments (gethash 'root threads)))
         (dolist (comment root-comments)
-          (let ((file-path (cdr (assq 'path comment)))
-                (is-outdated (cdr (assq 'outdated comment))))
-            ;; Use the hierarchical comment system with show-context=t for diff hunks
-            ;; Pass depth-offset=1 to indent as children of the review body
-            (shipit--insert-status-hierarchical-comment
-             comment threads file-path is-outdated 0 t t repo pr-number nil 1)))))))
+          (condition-case err
+              (let ((file-path (cdr (assq 'path comment)))
+                    (is-outdated (cdr (assq 'outdated comment))))
+                (shipit--insert-status-hierarchical-comment
+                 comment threads file-path is-outdated 0 t t repo pr-number nil 1))
+            (error
+             (when (fboundp 'shipit--debug-log)
+               (shipit--debug-log
+                "REVIEW-INLINE-RENDER: error for inline comment %s under review %s: %s"
+                (cdr (assq 'id comment)) review-id
+                (error-message-string err))))))))))
 
 (defun shipit--insert-status-hierarchical-comment (comment threads file-path is-outdated depth is-inline &optional show-context repo pr-number is-resolved-thread depth-offset)
   "Insert a COMMENT with hierarchical threading at DEPTH level.
@@ -747,8 +755,16 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
               (when ts-pos
                 (put-text-property (+ header-start ts-pos)
                                    (+ header-start ts-pos (length formatted-timestamp))
-                                   'font-lock-face 'shipit-timestamp-face))))
-            ;; Apply dimmed face to [RESOLVED] tag if present
+                                   'font-lock-face 'shipit-timestamp-face)))
+            ;; Apply dimmed face to [RESOLVED] tag if present.  This
+            ;; block MUST sit inside the `let*' binding above so it
+            ;; can read `header-content' -- an earlier version closed
+            ;; the `let*' on the previous line, raising
+            ;; "Symbol's value as variable is void: header-content"
+            ;; the moment `thread-is-resolved' was non-nil.  The
+            ;; render aborted before the section finalised, so the
+            ;; comment\\='s magit-section was never registered with
+            ;; its parent and `n' skipped over every resolved entry.
             (when thread-is-resolved
               (let ((resolved-pos (string-match "\\[RESOLVED\\]" header-content)))
                 (when resolved-pos
@@ -757,7 +773,7 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
                                           'shadow t)
                   (add-face-text-property (+ header-start resolved-pos)
                                           (+ header-start resolved-pos 10)
-                                          'italic t))))
+                                          'italic t)))))
             ;; Add unread indicator at end of heading (after face styling to preserve red color)
             (save-excursion
               (goto-char header-start)
@@ -768,13 +784,52 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
             ;; Insert diff context for root comments when requested
             (when (and show-context (= actual-depth 0))
               (let* ((context-hunk (cdr (assq 'diff_hunk comment)))
-                     (line (or (cdr (assq 'line comment)) 0))
-                     (start-line (or (cdr (assq 'start_line comment)) line))
+                     ;; Fall back to `original_line' / `original_start_line'
+                     ;; when the live fields are nil -- OUTDATED comments
+                     ;; have line=null but retain the original range so
+                     ;; the reviewer still sees "what this was about".
+                     (line (or (cdr (assq 'line comment))
+                               (cdr (assq 'original_line comment))
+                               0))
+                     (start-line (or (cdr (assq 'start_line comment))
+                                     (cdr (assq 'original_start_line comment))
+                                     line))
                      (is-multiline (and start-line line (not (= start-line line)))))
                 (when (and context-hunk (not (string-empty-p context-hunk)))
                   (insert (format "         ┌─ Code Context%s:\n"
                                   (if is-multiline (format " (Lines %s-%s)" start-line line) "")))
-                  (let ((hunk-lines (split-string context-hunk "\n")))
+                  ;; Tail the hunk to the last
+                  ;; `shipit-render-diff-hunk-context-lines' lines so
+                  ;; the rendering matches github.com's compact code
+                  ;; context (default ~4-5 lines).  Keep the leading
+                  ;; `@@' header if present.  The commented line is
+                  ;; the last entry of the hunk by GitHub's API
+                  ;; design, so tailing yields the actual change.
+                  (let* ((all-lines (split-string context-hunk "\n"))
+                         (max-context (or (and (boundp 'shipit-render-diff-hunk-context-lines)
+                                               shipit-render-diff-hunk-context-lines)
+                                          5))
+                         ;; Drop the leading `@@ -X,Y +A,B @@' header.
+                         ;; GitHub reports the entire file range
+                         ;; (`@@ -0,0 +1,1351 @@') in `diff_hunk' when
+                         ;; the comment sits in a newly-added file,
+                         ;; which is misleading when we only render a
+                         ;; small slice.  The "Code Context (Lines
+                         ;; X-Y)" label above already states the
+                         ;; actual range.
+                         (body-lines (if (and (car all-lines)
+                                              (string-prefix-p "@@" (car all-lines)))
+                                         (cdr all-lines)
+                                       all-lines))
+                         ;; For multi-line comments, keep at least the
+                         ;; comment's full range -- web UI shows all
+                         ;; the lines between `start_line' and `line'.
+                         ;; Single-line comments tail to `max-context'.
+                         (range-size (if is-multiline (1+ (- line start-line)) 1))
+                         (keep (max max-context range-size))
+                         (hunk-lines (if (> (length body-lines) keep)
+                                         (nthcdr (- (length body-lines) keep) body-lines)
+                                       body-lines)))
                     (dolist (hunk-line hunk-lines)
                       (when (not (string-empty-p hunk-line))
                         (let ((line-start (point))
@@ -809,9 +864,21 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
                                   (+ (if is-inline 3 3) (length thread-prefix) (length tree-indicator) 3))))
               (shipit--insert-comment-body-only comment body-indent status-comment-keymap file-path repo pr-number (or (cdr (assq 'line comment)) 0) t)
               (insert "\n")
-              ;; For review comments, show associated inline comments using nested magit-sections
+              ;; For review comments, show associated inline comments using nested magit-sections.
+              ;; Wrap in `condition-case' so an error rendering one of
+              ;; the review's inline children can't kill the outer
+              ;; review's own `magit-insert-section' before magit
+              ;; registers it -- otherwise the review's section is
+              ;; missing from the parent's `children' list and `n'
+              ;; skips over it.
               (when (equal (cdr (assq 'shipit-comment-type comment)) "review")
-                (shipit--insert-review-inline-comments comment-id repo pr-number)))
+                (condition-case err
+                    (shipit--insert-review-inline-comments comment-id repo pr-number)
+                  (error
+                   (when (fboundp 'shipit--debug-log)
+                     (shipit--debug-log
+                      "REVIEW-INLINE-RENDER: error for review %s: %s"
+                      comment-id (error-message-string err)))))))
 
             ;; Insert reactions with proper indentation (aligned with username, always shows with placeholder)
             (let ((reactions (shipit--format-comment-reactions comment is-inline)))

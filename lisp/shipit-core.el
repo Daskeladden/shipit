@@ -1157,6 +1157,17 @@ Used in shipit-render module for wrapping blockquotes and regular text."
   :type '(integer :tag "Characters per line")
   :group 'shipit)
 
+(defcustom shipit-render-diff-hunk-context-lines 5
+  "Max number of diff-hunk lines to render as code context for an inline comment.
+GitHub\\='s `diff_hunk' field carries the FULL unified-diff hunk
+that contained the commented line, which can run dozens of lines
+even when the actual change is a single edit.  github.com\\='s UI
+renders only the last few lines for context; matching that keeps
+the PR buffer scannable.  Setting this to a large number reverts
+to showing the full hunk."
+  :type '(integer :tag "Lines")
+  :group 'shipit)
+
 (defcustom shipit-enable-mouse-navigation nil
   "Whether to enable mouse navigation to file diffs when clicking on comments.
 When non-nil, clicking anywhere on a comment will navigate to the file diff.

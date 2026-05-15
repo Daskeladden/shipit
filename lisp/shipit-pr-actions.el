@@ -1859,6 +1859,23 @@ Handles both PR files (shipit-pr-file property) and commit files
                  (get-text-property (point) 'shipit-commit-sha)))
  #'shipit--file-action-menu)
 
+;; Commit-SHA overlay (rendered by
+;; `shipit--create-commit-sha-overlays' in comments / descriptions).
+;; Matches the `shipit-commit-sha' OVERLAY property -- via
+;; `get-char-property' so both overlays and text properties are
+;; picked up.  Registered LAST so it sits at the HEAD of the
+;; dispatch list (`shipit-register-dwim-handler' prepends) and
+;; claims a commit SHA inside an inline comment BEFORE the
+;; comment\\='s own handler routes the action.  Pops a transient
+;; with magit-view / browser / copy-URL / copy-SHA.
+(shipit-register-dwim-handler
+ 'commit-sha
+ (lambda () (get-char-property (point) 'shipit-commit-sha))
+ (lambda ()
+   (if (fboundp 'shipit-commit-sha-menu)
+       (shipit-commit-sha-menu)
+     (shipit-commit-sha-open-magit))))
+
 ;;; Region I: Activity section header actions
 
 (defun shipit--activity-section-header-actions ()

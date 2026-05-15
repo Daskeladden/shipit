@@ -3088,31 +3088,53 @@ Returns (CACHE . FULL-SHA) on success, nil on failure.  Expands
 short SHAs to 40-char form via the GitHub API first since
 `git fetch URL SHA' rejects short SHAs.  Uses `--depth=1' so
 only the target commit (and its tree) is downloaded, not the
-whole history."
+whole history.
+
+Disables git\\='s interactive credential prompts via
+`GIT_TERMINAL_PROMPT=0' and `GIT_ASKPASS=true' -- without that,
+fetching from a private HTTPS clone URL hangs `call-process'
+indefinitely on the password prompt (`call-process' has no
+terminal, so the prompt never shows but git waits anyway), and
+the user has to C-g out."
   (let* ((full-sha (if (= (length sha) 40)
                        sha
                      (shipit--expand-commit-sha sha repo)))
          (url (shipit--repo-clone-url repo))
          (cache (shipit--commit-cache-init)))
     (when (and full-sha url)
-      (let ((default-directory cache))
+      (let ((default-directory cache)
+            (process-environment
+             (append '("GIT_TERMINAL_PROMPT=0"
+                       "GIT_ASKPASS=true"
+                       "SSH_ASKPASS=true")
+                     process-environment)))
         (when (zerop (call-process "git" nil nil nil
                                    "fetch" "--depth=1" url full-sha))
           (cons cache full-sha))))))
 
 (defun shipit--view-commit-in-magit (sha &optional repo)
   "View commit SHA in a magit-revision buffer.
-When REPO (`owner/name') is provided, fetches the SHA from
-that repo's clone URL into `shipit-commit-cache-directory'
-and shows it -- no local clone of REPO required.  Without
-REPO, falls back to looking up SHA in the current
-`default-directory' (the legacy behaviour for SHAs in PR
-buffers where the repo *is* the local repo)."
+Tries hardest-fast-path-first:
+
+1. Look up SHA in the *current* `default-directory' -- when
+   reviewing a PR you almost always have the repo cloned, so
+   the SHA is right there and no fetch is needed.
+2. When REPO (`owner/name') is provided and the local lookup
+   missed, fetch into `shipit-commit-cache-directory' with
+   interactive prompts disabled (the previous version hung
+   on HTTPS auth -- now it fails fast).
+3. On any failure, fall back to opening the commit in the
+   browser via the active PR backend."
   (cond
    ((not (fboundp 'magit-show-commit))
     (message "magit-show-commit not available"))
+   ;; Fast path: SHA is in the local repo already.
+   ((magit-commit-p sha)
+    (magit-show-commit sha))
+   ;; With REPO: try the cache fetch, then browser fallback.
    (repo
-    (message "Fetching %s from %s..." (substring sha 0 (min 10 (length sha))) repo)
+    (message "Fetching %s from %s..."
+             (substring sha 0 (min 10 (length sha))) repo)
     (let ((result (shipit--fetch-commit-into-cache sha repo)))
       (cond
        (result
@@ -3120,12 +3142,15 @@ buffers where the repo *is* the local repo)."
               (full-sha (cdr result)))
           (if (magit-commit-p full-sha)
               (magit-show-commit full-sha)
-            (message "Fetched but commit %s not visible in cache" sha)
+            (message "Fetched but commit %s not visible in cache -- browsing"
+                     sha)
             (shipit--open-commit-in-browser sha repo))))
        (t
-        (message "Could not fetch %s from %s -- opening in browser" sha repo)
+        (message "Could not fetch %s from %s -- opening in browser"
+                 sha repo)
         (shipit--open-commit-in-browser sha repo)))))
-   ((magit-commit-p sha) (magit-show-commit sha))
+   ;; No REPO and not local: legacy path that prompts to fetch
+   ;; from origin in the local clone.
    ((y-or-n-p (format "Commit %s not found locally. Fetch from origin? " sha))
     (message "Fetching from origin...")
     (magit-run-git "fetch" "origin")
@@ -3136,13 +3161,70 @@ buffers where the repo *is* the local repo)."
 
 (defun shipit--open-commit-in-browser (sha repo)
   "Open commit SHA in browser via the active PR backend."
+  (browse-url (shipit--commit-url sha repo)))
+
+(defun shipit--commit-url (sha repo)
+  "Return the browser URL for commit SHA in REPO via the active backend."
   (let* ((resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
          (fn (plist-get backend :browse-commit-url)))
     (if fn
-        (browse-url (funcall fn config sha))
+        (funcall fn config sha)
       (error "Backend has no :browse-commit-url"))))
+
+(defun shipit--copy-commit-url (sha repo)
+  "Kill the commit URL for SHA in REPO and show it in the echo area."
+  (let ((url (shipit--commit-url sha repo)))
+    (kill-new url)
+    (message "Copied %s" url)))
+
+(defun shipit--commit-sha-at-point ()
+  "Return (SHA . REPO) for the commit-SHA overlay at point, or nil.
+Reads `shipit-commit-sha' / `shipit-commit-repo' overlay
+properties planted by `shipit--create-commit-sha-overlays'."
+  (let ((sha (get-char-property (point) 'shipit-commit-sha))
+        (repo (get-char-property (point) 'shipit-commit-repo)))
+    (and sha (cons sha repo))))
+
+(defun shipit-commit-sha-open-magit ()
+  "DWIM open action for the commit SHA at point."
+  (interactive)
+  (let ((info (shipit--commit-sha-at-point)))
+    (when info
+      (shipit--view-commit-in-magit (car info) (cdr info)))))
+
+(defun shipit-commit-sha-open-browser ()
+  "DWIM browse action for the commit SHA at point."
+  (interactive)
+  (let ((info (shipit--commit-sha-at-point)))
+    (when info
+      (shipit--open-commit-in-browser (car info) (cdr info)))))
+
+(defun shipit-commit-sha-copy-url ()
+  "DWIM copy-URL action for the commit SHA at point."
+  (interactive)
+  (let ((info (shipit--commit-sha-at-point)))
+    (when info
+      (shipit--copy-commit-url (car info) (cdr info)))))
+
+(defun shipit-commit-sha-copy-sha ()
+  "DWIM copy-SHA action for the commit SHA at point."
+  (interactive)
+  (let ((info (shipit--commit-sha-at-point)))
+    (when info
+      (kill-new (car info))
+      (message "Copied %s" (car info)))))
+
+(when (fboundp 'transient-define-prefix)
+  (transient-define-prefix shipit-commit-sha-menu ()
+    "Actions for the commit SHA at point."
+    [["Open"
+      ("o" "magit-revision"  shipit-commit-sha-open-magit)
+      ("b" "browser"         shipit-commit-sha-open-browser)]
+     ["Copy"
+      ("w" "URL"             shipit-commit-sha-copy-url)
+      ("s" "SHA"             shipit-commit-sha-copy-sha)]]))
 
 (defun shipit--create-commit-sha-overlays (repo &optional body-start body-end)
   "Highlight 7-40-char hex runs as commit SHAs in REPO.
@@ -3173,12 +3255,27 @@ one [a-f]."
                   (lambda (_)
                     (interactive "e")
                     (shipit--view-commit-in-magit sha repo)))
+                (define-key keymap (kbd "b")
+                  (lambda ()
+                    (interactive)
+                    (shipit--open-commit-in-browser sha repo)))
+                (define-key keymap (kbd "w")
+                  (lambda ()
+                    (interactive)
+                    (shipit--copy-commit-url sha repo)))
                 (overlay-put ov 'face 'magit-hash)
                 (overlay-put ov 'mouse-face 'highlight)
                 (overlay-put ov 'keymap keymap)
                 (overlay-put ov 'evaporate t)
+                ;; Stamp the SHA + repo on the overlay so the dwim
+                ;; handler (`M-;') can find the commit context from
+                ;; arbitrary character properties at point and pop
+                ;; the transient action menu.
+                (overlay-put ov 'shipit-commit-sha sha)
+                (overlay-put ov 'shipit-commit-repo repo)
                 (overlay-put ov 'help-echo
-                             (format "%s - RET: open in magit-revision" sha))))))))))
+                             (format "%s -- RET: magit / b: browse / w: copy URL / M-;: menu"
+                                     sha))))))))))
 
 (defun shipit--reference-is-pr-p (ref-data)
   "Return non-nil if REF-DATA (from issues endpoint) represents a PR."

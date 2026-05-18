@@ -260,17 +260,22 @@ Returns list compatible with `shipit--render-files-section'."
   (interactive)
   (let ((current-desc (or shipit-preview--description ""))
         (commits (shipit-preview--get-commits))
-        (preview-buffer (current-buffer)))
+        (preview-buffer (current-buffer))
+        ;; Pass the preview\\='s repo context through so the editor\\='s
+        ;; `#' PR-reference completion and `@' user-mention have a
+        ;; backend to search.  Without `:repo' on the context,
+        ;; `shipit-editor-insert-pr-reference' short-circuits to a
+        ;; literal `#' insertion and the user sees no candidates.
+        (repo shipit-preview--repo))
     (if (fboundp 'shipit-editor-open)
         (shipit-editor-open
          (list :type 'preview-description
                :source-buffer preview-buffer
                :initial-content current-desc
                :commit-messages commits
-               ;; Create closure capturing the preview buffer
+               :repo repo
                :on-save (lambda (content)
                           (shipit-preview--on-description-saved content preview-buffer))))
-      ;; Fallback to simple editor if shipit-editor not loaded
       (shipit-preview--edit-description-simple current-desc))))
 
 (defun shipit-preview--on-description-saved (content preview-buffer)

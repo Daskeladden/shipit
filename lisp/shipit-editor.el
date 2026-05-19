@@ -40,6 +40,13 @@
 (declare-function shipit--reply-to-inline-comment "shipit-http")
 (declare-function shipit--reply-to-general-comment "shipit-http")
 (declare-function shipit-post-review "shipit-http")
+(declare-function shipit-review-queue-add "shipit-review-queue"
+                  (file line side body &optional old-line repo pr-number))
+(declare-function shipit-review-queue-update "shipit-review-queue"
+                  (id new-body))
+(declare-function shipit-review-queue--locate-pr-buffer
+                  "shipit-review-queue" (repo pr-number))
+(declare-function shipit-review-queue-count "shipit-review-queue")
 (declare-function shipit--get-comment-type-icon "shipit-render")
 (declare-function shipit--replace-general-comments-section-with-content "shipit-pr-sections")
 (declare-function shipit--insert-reply-as-child "shipit-pr-sections")
@@ -93,6 +100,11 @@ One of: APPROVE, REQUEST_CHANGES, COMMENT.")
 
 (defvar-local shipit-editor--comment-id nil
   "Comment ID for editing existing comments.")
+
+(defvar-local shipit-editor--review-queue-edit-id nil
+  "Queue id when editing a draft from `shipit-review-queue'.
+When set, the save action updates the queued draft instead of
+posting a new comment or queueing a new draft.")
 
 (defvar-local shipit-editor--parent-comment-id nil
   "Parent comment ID for replies.")
@@ -259,6 +271,8 @@ CONTEXT is a plist with:
               shipit-editor--old-line-number (plist-get context :old-line-number)
               shipit-editor--side (plist-get context :side)
               shipit-editor--comment-id (plist-get context :comment-id)
+              shipit-editor--review-queue-edit-id
+              (plist-get context :shipit-review-queue-edit-id)
               shipit-editor--parent-comment-id (plist-get context :parent-comment-id)
               shipit-editor--discussion-id (plist-get context :discussion-id)
               shipit-editor--parent-depth (plist-get context :parent-depth)
@@ -318,7 +332,20 @@ CONTEXT is a plist with:
                          (t (format "Review (%s)" event)))))
             (setq-local header-line-format
                         (propertize (format " %s - C-c C-c: Submit, C-c C-k: Cancel " label)
-                                    'font-lock-face 'mode-line-highlight)))))
+                                    'font-lock-face 'mode-line-highlight))))
+         ;; Inline comments now flow through the local review queue.
+         ;; Be explicit so `C-c C-c' isn't mistaken for a publish action.
+         ((and (eq (plist-get context :type) 'inline-comment)
+               (not (plist-get context :comment-id)))
+          (let ((queue-label
+                 (if (plist-get context :shipit-review-queue-edit-id)
+                     "Edit Draft Comment"
+                   "Add Comment to Review")))
+            (setq-local header-line-format
+                        (propertize
+                         (format " %s - C-c C-c: Save to draft (queue, not yet sent), C-c C-k: Cancel "
+                                 queue-label)
+                         'font-lock-face 'mode-line-highlight)))))
         ;; Store preview overlay info
         (when preview-info
           (setq shipit-editor--preview-overlay (plist-get preview-info :overlay)
@@ -516,7 +543,14 @@ Returns a plist with :overlay, :start, :end or nil if setup fails."
         ('preview-file-comment
          (shipit-editor--setup-preview-file-comment-preview context))
         ('inline-comment
-         (shipit-editor--setup-inline-comment-preview comment-id section-marker context))
+         ;; Editing an existing queued draft?  Skip the preview path:
+         ;; the existing pending-comment section in Files Changed is
+         ;; the user's visual feedback, and on save `queue-update'
+         ;; re-renders it.  Spinning up an extra draft section here
+         ;; collides with the existing one and hangs the save + cleanup.
+         (if (plist-get context :shipit-review-queue-edit-id)
+             nil
+           (shipit-editor--setup-inline-comment-preview comment-id section-marker context)))
         ('reply
          (shipit-editor--setup-reply-preview parent-comment-id section-marker))
         ('issue-comment
@@ -2097,6 +2131,7 @@ Inserts literal @ if cancelled or no users found."
         (old-line-number shipit-editor--old-line-number)
         (side (or shipit-editor--side "RIGHT"))
         (comment-id shipit-editor--comment-id)
+        (queue-edit-id shipit-editor--review-queue-edit-id)
         (parent-comment-id shipit-editor--parent-comment-id)
         (review-event shipit-editor--review-event)
         (on-save shipit-editor--on-save)
@@ -2154,15 +2189,56 @@ Inserts literal @ if cancelled or no users found."
              (shipit--edit-comment comment-id content nil nil)
            (shipit--add-general-comment-to-pr pr-number content t))))
       ('inline-comment
-       ;; Run in source buffer so backend resolves correctly (buffer-local shipit-pr-backend)
-       (if (buffer-live-p source-buffer)
+       ;; Inline comments now flow through the local review queue so a
+       ;; user can stage several drafts and submit them together via
+       ;; `shipit-review-submit'.  Three sub-cases:
+       ;;   * comment-id     -> editing a posted comment, hit the API.
+       ;;   * queue-edit-id  -> editing a queued draft, update in place.
+       ;;   * else           -> brand-new draft, push onto the queue.
+       (cond
+        (comment-id
+         (if (buffer-live-p source-buffer)
+             (with-current-buffer source-buffer
+               (shipit--edit-comment comment-id content t nil))
+           (shipit--edit-comment comment-id content t nil)))
+        (queue-edit-id
+         (when (buffer-live-p source-buffer)
            (with-current-buffer source-buffer
-             (if comment-id
-                 (shipit--edit-comment comment-id content t nil)
-               (shipit--add-comment-to-pr pr-number file-path line-number content side nil old-line-number)))
-         (if comment-id
-             (shipit--edit-comment comment-id content t nil)
-           (shipit--add-comment-to-pr pr-number file-path line-number content side nil old-line-number))))
+             (when (fboundp 'shipit-review-queue-update)
+               (shipit-review-queue-update queue-edit-id content))
+             (message "Updated queued draft (use M-x shipit-review-submit to send)"))))
+        (t
+         (when (fboundp 'shipit-review-queue-add)
+           ;; Route into the PR buffer (not the review-mode file
+           ;; buffer) so the overlays render on the actual diff and
+           ;; the queue is reachable via `S' / `D' on the PR view.
+           (let* ((id (shipit-review-queue-add
+                       file-path line-number side content
+                       old-line-number repo pr-number))
+                  (pr-buf (and (fboundp 'shipit-review-queue--locate-pr-buffer)
+                               (shipit-review-queue--locate-pr-buffer
+                                repo pr-number)))
+                  (queue (and pr-buf (buffer-live-p pr-buf)
+                              (buffer-local-value
+                               'shipit-review-queue pr-buf))))
+             ;; Move point to the just-inserted pending section in
+             ;; Files Changed so the user sees where the draft
+             ;; landed.
+             (when (and id (buffer-live-p pr-buf))
+               (with-current-buffer pr-buf
+                 (let* ((sections
+                         (buffer-local-value
+                          'shipit-review-queue--sections pr-buf))
+                        (section (cdr (assoc id sections))))
+                   (when (and section (slot-boundp section 'start))
+                     (let ((win (get-buffer-window pr-buf t)))
+                       (when (window-live-p win)
+                         (with-selected-window win
+                           (goto-char (oref section start))
+                           (recenter))))))))
+             (message
+              "Draft queued (%d total; submit with `S' on the PR buffer or M-x shipit-review-submit)"
+              (length (or queue '(t)))))))))
       ('reply
        ;; Reply to parent comment - content is already the user's reply text
        ;; (quoted parent is NOT included - user writes just their reply)

@@ -55,6 +55,7 @@
 (declare-function shipit--clean-text "shipit-core")
 (declare-function shipit--get-repo-root "shipit-worktree")
 (declare-function shipit--create-jira-mention-overlays "shipit-issue-jira")
+(declare-function shipit--get-current-user "shipit-pr-actions")
 (declare-function shipit--format-comment-reactions "shipit-http")
 (declare-function magit-insert-section "magit-section")
 (declare-function magit-insert-heading "magit-section")
@@ -2517,12 +2518,106 @@ Lightens dark backgrounds, darkens light backgrounds."
   (cl-some (lambda (ov) (overlay-get ov 'shipit-code-block))
            (overlays-at pos)))
 
+(defun shipit--apply-inline-code-faces-in-region (start end)
+  "Apply `markdown-inline-code-face' as an overlay over inline-code spans in START..END.
+Walks the region looking for the `markdown-inline-code-face' text
+property set by `shipit--render-markdown' (or any other markdown
+font-lock pass) and adds `markdown-inline-code-face' via
+`add-face-text-property' with the prepend flag so our shipit-side
+attributes (background + foreground tint) take precedence over
+the inherited / default-looking markdown face.
+
+Without this, `markdown-inline-code-face' often blends with body
+text -- its inherited chain is `fixed-pitch' +
+`font-lock-constant-face', and most themes leave both close to
+default on a monospace buffer.  This pass gives `code' a
+distinct background so it actually reads as code at a glance."
+  (when (and start end (< start end) (<= end (point-max)))
+    (save-excursion
+      (let ((pos start))
+        (while (< pos end)
+          (let* ((face (or (get-text-property pos 'face)
+                           (get-text-property pos 'font-lock-face)))
+                 (is-inline-code
+                  (cond
+                   ((eq face 'markdown-inline-code-face) t)
+                   ((and (listp face)
+                         (memq 'markdown-inline-code-face face))
+                    t)
+                   (t nil)))
+                 (next (or (next-single-property-change pos 'face nil end)
+                           (next-single-property-change
+                            pos 'font-lock-face nil end)
+                           end)))
+            (when is-inline-code
+              ;; Overlay > text-property in Emacs's display priority,
+              ;; and the magit-section-highlight overlay on this
+              ;; buffer wins against our text-property face.  Use a
+              ;; high-priority overlay so the chip actually shows.
+              (let ((ov (make-overlay pos next)))
+                (overlay-put ov 'face 'markdown-inline-code-face)
+                (overlay-put ov 'priority 100)
+                (overlay-put ov 'evaporate t)
+                (overlay-put ov 'shipit-inline-code t)))
+            (setq pos next)))))))
+
+(defun shipit--apply-inline-code-faces-by-regex-in-region (start end)
+  "Detect single-backtick `code' spans in START..END via regex.
+For regions that haven't been markdown-fontified (e.g., headings
+inserted via `magit-insert-heading' directly without going through
+`shipit--render-body').  Mirrors what
+markdown-mode would do: applies `markdown-inline-code-face' to the
+inner text and hides the backticks via `invisible' overlays.
+
+Skips:
+  * fenced code blocks (``` triplets) -- handled separately,
+  * spans already wrapped with a `shipit-inline-code' overlay
+    (idempotent across re-renders)."
+  (when (and start end (< start end) (<= end (point-max)))
+    (save-excursion
+      (goto-char start)
+      (let ((case-fold-search nil))
+        (while (re-search-forward "`\\([^`\n]+?\\)`" end t)
+          (let* ((bt1-start (match-beginning 0))
+                 (code-start (match-beginning 1))
+                 (code-end (match-end 1))
+                 (bt2-end (match-end 0))
+                 (skip
+                  (or
+                   (cl-some
+                    (lambda (ov)
+                      (overlay-get ov 'shipit-code-block))
+                    (overlays-at bt1-start))
+                   (cl-some
+                    (lambda (ov)
+                      (overlay-get ov 'shipit-inline-code))
+                    (overlays-at code-start)))))
+            (unless skip
+              (let ((mk1 (make-overlay bt1-start code-start))
+                    (mk2 (make-overlay code-end bt2-end)))
+                (overlay-put mk1 'invisible t)
+                (overlay-put mk1 'evaporate t)
+                (overlay-put mk1 'shipit-inline-code-marker t)
+                (overlay-put mk2 'invisible t)
+                (overlay-put mk2 'evaporate t)
+                (overlay-put mk2 'shipit-inline-code-marker t))
+              (let ((ov (make-overlay code-start code-end)))
+                (overlay-put ov 'face 'markdown-inline-code-face)
+                (overlay-put ov 'priority 100)
+                (overlay-put ov 'evaporate t)
+                (overlay-put ov 'shipit-inline-code t)))))))))
+
 (defun shipit--apply-code-block-backgrounds-in-region (start end)
   "Apply background color overlays and syntax highlighting to code blocks.
 Detects both triple-backtick fenced code blocks and indented code blocks
 between START and END. Uses overlays with :extend t to fill full line width.
 If a language is specified after ```, applies syntax highlighting.
-Must be called AFTER text is inserted into the final buffer."
+Must be called AFTER text is inserted into the final buffer.
+
+Also runs `shipit--apply-inline-code-faces-in-region' so inline
+code (`code`) gets a distinct shipit face on top of whatever
+markdown-mode applied -- without it, inline code in a heading
+blends with the surrounding prose."
   ;; Guard against invalid region bounds (can happen during async refresh)
   (when (and start end (< start end) (<= end (point-max)))
     (condition-case err
@@ -2680,6 +2775,10 @@ Must be called AFTER text is inserted into the final buffer."
                       (overlay-put ov 'shipit-nested-code-block is-nested)))))))
           (shipit--debug-log "CODE-BLOCK-BG: Found %d fenced, %d indented, %d org blocks"
                              found-fenced found-indented found-org)
+          ;; Inline-code styling (single backticks).  Runs after the
+          ;; fenced-block pass; the fenced overlays already cover any
+          ;; text inside their range, so we don't double-style.
+          (shipit--apply-inline-code-faces-in-region start end)
           ;; Render mermaid diagrams after applying code block styling
           (shipit--render-mermaid-blocks-in-region start end)))
       (error
@@ -3415,7 +3514,15 @@ BODY-START and BODY-END define the region to search."
               ;; Create overlay only if not in inline code
               (when (= (mod backtick-count 2) 0)
                 (let* ((ov (make-overlay start end))
-                       (keymap (make-sparse-keymap)))
+                       (keymap (make-sparse-keymap))
+                       (me (and (fboundp 'shipit--get-current-user)
+                                (shipit--get-current-user)))
+                       (self (and me
+                                  (string-equal (downcase username)
+                                                (downcase me))))
+                       (face (if self
+                                 'shipit-user-mention-self-face
+                               'shipit-user-mention-face)))
                   (set-keymap-parent keymap (current-local-map))
                   ;; Add RET keybinding to show action menu
                   (define-key keymap (kbd "RET")
@@ -3424,12 +3531,17 @@ BODY-START and BODY-END define the region to search."
                       (lambda ()
                         (interactive)
                         (shipit--user-mention-action-menu user-copy repo-copy))))
-                  ;; Apply styling - bold with underline (not blue)
-                  (overlay-put ov 'face '(:weight bold :underline t))
+                  ;; Apply styling -- distinct face for mentions of self
+                  ;; so "the author actually pinged me" stands out.
+                  (overlay-put ov 'face face)
                   (overlay-put ov 'keymap keymap)
                   (overlay-put ov 'evaporate t)
                   (overlay-put ov 'shipit-user-mention username)
-                  (overlay-put ov 'help-echo (format "@%s - RET: actions" username))))))))
+                  (overlay-put ov 'shipit-user-mention-self self)
+                  (overlay-put ov 'help-echo
+                               (format "@%s%s - RET: actions"
+                                       username
+                                       (if self "  (you)" "")))))))))
     (error
      (when (fboundp 'shipit--debug-log)
        (shipit--debug-log "ERROR in shipit--create-user-mention-overlays: %s" err)))))
@@ -6158,6 +6270,30 @@ ROWS is a list of lists where each inner list is a row of cells."
 
       ;; Join lines
       (mapconcat 'identity (reverse table-lines) "\n"))))
+
+(defun shipit--wrap-body (body indent)
+  "Word-wrap BODY so every output line is INDENT + content + <= fill-column.
+Delegates to `shipit--wrap-text' (the same wrapper PR comments use)
+so face/overlay properties from `shipit--render-body' survive: a
+`fill-region' pass dropped the inline code face on every backtick.
+INDENT is prepended to every line of the wrapped output."
+  (let* ((width (max 40 (or fill-column 80)))
+         (effective-width (max 20 (- width (length indent))))
+         (rendered (if (and (fboundp 'shipit--render-body)
+                            (bound-and-true-p shipit-render-markdown))
+                       (shipit--render-body (or body ""))
+                     (or body "")))
+         (wrapped (if (fboundp 'shipit--wrap-text)
+                      (shipit--wrap-text rendered effective-width)
+                    rendered)))
+    (with-temp-buffer
+      (insert wrapped)
+      (goto-char (point-min))
+      (insert indent)
+      (while (re-search-forward "\n" nil t)
+        (unless (eobp)
+          (insert indent)))
+      (buffer-string))))
 
 (provide 'shipit-render)
 ;;; shipit-render.el ends here

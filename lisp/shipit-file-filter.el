@@ -44,12 +44,16 @@
 (declare-function shipit--codeowners-pattern-to-regexp "shipit-lib")
 (declare-function shipit--insert-files-content "shipit-pr-sections")
 (declare-function shipit-preview--refresh-files-section-only "shipit-preview")
+(declare-function shipit-review-queue--render "shipit-review-queue")
+(declare-function shipit-review-queue--render-badges "shipit-review-queue")
 
 ;; Forward declarations — variables
 (defvar shipit-buffer-repo)
 (defvar shipit-buffer-pr-data)
 (defvar shipit-buffer-pr-number)
 (defvar shipit--cached-inline-comments)
+(defvar shipit-review-queue)
+(defvar shipit-review-queue--sections)
 
 ;;; Buffer-local filter state
 
@@ -59,8 +63,12 @@ Only files matching this text (case-insensitive) will be displayed.")
 
 (defvar-local shipit--files-filter-mode nil
   "Current filter mode for files section (main Files Changed).
-nil means no special filter, 'comments means files with comments only,
-'owned means files I own based on CODEOWNERS.")
+Possible values:
+- nil: no special filter (use text filter if set)
+- `comments': files with inline comments only
+- `owned': files I own based on CODEOWNERS
+- `viewed' / `unviewed': by viewed status
+- `drafts': files with pending review-queue drafts only.")
 
 ;;; Filter predicates
 
@@ -81,6 +89,8 @@ Returns nil if no filter is active."
     "viewed files")
    ((eq shipit--files-filter-mode 'unviewed)
     "unviewed files")
+   ((eq shipit--files-filter-mode 'drafts)
+    "files with draft comments")
    ((not (string-empty-p shipit--files-filter-text))
     shipit--files-filter-text)
    (t nil)))
@@ -94,21 +104,49 @@ Returns nil if no filter is active."
         (setq section (oref section parent)))
       (and section (memq (oref section type) '(pr-files commit-files))))))
 
+(defun shipit--file-has-draft-p (filename)
+  "Return non-nil if FILENAME has any pending review-queue draft in the current PR.
+Checks the buffer-local `shipit-review-queue' for entries whose
+`:file' matches FILENAME exactly."
+  (and filename
+       (boundp 'shipit-review-queue)
+       (cl-some (lambda (entry)
+                  (let ((entry-file (plist-get entry :file)))
+                    (and entry-file (string= entry-file filename))))
+                shipit-review-queue)))
+
+(defvar-local shipit--files-with-comments-cache nil
+  "Hashtable FILENAME -> t for files that have at least one inline comment.
+Built lazily by `shipit--file-has-comments-p' from
+`shipit--cached-inline-comments'.  Identity of the source list
+is tracked in `shipit--files-with-comments-token' so the cache
+rebuilds when comments change.")
+
+(defvar-local shipit--files-with-comments-token nil
+  "Identity (eq) of `shipit--cached-inline-comments' the cache was built from.")
+
+(defun shipit--files-with-comments-ensure-cache ()
+  "Rebuild `shipit--files-with-comments-cache' if the comments list changed."
+  (unless (eq shipit--files-with-comments-token
+              (bound-and-true-p shipit--cached-inline-comments))
+    (let ((tbl (make-hash-table :test 'equal)))
+      (dolist (comment (bound-and-true-p shipit--cached-inline-comments))
+        (let ((path (cdr (assq 'path comment))))
+          (when path (puthash path t tbl))))
+      (setq shipit--files-with-comments-cache tbl)
+      (setq shipit--files-with-comments-token
+            (bound-and-true-p shipit--cached-inline-comments)))))
+
 (defun shipit--file-has-comments-p (filename)
   "Return non-nil if FILENAME has inline comments in the current PR.
-Uses the buffer-local `shipit--cached-inline-comments' variable."
-  (shipit--debug-log "FILE-FILTER: Checking comments for file '%s', cache has %d comments"
-                     filename (if shipit--cached-inline-comments
-                                 (length shipit--cached-inline-comments) 0))
-  (let ((result (when (and filename shipit--cached-inline-comments)
-                  (cl-some (lambda (comment)
-                             (let ((comment-path (cdr (assq 'path comment))))
-                               (shipit--debug-log "FILE-FILTER:   comment path='%s' match=%s"
-                                                  comment-path (string= comment-path filename))
-                               (and comment-path (string= comment-path filename))))
-                           shipit--cached-inline-comments))))
-    (shipit--debug-log "FILE-FILTER: Result for '%s': %s" filename result)
-    result))
+O(1) hashtable lookup; the cache is rebuilt only when
+`shipit--cached-inline-comments' identity changes.  The old
+linear scan was the bottleneck behind the `with comments'
+filter feeling laggy on PRs with many files."
+  (shipit--files-with-comments-ensure-cache)
+  (and filename
+       shipit--files-with-comments-cache
+       (gethash filename shipit--files-with-comments-cache)))
 
 ;;; CODEOWNERS filtering
 
@@ -197,6 +235,8 @@ FILTER-TEXT is used for case-insensitive filename matching when mode is nil."
        (shipit--file-viewed-p filename))
       ('unviewed
        (not (shipit--file-viewed-p filename)))
+      ('drafts
+       (shipit--file-has-draft-p filename))
       (_
        ;; Default: text-based filename filter
        (if (or (null filter-text) (string-empty-p filter-text))
@@ -280,6 +320,14 @@ Matches both direct user ownership (@username) and team membership (@org/team)."
   (shipit--refresh-files-section-only)
   (message "Showing unviewed files only"))
 
+(defun shipit--filter-files-with-drafts ()
+  "Filter to show only files with pending review-queue drafts."
+  (interactive)
+  (setq shipit--files-filter-mode 'drafts)
+  (setq shipit--files-filter-text "")
+  (shipit--refresh-files-section-only)
+  (message "Showing files with draft comments only"))
+
 (defun shipit--clear-files-filter ()
   "Clear all file filters."
   (interactive)
@@ -297,6 +345,7 @@ Matches both direct user ownership (@username) and team membership (@org/team)."
     ("o" "I own (CODEOWNERS)" shipit--filter-files-owned)]
    [("v" "Viewed" shipit--filter-files-viewed)
     ("u" "Unviewed" shipit--filter-files-unviewed)
+    ("d" "With drafts" shipit--filter-files-with-drafts)
     ("x" "Clear filter" shipit--clear-files-filter)
     ("q" "Quit" transient-quit-one)]])
 
@@ -369,6 +418,18 @@ Works from any buffer - refreshes all visible shipit-mode buffers with files sec
                                               (shipit--insert-files-content repo pr-data pr-number))
                                             ;; Update section end marker
                                             (oset section end (copy-marker (point)))
+                                            ;; The wipe-and-reinsert dropped any
+                                            ;; queue-rendered inline pending sections
+                                            ;; and file-heading draft badges, since
+                                            ;; they lived inside the file children we
+                                            ;; just regenerated.  Repaint them so the
+                                            ;; user keeps seeing their drafts after a
+                                            ;; filter toggle.
+                                            (when (fboundp 'shipit-review-queue--render)
+                                              (setq-local shipit-review-queue--sections nil)
+                                              (shipit-review-queue--render))
+                                            (when (fboundp 'shipit-review-queue--render-badges)
+                                              (shipit-review-queue--render-badges))
                                             (setq refreshed-count (1+ refreshed-count))))
                                       (error
                                        (shipit--debug-log "TARGET-REFRESH: Section update failed: %s"

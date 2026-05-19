@@ -318,5 +318,94 @@ Used for preserving expansion state across refreshes."
   "Magit section identifier for inline comments.")
 (put 'inline-comment 'magit-section t)
 
+(defun shipit--find-files-section ()
+  "Return the pr-files magit section without expanding it.
+Text-property scans work on collapsed sections too, so a lookup that
+walks it leaves Files Changed as it was."
+  (when (and (boundp 'magit-root-section) magit-root-section)
+    (catch 'found
+      (dolist (child (oref magit-root-section children))
+        (when (eq (oref child type) 'pr-files)
+          (throw 'found child))))))
+
+(defun shipit--find-file-in-files-section (file pr-files-section)
+  "Find FILE within PR-FILES-SECTION; return (POS . MATCHED-PATH) or nil.
+Search is constrained to the section\\='s range, so it never falls
+through into another section whose rows also carry `shipit-file-path'.
+Falls back to a basename match when FILE is only a file name."
+  (when pr-files-section
+    (let* ((start (oref pr-files-section start))
+           (end (oref pr-files-section end))
+           ;; Candidate basenames to try, in order:
+           ;;   1. The raw basename ("smoke script").
+           ;;   2. The first whitespace-separated token ("smoke") --
+           ;;      catches a name with a descriptor appended, like
+           ;;      "auth handler" or "smoke script".
+           (raw-basename (file-name-nondirectory (or file "")))
+           (first-token (and raw-basename
+                             (car (split-string raw-basename "[[:space:]]+" t))))
+           (candidates (delete-dups
+                        (delq nil (list raw-basename first-token))))
+           (exact nil)
+           (basename-match nil))
+      (save-excursion
+        (goto-char start)
+        (while (and (not exact) (< (point) end))
+          (let* ((prop (get-text-property (point) 'shipit-file-path))
+                 (prop-base (and prop (file-name-nondirectory prop))))
+            (cond
+             ((and prop (string= prop file))
+              (setq exact (cons (point) prop)))
+             ((and prop-base (not basename-match)
+                   (member prop-base candidates))
+              (setq basename-match (cons (point) prop)))))
+          (goto-char (or (next-single-property-change
+                          (point) 'shipit-file-path nil end)
+                         end))))
+      (or exact basename-match))))
+
+(defun shipit--find-diff-line-in-file-section (file line section)
+  "Find diff line for FILE/LINE within file SECTION.
+Walks the section\\='s range and returns the first position
+whose `shipit-file-path' and `shipit-line-number' match without
+carrying `shipit-comment' -- diff lines are inserted before any
+inline comment that anchors to them, so the first non-comment
+hit is the diff line itself."
+  (when section
+    (let ((start (oref section start))
+          (end (oref section end))
+          (found nil))
+      (save-excursion
+        (goto-char start)
+        (while (and (not found) (< (point) end))
+          (when (and (equal (get-text-property (point) 'shipit-file-path) file)
+                     (equal (get-text-property (point) 'shipit-line-number) line)
+                     (not (get-text-property (point) 'shipit-comment)))
+            (setq found (point)))
+          (goto-char (or (next-single-property-change
+                          (point) 'shipit-line-number nil end)
+                         end))))
+      found)))
+
+(defun shipit--call-with-section-shown (section thunk)
+  "Run THUNK with SECTION expanded, restoring its prior collapsed state.
+Used by render paths that need to walk a `pr-file' section's
+content (for line lookup or buffer-substring) but shouldn't
+leave the file expanded.
+
+`unwind-protect' guarantees we collapse back even if THUNK
+errors out."
+  (let ((was-hidden (and section
+                         (slot-boundp section 'hidden)
+                         (oref section hidden))))
+    (when (and section was-hidden (fboundp 'magit-section-show))
+      (magit-section-show section))
+    (unwind-protect
+        (funcall thunk)
+      (when (and section was-hidden
+                 (buffer-live-p (current-buffer))
+                 (fboundp 'magit-section-hide))
+        (ignore-errors (magit-section-hide section))))))
+
 (provide 'shipit-sections)
 ;;; shipit-sections.el ends here

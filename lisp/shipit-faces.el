@@ -216,6 +216,26 @@ the PR itself) -- this marks the reviewer\\='s own unsaved
 modifications, the source for `c s' suggestion comments."
   :group 'shipit)
 
+(shipit-defface shipit-user-mention-face
+  '((t :weight bold :underline t))
+  "Face for @username mentions in comments, descriptions, etc.
+Generic mention styling -- bold + underline so the mention reads
+as a link without being noisy.  See `shipit-user-mention-self-face'
+for the special case where the mention targets the current user."
+  :group 'shipit)
+
+(shipit-defface shipit-user-mention-self-face
+  '((((background dark))  :weight bold :underline t
+     :background "#5a4a1e" :foreground "#ffe066")
+    (((background light)) :weight bold :underline t
+     :background "#fff3a8" :foreground "#5a3d00"))
+  "Face for @username mentions that target the current user.
+Distinct background + foreground so a mention OF you stands out
+from generic @-mentions in the buffer at a glance -- you can
+spot \"the PR author actually pinged me\" without scanning
+every comment."
+  :group 'shipit)
+
 (provide 'shipit-faces)
 
 ;;; shipit-faces.el ends here

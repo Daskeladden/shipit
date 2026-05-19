@@ -371,6 +371,54 @@ DIFF-HUNK provides context to help locate the correct hunk."
 
     (_ (message "Unknown action: %s" mode) nil)))
 
+(defun shipit--goto-and-recenter-line (line-number)
+  "Move point to LINE-NUMBER in the current buffer and sync the window.
+Used after opening a worktree file so RET on a diff line lands on
+the matching line in the file.  Calls `set-window-point' too --
+when the file was already visible elsewhere, the displayed window
+sometimes keeps its old point unless we update it explicitly.
+Pulses the landing line briefly when `pulse-momentary-highlight-one-line'
+is available so the user spots where we landed."
+  (shipit--debug-log
+   "GOTO-LINE: buf=%s line=%S point-before=%d size=%d window=%S"
+   (buffer-name) line-number (point) (buffer-size)
+   (get-buffer-window (current-buffer) t))
+  (cond
+   ((not (and line-number (> line-number 0)))
+    (shipit--debug-log "GOTO-LINE: skipped (no usable line-number)"))
+   (t
+    (widen)
+    (goto-char (point-min))
+    (forward-line (1- line-number))
+    (shipit--debug-log "GOTO-LINE: after forward-line point=%d at-line=%d"
+                       (point) (line-number-at-pos))
+    (let ((win (get-buffer-window (current-buffer) t)))
+      (cond
+       ((window-live-p win)
+        ;; Recenter / pulse the window actually showing this buffer.
+        ;; After review-mode activates, the diff-actions legend has
+        ;; stolen focus -- a plain `recenter' would operate on it
+        ;; instead of the file window.
+        (set-window-point win (point))
+        (with-selected-window win
+          (recenter)
+          (when (fboundp 'pulse-momentary-highlight-one-line)
+            (pulse-momentary-highlight-one-line (point))))
+        (shipit--debug-log
+         "GOTO-LINE: window-point synced to %d, recentered" (point)))
+       (t
+        (shipit--debug-log
+         "GOTO-LINE: no live window displaying buffer -- popping it")
+        ;; No window showing the file (legend swallowed everything?).
+        ;; Pop it explicitly so the user sees the file at all.
+        (let ((win (display-buffer (current-buffer))))
+          (when (window-live-p win)
+            (set-window-point win (point))
+            (with-selected-window win
+              (recenter)
+              (when (fboundp 'pulse-momentary-highlight-one-line)
+                (pulse-momentary-highlight-one-line (point))))))))))))
+
 (defun shipit--open-file-from-worktree-or-repo (file-path pr-data &optional line-number)
   "Open FILE-PATH based on worktree status.
 If worktree exists and is in-sync, open from worktree (editable).
@@ -396,9 +444,9 @@ If LINE-NUMBER is provided, position cursor on that line."
        (let ((full-path (expand-file-name file-path worktree-path)))
          (shipit--debug-log "Opening file from in-sync worktree: %s" full-path)
          (if (file-exists-p full-path)
-             (progn
+             (let ((file-buf nil))
                (find-file full-path)
-               ;; Enable review mode with PR context
+               (setq file-buf (current-buffer))
                (setq-local shipit-review--pr-data pr-data)
                (setq-local shipit-review--head-sha pr-head-sha)
                (setq-local shipit-review--base-sha
@@ -407,9 +455,10 @@ If LINE-NUMBER is provided, position cursor on that line."
                              (cdr (assq 'sha (cdr (assq 'base pr-data))))))
                (when (fboundp 'shipit-review-mode)
                  (shipit-review-mode 1))
-               (when line-number
-                 (goto-char (point-min))
-                 (forward-line (1- line-number))))
+               ;; review-mode\='s legend selects its own window, so the
+               ;; goto must explicitly target the file buffer.
+               (with-current-buffer file-buf
+                 (shipit--goto-and-recenter-line line-number)))
            (user-error "File not found in worktree: %s" file-path))))
 
       ('out-of-sync
@@ -427,25 +476,19 @@ If LINE-NUMBER is provided, position cursor on that line."
               (shipit--debug-log "Opening file from out-of-sync worktree: %s" full-path)
               (cond
                ((file-exists-p full-path)
-                (find-file full-path)
-                ;; Worktree is out-of-sync but the buffer\\='s file
-                ;; IS a real worktree file, so review mode is just
-                ;; as relevant -- enable it so the user gets the
-                ;; legend / overlays.  Diff overlays will compare
-                ;; the (possibly stale) worktree against PR
-                ;; HEAD..BASE, which is the right reference
-                ;; regardless of worktree freshness.
-                (setq-local shipit-review--pr-data pr-data)
-                (setq-local shipit-review--head-sha pr-head-sha)
-                (setq-local shipit-review--base-sha
-                            (if (fboundp 'shipit-review--resolve-base-sha)
-                                (shipit-review--resolve-base-sha pr-data worktree-path)
-                              (cdr (assq 'sha (cdr (assq 'base pr-data))))))
-                (when (fboundp 'shipit-review-mode)
-                  (shipit-review-mode 1))
-                (when line-number
-                  (goto-char (point-min))
-                  (forward-line (1- line-number))))
+                (let ((file-buf nil))
+                  (find-file full-path)
+                  (setq file-buf (current-buffer))
+                  (setq-local shipit-review--pr-data pr-data)
+                  (setq-local shipit-review--head-sha pr-head-sha)
+                  (setq-local shipit-review--base-sha
+                              (if (fboundp 'shipit-review--resolve-base-sha)
+                                  (shipit-review--resolve-base-sha pr-data worktree-path)
+                                (cdr (assq 'sha (cdr (assq 'base pr-data))))))
+                  (when (fboundp 'shipit-review-mode)
+                    (shipit-review-mode 1))
+                  (with-current-buffer file-buf
+                    (shipit--goto-and-recenter-line line-number))))
                (t (user-error "File not found in worktree: %s" file-path)))))
            ("at PR revision (read-only)"
             (shipit--open-file-at-revision file-path pr-head-sha line-number worktree-path pr-repo))
@@ -456,21 +499,19 @@ If LINE-NUMBER is provided, position cursor on that line."
                     (let ((full-path (expand-file-name file-path worktree-path)))
                       (cond
                        ((file-exists-p full-path)
-                        (find-file full-path)
-                        ;; Worktree is now in-sync -- enable review
-                        ;; mode the same way the 'in-sync branch
-                        ;; above does.
-                        (setq-local shipit-review--pr-data pr-data)
-                        (setq-local shipit-review--head-sha pr-head-sha)
-                        (setq-local shipit-review--base-sha
-                                    (if (fboundp 'shipit-review--resolve-base-sha)
-                                        (shipit-review--resolve-base-sha pr-data worktree-path)
-                                      (cdr (assq 'sha (cdr (assq 'base pr-data))))))
-                        (when (fboundp 'shipit-review-mode)
-                          (shipit-review-mode 1))
-                        (when line-number
-                          (goto-char (point-min))
-                          (forward-line (1- line-number))))
+                        (let ((file-buf nil))
+                          (find-file full-path)
+                          (setq file-buf (current-buffer))
+                          (setq-local shipit-review--pr-data pr-data)
+                          (setq-local shipit-review--head-sha pr-head-sha)
+                          (setq-local shipit-review--base-sha
+                                      (if (fboundp 'shipit-review--resolve-base-sha)
+                                          (shipit-review--resolve-base-sha pr-data worktree-path)
+                                        (cdr (assq 'sha (cdr (assq 'base pr-data))))))
+                          (when (fboundp 'shipit-review-mode)
+                            (shipit-review-mode 1))
+                          (with-current-buffer file-buf
+                            (shipit--goto-and-recenter-line line-number))))
                        (t (user-error "File not found in worktree: %s" file-path))))
                   (user-error "Failed to sync worktree"))))))))
 
@@ -582,9 +623,7 @@ REPO should be 'owner/repo' format for GitHub API fallback."
         (condition-case err
             (progn
               (magit-find-file revision file-path)
-              (when line-number
-                (goto-char (point-min))
-                (forward-line (1- line-number)))
+              (shipit--goto-and-recenter-line line-number)
               ;; Disable blob navigation if no worktree context
               (unless worktree-path
                 (shipit--disable-blob-navigation)))
@@ -613,9 +652,7 @@ REPO should be 'owner/repo' format for GitHub API fallback."
                                            default-directory))))
         (shipit--debug-log "Fallback: opening file from repo: %s" full-path)
         (find-file full-path)
-        (when line-number
-          (goto-char (point-min))
-          (forward-line (1- line-number))))))))
+        (shipit--goto-and-recenter-line line-number))))))
 
 (defun shipit--display-file-from-api (repo file-path revision &optional line-number)
   "Fetch and display FILE-PATH from REPO at REVISION via backend API.
@@ -694,13 +731,29 @@ If point is within a diff hunk, positions cursor on the corresponding line."
                        file-path pr-number pr-head-sha pr-repo line-number)
     (if file-path
         (if (and pr-number pr-head-sha pr-repo)
-            ;; Construct minimal pr-data for the helper function
-            (let ((minimal-pr-data `((number . ,pr-number)
-                                     (head . ((sha . ,pr-head-sha)
-                                              (ref . ,pr-head-ref)))
-                                     (base . ((repo . ((full_name . ,pr-repo))))))))
-              (shipit--debug-log "Opening file from worktree or repo: %s" file-path)
-              (shipit--open-file-from-worktree-or-repo file-path minimal-pr-data line-number))
+            ;; Prefer the full `shipit-buffer-pr-data' when this is a
+            ;; shipit PR buffer -- it carries `commits' (the PR\='s
+            ;; commit list) which review-mode needs to tag each file
+            ;; history entry as in-PR vs pre-PR.  The minimal pr-data
+            ;; built from text properties never had that, so RET on a
+            ;; file from an in-sync worktree opened the file but
+            ;; review-mode marked every commit as outside the PR.
+            (let* ((full-pr-data (and (bound-and-true-p shipit-buffer-pr-data)
+                                      (equal (cdr (assq 'number
+                                                        shipit-buffer-pr-data))
+                                             pr-number)
+                                      shipit-buffer-pr-data))
+                   (pr-data-to-pass
+                    (or full-pr-data
+                        `((number . ,pr-number)
+                          (head . ((sha . ,pr-head-sha)
+                                   (ref . ,pr-head-ref)))
+                          (base . ((repo . ((full_name . ,pr-repo)))))))))
+              (shipit--debug-log
+               "Opening file from worktree or repo: %s (full-pr-data=%s)"
+               file-path (and full-pr-data t))
+              (shipit--open-file-from-worktree-or-repo
+               file-path pr-data-to-pass line-number))
           (user-error "Missing PR data to determine worktree context"))
       (user-error "No file at point"))))
 

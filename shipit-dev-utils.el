@@ -103,6 +103,7 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
                           "shipit-buffer.el" "shipit-commands.el"
                           "shipit-review-history.el" "shipit-review-mode.el" "shipit-review-revision.el"
                           "shipit-preview.el" "shipit-editor.el"
+                          "shipit-review-queue.el"
                           "shipit-issue-create.el"
                           "shipit-issues.el" "shipit-issues-buffer.el"
                           "shipit-issue-branch.el"
@@ -210,9 +211,13 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
       (setq shipit--completion-cache nil))
     
     ;; 5. Reinitialize if needed
-    (when (fboundp 'shipit-enable)
+    ;; Prefer `shipit-init' (modern API) -- it eagerly loads all
+    ;; modules + warms up auth-source so the first post-reload HTTP
+    ;; call has a token.  `shipit-enable' is the legacy name kept for
+    ;; folks with old configs; try both.
+    (when (or (fboundp 'shipit-init) (fboundp 'shipit-enable))
       (condition-case err
-          (shipit-enable)
+          (if (fboundp 'shipit-init) (shipit-init) (shipit-enable))
         (error (message "Error enabling shipit: %s" (error-message-string err)))))
     
     ;; NOTE: We no longer add shipit to magit-status-sections-hook
@@ -263,20 +268,26 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (when (derived-mode-p 'shipit-mode)
-          (condition-case err
-              (let ((pr-number shipit-buffer-pr-number)
-                    (repo shipit-buffer-repo)
-                    (repo-root default-directory)
-                    (backend-id shipit-buffer-backend-id)
-                    (backend-config shipit-buffer-backend-config))
-                (when (and pr-number repo (fboundp 'shipit-mode))
-                  ;; Kill the buffer and recreate it fresh - this ensures clean section structure
-                  ;; and avoids issues with stale async callbacks
-                  (let ((default-directory repo-root))
-                    (kill-buffer)
-                    (shipit-open-pr-buffer pr-number repo backend-id backend-config))))
-            (error (message "Error refreshing shipit buffer %s: %s"
-                          (buffer-name) (error-message-string err)))))))
+          ;; Capture the buffer name BEFORE killing -- after the kill
+          ;; the current buffer flips to whatever Emacs picks
+          ;; (typically `*Messages*'), and that's the name the error
+          ;; handler used to report, which made every failure look
+          ;; like it was about `*Messages*'.
+          (let ((orig-name (buffer-name)))
+            (condition-case err
+                (let ((pr-number shipit-buffer-pr-number)
+                      (repo shipit-buffer-repo)
+                      (repo-root default-directory)
+                      (backend-id shipit-buffer-backend-id)
+                      (backend-config shipit-buffer-backend-config))
+                  (when (and pr-number repo (fboundp 'shipit-mode))
+                    ;; Kill the buffer and recreate it fresh - this ensures clean section structure
+                    ;; and avoids issues with stale async callbacks
+                    (let ((default-directory repo-root))
+                      (kill-buffer)
+                      (shipit-open-pr-buffer pr-number repo backend-id backend-config))))
+              (error (message "Error refreshing shipit buffer %s: %s"
+                              orig-name (error-message-string err))))))))
 
     ;; 8b. Kill cached display buffers whose CONTENTS are baked from the
     ;; reloaded code (legend layout, etc.).  Without this the buffer

@@ -280,26 +280,51 @@ Returns plist with pr-number, repo, branch, pr-head-sha, created-at, or nil."
 
 (defun shipit--worktree-in-sync-p (worktree-path current-pr-head-sha)
   "Check if worktree at WORKTREE-PATH is in sync with CURRENT-PR-HEAD-SHA.
-Returns t if in sync, nil otherwise."
-  (let ((pr-info (shipit--get-pr-info-from-worktree worktree-path)))
-    (when pr-info
-      (let ((stored-sha (plist-get pr-info :pr-head-sha)))
-        ;; Check both stored SHA and actual HEAD to detect real sync status
-        ;; Stored SHA may be outdated if PR got new commits, so also check actual HEAD
-        (condition-case err
-            (let ((actual-head (string-trim-right
-                                (shell-command-to-string
-                                 (format "cd %s && git rev-parse HEAD"
-                                         (shell-quote-argument worktree-path))))))
-              (let ((in-sync-p (string-equal actual-head current-pr-head-sha)))
-                (shipit--debug-log "Sync check: actual=%s (len=%d) current-pr=%s (len=%d) match=%s"
-                                 actual-head (length actual-head)
-                                 current-pr-head-sha (length current-pr-head-sha)
-                                 in-sync-p)
-                in-sync-p))
-          (error
-           (shipit--debug-log "⚠️ Error checking worktree sync at %s: %s" worktree-path err)
-           nil))))))
+Returns t if in sync, nil otherwise.
+
+Tolerant compare:
+  * trims whitespace on both sides,
+  * case-insensitive (git SHAs are lowercase but be defensive),
+  * accepts short-vs-full SHA when one is a >=7-char prefix of
+    the other (so a 7-char abbrev from one source matches a full
+    40-char SHA from the other).
+Logs both inputs to `shipit--debug-log' on every check so a
+falsely-out-of-sync result can be diagnosed."
+  ;; Don't gate on `.shipit-pr-info.json' existing -- the file is
+  ;; advisory metadata, not load-bearing for the sync check.  The
+  ;; comparison uses the worktree's actual `git rev-parse HEAD' vs
+  ;; the PR's current head SHA from GitHub, which works fine for a
+  ;; worktree created outside shipit (or one whose metadata file got
+  ;; deleted).  Previously the early bail when the file was missing
+  ;; made the caller report "Out of Sync" even when git was in sync.
+  (when (file-directory-p worktree-path)
+    (condition-case err
+        (let* ((actual-raw (shell-command-to-string
+                            (format "cd %s && git rev-parse HEAD"
+                                    (shell-quote-argument worktree-path))))
+               (actual (and (stringp actual-raw) (string-trim actual-raw)))
+               (expected (and (stringp current-pr-head-sha)
+                              (string-trim current-pr-head-sha)))
+               (in-sync-p
+                (and actual expected
+                     (not (string-empty-p actual))
+                     (not (string-empty-p expected))
+                     (let ((a (downcase actual))
+                           (b (downcase expected)))
+                       (or (string= a b)
+                           (and (>= (length a) 7) (>= (length b) 7)
+                                (or (string-prefix-p a b)
+                                    (string-prefix-p b a))))))))
+          (shipit--debug-log
+           "Sync check: actual=%S (len=%d) expected=%S (len=%d) match=%s"
+           actual (length (or actual ""))
+           expected (length (or expected ""))
+           in-sync-p)
+          in-sync-p)
+      (error
+       (shipit--debug-log "Sync check error at %s: %s"
+                          worktree-path (error-message-string err))
+       nil))))
 
 (defun shipit--main-worktree-root ()
   "Return the main worktree\='s root directory, even from a linked worktree.
@@ -1064,13 +1089,19 @@ Returns (path . success) on success, or nil on error."
        (shipit--debug-log "Failed to create worktree: %s" err)
        nil))))
 
-(defun shipit--create-worktree-pr-async (pr-number branch-name pr-head-sha pr-buffer)
+(defun shipit--create-worktree-pr-async (pr-number branch-name pr-head-sha pr-buffer
+                                                    &optional on-done)
   "Async variant of `shipit--create-worktree-pr\='.
 Kicks off the fetch (if needed) and the `git worktree add\=' as
 chained `make-process\=' calls, updating
 `shipit-worktree--progress\=' and refreshing the Worktree
 section in PR-BUFFER between phases.  Returns immediately;
-callers should check / observe progress via the section."
+callers should check / observe progress via the section.
+
+ON-DONE, when non-nil, is a function called (inside PR-BUFFER
+if still live) once the worktree is ready and metadata is
+written -- used to resume work that needed the worktree once a
+freshly-created worktree is available."
   (let* ((repo-root (or (shipit--get-repo-root)
                         (user-error "Not in a git repository")))
          (worktree-path (shipit--get-worktree-path pr-number branch-name))
@@ -1105,7 +1136,13 @@ callers should check / observe progress via the section."
             (shipit-worktree--refresh-section-in-buffer pr-buffer)
             (when (buffer-live-p pr-buffer)
               (with-current-buffer pr-buffer
-                (message "Worktree ready at %s" worktree-path)))))
+                (message "Worktree ready at %s" worktree-path)
+                (when (functionp on-done)
+                  (condition-case err
+                      (funcall on-done)
+                    (error
+                     (shipit--debug-log
+                      "create-worktree on-done failed: %S" err))))))))
          ;; Step 2: kick off `git worktree add\='.
          (start-add
           (lambda ()
@@ -1338,28 +1375,54 @@ Only adds to .gitignore if not already in .gitignore or .git/info/exclude."
 
 (defun shipit--sync-worktree (worktree-path branch-name)
   "Sync WORKTREE-PATH with latest changes from BRANCH-NAME.
-Returns t on success, nil on error."
-  (condition-case err
-      (progn
-        (shipit--debug-log "Syncing worktree: %s" worktree-path)
-        (let ((cmd (format "cd %s && git pull origin %s"
-                          (shell-quote-argument worktree-path)
-                          (shell-quote-argument branch-name))))
-          (let ((exit-code (shell-command cmd)))
-            (unless (= exit-code 0)
-              (error "Git pull failed with exit code %d" exit-code))))
+Aborts when the worktree has uncommitted changes -- the sync
+runs `git reset --hard' which would silently destroy them.
 
-        ;; Update PR head SHA in metadata file
+Strategy: `git fetch origin BRANCH' then `git reset --hard
+FETCH_HEAD'.  No merge, no rebase, no conflict resolution -- the
+worktree is treated as a read-only mirror of what the PR author
+pushed.  This eliminates the merge-conflict class that
+`git pull' produced whenever the author force-pushed (rewrote
+history), since reset just moves the branch pointer to the new
+tip and the team\\='s merge-vs-rebase preference is irrelevant
+when we don\\='t have local commits to integrate.
+
+Returns t on success, nil on error.  Failures surface via
+`message' as well as the debug log so the user can see why a
+sync didn\\='t happen."
+  (condition-case err
+      (let* ((default-directory (file-name-as-directory worktree-path))
+             (status (string-trim
+                      (shell-command-to-string "git status --porcelain"))))
+        (shipit--debug-log "Syncing worktree: %s" worktree-path)
+        (unless (string-empty-p status)
+          (error
+           "Worktree has uncommitted changes -- commit / stash / discard before sync:\n%s"
+           status))
+        ;; Fetch the PR branch.  FETCH_HEAD points to the freshly
+        ;; fetched tip regardless of whether a tracking ref exists.
+        (let ((exit (call-process "git" nil nil nil
+                                  "fetch" "origin" branch-name)))
+          (unless (= exit 0)
+            (error "git fetch origin %s failed (exit %d)"
+                   branch-name exit)))
+        ;; Move the worktree's branch pointer to the fetched tip.
+        ;; No merge step, so a force-push can't produce conflicts.
+        (let ((exit (call-process "git" nil nil nil
+                                  "reset" "--hard" "FETCH_HEAD")))
+          (unless (= exit 0)
+            (error "git reset --hard FETCH_HEAD failed (exit %d)" exit)))
+        ;; Update PR head SHA in metadata file.
         (when-let* ((pr-info (shipit--get-pr-info-from-worktree worktree-path)))
-          (let ((latest-sha (string-trim-right
-                            (shell-command-to-string
-                             (format "cd %s && git rev-parse HEAD"
-                                     (shell-quote-argument worktree-path))))))
-            (shipit--write-pr-info-to-worktree worktree-path
-                                               (plist-put pr-info :pr-head-sha latest-sha))))
+          (let ((latest-sha (string-trim
+                             (shell-command-to-string "git rev-parse HEAD"))))
+            (shipit--write-pr-info-to-worktree
+             worktree-path
+             (plist-put pr-info :pr-head-sha latest-sha))))
         t)
     (error
      (shipit--debug-log "Failed to sync worktree: %s" err)
+     (message "shipit: sync failed -- %s" (error-message-string err))
      nil)))
 
 (defcustom shipit-worktree-show-lfs-indicator t

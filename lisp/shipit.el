@@ -56,7 +56,8 @@
   (require 'shipit-preview)
   (require 'shipit-diff)
   (require 'shipit-render)
-  (require 'shipit-editor))
+  (require 'shipit-editor)
+  (require 'shipit-review-queue))
 
 ;; MODERN INITIALIZATION API
 ;;;###autoload
@@ -83,6 +84,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   (require 'shipit-review-revision)
   (require 'shipit-debug)
   (require 'shipit-editor)  ; Comment/description editor with live preview
+  (require 'shipit-review-queue) ; Local draft review queue + pending-comment sections
   ;; Pluggable backend registries + GitHub implementations
   (require 'shipit-pr-backends)
   (require 'shipit-pr-github)

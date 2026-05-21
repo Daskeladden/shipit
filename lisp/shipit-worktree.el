@@ -1361,6 +1361,33 @@ Only adds to .gitignore if not already in .gitignore or .git/info/exclude."
           (with-temp-file gitignore-path
             (insert pattern)))))))
 
+(defun shipit--worktree-exclude-pr-info (worktree-path)
+  "Ensure `.shipit-pr-info.json' is in the worktree\\='s git exclude file.
+Git worktrees keep their own private exclude at
+`<repo>/.git/worktrees/<name>/info/exclude'; without an entry there
+the JSON shipit drops at the worktree root shows up untracked in
+`git status', which makes `shipit--sync-worktree' abort because it
+treats any porcelain output as `worktree has uncommitted changes'."
+  (let* ((default-directory (file-name-as-directory worktree-path))
+         (git-dir (ignore-errors
+                    (string-trim
+                     (shell-command-to-string "git rev-parse --git-dir"))))
+         (exclude (and git-dir
+                       (expand-file-name "info/exclude"
+                                         (expand-file-name git-dir
+                                                           worktree-path))))
+         (pattern ".shipit-pr-info.json"))
+    (when (and exclude (file-exists-p exclude))
+      (unless (shipit--worktree-pattern-in-file-p exclude pattern)
+        (with-temp-buffer
+          (insert-file-contents exclude)
+          (goto-char (point-max))
+          (unless (or (= (point) (point-min))
+                      (eq (char-before) ?\n))
+            (insert "\n"))
+          (insert pattern "\n")
+          (write-region (point-min) (point-max) exclude))))))
+
 (defun shipit--write-pr-info-to-worktree (worktree-path pr-info)
   "Write .shipit-pr-info.json to WORKTREE-PATH with PR-INFO plist."
   (let* ((info-file (expand-file-name ".shipit-pr-info.json" worktree-path))
@@ -1371,7 +1398,10 @@ Only adds to .gitignore if not already in .gitignore or .git/info/exclude."
                       (repo . ,(shipit--get-repo-from-remote))))
          (json-str (json-encode json-data)))
     (with-temp-file info-file
-      (insert json-str))))
+      (insert json-str))
+    ;; Quiet `git status' inside the worktree -- our metadata file
+    ;; should never count as untracked work that blocks sync.
+    (shipit--worktree-exclude-pr-info worktree-path)))
 
 (defun shipit--sync-worktree (worktree-path branch-name)
   "Sync WORKTREE-PATH with latest changes from BRANCH-NAME.
@@ -1392,13 +1422,33 @@ Returns t on success, nil on error.  Failures surface via
 sync didn\\='t happen."
   (condition-case err
       (let* ((default-directory (file-name-as-directory worktree-path))
-             (status (string-trim
-                      (shell-command-to-string "git status --porcelain"))))
+             (raw-status (string-trim
+                          (shell-command-to-string "git status --porcelain")))
+             ;; Filter our own metadata file from the porcelain output --
+             ;; worktrees created before the exclude-file fix still
+             ;; surface `.shipit-pr-info.json\=' as untracked, and we
+             ;; shouldn\='t refuse to sync over a file shipit itself
+             ;; writes on every PR open.
+             (status
+              (string-trim
+               (mapconcat
+                #'identity
+                (cl-remove-if
+                 (lambda (line)
+                   (string-match-p
+                    "\\`\\(\\?\\?\\|[ ACDMRTU][ ACDMRTU]\\) +\\.shipit-pr-info\\.json\\\'"
+                    line))
+                 (split-string raw-status "\n" t))
+                "\n"))))
         (shipit--debug-log "Syncing worktree: %s" worktree-path)
         (unless (string-empty-p status)
           (error
            "Worktree has uncommitted changes -- commit / stash / discard before sync:\n%s"
            status))
+        ;; Make sure the worktree exclude has our metadata file so
+        ;; future syncs + the user\='s own `git status\=' calls don\='t
+        ;; surface it.
+        (shipit--worktree-exclude-pr-info worktree-path)
         ;; Fetch the PR branch.  FETCH_HEAD points to the freshly
         ;; fetched tip regardless of whether a tracking ref exists.
         (let ((exit (call-process "git" nil nil nil

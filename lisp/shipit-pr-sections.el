@@ -1781,27 +1781,64 @@ that more files exist beyond the fetched limit."
                                                 (number-to-string total-count)))
                                (total-adds (apply #'+ (mapcar (lambda (f) (or (cdr (assq 'additions f)) 0)) files)))
                                (total-dels (apply #'+ (mapcar (lambda (f) (or (cdr (assq 'deletions f)) 0)) files)))
+                               ;; Honour buffer-local filter so async refresh
+                               ;; doesn\='t silently reset `f a\=' narrowing.
+                               (has-filter (shipit--files-filter-active-p))
+                               (filtered-files
+                                (if has-filter
+                                    (seq-filter
+                                     (lambda (f)
+                                       (shipit--file-matches-filter-p
+                                        f shipit--files-filter-text))
+                                     files)
+                                  files))
+                               (display-count (length filtered-files))
                                (header-start (point)))
                           (magit-insert-heading
-                            (format "%s Files Changed (%s, %s %s)"
-                                    (shipit--get-files-icon "📄")
-                                    count-display
-                                    (if (> total-adds 0)
-                                        (propertize (format "+%d" total-adds) 'font-lock-face 'diff-added)
-                                      "+0")
-                                    (if (> total-dels 0)
-                                        (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
-                                      "-0")))
+                            (if has-filter
+                                (format "%s Files Changed (%d/%s, %s %s)"
+                                        (shipit--get-files-icon "📄")
+                                        display-count count-display
+                                        (if (> total-adds 0)
+                                            (propertize (format "+%d" total-adds) 'font-lock-face 'diff-added)
+                                          "+0")
+                                        (if (> total-dels 0)
+                                            (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
+                                          "-0"))
+                              (format "%s Files Changed (%s, %s %s)"
+                                      (shipit--get-files-icon "📄")
+                                      count-display
+                                      (if (> total-adds 0)
+                                          (propertize (format "+%d" total-adds) 'font-lock-face 'diff-added)
+                                        "+0")
+                                      (if (> total-dels 0)
+                                          (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
+                                        "-0"))))
+                          (when has-filter
+                            (let ((display (shipit--get-files-filter-display)))
+                              (when display
+                                (insert
+                                 (propertize
+                                  (format "   Filter: %s\n"
+                                          (propertize display
+                                                      'font-lock-face
+                                                      'font-lock-string-face))
+                                  'font-lock-face 'italic)))))
                           (add-text-properties header-start (point)
                                                `(shipit-pr-files t
                                                                  shipit-pr-number ,pr-number
-                                                                 shipit-repo ,repo)))
-                        (magit-insert-section-body
-                          (if (= (length files) 0)
-                              (insert "   No files changed\n")
-                            (dolist (file files)
-                              (shipit--insert-pr-file-section file repo pr-number pr-data)))
-                          (insert "\n"))))
+                                                                 shipit-repo ,repo))
+                          (magit-insert-section-body
+                            (cond
+                             ((= (length files) 0)
+                              (insert "   No files changed\n"))
+                             ((= (length filtered-files) 0)
+                              (insert "   No files match filter\n"))
+                             (t
+                              (dolist (file filtered-files)
+                                (shipit--insert-pr-file-section
+                                 file repo pr-number pr-data))))
+                            (insert "\n")))))
                 ;; Fix parent's children by position-sorting (async-safe)
                 (when (and parent-section files-section)
                   (let* ((current-children (oref parent-section children))
@@ -2760,17 +2797,42 @@ REPO and PR-NUMBER are used for context in file operations."
             (dolist (file filtered-files)
               (shipit--insert-pr-file-section file repo pr-number nil pr-head-sha))))))))
 
+(defvar-local shipit--comments-by-path-cache nil
+  "Hashtable PATH -> list of inline comments with that path.
+Built lazily by `shipit--comments-for-path' from
+`shipit--cached-inline-comments' so the per-file count functions
+stop doing 3 linear seq-filters per file -- the bottleneck behind
+slow filter toggles on PRs with many files + many comments.")
+
+(defvar-local shipit--comments-by-path-token nil
+  "Identity (eq) of `shipit--cached-inline-comments' the bucket was built from.")
+
+(defun shipit--comments-for-path (path)
+  "Return the cached inline comments whose `path' matches PATH (list).
+Rebuilds the bucket only when the source list identity changes."
+  (when (and (boundp 'shipit--cached-inline-comments)
+             shipit--cached-inline-comments)
+    (unless (eq shipit--comments-by-path-token shipit--cached-inline-comments)
+      (let ((tbl (make-hash-table :test 'equal)))
+        (dolist (c shipit--cached-inline-comments)
+          (let ((p (cdr (assq 'path c))))
+            (when p (puthash p (cons c (gethash p tbl)) tbl))))
+        (setq shipit--comments-by-path-cache tbl)
+        (setq shipit--comments-by-path-token shipit--cached-inline-comments)))
+    (and path shipit--comments-by-path-cache
+         (gethash path shipit--comments-by-path-cache))))
+
 (defun shipit--get-file-comment-count (pr-number filename)
   "Get the number of ACTIVE comments for FILENAME in PR-NUMBER using cached data.
 Includes both line-level and file-level comments."
   ;; Use cached inline comments if available (much faster than individual API calls)
   (if (and (boundp 'shipit--inline-comments-fetched) shipit--inline-comments-fetched
            (boundp 'shipit--cached-inline-comments))
-      ;; Fast path: filter from already-cached comments (count only active, non-resolved comments)
-      ;; Include both line-level comments (have line/original_line) and file-level comments (no line)
-      (let* ((file-comments (seq-filter (lambda (comment)
-                                          (string= (cdr (assq 'path comment)) filename))
-                                        shipit--cached-inline-comments))
+      ;; Fast path: O(1) bucket lookup instead of a linear seq-filter
+      ;; over every cached comment.  The list is the same shape as
+      ;; before -- includes line-level + file-level comments for this
+      ;; FILENAME.
+      (let* ((file-comments (shipit--comments-for-path filename))
              ;; Filter out both outdated and resolved comments
              ;; Note: REST API comments don't have resolved property; must check via hash
              (non-outdated (shipit--filter-active-comments file-comments))
@@ -2796,12 +2858,13 @@ Includes both line-level and file-level comments."
   "Get the number of outdated inline comments for FILENAME in PR-NUMBER using cached data."
   (if (and (boundp 'shipit--inline-comments-fetched) shipit--inline-comments-fetched
            (boundp 'shipit--cached-inline-comments))
-      ;; Filter for outdated comments on this file
-      (let* ((all-file-comments (seq-filter (lambda (comment)
-                                              (and (string= (cdr (assq 'path comment)) filename)
-                                                   (or (cdr (assq 'line comment))
-                                                       (cdr (assq 'original_line comment)))))
-                                            shipit--cached-inline-comments))
+      ;; Bucket lookup + line-bearing filter.
+      (let* ((all-file-comments
+              (cl-remove-if-not
+               (lambda (comment)
+                 (or (cdr (assq 'line comment))
+                     (cdr (assq 'original_line comment))))
+               (shipit--comments-for-path filename)))
              (outdated-comments (shipit--filter-outdated-comments all-file-comments)))
         (length outdated-comments))
     0))
@@ -2810,12 +2873,13 @@ Includes both line-level and file-level comments."
   "Get the number of resolved inline comments for FILENAME in PR-NUMBER using cached data."
   (if (and (boundp 'shipit--inline-comments-fetched) shipit--inline-comments-fetched
            (boundp 'shipit--cached-inline-comments))
-      ;; Filter for resolved comments on this file
-      (let* ((all-file-comments (seq-filter (lambda (comment)
-                                              (and (string= (cdr (assq 'path comment)) filename)
-                                                   (or (cdr (assq 'line comment))
-                                                       (cdr (assq 'original_line comment)))))
-                                            shipit--cached-inline-comments))
+      ;; Bucket lookup + line-bearing filter.
+      (let* ((all-file-comments
+              (cl-remove-if-not
+               (lambda (comment)
+                 (or (cdr (assq 'line comment))
+                     (cdr (assq 'original_line comment))))
+               (shipit--comments-for-path filename)))
              ;; Include comments that are resolved (including replies in resolved threads)
              (resolved-comments (cl-remove-if-not (lambda (comment)
                                                     (let* ((comment-id (cdr (assq 'id comment)))

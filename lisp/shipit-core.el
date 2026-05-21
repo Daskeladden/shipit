@@ -587,26 +587,40 @@ Examples:
            (should-log (or (memq 'all shipit-debug-categories)
                           (memq category shipit-debug-categories))))
       (when should-log
-        (let ((message (shipit--redact-secrets (apply #'format actual-format actual-args)))
-              (timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
-              (category-str (if has-category (format "[%s] " category) "")))
-          (with-temp-buffer
-            (when (file-exists-p shipit--debug-log-file)
-              (insert-file-contents shipit--debug-log-file))
-            (goto-char (point-max))
-            (insert (format "[%s] %s%s\n" timestamp category-str message))
+        (let* ((message (shipit--redact-secrets
+                         (apply #'format actual-format actual-args)))
+               (timestamp (format-time-string "%Y-%m-%d %H:%M:%S"))
+               (category-str (if has-category (format "[%s] " category) ""))
+               (line (format "[%s] %s%s\n" timestamp category-str message)))
+          ;; Append the line -- O(line-size) instead of the old
+          ;; read-entire-file/rewrite-entire-file pattern, which turned
+          ;; every render-time `--debug-log\=' call into a whole-file
+          ;; copy on PRs with a long-lived log.
+          (write-region line nil shipit--debug-log-file 'append 'silent)
+          ;; Rotate occasionally, not per line.
+          (when (zerop (% (cl-incf shipit--debug-log-write-counter)
+                          (max 16 (/ shipit-debug-log-max-lines 16))))
+            (shipit--debug-log-maybe-rotate)))))))
 
-            ;; Rotate log if it's too long
-            (let ((line-count (count-lines (point-min) (point-max))))
-              (when (> line-count shipit-debug-log-max-lines)
-                (goto-char (point-min))
-                (forward-line (- line-count (/ shipit-debug-log-max-lines 2)))
-                (delete-region (point-min) (point))
-                (goto-char (point-min))
-                (insert (format "[%s] === Log rotated (kept last %d lines) ===\n"
-                               timestamp (/ shipit-debug-log-max-lines 2)))))
+(defvar shipit--debug-log-write-counter 0
+  "Counter for amortising `shipit--debug-log' rotation.")
 
-            (write-region (point-min) (point-max) shipit--debug-log-file nil 'silent)))))))
+(defun shipit--debug-log-maybe-rotate ()
+  "Trim the debug log if it has more than `shipit-debug-log-max-lines'."
+  (when (file-exists-p shipit--debug-log-file)
+    (with-temp-buffer
+      (insert-file-contents shipit--debug-log-file)
+      (let ((line-count (count-lines (point-min) (point-max))))
+        (when (> line-count shipit-debug-log-max-lines)
+          (goto-char (point-min))
+          (forward-line (- line-count (/ shipit-debug-log-max-lines 2)))
+          (delete-region (point-min) (point))
+          (goto-char (point-min))
+          (insert (format "[%s] === Log rotated (kept last %d lines) ===\n"
+                          (format-time-string "%Y-%m-%d %H:%M:%S")
+                          (/ shipit-debug-log-max-lines 2)))
+          (write-region (point-min) (point-max)
+                        shipit--debug-log-file nil 'silent))))))
 
 ;; Performance timing helpers
 

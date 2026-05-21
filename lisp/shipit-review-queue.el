@@ -984,7 +984,13 @@ worktree files happen to be open."
           (when file
             (puthash file (1+ (gethash file counts 0)) counts))))
       (dolist (child (oref magit-root-section children))
-        (when (eq (oref child type) 'pr-files)
+        ;; Only render badges when Files Changed is expanded -- a
+        ;; collapsed parent has an invisible overlay over the child
+        ;; headings, but `after-string' overlays inside the range
+        ;; still render, piling every badge onto the one visual line.
+        (when (and (eq (oref child type) 'pr-files)
+                   (not (and (slot-boundp child 'hidden)
+                             (oref child hidden))))
           (cl-incf pr-files-count)
           (dolist (file-section (oref child children))
             (when (eq (oref file-section type) 'pr-file)

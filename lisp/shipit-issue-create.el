@@ -99,6 +99,28 @@ Returns non-nil if state was restored."
   "Clear saved draft state for current buffer."
   (remhash (shipit-issue-create--draft-key) shipit-issue-create--drafts))
 
+(defun shipit-issue-create--apply-prefill (prefill)
+  "Set form fields from PREFILL plist, overriding draft + defaults.
+Unlike `shipit-issue-create--apply-defaults\=', this UNCONDITIONALLY
+sets fields that are present (and non-nil) in PREFILL -- the caller
+is supplying authoritative content that should beat any stale
+draft on disk.  nil values in PREFILL are
+ignored so a partial seed (e.g. (:title T) alone) leaves body /
+type / labels untouched."
+  (when prefill
+    (let ((v (plist-get prefill :title)))
+      (when v (setq shipit-issue-create--title v)))
+    (let ((v (plist-get prefill :body)))
+      (when v (setq shipit-issue-create--body v)))
+    (let ((v (plist-get prefill :issue-type)))
+      (when v (setq shipit-issue-create--issue-type v)))
+    (let ((v (plist-get prefill :labels)))
+      (when v (setq shipit-issue-create--labels v)))
+    (let ((v (plist-get prefill :assignees)))
+      (when v (setq shipit-issue-create--assignees v)))
+    (let ((v (plist-get prefill :components)))
+      (when v (setq shipit-issue-create--components v)))))
+
 (defun shipit-issue-create--apply-defaults ()
   "Pre-fill any unset draft fields from `:create-defaults\=' on the resolved config.
 Reads an alist of (FIELD-NAME . VALUE) keyed off the buffer\='s
@@ -491,12 +513,20 @@ Includes only fields that have values set."
 ;;; Entry point
 
 ;;;###autoload
-(defun shipit-issue-create-buffer (&optional repo-override)
+(defun shipit-issue-create-buffer (&optional repo-override prefill)
   "Open a rich issue creation buffer.
 REPO-OVERRIDE lets callers pass the repository explicitly, bypassing
 `shipit--get-repo-from-remote'.  Useful when the calling buffer already
 knows the repo (e.g. a shipit PR buffer) and the remote detection would
-return the wrong context."
+return the wrong context.
+
+PREFILL, when supplied, is a plist whose values override draft
+restoration and backend defaults so an upstream command can seed
+the form.  Recognised keys: `:title\\=', `:body\\=', `:issue-type\\=',
+`:labels\\=', `:assignees\\=', `:components\\='.  Nil values in the
+plist are ignored; non-nil values win over any pre-existing
+draft / default value, so the user does not have to dismiss a
+stale draft first."
   (interactive)
   (let* ((repo (or repo-override (shipit--get-repo-from-remote)))
          (_ (unless repo (user-error "Could not determine repository from remote")))
@@ -514,6 +544,8 @@ return the wrong context."
             shipit-issue-create--field-descriptors fields)
       (shipit-issue-create--restore-draft)
       (shipit-issue-create--apply-defaults)
+      (when prefill
+        (shipit-issue-create--apply-prefill prefill))
       (shipit-issue-create--refresh))
     (switch-to-buffer buf-name)))
 

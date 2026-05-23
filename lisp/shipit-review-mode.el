@@ -28,18 +28,54 @@
   "Shipit worktree review mode for interactive PR exploration."
   :group 'shipit)
 
+(defun shipit-review--sha-reachable-p (sha worktree-path)
+  "Return non-nil when SHA exists in the git object database at WORKTREE-PATH.
+A SHA from `pr-data.base.sha\\=' can be perfectly valid on the
+server but absent locally -- common after a fresh worktree clone
+that hasn\\='t fetched the merge-base.  Using such a SHA later in
+`git log SHA..HEAD\\=' silently fails and breaks every downstream
+nav site, so the resolver verifies reachability before handing
+it back."
+  (when (and sha (stringp sha) (> (length sha) 0)
+             worktree-path (file-directory-p worktree-path))
+    (let ((default-directory (file-name-as-directory worktree-path)))
+      (with-temp-buffer
+        (zerop (process-file "git" nil t nil
+                             "rev-parse" "--verify" "--quiet"
+                             (concat sha "^{commit}")))))))
+
+(defun shipit-review--merge-base-against (ref worktree-path)
+  "Return `git merge-base HEAD REF\\=' in WORKTREE-PATH, or nil on failure.
+REF is something like `origin/master\\=' / `origin/HEAD\\=' -- a
+remote-tracking ref that\\='s expected to exist locally.  Returns
+nil when the ref doesn\\='t resolve or merge-base can\\='t find a
+common ancestor, so the resolver can fall through to the next
+candidate."
+  (when (and ref (stringp ref) (> (length ref) 0)
+             worktree-path (file-directory-p worktree-path))
+    (let ((default-directory (file-name-as-directory worktree-path)))
+      (with-temp-buffer
+        (when (zerop (process-file
+                      "git" nil t nil
+                      "merge-base" "HEAD" ref))
+          (let ((sha (string-trim (buffer-string))))
+            (and (> (length sha) 0) sha)))))))
+
 (defun shipit-review--resolve-base-sha (pr-data &optional worktree-path)
   "Return a usable base SHA for review mode, given PR-DATA + WORKTREE-PATH.
 
 Tries, in order:
 
 1. `pr-data\\='s `base.sha\\=' (the canonical value from the GitHub
-   API).  This is what shipit fetches for fully-loaded PR
-   data.
+   API) -- ONLY when it\\='s reachable in WORKTREE-PATH.  A stale
+   worktree may not have fetched the base commit yet, in which
+   case handing it back would poison every subsequent `git log\\='
+   call.
 2. `git merge-base HEAD origin/BASE-REF\\=' inside WORKTREE-PATH,
    where BASE-REF comes from `pr-data\\='s `base.ref\\=' (e.g.
-   `master\\=' / `main\\=').  Useful when `pr-data\\=' was loaded from
-   a context that strips the base subobject.
+   `master\\=' / `main\\=').  Useful when (a) `pr-data\\=' was loaded
+   from a context that strips the base subobject, or (b) the
+   pr-data sha is unreachable locally.
 3. `git merge-base HEAD origin/HEAD\\=' inside WORKTREE-PATH, as
    a last-resort default-branch fallback.
 
@@ -52,25 +88,18 @@ a usable answer.  Logs which source matched so the next
          (source nil))
     (cond
      ((and base-from-data (stringp base-from-data)
-           (> (length base-from-data) 0))
+           (> (length base-from-data) 0)
+           (shipit-review--sha-reachable-p base-from-data worktree-path))
       (setq resolved base-from-data source 'pr-data))
      ((and worktree-path (file-directory-p worktree-path))
-      (let* ((default-directory (file-name-as-directory worktree-path))
-             (try-merge-base
-              (lambda (ref)
-                (with-temp-buffer
-                  (when (zerop (process-file
-                                "git" nil t nil
-                                "merge-base" "HEAD" ref))
-                    (let ((sha (string-trim (buffer-string))))
-                      (and (> (length sha) 0) sha)))))))
-        (cond
-         ((and base-ref (stringp base-ref) (> (length base-ref) 0)
-               (setq resolved (funcall try-merge-base
-                                       (concat "origin/" base-ref))))
-          (setq source (format "merge-base origin/%s" base-ref)))
-         ((setq resolved (funcall try-merge-base "origin/HEAD"))
-          (setq source "merge-base origin/HEAD"))))))
+      (cond
+       ((and base-ref (stringp base-ref) (> (length base-ref) 0)
+             (setq resolved (shipit-review--merge-base-against
+                             (concat "origin/" base-ref) worktree-path)))
+        (setq source (format "merge-base origin/%s" base-ref)))
+       ((setq resolved (shipit-review--merge-base-against
+                        "origin/HEAD" worktree-path))
+        (setq source "merge-base origin/HEAD")))))
     (shipit--debug-log
      "review base-sha resolved: %s (source=%s, pr-data-base=%s base-ref=%s worktree=%s)"
      (if resolved (substring resolved 0 (min 7 (length resolved))) "nil")
@@ -1093,7 +1122,7 @@ commands can route to it via `--with-source-buffer'."
 (defun shipit-review--current-diff-range ()
   "Return (FROM-SHA . TO-SHA) for the current comparison/range state.
 Falls back to base..head when no specific range is selected."
-  (let* ((commits (cdr (assq 'commits shipit-review--pr-data)))
+  (let* ((commits (shipit-review--pr-commits))
          (from nil)
          (to nil))
     (cond
@@ -1478,7 +1507,7 @@ No-op when SHA is nil, or when SHA equals the worktree HEAD
                (buf (and should-update (get-buffer-create buf-name)))
                (default-directory (file-name-as-directory worktree))
                (short (substring sha 0 (min 7 (length sha))))
-               (commits (cdr (assq 'commits shipit-review--pr-data)))
+               (commits (shipit-review--pr-commits))
                (subject
                 (cl-loop for c in commits
                          when (and (cdr (assq 'sha c))
@@ -1575,7 +1604,7 @@ rendering had no equivalent before this)."
              ;; `original_commit_id' got force-pushed away.
              (pr-commit-shas
               (let ((h (make-hash-table :test 'equal)))
-                (dolist (c (cdr (assq 'commits shipit-review--pr-data)))
+                (dolist (c (shipit-review--pr-commits))
                   (let ((s (cdr (assq 'sha c))))
                     (when s (puthash s t h))))
                 h))
@@ -1650,28 +1679,33 @@ rendering had no equivalent before this)."
                (cons (cons 'is_resolved (and resolved t)) c)))
            filtered))))))
 
-(defun shipit-review--rounded-after-string (lines)
+(defun shipit-review--rounded-after-string (lines &optional bg-color)
   "Wrap LINES with rounded SVG edges + filled background.
-LINES is a list of strings without trailing newlines.
+LINES is a list of strings without trailing newlines.  BG-COLOR
+defaults to `shipit-rounded-section-bg-color\\=' so existing
+inline-comment callers keep their look; another caller can pass a
+color of its own.
 
 Mirrors the magit-section rounded-pill treatment from
-`shipit-rounded--apply-bg' but for the
-`after-string' overlay path used by file-view inline
-comments.  Magit\='s implementation walks buffer text and
-applies `line-prefix' / overlays per line; an after-string
-isn\='t in the buffer, so we instead build the SVG edges
-straight into the after-string content and append a
-`:background ... :extend t' face to each line via
-`add-face-text-property' (priority APPEND so existing
-username / timestamp / body faces compose).
+`shipit-rounded--apply-bg\\=' but for the `after-string\\=' overlay
+path used by file-view inline comments.  Magit\\='s implementation
+walks buffer text and applies `line-prefix\\=' / overlays per line;
+an after-string isn\\='t in the buffer, so we instead build the SVG
+edges straight into the after-string content.
+
+The bg face is applied to the line text AND its trailing newline
+char so `:extend t\\=' fills the rest of each visual row out to the
+window edge (the same trick the PR-buffer pill uses by including
+the line\\='s `\\n\\=' in its overlay range).  Without that the pill
+stops at the text width and leaves an empty corridor on the right.
 
 Falls back to a plain newline-joined string in non-graphic
-displays where SVGs can\='t render."
+displays where SVGs can\\='t render."
   (cond
    ((not (display-graphic-p))
     (mapconcat #'identity lines "\n"))
    (t
-    (let* ((bg-color shipit-rounded-section-bg-color)
+    (let* ((bg-color (or bg-color shipit-rounded-section-bg-color))
            (char-height (frame-char-height))
            (radius 10)
            (count (length lines))
@@ -1688,12 +1722,12 @@ displays where SVGs can\='t render."
                       (edge (shipit-rounded--make-edge-svg
                              char-height radius bg-color position 'left))
                       (edge-prefix (propertize " " 'display edge))
-                      (line-bg (copy-sequence line)))
+                      (line-bg (concat (copy-sequence line) "\n")))
                  (add-face-text-property 0 (length line-bg)
                                          `(:background ,bg-color :extend t)
                                          t line-bg)
                  (push (concat edge-prefix line-bg) parts)))
-      (mapconcat #'identity (nreverse parts) "\n")))))
+      (apply #'concat (nreverse parts))))))
 
 (defun shipit-review--render-inline-comment (comment)
   "Build the multi-line `after-string' for an inline COMMENT overlay.
@@ -1806,7 +1840,6 @@ target line.  Outdated comments are skipped."
        (let ((n (shipit-review--show-inline-comments)))
          (message "Inline comments: %d shown" n)))))))
 
-
 ;;;###autoload
 (define-minor-mode shipit-review-mode
   "Minor mode for interactive PR review in worktrees.
@@ -1840,7 +1873,7 @@ When enabled on a file opened from a PR worktree:
 
 (defun shipit-review--update-buffer-mode-line ()
   "Update the buffer's mode line to show the current file SHA."
-  (let ((commits (cdr (assq 'commits shipit-review--pr-data)))
+  (let ((commits (shipit-review--pr-commits))
         (displayed-sha nil))
     (cond
      ;; Single-commit mode: show that commit's SHA
@@ -1920,7 +1953,7 @@ TARGET-SHA should be a git SHA. DESCRIPTION is for logging."
   (lambda ()
     (interactive)
     (when shipit-review--pr-data
-      (let* ((commits (cdr (assq 'commits shipit-review--pr-data)))
+      (let* ((commits (shipit-review--pr-commits))
              (index (1- commit-num)))
         (when (< index (length commits))
           (let ((commit (nth index commits)))
@@ -1973,7 +2006,7 @@ PR's `pr-data.commits' SHA set."
            (rel (and file worktree (file-relative-name file worktree)))
            (pr-shas
             (let ((h (make-hash-table :test 'equal)))
-              (dolist (c (cdr (assq 'commits shipit-review--pr-data)))
+              (dolist (c (shipit-review--pr-commits))
                 (let ((s (cdr (assq 'sha c))))
                   (when s (puthash s t h))))
               h))
@@ -2046,7 +2079,7 @@ historical commit, so we want the lines THIS commit changed."
   (let* ((sha (cdr (assq 'sha entry)))
          (msg (cdr (assq 'message entry)))
          (in-pr (cdr (assq 'in-pr entry)))
-         (pr-commits (cdr (assq 'commits shipit-review--pr-data)))
+         (pr-commits (shipit-review--pr-commits))
          (pr-idx (and in-pr
                       (cl-position sha pr-commits
                                    :key (lambda (c) (cdr (assq 'sha c)))
@@ -2197,7 +2230,7 @@ Walks `--file-commits-list' (PR + pre-PR file history)."
   "Extend range by moving base to previous (older) commit."
   (interactive)
   (when shipit-review--pr-data
-    (let* ((commits (cdr (assq 'commits shipit-review--pr-data)))
+    (let* ((commits (shipit-review--pr-commits))
            ;; If in single-commit mode, initialize range from that commit
            (current-start (if (not (null shipit-review--current-commit-index))
                              shipit-review--current-commit-index
@@ -2221,7 +2254,7 @@ Walks `--file-commits-list' (PR + pre-PR file history)."
   "Extend range by moving head to next (newer) commit."
   (interactive)
   (when shipit-review--pr-data
-    (let* ((commits (cdr (assq 'commits shipit-review--pr-data)))
+    (let* ((commits (shipit-review--pr-commits))
            (total (length commits))
            ;; If in single-commit mode, initialize range from that commit
            (current-start (if (not (null shipit-review--current-commit-index))
@@ -2318,6 +2351,22 @@ regardless of how the buffer was opened."
            (length git-list)
            (substring (or shipit-review--base-sha "?") 0 7)
            (substring (or shipit-review--head-sha "?") 0 7)))))))
+
+(defun shipit-review--pr-commits ()
+  "Return `pr-data.commits' as a list, or nil when unavailable.
+Coerces the REST API\\='s integer count into the actual SHA list
+via `shipit-review--ensure-commits-list\\=' on the way out, and
+flattens a vector value into a list so every navigation /
+overlay site sees a consistent shape.  Returns nil cleanly when
+the count couldn\\='t be resolved (typically because the base SHA
+is unknown) -- callers then see \"no commits\" instead of crashing
+with `Wrong type argument: listp, N\\='."
+  (shipit-review--ensure-commits-list)
+  (let ((raw (cdr (assq 'commits shipit-review--pr-data))))
+    (cond
+     ((listp raw) raw)
+     ((vectorp raw) (append raw nil))
+     (t nil))))
 
 (defvar-local shipit-review--edit-line-overlays nil
   "Overlays marking reviewer-edited lines in this review buffer.
@@ -4200,7 +4249,7 @@ auto-show behaviour."
   (interactive)
   (when shipit-review--base-sha
     (condition-case err
-        (let* ((commits (cdr (assq 'commits shipit-review--pr-data)))
+        (let* ((commits (shipit-review--pr-commits))
                (from-sha (if shipit-review--current-commit-index
                            ;; For single commit view: compare against parent
                            (if (> shipit-review--current-commit-index 0)

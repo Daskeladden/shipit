@@ -872,13 +872,16 @@ Read-only, with the same major mode the live file uses."
 ;;; Entry point ------------------------------------------------------
 
 (defun shipit-review-history--pr-shas (source-buffer)
-  "Return the list of full SHAs in the PR currently displayed in SOURCE-BUFFER."
+  "Return the list of full SHAs in the PR currently displayed in SOURCE-BUFFER.
+Delegates to `shipit-review--pr-commits\\=' so the integer-count
+edge case (REST API stores `commits\\=' as a number) is normalised
+in one place -- the helper synthesises the real list from
+`git log base..head\\=' when possible and returns nil otherwise."
   (when (buffer-live-p source-buffer)
     (with-current-buffer source-buffer
-      (let ((commits (and (boundp 'shipit-review--pr-data)
-                          shipit-review--pr-data
-                          (cdr (assq 'commits shipit-review--pr-data)))))
-        (mapcar (lambda (c) (cdr (assq 'sha c))) commits)))))
+      (when (fboundp 'shipit-review--pr-commits)
+        (mapcar (lambda (c) (cdr (assq 'sha c)))
+                (shipit-review--pr-commits))))))
 
 (defun shipit-review-history--worktree-and-file (source-buffer)
   "Return (WORKTREE-PATH . REPO-RELATIVE-FILE) for SOURCE-BUFFER, or nil."

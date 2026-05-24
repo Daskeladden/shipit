@@ -283,6 +283,20 @@ Fetches job data and logs on first expand, uses cache thereafter."
       (when (and win win-start)
         (set-window-start win win-start t)))))
 
+(defun shipit--find-enclosing-run-id (section)
+  "Walk up from SECTION to find the enclosing `workflow-run\='s run-id.
+Returns the run-id string when found, nil otherwise.  The PR
+Checks tree has check-items nested under `workflow-run', whose
+value carries the run-id we need to filter the conv-store with."
+  (let ((sec section)
+        (found nil))
+    (while (and sec (not found))
+      (when (and (slot-exists-p sec 'type)
+                 (eq (oref sec type) 'workflow-run))
+        (setq found (cdr (assq 'run-id (oref sec value)))))
+      (setq sec (and (slot-exists-p sec 'parent) (oref sec parent))))
+    found))
+
 (defun shipit--toggle-check-step-time-format (section)
   "Toggle step start time format and re-render SECTION."
   (setq shipit-actions--step-time-format
@@ -973,9 +987,11 @@ Returns non-nil if handled."
           (when (and (memq type '(workflow workflow-run))
                      (consp value))
             (let ((run-id (cdr (assq 'run-id value)))
-                  (repo (bound-and-true-p shipit-buffer-repo)))
+                  (repo (bound-and-true-p shipit-buffer-repo))
+                  (pr-number (bound-and-true-p shipit-buffer-pr-number)))
               (when (and run-id repo)
-                (shipit-open-actions-run repo run-id)
+                ;; Thread the PR context into the actions buffer.
+                (shipit-open-actions-run repo run-id nil pr-number)
                 t))))))))
 
 (defun shipit--extract-run-id-from-url (html-url)
@@ -992,11 +1008,15 @@ Returns nil if URL doesn't contain an Actions run path."
 
 (defun shipit--open-check-in-actions (check-name html-url)
   "Open the Actions run for CHECK-NAME from HTML-URL.
-If CHECK-NAME is non-nil, auto-expand that job in the actions buffer."
+If CHECK-NAME is non-nil, auto-expand that job in the actions buffer.
+Threads `shipit-buffer-pr-number' into the actions buffer (via
+`shipit-open-actions-run's PR-NUMBER arg), so the buffer knows the
+pull request it came from."
   (let ((run-id (shipit--extract-run-id-from-url html-url))
-        (repo (bound-and-true-p shipit-buffer-repo)))
+        (repo (bound-and-true-p shipit-buffer-repo))
+        (pr-number (bound-and-true-p shipit-buffer-pr-number)))
     (if (and run-id repo)
-        (shipit-open-actions-run repo run-id check-name)
+        (shipit-open-actions-run repo run-id check-name pr-number)
       (when html-url
         (browse-url html-url)))))
 

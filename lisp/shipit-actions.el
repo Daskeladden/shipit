@@ -84,6 +84,12 @@
 (defvar-local shipit-actions--repo nil
   "Repository owner/name for this actions buffer.")
 
+(defvar-local shipit-actions--pr-number nil
+  "PR number the actions buffer was opened from, or nil.
+Set by `shipit-open-actions-run' when invoked from a shipit PR
+buffer (via `shipit--open-check-in-actions' RET on a check
+item).")
+
 (defvar-local shipit-actions--run-id nil
   "Workflow run ID for this actions buffer.")
 
@@ -151,14 +157,21 @@ Each job's logs are fetched lazily on first expand.")
 ;;; Entry point
 
 ;;;###autoload
-(defun shipit-open-actions-run (repo run-id &optional job-id)
+(defun shipit-open-actions-run (repo run-id &optional job-id pr-number)
   "Open a shipit buffer for Actions run RUN-ID in REPO.
-When JOB-ID is non-nil, auto-expand that job after loading."
+When JOB-ID is non-nil, auto-expand that job after loading.
+PR-NUMBER, when supplied, records which PR opened this actions
+buffer."
   (let* ((buf-name (format "*shipit-actions-run: %s #%s*" repo run-id))
          (existing (get-buffer buf-name)))
     (if existing
         (progn
           (switch-to-buffer existing)
+          ;; Refresh PR context if a re-open carries new info; never
+          ;; overwrite with nil so subsequent opens without context
+          ;; can't clobber a prior open's value.
+          (when pr-number
+            (setq shipit-actions--pr-number pr-number))
           (when job-id
             (setq shipit-actions--job-id job-id)
             (shipit-actions--auto-expand-job)))
@@ -167,7 +180,8 @@ When JOB-ID is non-nil, auto-expand that job after loading."
           (shipit-actions-mode)
           (setq shipit-actions--repo repo
                 shipit-actions--run-id run-id
-                shipit-actions--job-id job-id)
+                shipit-actions--job-id job-id
+                shipit-actions--pr-number pr-number)
           (shipit-actions--fetch-and-render))
         (switch-to-buffer buffer)))))
 

@@ -23,7 +23,7 @@
 ;;   :name                 — human-readable name
 ;;   :fetch-pr             — (config number) → PR alist
 ;;   :search               — (config args) → list of PR alists
-;;   :create-pr            — (config title body base head) → PR alist
+;;   :create-pr            — (config title body base head draft) → PR alist
 ;;   :merge-pr             — (config number method) → result
 ;;   :update-pr            — (config number data) → PR alist
 ;;   :fetch-reviews        — (config number) → list of review alists

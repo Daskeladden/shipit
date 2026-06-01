@@ -59,6 +59,7 @@ test-unit: compile
 		-l test/test-shipit-discussions-buffer.el \
 		-l test/test-shipit-discussions.el \
 		-l test/test-shipit-pr-backends.el \
+		-l test/test-shipit-pr-github.el \
 		-l test/test-shipit-comment-backends.el \
 		-l test/test-shipit-gitlab-http.el \
 		-l test/test-shipit-pr-gitlab.el \

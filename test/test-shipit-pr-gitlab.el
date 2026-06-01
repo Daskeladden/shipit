@@ -184,6 +184,38 @@ THEN draft is t."
                (shipit-pr-gitlab--normalize-mr mr))))
     (should (eq t (cdr (assq 'draft pr))))))
 
+;;; Create MR draft tests
+
+(defun test-gitlab--create-pr-payload (draft)
+  "Call GitLab create-pr with DRAFT and return the captured request data."
+  (require 'shipit-pr-gitlab)
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'shipit-gitlab--api-request-method)
+               (lambda (_config _path data &optional _method)
+                 (setq captured data)
+                 (test-gitlab--make-mr-data))))
+      (shipit-pr-gitlab--create-pr '(:project-path "mygroup/myproject")
+                                   "Add feature X" "Body" "main" "feature-x" draft)
+      captured)))
+
+(ert-deftest test-shipit-pr-gitlab--create-pr-draft-prefixes-title ()
+  "GIVEN draft is non-nil
+WHEN creating a GitLab MR
+THEN the title is prefixed with \"Draft: \" (the GitLab draft convention)."
+  ;; WHEN
+  (let ((data (test-gitlab--create-pr-payload t)))
+    ;; THEN
+    (should (equal "Draft: Add feature X" (cdr (assq 'title data))))))
+
+(ert-deftest test-shipit-pr-gitlab--create-pr-no-draft-plain-title ()
+  "GIVEN draft is nil
+WHEN creating a GitLab MR
+THEN the title is sent unchanged."
+  ;; WHEN
+  (let ((data (test-gitlab--create-pr-payload nil)))
+    ;; THEN
+    (should (equal "Add feature X" (cdr (assq 'title data))))))
+
 ;;; Pipeline job normalization tests
 
 (ert-deftest test-shipit-pr-gitlab-normalize-pipeline-job-success ()

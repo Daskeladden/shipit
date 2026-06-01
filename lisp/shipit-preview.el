@@ -1430,7 +1430,7 @@ Returns the existing PR data if found, nil otherwise."
       (message "Creating PR...")
       (let ((response (funcall (plist-get backend :create-pr)
                                config title body base-branch
-                               shipit-preview--branch)))
+                               shipit-preview--branch draft)))
         (if response
             (let ((pr-number (cdr (assq 'number response)))
                   (html-url (cdr (assq 'html_url response))))

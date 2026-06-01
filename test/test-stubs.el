@@ -139,7 +139,7 @@ Supports category as first argument like the real implementation."
   (let* ((has-category (and args (symbolp format-string)))
          (actual-format (if has-category (car args) format-string))
          (actual-args (if has-category (cdr args) args)))
-    (message (apply 'format actual-format actual-args))))
+    (message "%s" (apply 'format actual-format actual-args))))
 
 ;; Mock external/missing functions only
 (defun assignees (&rest args)

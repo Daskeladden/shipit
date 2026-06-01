@@ -7,12 +7,14 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 
 ;; Load test stubs if not already loaded
 (unless (fboundp 'shipit--api-request)
   (load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name)))))
 
 (require 'shipit-preview)
+(require 'shipit-pr-backends)
 
 ;;; Auto-fill description tests
 
@@ -83,6 +85,59 @@ and reopened - the restored empty description should still auto-fill."
     (let ((result (shipit-preview--maybe-auto-fill-description restored-description commits)))
       ;; THEN the commit message is used
       (should (string= result "Commit message from git")))))
+
+;;; Draft forwarding tests
+
+(defun test-shipit-preview--create-pr-capturing (draft-value)
+  "Drive `shipit-preview--create-pr' with DRAFT-VALUE and return backend args.
+Mocks every side-effecting boundary so only the argument wiring is
+exercised, then returns the list of arguments the backend's
+`:create-pr' function received."
+  (let ((captured-args nil)
+        (shipit-preview--repo "owner/repo")
+        (shipit-preview--branch "feature")
+        (shipit-preview--base-ref "origin/main")
+        (shipit-preview--title "My title")
+        (shipit-preview--description "Body")
+        (shipit-preview--draft draft-value)
+        (shipit-preview--labels nil)
+        (shipit-preview--reviewers nil)
+        (shipit-preview--assignees nil)
+        (shipit-preview--comments nil)
+        (shipit-preview--general-comments nil))
+    (cl-letf (((symbol-function 'shipit-preview--check-existing-pr)
+               (lambda () nil))
+              ((symbol-function 'shipit-preview--ensure-branch-pushed)
+               (lambda () t))
+              ((symbol-function 'shipit-pr--resolve-for-repo)
+               (lambda (_repo)
+                 (cons (list :create-pr
+                             (lambda (&rest args)
+                               (setq captured-args args)
+                               '((number . 7) (html_url . "https://example/7"))))
+                       '(:repo "owner/repo"))))
+              ((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+              ((symbol-function 'y-or-n-p) (lambda (&rest _) nil))
+              ((symbol-function 'shipit-preview--clear-saved-state)
+               (lambda () nil)))
+      (shipit-preview--create-pr)
+      captured-args)))
+
+(ert-deftest test-shipit-preview--create-pr-forwards-draft-true ()
+  "GIVEN a preview buffer with draft enabled
+WHEN the PR is created
+THEN the backend :create-pr receives the draft flag as its 6th argument."
+  ;; WHEN/THEN
+  (should (equal (test-shipit-preview--create-pr-capturing t)
+                 (list '(:repo "owner/repo") "My title" "Body" "main" "feature" t))))
+
+(ert-deftest test-shipit-preview--create-pr-forwards-draft-nil ()
+  "GIVEN a preview buffer with draft disabled
+WHEN the PR is created
+THEN the backend :create-pr receives nil as its draft argument."
+  ;; WHEN/THEN
+  (should (equal (test-shipit-preview--create-pr-capturing nil)
+                 (list '(:repo "owner/repo") "My title" "Body" "main" "feature" nil))))
 
 (provide 'test-shipit-preview)
 ;;; test-shipit-preview.el ends here

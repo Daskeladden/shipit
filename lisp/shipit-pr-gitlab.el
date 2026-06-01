@@ -369,17 +369,21 @@ Returns alist with `status-text', `completed-reviews', `pending-users',
   (when (string-match "^[0-9]+-\\([^@]+\\)@users\\.noreply\\." email)
     (match-string 1 email)))
 
-(defun shipit-pr-gitlab--create-pr (config title body base head)
+(defun shipit-pr-gitlab--create-pr (config title body base head draft)
   "Create a new MR in project specified by CONFIG.
-TITLE, BODY (description), BASE (target branch), HEAD (source branch)."
+TITLE, BODY (description), BASE (target branch), HEAD (source branch).
+When DRAFT is non-nil the title is prefixed with \"Draft: \", which is
+how GitLab marks a merge request as a draft."
   (let* ((project (shipit-gitlab--project-path config))
          (path (format "/projects/%s/merge_requests" project))
+         (mr-title (if draft (concat "Draft: " title) title))
          (data `((source_branch . ,head)
                  (target_branch . ,base)
-                 (title . ,title)
+                 (title . ,mr-title)
                  (description . ,body)))
          (result (shipit-gitlab--api-request-method config path data "POST")))
-    (shipit--debug-log "GitLab PR backend: creating MR in project %s" project)
+    (shipit--debug-log "GitLab PR backend: creating MR in project %s (draft=%s)"
+                       project (and draft t))
     (when result
       (shipit-pr-gitlab--normalize-mr result))))
 

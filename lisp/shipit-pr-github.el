@@ -54,14 +54,17 @@ CONFIG must contain :repo.  Uses ETag caching for performance."
          (per-page (min 50 limit)))
     (shipit--search-prs-with-encoded-query repo query-parts per-page limit sort-by)))
 
-(defun shipit-pr-github--create-pr (config title body base head)
+(defun shipit-pr-github--create-pr (config title body base head draft)
   "Create a new PR in REPO specified by CONFIG.
-TITLE, BODY, BASE branch, HEAD branch."
+TITLE, BODY, BASE branch, HEAD branch.  When DRAFT is non-nil the PR
+is created as a draft rather than ready for review."
   (let* ((repo (plist-get config :repo))
          (endpoint (format "/repos/%s/pulls" repo))
          (data `((title . ,title) (body . ,body)
-                 (base . ,base) (head . ,head))))
-    (shipit--debug-log "GitHub PR backend: creating PR in %s" repo)
+                 (base . ,base) (head . ,head)
+                 (draft . ,(if draft t :json-false)))))
+    (shipit--debug-log "GitHub PR backend: creating PR in %s (draft=%s)"
+                       repo (and draft t))
     (shipit--api-request-post endpoint data)))
 
 (defun shipit-pr-github--merge-pr (config number method)

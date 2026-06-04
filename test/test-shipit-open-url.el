@@ -377,6 +377,43 @@ THEN it is still recognized."
     (should (eq (plist-get result :type) 'actions-run))
     (should (equal (plist-get result :run-id) "123"))))
 
+(ert-deftest test-classify-url-github-actions-run-with-pr-query ()
+  "GIVEN a GitHub Actions run URL with a ?pr=N query (GitHub appends this
+when a run is opened from a PR)
+WHEN classified via shipit-pr--classify-url
+THEN it is recognized as actions-run and :pr-number is captured."
+  (let ((result (shipit-pr--classify-url
+                 "https://github.com/acme/acme-project/actions/runs/26847758251?pr=19691")))
+    (should result)
+    (should (eq (plist-get result :type) 'actions-run))
+    (should (equal (plist-get result :repo) "acme/acme-project"))
+    (should (equal (plist-get result :run-id) "26847758251"))
+    (should (= (plist-get result :pr-number) 19691))
+    (should (eq (plist-get result :backend-id) 'github))))
+
+(ert-deftest test-classify-url-github-actions-run-with-job-and-pr-query ()
+  "GIVEN a GitHub Actions run URL with /job/JOB_ID and a ?pr=N query
+WHEN classified via shipit-pr--classify-url
+THEN both :job-id and :pr-number are captured."
+  (let ((result (shipit-pr--classify-url
+                 "https://github.com/acme/acme-project/actions/runs/123/job/456?pr=789")))
+    (should result)
+    (should (eq (plist-get result :type) 'actions-run))
+    (should (equal (plist-get result :run-id) "123"))
+    (should (equal (plist-get result :job-id) "456"))
+    (should (= (plist-get result :pr-number) 789))))
+
+(ert-deftest test-classify-url-github-actions-run-non-pr-query ()
+  "GIVEN a GitHub Actions run URL with a non-pr query string
+WHEN classified via shipit-pr--classify-url
+THEN it is still recognized as actions-run with no :pr-number."
+  (let ((result (shipit-pr--classify-url
+                 "https://github.com/owner/repo/actions/runs/123?check_suite_focus=true")))
+    (should result)
+    (should (eq (plist-get result :type) 'actions-run))
+    (should (equal (plist-get result :run-id) "123"))
+    (should-not (plist-get result :pr-number))))
+
 (ert-deftest test-classify-url-github-pr-with-trailing-path ()
   "GIVEN a GitHub PR URL with /files trailing path
 WHEN classified via shipit-pr--classify-url
@@ -412,20 +449,21 @@ THEN it is still recognized as an issue."
 (ert-deftest test-open-classified-url-actions-run ()
   "GIVEN a classified actions-run URL
 WHEN opened via shipit--open-classified-url
-THEN shipit-open-actions-run is called with repo, run-id, and job-id."
+THEN shipit-open-actions-run is called with repo, run-id, job-id, and pr-number."
   (require 'shipit-render)
   (let ((captured-args nil))
     (cl-letf (((symbol-function 'shipit-open-actions-run)
-               (lambda (repo run-id &optional job-id)
-                 (setq captured-args (list repo run-id job-id)))))
+               (lambda (repo run-id &optional job-id pr-number)
+                 (setq captured-args (list repo run-id job-id pr-number)))))
       (shipit--open-classified-url
        '(:type actions-run :repo "acme/acme-project"
          :run-id "22821333060" :job-id "66194471201"
-         :backend-id github))
+         :pr-number 19691 :backend-id github))
       (should captured-args)
       (should (equal (nth 0 captured-args) "acme/acme-project"))
       (should (equal (nth 1 captured-args) "22821333060"))
-      (should (equal (nth 2 captured-args) "66194471201")))))
+      (should (equal (nth 2 captured-args) "66194471201"))
+      (should (= (nth 3 captured-args) 19691)))))
 
 ;;; Empty input handling
 

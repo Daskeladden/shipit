@@ -778,15 +778,20 @@ Returns plist (:type TYPE :repo REPO :number N) or nil."
     (list :type 'issue
           :repo (match-string 1 url)
           :number (string-to-number (match-string 2 url))))
-   ;; Actions run: /owner/repo/actions/runs/RUN_ID (with optional /job/JOB_ID)
+   ;; Actions run: /owner/repo/actions/runs/RUN_ID (optional /job/JOB_ID,
+   ;; optional ?query / #fragment).  GitHub appends ?pr=N when the run is
+   ;; opened from a PR; capture it so the actions buffer keeps PR context.
    ((string-match
-     "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/actions/runs/\\([0-9]+\\)\\(?:/job/\\([0-9]+\\)\\)?/?\\'"
+     "\\`https?://github\\.com/\\([^/]+/[^/]+\\)/actions/runs/\\([0-9]+\\)\\(?:/job/\\([0-9]+\\)\\)?/?\\(?:[?#].*\\)?\\'"
      url)
     (let ((result (list :type 'actions-run
                         :repo (match-string 1 url)
                         :run-id (match-string 2 url))))
       (when (match-string 3 url)
         (setq result (plist-put result :job-id (match-string 3 url))))
+      (when (string-match "[?&]pr=\\([0-9]+\\)" url)
+        (setq result (plist-put result :pr-number
+                                (string-to-number (match-string 1 url)))))
       result))
    ;; Discussion: /owner/repo/discussions/N
    ((string-match

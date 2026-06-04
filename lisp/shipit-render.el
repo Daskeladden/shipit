@@ -3834,7 +3834,8 @@ When :backend-id is present, passes it through so the correct forge is used."
       ('actions-run
        (shipit-open-actions-run repo
                                 (plist-get classified :run-id)
-                                (plist-get classified :job-id))))))
+                                (plist-get classified :job-id)
+                                (plist-get classified :pr-number))))))
 
 (defun shipit--generic-url-action-menu (url &optional prefix-arg)
   "Show action menu for a generic URL.

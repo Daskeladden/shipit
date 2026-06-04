@@ -1270,17 +1270,21 @@ First checks locally-known tracking refs, then falls back to ls-remote."
         (not (string-empty-p remote-check))))))
 
 (defun shipit-preview--push-branch (branch)
-  "Push BRANCH to origin, setting upstream tracking."
+  "Push BRANCH to origin, setting upstream tracking.
+Return t when git exits successfully, nil otherwise.  Success is
+determined by git's exit code -- never by grepping the output, which
+produces false failures when a pre-push hook or remote server message
+happens to print \"error:\"/\"fatal:\" on an otherwise-successful push."
   (message "Pushing branch %s to origin..." branch)
-  (let ((result (shell-command-to-string
-                 (format "git push -u origin %s 2>&1"
-                         (shell-quote-argument branch)))))
-    (if (string-match-p "error:\\|fatal:" result)
-        (progn
-          (message "Push failed: %s" result)
-          nil)
-      (message "Branch %s pushed to origin" branch)
-      t)))
+  (with-temp-buffer
+    (let ((exit (call-process "git" nil t nil "push" "-u" "origin" branch)))
+      (if (zerop exit)
+          (progn
+            (message "Branch %s pushed to origin" branch)
+            t)
+        (message "Push failed (git exit %s): %s"
+                 exit (string-trim (buffer-string)))
+        nil))))
 
 (defun shipit-preview--ensure-branch-pushed ()
   "Ensure current branch is pushed to remote. Return t if ready for PR."

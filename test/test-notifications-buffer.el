@@ -1131,6 +1131,119 @@ this matters because the regex is being typed character by character."
                      shipit-notifications-buffer--auto-mark-preview-overlays)))
         (kill-buffer buf)))))
 
+(ert-deftest test-shipit-notifications-buffer--activity-matches-regex-p ()
+  "GIVEN an activity with a repo and a subject
+WHEN tested with `--activity-matches-regex-p'
+THEN the regex matches against EITHER the repo or the subject."
+  (let ((activity '((repo . "owner/widget-sdk") (subject . "feat: real feature"))))
+    ;; WHEN/THEN regex hits the repo only
+    (should (shipit-notifications-buffer--activity-matches-regex-p activity "sdk"))
+    ;; WHEN/THEN regex hits the subject only
+    (should (shipit-notifications-buffer--activity-matches-regex-p activity "feat"))
+    ;; WHEN/THEN regex hits neither
+    (should-not (shipit-notifications-buffer--activity-matches-regex-p activity "nope"))))
+
+(ert-deftest test-shipit-notifications-buffer--activity-matches-regex-p-nil-safe ()
+  "GIVEN an activity missing repo and/or subject
+WHEN tested with `--activity-matches-regex-p'
+THEN it does not error and only matches the field that is present."
+  ;; GIVEN no repo and no subject -> never matches
+  (should-not (shipit-notifications-buffer--activity-matches-regex-p
+               '((number . 1)) "x"))
+  ;; GIVEN only a repo -> matches via repo
+  (should (shipit-notifications-buffer--activity-matches-regex-p
+           '((repo . "a/b")) "a/b")))
+
+(ert-deftest test-shipit-notifications-buffer--apply-auto-mark-preview-matches-repo ()
+  "GIVEN a notification whose REPO matches REGEX but whose subject does not
+WHEN `--apply-auto-mark-preview' runs with that regex
+THEN the row is previewed (one strike-through row overlay is installed)."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/widget-sdk:pr:1"
+               '((repo . "owner/widget-sdk") (number . 1) (type . "pr")
+                 (subject . "feat: real feature") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (shipit-notifications-buffer--rerender)
+            ;; WHEN "sdk" matches the repo, not the subject
+            (shipit-notifications-buffer--apply-auto-mark-preview "sdk")
+            ;; THEN the matching row gets a strike-through overlay
+            (let ((row-ovs (seq-filter
+                            (lambda (o) (eq (overlay-get o 'face)
+                                            'shipit-auto-mark-preview-face))
+                            shipit-notifications-buffer--auto-mark-preview-overlays)))
+              (should (= 1 (length row-ovs)))))
+        (shipit-notifications-buffer--clear-auto-mark-preview)
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer--apply-auto-mark-preview-highlights-repo-chars ()
+  "GIVEN a notification whose repo contains the regex match
+WHEN `--apply-auto-mark-preview' runs
+THEN a sub-match overlay covers the matching characters in the repo cell."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/widget-sdk:pr:1"
+               '((repo . "owner/widget-sdk") (number . 1) (type . "pr")
+                 (subject . "feat: real feature") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (shipit-notifications-buffer--rerender)
+            (shipit-notifications-buffer--apply-auto-mark-preview "sdk")
+            ;; THEN exactly the repo's "sdk" run is highlighted
+            (let ((match-ovs (seq-filter
+                              (lambda (o) (eq (overlay-get o 'face)
+                                              'shipit-auto-mark-preview-match-face))
+                              shipit-notifications-buffer--auto-mark-preview-overlays)))
+              (should (>= (length match-ovs) 1))
+              (should (string= "sdk"
+                               (buffer-substring-no-properties
+                                (overlay-start (car match-ovs))
+                                (overlay-end (car match-ovs)))))))
+        (shipit-notifications-buffer--clear-auto-mark-preview)
+        (kill-buffer buf)))))
+
+(ert-deftest test-shipit-notifications-buffer-mark-by-regex-selects-repo-match ()
+  "GIVEN a notification whose repo matches REGEX but whose subject does not
+WHEN `shipit-notifications-buffer-mark-by-regex' runs with that regex
+THEN the repo-matching activity is the one scheduled to be marked."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create))
+          (scheduled nil))
+      (puthash "owner/widget-sdk:pr:1"
+               '((repo . "owner/widget-sdk") (number . 1) (type . "pr")
+                 (subject . "feat: real feature") (reason . "mention")
+                 (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (shipit-notifications-buffer--rerender)
+            (cl-letf (((symbol-function 'shipit-notifications-buffer--schedule-mark)
+                       (lambda (to-mark &rest _) (setq scheduled to-mark))))
+              ;; WHEN marking by a regex that only matches the repo
+              (shipit-notifications-buffer-mark-by-regex "sdk"))
+            ;; THEN that row is scheduled
+            (should (= 1 (length scheduled)))
+            (should (equal "owner/widget-sdk"
+                           (cdr (assq 'repo (car scheduled))))))
+        (kill-buffer buf)))))
+
 (ert-deftest test-shipit-notifications-buffer-remove-auto-mark-rule-by-index ()
   "GIVEN a rules list with 3 entries
 WHEN `--remove-auto-mark-rule-at' is invoked with index 1 (second rule)

@@ -1304,7 +1304,8 @@ icon matches GitHub's web UI for deployment review requests."
                             source-icon
                             type-icon
                             (propertize (truncate-string-to-width repo repo-width nil ?\s)
-                                        'font-lock-face 'font-lock-constant-face)
+                                        'font-lock-face 'font-lock-constant-face
+                                        'shipit-notification-repo t)
                             pr-str
                             spacer
                             (propertize
@@ -2289,17 +2290,16 @@ the prompt closes (success or abort).")
     (delete-overlay ov))
   (setq shipit-notifications-buffer--auto-mark-preview-overlays nil))
 
-(defun shipit-notifications-buffer--title-region-in-section (section)
-  "Return (BEG . END) for the title text inside SECTION, or nil.
-Title cells are marked with a `shipit-notification-title' text
-property at render time; this walks the section bounds and
-returns the contiguous run carrying that property."
+(defun shipit-notifications-buffer--cell-region-in-section (section prop)
+  "Return (BEG . END) for the text carrying PROP inside SECTION, or nil.
+Cells are marked with a text property (e.g. `shipit-notification-title'
+or `shipit-notification-repo') at render time; this walks the section
+bounds and returns the contiguous run carrying PROP."
   (let* ((beg (oref section start))
          (end (oref section end))
-         (start (text-property-any beg end 'shipit-notification-title t)))
+         (start (text-property-any beg end prop t)))
     (when start
-      (let ((stop (or (next-single-property-change
-                       start 'shipit-notification-title nil end)
+      (let ((stop (or (next-single-property-change start prop nil end)
                       end)))
         (cons start stop)))))
 
@@ -2310,27 +2310,28 @@ returns the contiguous run carrying that property."
     (overlay-put ov 'priority 100)
     (push ov shipit-notifications-buffer--auto-mark-preview-overlays)))
 
-(defun shipit-notifications-buffer--add-preview-match-overlays (section regex)
-  "Install per-match character overlays inside SECTION's title region.
-Walks the title sub-region only — repo / reason / timestamp text
-in the same row stays unhighlighted even if it accidentally
-matches REGEX, so the preview reflects what the rule actually
-checks (i.e., the activity's `subject')."
-  (let ((title (shipit-notifications-buffer--title-region-in-section
-                section)))
-    (when title
-      (save-excursion
-        (goto-char (car title))
-        (while (re-search-forward regex (cdr title) t)
-          ;; Skip empty matches (e.g. a regex like ".*" matching at
-          ;; every position) so we don't loop forever or spam zero-
-          ;; width overlays.
-          (when (> (match-end 0) (match-beginning 0))
-            (let ((mov (make-overlay (match-beginning 0) (match-end 0))))
-              (overlay-put mov 'face 'shipit-auto-mark-preview-match-face)
-              (overlay-put mov 'priority 110)
-              (push mov
-                    shipit-notifications-buffer--auto-mark-preview-overlays))))))))
+(defun shipit-notifications-buffer--add-preview-match-overlays (section regex &optional props)
+  "Install per-match character overlays inside SECTION's cells.
+PROPS is a list of cell text-property symbols to search within; it
+defaults to (shipit-notification-title).  Only text inside those cells
+is highlighted, so columns the matcher does not check stay
+unhighlighted even if they happen to match REGEX."
+  (dolist (prop (or props '(shipit-notification-title)))
+    (let ((region (shipit-notifications-buffer--cell-region-in-section
+                   section prop)))
+      (when region
+        (save-excursion
+          (goto-char (car region))
+          (while (re-search-forward regex (cdr region) t)
+            ;; Skip empty matches (e.g. a regex like ".*" matching at
+            ;; every position) so we don't loop forever or spam zero-
+            ;; width overlays.
+            (when (> (match-end 0) (match-beginning 0))
+              (let ((mov (make-overlay (match-beginning 0) (match-end 0))))
+                (overlay-put mov 'face 'shipit-auto-mark-preview-match-face)
+                (overlay-put mov 'priority 110)
+                (push mov
+                      shipit-notifications-buffer--auto-mark-preview-overlays)))))))))
 
 (defun shipit-notifications-buffer--for-each-entry (fn)
   "Call FN on every `notification-entry' section in the buffer's tree.
@@ -2346,14 +2347,23 @@ under `notification-repo' wrappers) are reached too -- a flat
                     (dolist (c (oref s children)) (walk c))))))
       (walk magit-root-section))))
 
+(defun shipit-notifications-buffer--activity-matches-regex-p (activity regex)
+  "Return non-nil when ACTIVITY's repo or subject matches REGEX.
+The quick mark-by-regex command tests both columns so a single
+pattern can target either the repo or the title."
+  (let ((subject (cdr (assq 'subject activity)))
+        (repo (cdr (assq 'repo activity))))
+    (or (and (stringp subject) (string-match-p regex subject))
+        (and (stringp repo) (string-match-p regex repo)))))
+
 (defun shipit-notifications-buffer--apply-auto-mark-preview (regex)
-  "Highlight notification rows whose subject matches REGEX.
+  "Highlight notification rows whose repo or title matches REGEX.
 Each matching row gets a strike-through overlay; the actual
-characters that the regex picks up inside the title also get a
-brighter sub-match overlay so the user can see *what* matched.
-Clears any previous preview first.  An invalid (mid-typing) regex
-is silently skipped -- the user will get a fresh preview as soon
-as the input parses again.
+characters the regex picks up inside the repo or title cells also
+get a brighter sub-match overlay so the user can see *what*
+matched.  Clears any previous preview first.  An invalid
+\(mid-typing) regex is silently skipped -- the user will get a
+fresh preview as soon as the input parses again.
 
 Returns the number of matched rows so callers (e.g. the regex
 minibuffer reader) can show a live match count."
@@ -2367,13 +2377,14 @@ minibuffer reader) can show a live match count."
                  (error nil)))
       (shipit-notifications-buffer--for-each-entry
        (lambda (section)
-         (let* ((activity (oref section value))
-                (subj (cdr (assq 'subject activity))))
-           (when (and (stringp subj) (string-match-p regex subj))
+         (let ((activity (oref section value)))
+           (when (shipit-notifications-buffer--activity-matches-regex-p
+                  activity regex)
              (cl-incf count)
              (shipit-notifications-buffer--add-preview-row-overlay section)
              (shipit-notifications-buffer--add-preview-match-overlays
-              section regex))))))
+              section regex
+              '(shipit-notification-title shipit-notification-repo)))))))
     count))
 
 (defun shipit-notifications-buffer--apply-auto-mark-rule-preview (rule)
@@ -2424,8 +2435,8 @@ finish typing."
 (defun shipit-notifications-buffer--read-regex-with-preview (prompt &optional default)
   "Read a regex from the minibuffer, live-previewing matches.
 PROMPT is the minibuffer prompt; DEFAULT is the prefilled value.
-Strike-throughs every notification row whose subject matches the
-typed regex as the user types, so the user sees exactly what the
+Strike-throughs every notification row whose repo or title matches
+the typed regex as the user types, so the user sees exactly what the
 regex would catch before submitting.  Returns the input string;
 clears overlays on exit (confirm or abort)."
   (let ((original-buffer (current-buffer))
@@ -2652,7 +2663,7 @@ their bound key works without further configuration."
       (undo arg)))))
 
 (defun shipit-notifications-buffer-mark-by-regex (regex)
-  "Mark every visible notification whose subject matches REGEX as read.
+  "Mark every visible notification whose repo or title matches REGEX as read.
 Interactive invocation reads REGEX from the minibuffer with a
 live strike-through preview of the matching rows -- you see what
 will be marked before pressing RET.  One-shot operation: no
@@ -2669,7 +2680,7 @@ group-by-repo layouts.  An invalid regex is silently skipped --
 the user can fix it and re-submit."
   (interactive
    (list (shipit-notifications-buffer--read-regex-with-preview
-          "Mark by regex (live preview): ")))
+          "Mark by regex — repo or title (live preview): ")))
   (when (and regex (stringp regex) (not (string-empty-p regex))
              (condition-case nil
                  (progn (string-match-p regex "") t)
@@ -2677,9 +2688,9 @@ the user can fix it and re-submit."
     (let ((to-mark '()))
       (shipit-notifications-buffer--for-each-entry
        (lambda (section)
-         (let* ((activity (oref section value))
-                (subj (cdr (assq 'subject activity))))
-           (when (and (stringp subj) (string-match-p regex subj))
+         (let ((activity (oref section value)))
+           (when (shipit-notifications-buffer--activity-matches-regex-p
+                  activity regex)
              (push activity to-mark)))))
       (if (null to-mark)
           (message "No rows match %S" regex)

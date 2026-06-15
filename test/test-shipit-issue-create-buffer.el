@@ -368,5 +368,28 @@ THEN the draft is cleared and the buffer is killed."
       ;; Buffer should be killed
       (should-not (buffer-live-p test-buffer)))))
 
+;;; Toggle-choice (multi-select) tests
+
+(ert-deftest test-shipit-issue-create--build-toggle-choices-no-allow-new ()
+  "GIVEN options and a current selection, with allow-new omitted
+WHEN building toggle choices
+THEN each option appears with its selection marker and no extra entry."
+  (let ((choices (shipit-issue-create--build-toggle-choices
+                  '("bug" "critical") '("bug"))))
+    (should (= 2 (length choices)))
+    (should (equal "bug" (cdr (assoc "• bug" choices))))
+    (should (equal "critical" (cdr (assoc "  critical" choices))))))
+
+(ert-deftest test-shipit-issue-create--build-toggle-choices-allow-new ()
+  "GIVEN allow-new is requested
+WHEN building toggle choices
+THEN an \"enter new\" sentinel entry is prepended ahead of the options."
+  (let* ((choices (shipit-issue-create--build-toggle-choices
+                   '("bug") '() t))
+         (first (car choices)))
+    (should (eq :shipit-create-new (cdr first)))
+    (should (= 2 (length choices)))
+    (should (equal "bug" (cdr (assoc "  bug" choices))))))
+
 (provide 'test-shipit-issue-create-buffer)
 ;;; test-shipit-issue-create-buffer.el ends here

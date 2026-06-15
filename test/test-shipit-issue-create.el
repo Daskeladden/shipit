@@ -261,6 +261,22 @@ THEN issue-type is select, components is multi-select."
     (should (eq 'select (plist-get (nth 2 fields) :type)))
     (should (eq 'multi-select (plist-get (nth 5 fields) :type)))))
 
+(ert-deftest test-shipit-issue-jira-creation-fields-labels-fetchable ()
+  "GIVEN the jira backend
+WHEN calling :creation-fields
+THEN the labels field offers candidates (has a :fetch-options function)
+and still permits brand-new values (has :allow-new)."
+  (let* ((backend (cdr (assq 'jira shipit-issue-backends)))
+         (fields-fn (plist-get backend :creation-fields))
+         (config '(:base-url "https://jira.example.com"
+                   :project-keys ("PRJ")))
+         (fields (funcall fields-fn config))
+         (labels-field (nth 3 fields)))
+    (should (eq 'labels (plist-get labels-field :name)))
+    (should (eq 'multi-select (plist-get labels-field :type)))
+    (should (functionp (plist-get labels-field :fetch-options)))
+    (should (plist-get labels-field :allow-new))))
+
 ;;; Extended Create Tests
 
 (ert-deftest test-shipit-issues-create-issue-extended-dispatches ()

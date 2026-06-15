@@ -1009,6 +1009,80 @@ THEN results are normalized with key, summary, status, assignee, issue-type."
       (let ((second (cadr result)))
         (should (null (cdr (assq 'assignee second))))))))
 
+;;; Fetch Labels Tests
+
+(ert-deftest test-shipit-issue-jira-fetch-labels-flattens-values ()
+  "GIVEN the Jira label endpoint returns a single page of label strings
+WHEN fetching labels
+THEN a flat list of those strings is returned."
+  (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+             (lambda (_config _path)
+               '((maxResults . 1000) (startAt . 0) (total . 2)
+                 (isLast . t) (values . ["bug" "critical"])))))
+    (let ((result (shipit-issue-jira--fetch-labels
+                   '(:base-url "https://jira.example.com"))))
+      (should (equal result '("bug" "critical"))))))
+
+(ert-deftest test-shipit-issue-jira-fetch-labels-follows-pagination ()
+  "GIVEN the Jira label endpoint paginates across two pages
+WHEN fetching labels
+THEN every page is requested by advancing startAt and all label
+strings are concatenated in order."
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (setq calls (1+ calls))
+                 (cond
+                  ((string-match-p "startAt=0" path)
+                   '((maxResults . 2) (startAt . 0) (total . 3)
+                     (isLast . :json-false) (values . ["alpha" "beta"])))
+                  ((string-match-p "startAt=2" path)
+                   '((maxResults . 2) (startAt . 2) (total . 3)
+                     (isLast . t) (values . ["gamma"])))
+                  (t '((maxResults . 2) (isLast . t) (values . [])))))))
+      (let ((result (shipit-issue-jira--fetch-labels
+                     '(:base-url "https://jira.example.com"))))
+        (should (= calls 2))
+        (should (equal result '("alpha" "beta" "gamma")))))))
+
+(ert-deftest test-shipit-issue-jira-update-labels-puts-vector ()
+  "GIVEN a list of label strings
+WHEN updating an issue's labels
+THEN a PUT is sent to the issue endpoint with labels as a JSON array."
+  (let ((captured-path nil) (captured-data nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-put)
+               (lambda (_config path data)
+                 (setq captured-path path captured-data data)
+                 nil)))
+      (shipit-issue-jira--update-labels
+       '(:base-url "https://jira.example.com") "PRJ-7" '("backend" "urgent"))
+      (should (equal captured-path "/rest/api/3/issue/PRJ-7"))
+      (let ((labels (cdr (assq 'labels (cdr (assq 'fields captured-data))))))
+        (should (vectorp labels))
+        (should (equal labels ["backend" "urgent"]))))))
+
+(ert-deftest test-shipit-issue-jira-update-labels-clears-with-empty-vector ()
+  "GIVEN an empty label list
+WHEN updating an issue's labels
+THEN labels are sent as an empty JSON array (clearing them), not null or {}."
+  (let ((captured-data nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-put)
+               (lambda (_config _path data) (setq captured-data data) nil)))
+      (shipit-issue-jira--update-labels
+       '(:base-url "https://jira.example.com") "PRJ-7" nil)
+      (let ((labels (cdr (assq 'labels (cdr (assq 'fields captured-data))))))
+        (should (vectorp labels))
+        (should (equal labels []))
+        (should (equal (json-encode labels) "[]"))))))
+
+(ert-deftest test-shipit-issue-jira-registers-label-ops ()
+  "GIVEN the jira backend
+WHEN inspecting the registry
+THEN it exposes :fetch-labels and :update-labels operations."
+  (let ((backend (cdr (assq 'jira shipit-issue-backends))))
+    (should (functionp (plist-get backend :fetch-labels)))
+    (should (functionp (plist-get backend :update-labels)))))
+
 (ert-deftest test-shipit-issue-jira-normalize-priority-and-status-category ()
   "GIVEN a Jira issue with priority and status containing statusCategory
 WHEN normalizing to shipit format

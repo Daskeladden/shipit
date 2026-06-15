@@ -262,6 +262,88 @@ THEN both Child Work Items and Linked Work Items sections appear
         ;; (issuelinks moved to their own section)
         )))))
 
+(ert-deftest test-shipit-issue-metadata-section-renders-labels ()
+  "GIVEN a Jira issue whose normalized data carries labels
+WHEN rendering the metadata section
+THEN a Labels line lists each label name."
+  (with-temp-buffer
+    (let ((magit-insert-section--parent nil)
+          (shipit-issue-buffer-repo "test/repo")
+          (issue-data '((id . "PRJ-7")
+                        (number . "PRJ-7")
+                        (title . "Labelled issue")
+                        (state . "Open")
+                        (issue-type . "Task")
+                        (body . "Body")
+                        (user . ((login . "Alice")))
+                        (assignees . nil)
+                        (labels . (((name . "backend")) ((name . "urgent"))))
+                        (comments . 0)
+                        (created_at . "2024-01-15T10:30:00Z")
+                        (updated_at . "2024-01-20T14:00:00Z"))))
+      (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
+                 (lambda (_config) nil)))
+        (magit-insert-section (shipit-issue)
+          (shipit-issue--insert-metadata-section "test/repo" issue-data))
+        (let ((buf-text (buffer-string)))
+          ;; THEN the Labels line is present with both names
+          (should (string-match-p "Labels:" buf-text))
+          (should (string-match-p "backend" buf-text))
+          (should (string-match-p "urgent" buf-text)))))))
+
+(ert-deftest test-shipit-issue-metadata-section-labels-line-always-shown ()
+  "GIVEN an issue with no labels
+WHEN rendering the metadata section
+THEN a Labels line is still shown with a None placeholder, and the line
+is tagged for editing (consistent with how Assignee always renders)."
+  (with-temp-buffer
+    (let ((magit-insert-section--parent nil)
+          (shipit-issue-buffer-repo "test/repo")
+          (issue-data '((id . "PRJ-8")
+                        (number . "PRJ-8")
+                        (title . "No labels")
+                        (state . "Open")
+                        (issue-type . "Task")
+                        (body . "Body")
+                        (user . ((login . "Alice")))
+                        (assignees . nil)
+                        (labels . nil)
+                        (comments . 0)
+                        (created_at . "2024-01-15T10:30:00Z")
+                        (updated_at . "2024-01-20T14:00:00Z"))))
+      (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
+                 (lambda (_config) nil)))
+        (magit-insert-section (shipit-issue)
+          (shipit-issue--insert-metadata-section "test/repo" issue-data))
+        ;; THEN the Labels line is present even with no labels
+        (should (string-match-p "Labels:[^\n]*None" (buffer-string)))
+        ;; AND the line carries the editable text property
+        (goto-char (point-min))
+        (should (re-search-forward "Labels:" nil t))
+        (should (get-text-property (match-beginning 0) 'shipit-issue-labels))))))
+
+(ert-deftest test-shipit-issue--change-labels-dispatches ()
+  "GIVEN a backend exposing :fetch-labels and :update-labels
+WHEN the user edits labels on an issue
+THEN the selected labels are passed to :update-labels and the buffer
+refreshes."
+  (let ((updated 'unset) (refreshed nil) (fetched nil))
+    (cl-letf (((symbol-function 'shipit-issue--get-backend)
+               (lambda ()
+                 (list :fetch-labels (lambda (_c) (setq fetched t) '("a" "b" "c"))
+                       :update-labels (lambda (_c _num labels) (setq updated labels)))))
+              ((symbol-function 'completing-read-multiple)
+               (lambda (&rest _) '("a" "c")))
+              ((symbol-function 'shipit-issue-buffer-refresh)
+               (lambda (&rest _) (setq refreshed t))))
+      (let ((shipit-issue-backend-config '(:base-url "x"))
+            (shipit-issue-buffer-number "PRJ-7")
+            (shipit-issue-buffer-data '((labels . nil))))
+        (shipit-issue--change-labels)
+        (should fetched)
+        (should (equal updated '("a" "c")))
+        (should refreshed)))))
+
 ;;; Icon Column Type Tests
 
 (ert-deftest test-shipit-issue-format-issue-type-icon-column ()

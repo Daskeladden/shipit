@@ -398,11 +398,19 @@ Dispatches to edit-title, edit-description, or edit-field based on text properti
          name (if (string-empty-p selected) nil selected))))
     (shipit-issue-create--refresh)))
 
+(defun shipit-issue-create--prompt-new-value (label)
+  "Read a brand-new value for LABEL; return trimmed string, or nil if empty."
+  (let ((new (string-trim (read-string (format "New %s: " label)))))
+    (unless (string-empty-p new) new)))
+
 (defun shipit-issue-create--edit-multi-select-field (field)
   "Edit a multi-select FIELD using toggle-style completing-read.
-Each RET toggles an item and reopens the list.  C-g finishes selection."
+Each RET toggles an item and reopens the list.  C-g finishes selection.
+When FIELD has a non-nil :allow-new, an \"enter new\" entry lets the user
+add a value not present in the fetched options."
   (let* ((name (plist-get field :name))
          (label (plist-get field :label))
+         (allow-new (plist-get field :allow-new))
          (options (shipit-issue-create--fetch-options field))
          (current (or (shipit-issue-create--get-field-value name) '())))
     ;; Mark this field expanded so refresh keeps it open
@@ -416,29 +424,44 @@ Each RET toggles an item and reopens the list.  C-g finishes selection."
       ;; Toggle loop: RET toggles, C-g finishes
       (condition-case nil
           (while t
-            (let* ((choices (shipit-issue-create--build-toggle-choices options current))
+            (let* ((choices (shipit-issue-create--build-toggle-choices
+                             options current allow-new))
                    (choice (completing-read
                             (format "Toggle %s (•=selected, C-g to finish): " label)
                             (mapcar #'car choices) nil t))
                    (value (cdr (assoc choice choices))))
-              (when value
+              (cond
+               ((eq value :shipit-create-new)
+                (let ((new (shipit-issue-create--prompt-new-value label)))
+                  (when (and new (not (member new current)))
+                    (unless (member new options)
+                      (setq options (append options (list new))))
+                    (push new current)
+                    (shipit-issue-create--set-field-value name current)
+                    (shipit-issue-create--refresh))))
+               (value
                 (if (member value current)
                     (setq current (delete value current))
                   (push value current))
                 (shipit-issue-create--set-field-value name current)
-                (shipit-issue-create--refresh))))
+                (shipit-issue-create--refresh)))))
         (quit nil)))
     (shipit-issue-create--set-field-value name current)
     (shipit-issue-create--refresh)))
 
-(defun shipit-issue-create--build-toggle-choices (options current)
-  "Build toggle-style choice alist from OPTIONS with CURRENT selections marked."
-  (mapcar (lambda (opt)
-            (cons (format "%s%s"
-                          (if (member opt current) "• " "  ")
-                          opt)
-                  opt))
-          options))
+(defun shipit-issue-create--build-toggle-choices (options current &optional allow-new)
+  "Build toggle-style choice alist from OPTIONS with CURRENT selections marked.
+When ALLOW-NEW is non-nil, prepend a sentinel entry that lets the user
+enter a brand-new value not present in OPTIONS."
+  (append
+   (when allow-new
+     (list (cons "  + [enter new…]" :shipit-create-new)))
+   (mapcar (lambda (opt)
+             (cons (format "%s%s"
+                           (if (member opt current) "• " "  ")
+                           opt)
+                   opt))
+           options)))
 
 ;;; Build fields alist
 

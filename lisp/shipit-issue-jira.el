@@ -1587,7 +1587,8 @@ CONFIG must contain :project-keys and :base-url."
    (list :name 'issue-type :label "Issue Type" :type 'select :required t
          :fetch-options (lambda (cfg) (shipit-issue-jira--fetch-issue-types cfg)))
    (list :name 'labels :label "Labels" :type 'multi-select :required nil
-         :fetch-options nil)
+         :allow-new t
+         :fetch-options (lambda (cfg) (shipit-issue-jira--fetch-labels cfg)))
    (list :name 'assignees :label "Assignee" :type 'multi-select :required nil
          :fetch-options (lambda (cfg) (shipit-issue-jira--fetch-assignable-users cfg)))
    (list :name 'components :label "Components" :type 'multi-select :required nil
@@ -1656,6 +1657,15 @@ ASSIGNEE-NAME is a display name or nil to unassign."
     (shipit--debug-log "Jira: updated assignee of %s to %s" issue-key
                        (or assignee-name "unassigned"))))
 
+(defun shipit-issue-jira--update-labels (config issue-key labels)
+  "Set ISSUE-KEY's labels to LABELS (a list of strings) via CONFIG.
+LABELS is encoded as a JSON array; an empty list clears the labels by
+sending [] rather than null."
+  (let ((data `((fields . ((labels . ,(vconcat labels)))))))
+    (shipit-issue-jira--api-request-put
+     config (format "/rest/api/3/issue/%s" issue-key) data)
+    (shipit--debug-log "Jira: updated labels of %s to %S" issue-key labels)))
+
 (defun shipit-issue-jira--fetch-components (config)
   "Fetch available components for the project in CONFIG."
   (let* ((project-key (car (plist-get config :project-keys)))
@@ -1665,6 +1675,25 @@ ASSIGNEE-NAME is a display name or nil to unassign."
     (shipit--debug-log "Jira backend: fetched %d components for %s"
                        (length components) project-key)
     (mapcar (lambda (c) (cdr (assq 'name c))) components)))
+
+(defun shipit-issue-jira--fetch-labels (config)
+  "Fetch all labels available in the Jira instance for CONFIG.
+Jira labels are instance-wide (not project-scoped).  Follows the
+startAt/maxResults pagination of GET /rest/api/3/label until the last
+page and returns a flat list of label strings."
+  (let ((labels nil) (start-at 0) (more t))
+    (while more
+      (let* ((path (format "/rest/api/3/label?startAt=%d&maxResults=1000" start-at))
+             (raw (shipit-issue-jira--api-request config path))
+             (values (append (cdr (assq 'values raw)) nil))
+             (page-max (or (cdr (assq 'maxResults raw)) (length values))))
+        (setq labels (nconc labels values))
+        (setq start-at (+ start-at (length values)))
+        (setq more (and (> (length values) 0)
+                        (>= (length values) page-max)
+                        (not (shipit-issue-jira--is-last-page-p raw))))))
+    (shipit--debug-log "Jira backend: fetched %d labels" (length labels))
+    labels))
 
 (defun shipit-issue-jira--create-issue-extended (config fields)
   "Create a Jira issue with extended FIELDS.
@@ -1864,6 +1893,8 @@ Call `shipit-issue-jira--clear-icon-memo' after a theme switch.")
        :fetch-project-statuses #'shipit-issue-jira--fetch-project-statuses
        :fetch-project-components #'shipit-issue-jira--fetch-components
        :update-assignee #'shipit-issue-jira--update-assignee
+       :fetch-labels #'shipit-issue-jira--fetch-labels
+       :update-labels #'shipit-issue-jira--update-labels
        :icon-spec '("jira" "simple" . "#0052CC")
        :icon-fallback-text "JR"))
 

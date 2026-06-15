@@ -575,21 +575,25 @@ buffer-local overrides so the issue fetches use the correct backend
                             (propertize "Unassigned" 'font-lock-face 'font-lock-comment-face))))
           (add-text-properties line-start (point)
                                '(shipit-issue-assignee t))))
-      ;; Labels
-      (let ((labels (cdr (assq 'labels issue-data))))
-        (when (and labels (> (length labels) 0))
-          (let ((label-strs (mapcar (lambda (l)
-                                      (let* ((name (cdr (assq 'name l)))
-                                             (color (cdr (assq 'color l)))
-                                             (face (when color
-                                                     `(:foreground ,(concat "#" color)))))
-                                        (if face
-                                            (propertize name 'font-lock-face face)
-                                          name)))
-                                    labels)))
-            (insert (format "   %s Labels:    %s\n"
-                            (shipit--get-pr-field-icon "labels" "🏷")
-                            (mapconcat #'identity label-strs ", "))))))
+      ;; Labels (always shown, like Assignee; editable via DWIM)
+      (let ((labels (cdr (assq 'labels issue-data)))
+            (line-start (point)))
+        (let ((label-strs (mapcar (lambda (l)
+                                    (let* ((name (cdr (assq 'name l)))
+                                           (color (cdr (assq 'color l)))
+                                           (face (when color
+                                                   `(:foreground ,(concat "#" color)))))
+                                      (if face
+                                          (propertize name 'font-lock-face face)
+                                        name)))
+                                  labels)))
+          (insert (format "   %s Labels:    %s\n"
+                          (shipit--get-pr-field-icon "labels" "🏷")
+                          (if label-strs
+                              (mapconcat #'identity label-strs ", ")
+                            (propertize "None" 'font-lock-face 'font-lock-comment-face))))
+          (add-text-properties line-start (point)
+                               '(shipit-issue-labels t))))
       ;; Components (Jira)
       (let ((components (cdr (assq 'components issue-data))))
         (when (and components (> (length components) 0))
@@ -2219,6 +2223,34 @@ Offers to edit description, add a comment, react, or change status."
       (message "Assignee updated to %s" (if (string= selected "Unassign") "none" selected))
       (shipit-issue-buffer-refresh))))
 
+(defun shipit-issue--current-label-names ()
+  "Return the current issue's label names as a list of strings."
+  (delq nil (mapcar (lambda (l) (cdr (assq 'name l)))
+                    (cdr (assq 'labels shipit-issue-buffer-data)))))
+
+(defun shipit-issue--change-labels ()
+  "Set the labels of the current issue.
+Offers the instance's existing labels as candidates while still
+allowing brand-new labels to be typed.  An empty selection clears them."
+  (let* ((backend (shipit-issue--get-backend))
+         (config (when (bound-and-true-p shipit-issue-backend-config)
+                   shipit-issue-backend-config))
+         (fetch-labels-fn (plist-get backend :fetch-labels))
+         (update-labels-fn (plist-get backend :update-labels))
+         (issue-number shipit-issue-buffer-number))
+    (unless update-labels-fn
+      (user-error "This backend does not support changing labels"))
+    (let* ((candidates (if fetch-labels-fn (funcall fetch-labels-fn config) '()))
+           (current (shipit-issue--current-label-names))
+           (selected (completing-read-multiple
+                      "Labels (comma-separated, blank to clear): "
+                      candidates nil nil
+                      (when current (string-join current ",")))))
+      (funcall update-labels-fn config issue-number selected)
+      (message "Labels updated: %s"
+               (if selected (string-join selected ", ") "none"))
+      (shipit-issue-buffer-refresh))))
+
 (defun shipit-issue--metadata-actions ()
   "Handle DWIM actions for issue metadata section.
 Offers to change status when transitions are supported."
@@ -2253,6 +2285,13 @@ Called both at load time (if shipit-magit loaded) and via `with-eval-after-load'
      (lambda () (and (derived-mode-p 'shipit-issue-mode)
                      (get-text-property (point) 'shipit-issue-assignee)))
      #'shipit-issue--change-assignee)
+
+    ;; Issue labels — change labels (line is tagged shipit-issue-labels)
+    (shipit-register-dwim-handler
+     'issue-labels
+     (lambda () (and (derived-mode-p 'shipit-issue-mode)
+                     (get-text-property (point) 'shipit-issue-labels)))
+     #'shipit-issue--change-labels)
 
     ;; Comments section header — add new comment
     (shipit-register-dwim-handler

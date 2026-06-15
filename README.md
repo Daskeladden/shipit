@@ -11,7 +11,7 @@ This project was built as a learning exercise in agentic AI-assisted programming
 ## What it does
 
 - **Pull requests** — view description, commits, file changes, labels, assignees, reviewers
-- **Linked tracker issues** — PRs show an expandable Issue section auto-detected from the branch name (e.g. `ZIVID-12624-foo` → `ZIVID-12624`); transient actions for search/link, open, browse, transition status, and create-and-link
+- **Linked tracker issues** — PRs show an expandable Issue section auto-detected from the branch name (e.g. `PRJ-12624-foo` → `PRJ-12624`); transient actions for search/link, open, browse, transition status, and create-and-link
 - **Comments** — inline diff comments with threading, general comments, reactions, live markdown preview
 - **Reviews** — submit approvals, request changes, resolve conversations
 - **CI/Checks** — expand check suites to see step logs with timestamp gap coloring

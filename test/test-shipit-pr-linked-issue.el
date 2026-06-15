@@ -15,26 +15,26 @@
 ;;; Branch-name extraction
 
 (ert-deftest test-shipit-pr-linked-issue-extract-jira-key-from-branch ()
-  "GIVEN a Jira backend with project key ZIVID
-WHEN scanning a branch named ZIVID-12624-fix-bug
-THEN the extracted key is ZIVID-12624."
+  "GIVEN a Jira backend with project key PRJ
+WHEN scanning a branch named PRJ-12624-fix-bug
+THEN the extracted key is PRJ-12624."
   (let ((shipit-issue-backend 'jira)
         (shipit-issue-backend-config
-         '(:base-url "https://x.atlassian.net" :project-keys ("ZIVID"))))
-    (should (equal "ZIVID-12624"
+         '(:base-url "https://x.atlassian.net" :project-keys ("PRJ"))))
+    (should (equal "PRJ-12624"
                    (shipit-pr-linked-issue--extract-from-text
-                    "ZIVID-12624-fix-bug" "foo/bar")))))
+                    "PRJ-12624-fix-bug" "foo/bar")))))
 
 (ert-deftest test-shipit-pr-linked-issue-extract-jira-key-with-prefix ()
   "GIVEN a Jira backend
-WHEN scanning a branch named feature/ZIVID-999-xy
+WHEN scanning a branch named feature/PRJ-999-xy
 THEN the key is found despite the directory-style prefix."
   (let ((shipit-issue-backend 'jira)
         (shipit-issue-backend-config
-         '(:base-url "https://x.atlassian.net" :project-keys ("ZIVID"))))
-    (should (equal "ZIVID-999"
+         '(:base-url "https://x.atlassian.net" :project-keys ("PRJ"))))
+    (should (equal "PRJ-999"
                    (shipit-pr-linked-issue--extract-from-text
-                    "feature/ZIVID-999-xy" "foo/bar")))))
+                    "feature/PRJ-999-xy" "foo/bar")))))
 
 (ert-deftest test-shipit-pr-linked-issue-extract-no-match ()
   "GIVEN a Jira backend
@@ -42,17 +42,17 @@ WHEN scanning a branch with no matching key
 THEN returns nil."
   (let ((shipit-issue-backend 'jira)
         (shipit-issue-backend-config
-         '(:base-url "https://x.atlassian.net" :project-keys ("ZIVID"))))
+         '(:base-url "https://x.atlassian.net" :project-keys ("PRJ"))))
     (should (null (shipit-pr-linked-issue--extract-from-text
                    "main" "foo/bar")))))
 
 (ert-deftest test-shipit-pr-linked-issue-extract-wrong-project ()
-  "GIVEN a Jira backend that knows only ZIVID
+  "GIVEN a Jira backend that knows only PRJ
 WHEN scanning a branch that references a different project
 THEN returns nil."
   (let ((shipit-issue-backend 'jira)
         (shipit-issue-backend-config
-         '(:base-url "https://x.atlassian.net" :project-keys ("ZIVID"))))
+         '(:base-url "https://x.atlassian.net" :project-keys ("PRJ"))))
     (should (null (shipit-pr-linked-issue--extract-from-text
                    "OTHER-123-foo" "foo/bar")))))
 
@@ -68,11 +68,11 @@ THEN the same key is returned."
          (shipit-pr-linked-issue--loaded nil))
     (unwind-protect
         (progn
-          (shipit-pr-linked-issue--set-override "foo/bar" 42 "ZIVID-999")
+          (shipit-pr-linked-issue--set-override "foo/bar" 42 "PRJ-999")
           ;; Force reload from disk
           (setq shipit-pr-linked-issue--loaded nil
                 shipit-pr-linked-issue--overrides nil)
-          (should (equal "ZIVID-999"
+          (should (equal "PRJ-999"
                          (shipit-pr-linked-issue--get-override "foo/bar" 42))))
       (ignore-errors (delete-file tmp)))))
 
@@ -86,7 +86,7 @@ THEN get-override returns nil."
          (shipit-pr-linked-issue--loaded nil))
     (unwind-protect
         (progn
-          (shipit-pr-linked-issue--set-override "foo/bar" 42 "ZIVID-999")
+          (shipit-pr-linked-issue--set-override "foo/bar" 42 "PRJ-999")
           (shipit-pr-linked-issue--set-override "foo/bar" 42 nil)
           (setq shipit-pr-linked-issue--loaded nil
                 shipit-pr-linked-issue--overrides nil)
@@ -103,12 +103,12 @@ THEN the override wins."
          (shipit-pr-linked-issue--loaded nil)
          (shipit-issue-backend 'jira)
          (shipit-issue-backend-config
-          '(:base-url "https://x.atlassian.net" :project-keys ("ZIVID")))
-         (pr-data '((head . ((ref . "ZIVID-1-auto"))))))
+          '(:base-url "https://x.atlassian.net" :project-keys ("PRJ")))
+         (pr-data '((head . ((ref . "PRJ-1-auto"))))))
     (unwind-protect
         (progn
-          (shipit-pr-linked-issue--set-override "foo/bar" 42 "ZIVID-999")
-          (should (equal "ZIVID-999"
+          (shipit-pr-linked-issue--set-override "foo/bar" 42 "PRJ-999")
+          (should (equal "PRJ-999"
                          (shipit-pr-linked-issue--detect
                           "foo/bar" 42 pr-data))))
       (ignore-errors (delete-file tmp)))))

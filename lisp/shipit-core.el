@@ -220,7 +220,7 @@ Examples: '.worktrees/', 'worktrees/', '.git/worktrees/'"
   "When non-nil, `shipit-init' enables `global-shipit-code-refs-mode'.
 
 This turns on issue-key highlighting (Jira-style keys like
-`ZIVID-12345') in every `prog-mode' derivative automatically.
+`PRJ-12345') in every `prog-mode' derivative automatically.
 Set to nil in your init before calling `shipit-init' if you prefer
 to enable the mode manually or per buffer."
   :type 'boolean

@@ -44,7 +44,7 @@
 
 ### Polish
 
-- Filter-bracket entries are suffixed with the matching activity count, so a deny like `[!repo: zivid/zivid-sdk (6)]` makes it obvious how much the filter is hiding.
+- Filter-bracket entries are suffixed with the matching activity count, so a deny like `[!repo: acme/acme-project (6)]` makes it obvious how much the filter is hiding.
 
 ---
 
@@ -167,7 +167,7 @@
 - **Atlassian dashboard** — new `M-x shipit-atlassian-dashboard` buffer for Jira projects with My Open Issues, What's Next, Kanban Board, Frequently Visited, and a filterable Issues section. Refuses to open when the active backend isn't Jira.
 - **Issues filters** — rich filter transient covering status, assignee, reporter, type, priority, resolution, component, text/comment search, sort, plus timeline filters (Updated since/before, Created since/before). Assignee, reporter, status, and component filters use dynamic completion against the Jira backend.
 - **Create issue from dashboard** — `M-; n` on the dashboard opens the rich create buffer with Jira fields (issue type, components, labels, assignee) pre-wired to the dashboard's repo.
-- **Linked tracker issue on PR buffer** — new "Issue" section on each PR auto-detects the key from the branch name (e.g. `ZIVID-12624-foo`) with a transient for link/clear/open/browse/copy-URL/transition/create-and-link. Manual overrides persist per (repo, pr-number) in `~/.emacs.d/shipit-pr-linked-issues.el`.
+- **Linked tracker issue on PR buffer** — new "Issue" section on each PR auto-detects the key from the branch name (e.g. `PRJ-12624-foo`) with a transient for link/clear/open/browse/copy-URL/transition/create-and-link. Manual overrides persist per (repo, pr-number) in `~/.emacs.d/shipit-pr-linked-issues.el`.
 - **Activity navigation from notifications** — pressing RET on an activity line in an expanded PR notification opens the PR and jumps directly to the comment/commit/review; a pulse highlights the landing line.
 - **Jira comment reactions** — issue comments render reaction rows via the internal DC/Server endpoint (Cloud stays placeholder-only, tracked by JRACLOUD-78153).
 - **Shebang language detection** — code blocks without a fence language tag get syntax highlighting inferred from `#!/usr/bin/env python` style shebang lines.
@@ -180,9 +180,9 @@
 
 ### Fixes
 
-- **Empty Issues section** — JQL now quotes project keys (`project in ("ZIVID")` instead of `project in (ZIVID)`); Jira's `/search/jql` endpoint rejects the unquoted form with HTTP 400.
+- **Empty Issues section** — JQL now quotes project keys (`project in ("PRJ")` instead of `project in (PRJ)`); Jira's `/search/jql` endpoint rejects the unquoted form with HTTP 400.
 - **Duplicated comments** — head-and-tail pagination fallback no longer renders the same comment twice when the total fits in the window.
-- **Thread subscription on Jira issues** — `w` on a Jira issue buffer (string key like `ZIVID-12624`) no longer raises a wrong-type-argument error; thread subscription is GitHub-only and now elides cleanly for string IDs.
+- **Thread subscription on Jira issues** — `w` on a Jira issue buffer (string key like `PRJ-12624`) no longer raises a wrong-type-argument error; thread subscription is GitHub-only and now elides cleanly for string IDs.
 - **Stale commit sub-sections** — commit detail sub-sections are collapsed by default.
 
 ### Docs

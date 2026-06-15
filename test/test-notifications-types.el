@@ -280,13 +280,13 @@ so the stored URL is the repo's /actions page.  GitHub's web UI
 highlights pending approvals at the top of that page."
   (require 'shipit-notifications-buffer)
   (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
-    (puthash "zivid/zivid-sdk:workflow:23639728638"
-             '((repo . "zivid/zivid-sdk")
+    (puthash "acme/acme-project:workflow:23639728638"
+             '((repo . "acme/acme-project")
                (number . 23639728638)
                (type . "workflow")
                (subject . "Deploy to prod")
                (reason . "approval_requested")
-               (browse-url . "https://github.com/zivid/zivid-sdk/actions")
+               (browse-url . "https://github.com/acme/acme-project/actions")
                (updated-at . "2026-04-22T09:28:41Z"))
              shipit--notification-pr-activities)
     (let ((buf (shipit-notifications-buffer-create))
@@ -299,7 +299,7 @@ highlights pending approvals at the top of that page."
               (goto-char (point-min))
               (search-forward "Deploy to prod")
               (shipit-notifications-buffer-open)
-              (should (equal "https://github.com/zivid/zivid-sdk/actions"
+              (should (equal "https://github.com/acme/acme-project/actions"
                              opened-url))))
         (kill-buffer buf)))))
 
@@ -313,13 +313,13 @@ the user wants to act on the run from Emacs, not bounce to the browser."
   ;; module and clobber our `cl-letf' binding.
   (require 'shipit-actions-list)
   (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
-    (puthash "zivid/zivid-sdk:workflow:24979004114"
-             '((repo . "zivid/zivid-sdk")
+    (puthash "acme/acme-project:workflow:24979004114"
+             '((repo . "acme/acme-project")
                (number . 24979004114)
                (type . "workflow")
                (subject . "Deploy to prod")
                (reason . "approval_requested")
-               (browse-url . "https://github.com/zivid/zivid-sdk/actions/runs/24979004114")
+               (browse-url . "https://github.com/acme/acme-project/actions/runs/24979004114")
                (updated-at . "2026-04-27T13:52:00Z"))
              shipit--notification-pr-activities)
     (let ((buf (shipit-notifications-buffer-create))
@@ -335,7 +335,7 @@ the user wants to act on the run from Emacs, not bounce to the browser."
               (goto-char (point-min))
               (search-forward "Deploy to prod")
               (shipit-notifications-buffer-open)
-              (should (equal '("zivid/zivid-sdk" 24979004114) called-with))
+              (should (equal '("acme/acme-project" 24979004114) called-with))
               (should-not browser-called)))
         (kill-buffer buf)))))
 
@@ -360,17 +360,17 @@ not the repo-wide /actions page."
           `((id . "notif-wf-1")
             (subject . ((type . "WorkflowRun")
                         (title . "Deploy to prod")
-                        (url . "https://api.github.com/repos/zivid/zivid-sdk/actions/runs/24770889847")))
+                        (url . "https://api.github.com/repos/acme/acme-project/actions/runs/24770889847")))
             (reason . "approval_requested")
             (unread . t)
-            (repository . ((full_name . "zivid/zivid-sdk")
-                           (html_url . "https://github.com/zivid/zivid-sdk")))
+            (repository . ((full_name . "acme/acme-project")
+                           (html_url . "https://github.com/acme/acme-project")))
             (updated_at . "2026-04-22T11:28:00Z")))))
     (shipit--process-notifications notifications)
-    (let ((activity (gethash "zivid/zivid-sdk:workflow:24770889847"
+    (let ((activity (gethash "acme/acme-project:workflow:24770889847"
                              shipit--notification-pr-activities)))
       (should activity)
-      (should (equal "https://github.com/zivid/zivid-sdk/actions/runs/24770889847"
+      (should (equal "https://github.com/acme/acme-project/actions/runs/24770889847"
                      (cdr (assq 'browse-url activity)))))))
 
 (ert-deftest test-shipit--closest-run-by-time ()
@@ -1848,24 +1848,24 @@ notification thread, so presence in the hash means unread."
   (let ((marked '())
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
         (shipit-notifications-auto-mark-read-rules
-         '((:repo "ZIVID" :not (:jira-component "Firmware")))))
+         '((:repo "PRJ" :not (:jira-component "Firmware")))))
     (cl-letf (((symbol-function 'shipit--mark-notification-read)
                (lambda (number repo &optional _no-refresh type)
                  (push (list number repo type) marked))))
-      (puthash "ZIVID:issue:ZIVID-12744"
-               '((repo . "ZIVID") (number . "ZIVID-12744") (type . "issue")
+      (puthash "PRJ:issue:PRJ-12744"
+               '((repo . "PRJ") (number . "PRJ-12744") (type . "issue")
                  (subject . "do something") (source . jira)
                  (backend-id . jira) (jira-components . ("SDK")))
                shipit--notification-pr-activities)
-      (puthash "ZIVID:issue:ZIVID-99999"
-               '((repo . "ZIVID") (number . "ZIVID-99999") (type . "issue")
+      (puthash "PRJ:issue:PRJ-99999"
+               '((repo . "PRJ") (number . "PRJ-99999") (type . "issue")
                  (subject . "ignore me") (source . jira)
                  (backend-id . jira) (jira-components . ("Firmware")))
                shipit--notification-pr-activities)
       (let ((count (shipit--auto-mark-rules-apply)))
         (should (= count 1))
-        (should (member '("ZIVID-12744" "ZIVID" "issue") marked))
-        (should-not (member '("ZIVID-99999" "ZIVID" "issue") marked))))))
+        (should (member '("PRJ-12744" "PRJ" "issue") marked))
+        (should-not (member '("PRJ-99999" "PRJ" "issue") marked))))))
 
 (ert-deftest test-shipit--auto-mark-rules-apply-jira-with-no-components ()
   "GIVEN a Jira activity with no components and a rule using `:not :jira-component'
@@ -1875,24 +1875,24 @@ are absent, so `:not' flips it to true."
   (let ((marked '())
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
         (shipit-notifications-auto-mark-read-rules
-         '((:repo "ZIVID" :not (:jira-component "Firmware")))))
+         '((:repo "PRJ" :not (:jira-component "Firmware")))))
     (cl-letf (((symbol-function 'shipit--mark-notification-read)
                (lambda (number repo &optional _no-refresh type)
                  (push (list number repo type) marked))))
-      (puthash "ZIVID:issue:ZIVID-1"
-               '((repo . "ZIVID") (number . "ZIVID-1") (type . "issue")
+      (puthash "PRJ:issue:PRJ-1"
+               '((repo . "PRJ") (number . "PRJ-1") (type . "issue")
                  (subject . "no components") (source . jira)
                  (backend-id . jira) (jira-components . nil))
                shipit--notification-pr-activities)
       (should (= 1 (shipit--auto-mark-rules-apply)))
-      (should (member '("ZIVID-1" "ZIVID" "issue") marked)))))
+      (should (member '("PRJ-1" "PRJ" "issue") marked)))))
 
 (ert-deftest test-shipit-notifications-clear-locally-marked-read-all ()
   "GIVEN entries in the locally-marked-read cache
 WHEN `shipit-notifications-clear-locally-marked-read' runs with no repo
 THEN every entry is removed."
   (let ((shipit--locally-marked-read-notifications (make-hash-table :test 'equal)))
-    (puthash "ZIVID:issue:ZIVID-1" 1 shipit--locally-marked-read-notifications)
+    (puthash "PRJ:issue:PRJ-1" 1 shipit--locally-marked-read-notifications)
     (puthash "owner/foo:pr:42" 2 shipit--locally-marked-read-notifications)
     (shipit-notifications-clear-locally-marked-read)
     (should (zerop (hash-table-count shipit--locally-marked-read-notifications)))))
@@ -1902,10 +1902,10 @@ THEN every entry is removed."
 WHEN clearing with a repo argument
 THEN only entries whose key starts with REPO: are removed; others stay."
   (let ((shipit--locally-marked-read-notifications (make-hash-table :test 'equal)))
-    (puthash "ZIVID:issue:ZIVID-1" 1 shipit--locally-marked-read-notifications)
-    (puthash "ZIVID:issue:ZIVID-2" 2 shipit--locally-marked-read-notifications)
+    (puthash "PRJ:issue:PRJ-1" 1 shipit--locally-marked-read-notifications)
+    (puthash "PRJ:issue:PRJ-2" 2 shipit--locally-marked-read-notifications)
     (puthash "owner/foo:pr:42" 3 shipit--locally-marked-read-notifications)
-    (shipit-notifications-clear-locally-marked-read "ZIVID")
+    (shipit-notifications-clear-locally-marked-read "PRJ")
     (should (= 1 (hash-table-count shipit--locally-marked-read-notifications)))
     (should (gethash "owner/foo:pr:42" shipit--locally-marked-read-notifications))))
 
@@ -1920,15 +1920,15 @@ rule to take effect."
         (shipit--locally-marked-read-notifications (make-hash-table :test 'equal))
         (shipit--last-notification-count 0)
         (shipit-notifications-auto-mark-read-rules
-         '((:repo "ZIVID" :reason "updated"))))
+         '((:repo "PRJ" :reason "updated"))))
     (cl-letf (((symbol-function 'shipit--mark-notification-read)
                (lambda (number repo &optional _no-refresh type)
                  (push (list number repo type) marked))))
       (shipit--merge-backend-notifications
-       '(((repo . "ZIVID") (number . "ZIVID-1") (type . "issue")
+       '(((repo . "PRJ") (number . "PRJ-1") (type . "issue")
           (reason . "updated") (subject . "T") (source . jira)
           (backend-id . jira) (jira-components . ("Other")))))
-      (should (member '("ZIVID-1" "ZIVID" "issue") marked)))))
+      (should (member '("PRJ-1" "PRJ" "issue") marked)))))
 
 (provide 'test-notifications-types)
 ;;; test-notifications-types.el ends here

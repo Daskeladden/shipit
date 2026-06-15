@@ -1829,8 +1829,8 @@ WHEN `--insert-activity-details' renders the expanded body
 THEN a Component line appears with each component name."
   (with-temp-buffer
     (shipit-notifications-buffer--insert-activity-details
-     '((repo . "ZIVID")
-       (number . "ZIVID-7")
+     '((repo . "PRJ")
+       (number . "PRJ-7")
        (type . "issue")
        (subject . "T")
        (reason . "updated")
@@ -1860,8 +1860,8 @@ WHEN `--insert-activity-details' renders the expanded body
 THEN an Author line appears with that name."
   (with-temp-buffer
     (shipit-notifications-buffer--insert-activity-details
-     '((repo . "ZIVID")
-       (number . "ZIVID-7")
+     '((repo . "PRJ")
+       (number . "PRJ-7")
        (type . "issue")
        (subject . "T")
        (reason . "updated")
@@ -1905,9 +1905,9 @@ THEN no Author line is inserted."
 WHEN evaluating `--matches-repo-p'
 THEN the activity is filtered out, even when the selector is nil."
   (let ((shipit-notifications-buffer--selected-repo nil)
-        (shipit-notifications-buffer--excluded-repos '("ZIVID")))
+        (shipit-notifications-buffer--excluded-repos '("PRJ")))
     (should-not (shipit-notifications-buffer--matches-repo-p
-                 '((repo . "ZIVID") (number . "ZIVID-1"))))
+                 '((repo . "PRJ") (number . "PRJ-1"))))
     (should (shipit-notifications-buffer--matches-repo-p
              '((repo . "owner/foo") (number . 1))))))
 
@@ -1916,19 +1916,19 @@ THEN the activity is filtered out, even when the selector is nil."
 WHEN evaluating `--matches-repo-p'
 THEN deny takes priority -- a repo can be in the allow-list but the
 deny-list still hides it."
-  (let ((shipit-notifications-buffer--selected-repo '("ZIVID"))
-        (shipit-notifications-buffer--excluded-repos '("zivid")))
+  (let ((shipit-notifications-buffer--selected-repo '("PRJ"))
+        (shipit-notifications-buffer--excluded-repos '("prj")))
     (should-not (shipit-notifications-buffer--matches-repo-p
-                 '((repo . "ZIVID") (number . "ZIVID-1"))))))
+                 '((repo . "PRJ") (number . "PRJ-1"))))))
 
 (ert-deftest test-shipit-notifications-buffer-matches-repo-p-allow-list-multi ()
   "GIVEN a multi-entry allow-list
 WHEN evaluating `--matches-repo-p'
 THEN repos in the list pass and others do not."
-  (let ((shipit-notifications-buffer--selected-repo '("ZIVID" "owner/foo"))
+  (let ((shipit-notifications-buffer--selected-repo '("PRJ" "owner/foo"))
         (shipit-notifications-buffer--excluded-repos nil))
     (should (shipit-notifications-buffer--matches-repo-p
-             '((repo . "zivid"))))
+             '((repo . "prj"))))
     (should (shipit-notifications-buffer--matches-repo-p
              '((repo . "owner/foo"))))
     (should-not (shipit-notifications-buffer--matches-repo-p

@@ -215,19 +215,19 @@ THEN it returns nil."
 WHEN shipit-code-refs--eldoc-function is called
 THEN it returns a formatted string with the title."
   (let ((shipit--issue-title-cache (make-hash-table :test 'equal)))
-    (puthash '("acme/repo" . "ZIVID-100")
+    (puthash '("acme/repo" . "PRJ-100")
              '(:status fresh :title "Camera drops frames"
                        :state "In Progress" :assignee "bob")
              shipit--issue-title-cache)
     (cl-letf (((symbol-function 'shipit-code-refs--current-repo)
                (lambda () "acme/repo")))
       (with-temp-buffer
-        (insert (propertize "ZIVID-100" 'shipit-issue-ref "ZIVID-100")
+        (insert (propertize "PRJ-100" 'shipit-issue-ref "PRJ-100")
                 " is broken\n")
         (goto-char 3)
         (let ((result (shipit-code-refs--eldoc-function #'ignore)))
           (should (stringp result))
-          (should (string-match-p "ZIVID-100" result))
+          (should (string-match-p "PRJ-100" result))
           (should (string-match-p "Camera drops frames" result))
           (should (string-match-p "In Progress" result)))))))
 
@@ -242,13 +242,13 @@ THEN it schedules a fetch and marks the entry as loading."
               ((symbol-function 'shipit--schedule-issue-title-fetch)
                (lambda (repo id _cb) (setq fetch-args (list repo id)))))
       (with-temp-buffer
-        (insert (propertize "ZIVID-7" 'shipit-issue-ref "ZIVID-7")
+        (insert (propertize "PRJ-7" 'shipit-issue-ref "PRJ-7")
                 "\n")
         (goto-char 2)
         (let ((result (shipit-code-refs--eldoc-function #'ignore)))
           (should (string-match-p "Loading" result))
-          (should (equal '("acme/repo" "ZIVID-7") fetch-args))
-          (let ((entry (gethash '("acme/repo" . "ZIVID-7")
+          (should (equal '("acme/repo" "PRJ-7") fetch-args))
+          (let ((entry (gethash '("acme/repo" . "PRJ-7")
                                 shipit--issue-title-cache)))
             (should (eq 'loading (plist-get entry :status)))))))))
 

@@ -1513,7 +1513,7 @@ text mentions the key, then verifies each candidate's own title
 and body contain the key as a bounded token (case-insensitive,
 non-alphanumeric or string-boundary on each side).  Drops the
 text-mention false positive where only the numeric tail of a Jira
-key happens to appear (e.g. `fix 12535' without `ZIVID-').
+key happens to appear (e.g. `fix 12535' without `PRJ-').
 
 The candidate text already comes back in the search response, so
 this makes one API call total — fast even with many candidates.

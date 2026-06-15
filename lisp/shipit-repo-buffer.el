@@ -1562,7 +1562,7 @@ Checks PR, Issue, and Discussion buffer-local variables."
    ((and (bound-and-true-p shipit-issue-buffer-number)
          ;; Thread subscriptions only make sense for GitHub-tracked issues
          ;; (the API expects a numeric $number).  Non-GitHub backends like
-         ;; Jira store their key as a string (e.g. "ZIVID-12624").
+         ;; Jira store their key as a string (e.g. "PRJ-12624").
          (integerp shipit-issue-buffer-number))
     (list :repo (bound-and-true-p shipit-issue-buffer-repo)
           :type "issue"

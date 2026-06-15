@@ -1666,6 +1666,13 @@ sending [] rather than null."
      config (format "/rest/api/3/issue/%s" issue-key) data)
     (shipit--debug-log "Jira: updated labels of %s to %S" issue-key labels)))
 
+(defun shipit-issue-jira--update-title (config issue-key title)
+  "Set ISSUE-KEY's summary (title) to TITLE via CONFIG."
+  (let ((data `((fields . ((summary . ,title))))))
+    (shipit-issue-jira--api-request-put
+     config (format "/rest/api/3/issue/%s" issue-key) data)
+    (shipit--debug-log "Jira: updated summary of %s" issue-key)))
+
 (defun shipit-issue-jira--fetch-components (config)
   "Fetch available components for the project in CONFIG."
   (let* ((project-key (car (plist-get config :project-keys)))
@@ -1895,6 +1902,7 @@ Call `shipit-issue-jira--clear-icon-memo' after a theme switch.")
        :update-assignee #'shipit-issue-jira--update-assignee
        :fetch-labels #'shipit-issue-jira--fetch-labels
        :update-labels #'shipit-issue-jira--update-labels
+       :update-title #'shipit-issue-jira--update-title
        :icon-spec '("jira" "simple" . "#0052CC")
        :icon-fallback-text "JR"))
 

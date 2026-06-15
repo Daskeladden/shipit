@@ -1083,6 +1083,28 @@ THEN it exposes :fetch-labels and :update-labels operations."
     (should (functionp (plist-get backend :fetch-labels)))
     (should (functionp (plist-get backend :update-labels)))))
 
+(ert-deftest test-shipit-issue-jira-update-title-puts-summary ()
+  "GIVEN a new title
+WHEN updating an issue's title
+THEN a PUT sets fields.summary on the issue endpoint."
+  (let ((captured-path nil) (captured-data nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-put)
+               (lambda (_config path data)
+                 (setq captured-path path captured-data data)
+                 nil)))
+      (shipit-issue-jira--update-title
+       '(:base-url "https://jira.example.com") "PRJ-7" "Improved summary")
+      (should (equal captured-path "/rest/api/3/issue/PRJ-7"))
+      (should (equal (cdr (assq 'summary (cdr (assq 'fields captured-data))))
+                     "Improved summary")))))
+
+(ert-deftest test-shipit-issue-jira-registers-update-title ()
+  "GIVEN the jira backend
+WHEN inspecting the registry
+THEN it exposes an :update-title operation."
+  (should (functionp (plist-get (cdr (assq 'jira shipit-issue-backends))
+                                :update-title))))
+
 (ert-deftest test-shipit-issue-jira-normalize-priority-and-status-category ()
   "GIVEN a Jira issue with priority and status containing statusCategory
 WHEN normalizing to shipit format

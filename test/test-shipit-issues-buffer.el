@@ -344,6 +344,42 @@ refreshes."
         (should (equal updated '("a" "c")))
         (should refreshed)))))
 
+(ert-deftest test-shipit-issue--edit-title-dispatches ()
+  "GIVEN a backend exposing :update-title
+WHEN the user edits the issue title to a new value
+THEN the new title is passed to :update-title and the buffer refreshes."
+  (let ((updated 'unset) (refreshed nil))
+    (cl-letf (((symbol-function 'shipit-issue--get-backend)
+               (lambda () (list :update-title
+                                (lambda (_c _num title) (setq updated title)))))
+              ((symbol-function 'read-string)
+               (lambda (&rest _) "Brand new summary"))
+              ((symbol-function 'shipit-issue-buffer-refresh)
+               (lambda (&rest _) (setq refreshed t))))
+      (let ((shipit-issue-backend-config '(:base-url "x"))
+            (shipit-issue-buffer-number "PRJ-7")
+            (shipit-issue-buffer-data '((title . "Old summary"))))
+        (shipit-issue--edit-title)
+        (should (equal updated "Brand new summary"))
+        (should refreshed)))))
+
+(ert-deftest test-shipit-issue--edit-title-noop-when-unchanged ()
+  "GIVEN the user keeps the title unchanged
+WHEN editing the title
+THEN no update is sent and the buffer is not refreshed."
+  (let ((updated nil) (refreshed nil))
+    (cl-letf (((symbol-function 'shipit-issue--get-backend)
+               (lambda () (list :update-title (lambda (&rest _) (setq updated t)))))
+              ((symbol-function 'read-string) (lambda (&rest _) "Same title"))
+              ((symbol-function 'shipit-issue-buffer-refresh)
+               (lambda (&rest _) (setq refreshed t))))
+      (let ((shipit-issue-backend-config '(:base-url "x"))
+            (shipit-issue-buffer-number "PRJ-7")
+            (shipit-issue-buffer-data '((title . "Same title"))))
+        (shipit-issue--edit-title)
+        (should-not updated)
+        (should-not refreshed)))))
+
 ;;; Icon Column Type Tests
 
 (ert-deftest test-shipit-issue-format-issue-type-icon-column ()

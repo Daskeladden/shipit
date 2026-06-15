@@ -2251,6 +2251,23 @@ allowing brand-new labels to be typed.  An empty selection clears them."
                (if selected (string-join selected ", ") "none"))
       (shipit-issue-buffer-refresh))))
 
+(defun shipit-issue--edit-title ()
+  "Edit the summary/title of the current issue."
+  (let* ((backend (shipit-issue--get-backend))
+         (config (when (bound-and-true-p shipit-issue-backend-config)
+                   shipit-issue-backend-config))
+         (update-title-fn (plist-get backend :update-title))
+         (issue-number shipit-issue-buffer-number)
+         (current (or (cdr (assq 'title shipit-issue-buffer-data)) "")))
+    (unless update-title-fn
+      (user-error "This backend does not support editing the title"))
+    (let ((new-title (string-trim (read-string "Title: " current))))
+      (when (and (not (string-empty-p new-title))
+                 (not (string= new-title current)))
+        (funcall update-title-fn config issue-number new-title)
+        (message "Title updated")
+        (shipit-issue-buffer-refresh)))))
+
 (defun shipit-issue--metadata-actions ()
   "Handle DWIM actions for issue metadata section.
 Offers to change status when transitions are supported."
@@ -2292,6 +2309,13 @@ Called both at load time (if shipit-magit loaded) and via `with-eval-after-load'
      (lambda () (and (derived-mode-p 'shipit-issue-mode)
                      (get-text-property (point) 'shipit-issue-labels)))
      #'shipit-issue--change-labels)
+
+    ;; Issue header/title — edit summary (header is tagged shipit-issue-header)
+    (shipit-register-dwim-handler
+     'issue-title
+     (lambda () (and (derived-mode-p 'shipit-issue-mode)
+                     (get-text-property (point) 'shipit-issue-header)))
+     #'shipit-issue--edit-title)
 
     ;; Comments section header — add new comment
     (shipit-register-dwim-handler

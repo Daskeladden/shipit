@@ -184,6 +184,24 @@ THEN draft is t."
                (shipit-pr-gitlab--normalize-mr mr))))
     (should (eq t (cdr (assq 'draft pr))))))
 
+;;; Update translation tests
+
+(ert-deftest test-shipit-pr-gitlab-translate-update-state-open-sends-reopen ()
+  "GIVEN update data with state=open (reopening a closed MR)
+WHEN translating update data to GitLab field names
+THEN state_event=reopen is produced."
+  (require 'shipit-pr-gitlab)
+  (should (equal '((state_event . "reopen"))
+                 (shipit-pr-gitlab--translate-update-data '((state . "open"))))))
+
+(ert-deftest test-shipit-pr-gitlab-translate-update-state-closed-sends-close ()
+  "GIVEN update data with state=closed
+WHEN translating update data to GitLab field names
+THEN state_event=close is produced."
+  (require 'shipit-pr-gitlab)
+  (should (equal '((state_event . "close"))
+                 (shipit-pr-gitlab--translate-update-data '((state . "closed"))))))
+
 ;;; Create MR draft tests
 
 (defun test-gitlab--create-pr-payload (draft)

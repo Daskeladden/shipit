@@ -500,23 +500,20 @@ If point is on a URL, includes Open URL option in the action menu."
                             (error-message-string err))
          nil))))
 
-(defun shipit--close-pr (pr-number repo &optional comment)
-  "Close PR-NUMBER in REPO, optionally adding COMMENT first.
-Dispatches to the active PR backend's :update-pr and comment backend."
-  (when comment
-    (let* ((resolved (shipit-comment--resolve-for-repo repo))
-           (cb (car resolved))
-           (cc (cdr resolved))
-           (add-fn (plist-get cb :add-general-comment)))
-      (funcall add-fn cc pr-number comment)))
-  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+(defun shipit--update-pr-state (pr-number repo state)
+  "Set PR-NUMBER in REPO to STATE, either \"open\" or \"closed\".
+Dispatches to the active PR backend's :update-pr, invalidates
+caches and refreshes the buffer on success."
+  (let* ((verb (if (string= state "closed") "close" "reopen"))
+         (done (if (string= state "closed") "closed" "reopened"))
+         (resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
          (update-fn (plist-get backend :update-pr))
-         (result (funcall update-fn config pr-number '((state . "closed")))))
+         (result (funcall update-fn config pr-number `((state . ,state)))))
     (if result
         (progn
-          (message "PR #%d closed" pr-number)
+          (message "PR #%d %s" pr-number done)
           ;; Invalidate all caches for this PR endpoint (persistent + refresh)
           (let ((endpoint (format "/repos/%s/pulls/%d" repo pr-number)))
             (when (fboundp 'shipit-gh-etag-invalidate-endpoint)
@@ -531,7 +528,61 @@ Dispatches to the active PR backend's :update-pr and comment backend."
           (when (and (fboundp 'shipit-buffer-refresh)
                      (derived-mode-p 'shipit-mode))
             (shipit-buffer-refresh)))
-      (user-error "Failed to close PR #%d" pr-number))))
+      (user-error "Failed to %s PR #%d" verb pr-number))))
+
+(defun shipit--close-pr (pr-number repo &optional comment)
+  "Close PR-NUMBER in REPO, optionally adding COMMENT first.
+Dispatches to the active PR backend's :update-pr and comment backend."
+  (when comment
+    (let* ((resolved (shipit-comment--resolve-for-repo repo))
+           (cb (car resolved))
+           (cc (cdr resolved))
+           (add-fn (plist-get cb :add-general-comment)))
+      (funcall add-fn cc pr-number comment)))
+  (shipit--update-pr-state pr-number repo "closed"))
+
+(defun shipit--reopen-pr (pr-number repo)
+  "Reopen closed PR-NUMBER in REPO.
+Dispatches to the active PR backend's :update-pr with state=open."
+  (shipit--update-pr-state pr-number repo "open"))
+
+(defun shipit--pr-state-action-labels (pr-state is-author)
+  "Return state-changing action labels for PR-STATE and IS-AUTHOR.
+Open PRs offer close (author only) and merge; closed PRs offer
+reopen (author only); merged PRs offer nothing."
+  (append
+   ;; Close option only for author and open PRs
+   (when (and is-author (string= pr-state "open"))
+     '("Close PR" "Close PR with comment"))
+   ;; Merge option for open PRs (available to all users, not just author)
+   (when (string= pr-state "open")
+     '("Merge"))
+   ;; Reopen option only for author and closed (not merged) PRs
+   (when (and is-author (string= pr-state "closed"))
+     '("Reopen PR"))))
+
+(defun shipit--pr-dispatch-state-action (choice pr-number repo)
+  "Execute state-changing CHOICE for PR-NUMBER in REPO.
+Return non-nil when CHOICE was one of the state actions."
+  (cond
+   ((string= choice "Close PR")
+    (when (yes-or-no-p (format "Close PR #%d? " pr-number))
+      (shipit--close-pr pr-number repo))
+    t)
+   ((string= choice "Close PR with comment")
+    (shipit-editor-open
+     (list :type 'close-pr-comment
+           :source-buffer (current-buffer)
+           :pr-number pr-number
+           :repo repo))
+    t)
+   ((string= choice "Reopen PR")
+    (when (yes-or-no-p (format "Reopen PR #%d? " pr-number))
+      (shipit--reopen-pr pr-number repo))
+    t)
+   ((string= choice "Merge")
+    (shipit-merge)
+    t)))
 
 (defun shipit--pr-header-actions ()
   "Handle dwim actions for PR header section."
@@ -543,23 +594,11 @@ Dispatches to the active PR backend's :update-pr and comment backend."
          (pr-author (when pr-author-obj (cdr (assq 'login pr-author-obj))))
          (current-user (shipit--get-current-user))
          (is-author (and pr-author current-user (string= pr-author current-user)))
-         (is-open (string= pr-state "open"))
-         (actions '()))
-    ;; Build action list based on context
-    (push "Open on GitHub" actions)
-    (push "Copy PR URL" actions)
-    ;; Author-only options
-    (when is-author
-      (push "Edit title" actions))
-    ;; Close option only for author and open PRs
-    (when (and is-author is-open)
-      (push "Close PR" actions)
-      (push "Close PR with comment" actions))
-    ;; Merge option for open PRs (available to all users, not just author)
-    (when is-open
-      (push "Merge" actions))
-    ;; Show action menu
-    (let ((choice (completing-read "PR action: " (nreverse actions) nil t)))
+         (actions (append '("Open on GitHub" "Copy PR URL")
+                          ;; Author-only options
+                          (when is-author '("Edit title"))
+                          (shipit--pr-state-action-labels pr-state is-author))))
+    (let ((choice (completing-read "PR action: " actions nil t)))
       (cond
        ((string= choice "Open on GitHub")
         (let ((url (cdr (assq 'html_url pr-data))))
@@ -578,18 +617,35 @@ Dispatches to the active PR backend's :update-pr and comment backend."
                (new-title (read-string "New PR title: " current-title)))
           (unless (string= new-title current-title)
             (shipit--edit-pr-title pr-number new-title repo))))
-       ((string= choice "Close PR")
-        (when (yes-or-no-p (format "Close PR #%d? " pr-number))
-          (shipit--close-pr pr-number repo)))
-       ((string= choice "Close PR with comment")
-        (shipit-editor-open
-         (list :type 'close-pr-comment
-               :source-buffer (current-buffer)
-               :pr-number pr-number
-               :repo repo)))
-       ((string= choice "Merge")
-        (shipit-merge))
+       ((shipit--pr-dispatch-state-action choice pr-number repo))
        (t (message "No action selected"))))))
+
+(defun shipit--pr-state-actions ()
+  "Handle dwim actions for the PR state line: close, reopen or merge."
+  (let* ((pr-number (or (get-text-property (point) 'shipit-pr-number)
+                        (bound-and-true-p shipit-buffer-pr-number)
+                        (car-safe shipit--current-displayed-pr)))
+         (repo (or (get-text-property (point) 'shipit-repo)
+                   (bound-and-true-p shipit-buffer-repo)
+                   (cadr shipit--current-displayed-pr))))
+    (unless (and pr-number repo)
+      (user-error "No PR context found at point"))
+    (let* ((pr-data (shipit-get-pull-request pr-number repo))
+           (pr-state (shipit--get-pr-actual-state pr-data))
+           (pr-author (cdr (assq 'login (cdr (assq 'user pr-data)))))
+           (current-user (shipit--get-current-user))
+           (is-author (and pr-author current-user (string= pr-author current-user)))
+           (labels (shipit--pr-state-action-labels pr-state is-author)))
+      (cond
+       ((string= pr-state "merged")
+        (user-error "PR #%s is merged — state cannot be changed" pr-number))
+       ((null labels)
+        (user-error "Only the PR author can %s this PR"
+                    (if (string= pr-state "closed") "reopen" "close")))
+       (t
+        (shipit--pr-dispatch-state-action
+         (completing-read (format "PR is %s — action: " pr-state) labels nil t)
+         pr-number repo))))))
 
 (defun shipit--edit-description ()
   "Edit PR description using the shipit editor.
@@ -1446,11 +1502,15 @@ ACTION function takes no args, executes the handler behavior."
                  (not (get-text-property (point) 'shipit-comment))))
  #'shipit--add-general-comment-directly)
 
-;; Metadata line handlers (do nothing but provide proper highlighting)
+;; State line: offer close/reopen/merge depending on current state
 (shipit-register-dwim-handler
  'pr-state-line
- (lambda () (get-text-property (point) 'shipit-pr-state))
- (lambda () (message "PR state: %s" (get-text-property (point) 'help-echo))))
+ (lambda () (or (get-text-property (point) 'shipit-pr-state)
+                (and (fboundp 'magit-current-section)
+                     (magit-section-match '(pr-state) (magit-current-section)))))
+ #'shipit--pr-state-actions)
+
+;; Metadata line handlers (do nothing but provide proper highlighting)
 
 (shipit-register-dwim-handler
  'pr-refs-line

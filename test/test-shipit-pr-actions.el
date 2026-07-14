@@ -126,6 +126,198 @@ THEN 'Edit title' is NOT included in the actions list."
       (shipit--pr-header-actions)
       (should-not (member "Edit title" captured-actions)))))
 
+;;; Tests — state action label gating
+
+(ert-deftest test-shipit-pr-state-action-labels-open-author ()
+  "GIVEN an open PR where the current user is the author
+WHEN building the state action labels
+THEN close, close-with-comment and merge are offered."
+  (should (equal '("Close PR" "Close PR with comment" "Merge")
+                 (shipit--pr-state-action-labels "open" t))))
+
+(ert-deftest test-shipit-pr-state-action-labels-open-non-author ()
+  "GIVEN an open PR where the current user is NOT the author
+WHEN building the state action labels
+THEN only merge is offered."
+  (should (equal '("Merge")
+                 (shipit--pr-state-action-labels "open" nil))))
+
+(ert-deftest test-shipit-pr-state-action-labels-closed-author ()
+  "GIVEN a closed (not merged) PR where the current user is the author
+WHEN building the state action labels
+THEN reopen is offered."
+  (should (equal '("Reopen PR")
+                 (shipit--pr-state-action-labels "closed" t))))
+
+(ert-deftest test-shipit-pr-state-action-labels-closed-non-author ()
+  "GIVEN a closed PR where the current user is NOT the author
+WHEN building the state action labels
+THEN no state actions are offered."
+  (should (null (shipit--pr-state-action-labels "closed" nil))))
+
+(ert-deftest test-shipit-pr-state-action-labels-merged ()
+  "GIVEN a merged PR, even for the author
+WHEN building the state action labels
+THEN no state actions are offered (merged PRs cannot change state)."
+  (should (null (shipit--pr-state-action-labels "merged" t))))
+
+;;; Tests — reopen from the PR header menu
+
+(ert-deftest test-shipit-pr-header-actions-includes-reopen-for-closed-pr-author ()
+  "GIVEN a closed (not merged) PR authored by the current user
+WHEN building the PR header action menu
+THEN 'Reopen PR' is offered and 'Close PR'/'Merge' are not."
+  (let ((captured-actions nil))
+    (cl-letf (((symbol-function 'get-text-property)
+               (lambda (_pos prop)
+                 (pcase prop
+                   ('shipit-pr-number 42)
+                   ('shipit-repo "owner/repo")
+                   (_ nil))))
+              ((symbol-function 'shipit-get-pull-request)
+               (lambda (_num _repo)
+                 '((state . "closed")
+                   (user (login . "testuser"))
+                   (html_url . "https://github.com/owner/repo/pull/42")
+                   (title . "Old Title"))))
+              ((symbol-function 'shipit--get-current-user)
+               (lambda () "testuser"))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq captured-actions collection)
+                 "Open on GitHub"))
+              ((symbol-function 'browse-url) #'ignore))
+      (shipit--pr-header-actions)
+      (should (member "Reopen PR" captured-actions))
+      (should-not (member "Close PR" captured-actions))
+      (should-not (member "Merge" captured-actions)))))
+
+(ert-deftest test-shipit-pr-header-actions-excludes-reopen-for-merged-pr ()
+  "GIVEN a merged PR authored by the current user
+WHEN building the PR header action menu
+THEN 'Reopen PR' is NOT offered."
+  (let ((captured-actions nil))
+    (cl-letf (((symbol-function 'get-text-property)
+               (lambda (_pos prop)
+                 (pcase prop
+                   ('shipit-pr-number 42)
+                   ('shipit-repo "owner/repo")
+                   (_ nil))))
+              ((symbol-function 'shipit-get-pull-request)
+               (lambda (_num _repo)
+                 '((state . "closed")
+                   (merged_at . "2026-07-01T10:00:00Z")
+                   (user (login . "testuser"))
+                   (html_url . "https://github.com/owner/repo/pull/42")
+                   (title . "Old Title"))))
+              ((symbol-function 'shipit--get-current-user)
+               (lambda () "testuser"))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq captured-actions collection)
+                 "Open on GitHub"))
+              ((symbol-function 'browse-url) #'ignore))
+      (shipit--pr-header-actions)
+      (should-not (member "Reopen PR" captured-actions)))))
+
+(ert-deftest test-shipit-pr-header-actions-reopen-choice-reopens-pr ()
+  "GIVEN a closed PR authored by the current user
+WHEN choosing 'Reopen PR' from the header menu and confirming
+THEN backend :update-pr is called with state=open."
+  (let ((captured-args nil))
+    (test-pr-actions--with-mock-backend
+        (:update-pr
+         (lambda (config number data)
+           (setq captured-args (list :repo (plist-get config :repo)
+                                     :number number :data data))
+           '((state . "open"))))
+      (cl-letf (((symbol-function 'get-text-property)
+                 (lambda (_pos prop)
+                   (pcase prop
+                     ('shipit-pr-number 42)
+                     ('shipit-repo "owner/repo")
+                     (_ nil))))
+                ((symbol-function 'shipit-get-pull-request)
+                 (lambda (_num _repo)
+                   '((state . "closed")
+                     (user (login . "testuser"))
+                     (html_url . "https://github.com/owner/repo/pull/42")
+                     (title . "Old Title"))))
+                ((symbol-function 'shipit--get-current-user)
+                 (lambda () "testuser"))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt _collection &rest _args) "Reopen PR"))
+                ((symbol-function 'yes-or-no-p) (lambda (_prompt) t))
+                ((symbol-function 'shipit-gh-etag-invalidate-endpoint) #'ignore)
+                ((symbol-function 'shipit-clear-etag-cache-for-repo) #'ignore)
+                ((symbol-function 'shipit-clear-stale-cache-files) #'ignore)
+                ((symbol-function 'shipit-buffer-refresh) #'ignore))
+        (shipit--pr-header-actions)
+        (should (string= "owner/repo" (plist-get captured-args :repo)))
+        (should (= 42 (plist-get captured-args :number)))
+        (should (equal '((state . "open")) (plist-get captured-args :data)))))))
+
+;;; Tests — state line dwim actions
+
+(ert-deftest test-shipit-pr-state-actions-reopens-closed-pr ()
+  "GIVEN a closed PR authored by the current user and point on the state line
+WHEN running the state dwim action and choosing 'Reopen PR'
+THEN backend :update-pr is called with state=open."
+  (let ((captured-args nil))
+    (test-pr-actions--with-mock-backend
+        (:update-pr
+         (lambda (config number data)
+           (setq captured-args (list :repo (plist-get config :repo)
+                                     :number number :data data))
+           '((state . "open"))))
+      (cl-letf (((symbol-function 'shipit-get-pull-request)
+                 (lambda (_num &optional _repo)
+                   '((state . "closed")
+                     (user (login . "testuser")))))
+                ((symbol-function 'shipit--get-current-user)
+                 (lambda () "testuser"))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt _collection &rest _args) "Reopen PR"))
+                ((symbol-function 'yes-or-no-p) (lambda (_prompt) t))
+                ((symbol-function 'shipit-gh-etag-invalidate-endpoint) #'ignore)
+                ((symbol-function 'shipit-clear-etag-cache-for-repo) #'ignore)
+                ((symbol-function 'shipit-clear-stale-cache-files) #'ignore)
+                ((symbol-function 'shipit-buffer-refresh) #'ignore))
+        (with-temp-buffer
+          (shipit--pr-state-actions))
+        (should (string= "owner/repo" (plist-get captured-args :repo)))
+        (should (= 42 (plist-get captured-args :number)))
+        (should (equal '((state . "open")) (plist-get captured-args :data)))))))
+
+(ert-deftest test-shipit-pr-state-actions-rejects-merged-pr ()
+  "GIVEN a merged PR and point on the state line
+WHEN running the state dwim action
+THEN a user-error explains the state cannot be changed."
+  (test-pr-actions--with-mock-backend ()
+    (cl-letf (((symbol-function 'shipit-get-pull-request)
+               (lambda (_num &optional _repo)
+                 '((state . "closed")
+                   (merged_at . "2026-07-01T10:00:00Z")
+                   (user (login . "testuser")))))
+              ((symbol-function 'shipit--get-current-user)
+               (lambda () "testuser")))
+      (with-temp-buffer
+        (should-error (shipit--pr-state-actions) :type 'user-error)))))
+
+(ert-deftest test-shipit-pr-state-actions-rejects-non-author-on-closed-pr ()
+  "GIVEN a closed PR NOT authored by the current user
+WHEN running the state dwim action
+THEN a user-error explains only the author can reopen."
+  (test-pr-actions--with-mock-backend ()
+    (cl-letf (((symbol-function 'shipit-get-pull-request)
+               (lambda (_num &optional _repo)
+                 '((state . "closed")
+                   (user (login . "otheruser")))))
+              ((symbol-function 'shipit--get-current-user)
+               (lambda () "testuser")))
+      (with-temp-buffer
+        (should-error (shipit--pr-state-actions) :type 'user-error)))))
+
 ;;; Tests — generic URL overlays
 
 (ert-deftest test-shipit-generic-url-overlay-created-for-plain-url ()

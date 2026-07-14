@@ -637,6 +637,27 @@ THEN backend :update-pr is called with body data."
       (should (= 42 (plist-get captured-args :number)))
       (should (equal "new description" (cdr (assq 'body (plist-get captured-args :data))))))))
 
+(ert-deftest test-shipit-reopen-pr-dispatches-to-backend ()
+  "GIVEN a mock PR backend with :update-pr
+WHEN calling shipit--reopen-pr
+THEN backend :update-pr is called with state=open."
+  (let ((captured-args nil))
+    (test-shipit-pr--with-mock-backend
+        (:update-pr
+         (lambda (config number data)
+           (setq captured-args (list :repo (plist-get config :repo)
+                                     :number number :data data))
+           '((state . "open"))))
+      (cl-letf (((symbol-function 'shipit--ensure-repository) (lambda () t))
+                ((symbol-function 'shipit-gh-etag-invalidate-endpoint) #'ignore)
+                ((symbol-function 'shipit-clear-etag-cache-for-repo) #'ignore)
+                ((symbol-function 'shipit-clear-stale-cache-files) #'ignore)
+                ((symbol-function 'shipit-buffer-refresh) #'ignore))
+        (shipit--reopen-pr 42 "owner/repo")
+        (should (string= "owner/repo" (plist-get captured-args :repo)))
+        (should (= 42 (plist-get captured-args :number)))
+        (should (equal '((state . "open")) (plist-get captured-args :data)))))))
+
 ;;; Orchestrator Dispatch Tests — Commit Operations
 
 (ert-deftest test-shipit-fetch-commit-files-dispatches-to-backend ()

@@ -525,16 +525,55 @@ and clears."
 
 (defun shipit--apply-strikethrough-faces (start end)
   "Apply strikethrough styling to ~text~ patterns in region START to END.
-Supports both single tilde ~text~ and double tilde ~~text~~ (GFM syntax)."
+Supports both single tilde ~text~ and double tilde ~~text~~ (GFM syntax).
+Writes `shipit-strikethrough-face' to `font-lock-face' (via
+`shipit--prepend-font-lock-face') so magit-section's
+`font-lock-mode' doesn't strip it on refontification --
+`add-face-text-property' targets `face', which font-lock owns
+and clears.
+
+A ~~...~~ span may cross newlines: the body wrapper breaks long
+struck sentences onto indented continuation lines, so requiring
+the pair on one line silently drops exactly the spans long enough
+to wrap.  A blank line (paragraph break) inside the pair
+disqualifies it, matching GFM.  Single-tilde pairs stay
+line-bound -- across lines they are far more likely to be two
+unrelated tildes (paths, approximations) than markup.
+Line-edge whitespace inside the span stays unstruck so wrapped
+spans don't draw a line through continuation-line indentation."
   (save-excursion
     (goto-char start)
-    ;; Match both ~text~ and ~~text~~ patterns
-    ;; Use non-greedy match and avoid matching inside code blocks
-    (while (re-search-forward "\\(~~\\([^~\n]+\\)~~\\|~\\([^~\n]+\\)~\\)" end t)
-      (let ((match-start (match-beginning 0))
-            (match-end (match-end 0)))
+    (while (re-search-forward "\\(~~\\([^~]+?\\)~~\\|~\\([^~\n]+\\)~\\)" end t)
+      (if (and (match-beginning 2)
+               (string-match-p "\n[ \t]*\n" (match-string 2)))
+          ;; Paragraph break inside ~~...~~ -- not strikethrough;
+          ;; resume just past the opening marker
+          (goto-char (+ (match-beginning 0) 2))
         ;; Apply strikethrough face to the entire match including tildes
-        (add-face-text-property match-start match-end '(:strike-through t))))))
+        (shipit--prepend-font-lock-face-by-line
+         (match-beginning 0) (match-end 0) 'shipit-strikethrough-face)))))
+
+(defun shipit--prepend-font-lock-face-by-line (start end face)
+  "Prepend FACE to `font-lock-face' between START and END, line by line.
+Unlike `shipit--prepend-font-lock-face', newlines and each line's
+leading/trailing whitespace are left untouched, so a face spanning
+wrapped lines doesn't paint over the continuation lines'
+indentation or past the text's edge."
+  (save-excursion
+    (goto-char start)
+    (while (< (point) end)
+      (skip-chars-forward " \t\n" end)
+      (when (< (point) end)
+        (let* ((seg-start (point))
+               (line-end (min end (line-end-position)))
+               (seg-end (progn (goto-char line-end)
+                               (skip-chars-backward " \t" seg-start)
+                               (point))))
+          (when (< seg-start seg-end)
+            (shipit--prepend-font-lock-face seg-start seg-end face))
+          (goto-char line-end)
+          (unless (>= (point) end)
+            (forward-char 1)))))))
 
 (defun shipit--apply-comment-body-decorations (body-start body-end &optional repo pr-number)
   "Apply markdown body decorations to the region between BODY-START and BODY-END.

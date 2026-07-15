@@ -109,6 +109,18 @@ elsewhere.  Customize freely if you want a stronger color or
 to match `markdown-blockquote-face' instead."
   :group 'shipit)
 
+(shipit-defface shipit-strikethrough-face
+  '((t :strike-through t))
+  "Face applied to ~struck~ / ~~struck~~ text in rendered comment bodies.
+Used by `shipit--apply-strikethrough-faces' via
+`shipit--prepend-font-lock-face' so the styling survives
+magit-section's font-lock-mode refontification pass -- the
+`markdown-strike-through-face' the markdown renderer puts on the
+plain `face' property gets wiped by that pass, while the markup
+tildes stay hidden, leaving struck text indistinguishable from
+normal prose."
+  :group 'shipit)
+
 ;; Identity / metadata faces -----------------------------------------
 
 (shipit-defface shipit-username-face

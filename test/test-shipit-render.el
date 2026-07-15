@@ -981,5 +981,137 @@ THEN it returns silently without touching the buffer or signalling --
       (shipit--apply-comment-body-decorations (point-min) (point-min))
       (should (string= before (buffer-string))))))
 
+(ert-deftest test-shipit--apply-strikethrough-faces-double-tilde ()
+  "GIVEN a buffer containing GFM strikethrough markup ~~text~~
+WHEN `shipit--apply-strikethrough-faces' decorates the region
+THEN `shipit-strikethrough-face' lives on `font-lock-face' across the
+     match -- writing to plain `face' gets wiped by font-lock-mode
+     in shipit buffers, which is why strikethrough never showed."
+  (with-temp-buffer
+    (insert "done ~~removed text~~ tail\n")
+    (shipit--apply-strikethrough-faces (point-min) (point-max))
+    (let ((flf (get-text-property 8 'font-lock-face)))
+      (should (or (eq flf 'shipit-strikethrough-face)
+                  (and (listp flf)
+                       (memq 'shipit-strikethrough-face flf)))))))
+
+(ert-deftest test-shipit--apply-strikethrough-faces-single-tilde ()
+  "GIVEN a buffer containing single-tilde strikethrough markup ~text~
+WHEN `shipit--apply-strikethrough-faces' decorates the region
+THEN `shipit-strikethrough-face' lives on `font-lock-face' across the match."
+  (with-temp-buffer
+    (insert "keep ~old~ tail\n")
+    (shipit--apply-strikethrough-faces (point-min) (point-max))
+    (let ((flf (get-text-property 8 'font-lock-face)))
+      (should (or (eq flf 'shipit-strikethrough-face)
+                  (and (listp flf)
+                       (memq 'shipit-strikethrough-face flf)))))))
+
+(ert-deftest test-shipit--apply-strikethrough-faces-survives-face-strip ()
+  "GIVEN a decorated buffer whose `face' props font-lock then wipes
+     (shipit buffers enable font-lock-mode, and refontification clears
+     the `face' property -- observed live: markdown's strikethrough face
+     was stripped from a PR buffer, leaving struck text looking plain)
+WHEN the `face' property is removed from the whole buffer
+THEN the strikethrough styling survives on `font-lock-face'."
+  (with-temp-buffer
+    (insert "note ~~obsolete advice~~ end\n")
+    (shipit--apply-strikethrough-faces (point-min) (point-max))
+    (remove-text-properties (point-min) (point-max) '(face nil))
+    (let ((flf (get-text-property 8 'font-lock-face)))
+      (should (or (eq flf 'shipit-strikethrough-face)
+                  (and (listp flf)
+                       (memq 'shipit-strikethrough-face flf)))))))
+
+(ert-deftest test-shipit--apply-strikethrough-faces-preserves-existing ()
+  "GIVEN struck text that already carries a `font-lock-face' (e.g. bold
+     from the markdown renderer)
+WHEN `shipit--apply-strikethrough-faces' decorates the region
+THEN both the pre-existing face and `shipit-strikethrough-face' apply."
+  (with-temp-buffer
+    (insert "~~struck bold~~\n")
+    (put-text-property (point-min) (point-max) 'font-lock-face 'bold)
+    (shipit--apply-strikethrough-faces (point-min) (point-max))
+    (let ((flf (get-text-property 4 'font-lock-face)))
+      (should (listp flf))
+      (should (memq 'shipit-strikethrough-face flf))
+      (should (memq 'bold flf)))))
+
+(ert-deftest test-shipit--apply-strikethrough-faces-wrapped-span ()
+  "GIVEN a ~~...~~ span that the body wrapper broke across a newline
+     with continuation-line indentation (exactly how long struck
+     sentences render in PR descriptions -- observed live in a PR
+     buffer where the span never got its face)
+WHEN `shipit--apply-strikethrough-faces' decorates the region
+THEN the strikethrough face applies across the whole wrapped span."
+  (with-temp-buffer
+    (insert "   ~~Note: faster readout will come\n   as a follow-up.~~\n")
+    (shipit--apply-strikethrough-faces (point-min) (point-max))
+    (goto-char (point-min))
+    (search-forward "follow-up")
+    (let ((flf (get-text-property (match-beginning 0) 'font-lock-face)))
+      (should (or (eq flf 'shipit-strikethrough-face)
+                  (and (listp flf)
+                       (memq 'shipit-strikethrough-face flf)))))))
+
+(ert-deftest test-shipit--apply-strikethrough-faces-wrapped-span-skips-indent ()
+  "GIVEN a ~~...~~ span wrapped onto an indented continuation line
+WHEN `shipit--apply-strikethrough-faces' decorates the region
+THEN the newline and the continuation line's leading indentation carry
+     no strikethrough face -- only the text does -- so the strike
+     doesn't draw a floating line through empty space at the left
+     margin of wrapped lines."
+  (with-temp-buffer
+    (insert "   ~~Note: faster readout will come\n   as a follow-up.~~\n")
+    (shipit--apply-strikethrough-faces (point-min) (point-max))
+    (goto-char (point-min))
+    (search-forward "come\n")
+    (let ((newline-pos (1- (point)))
+          (indent-pos (point)))
+      (should-not (get-text-property newline-pos 'font-lock-face))
+      (should-not (get-text-property indent-pos 'font-lock-face))
+      (search-forward "as a")
+      (let ((flf (get-text-property (match-beginning 0) 'font-lock-face)))
+        (should (or (eq flf 'shipit-strikethrough-face)
+                    (and (listp flf)
+                         (memq 'shipit-strikethrough-face flf))))))))
+
+(ert-deftest test-shipit--apply-strikethrough-faces-rejects-paragraph-break ()
+  "GIVEN an opening ~~ and a closing ~~ separated by a blank line
+     (a paragraph break -- GFM strikethrough never spans paragraphs)
+WHEN `shipit--apply-strikethrough-faces' decorates the region
+THEN no strikethrough face is applied."
+  (with-temp-buffer
+    (insert "~~not a span\n\nstill not~~\n")
+    (shipit--apply-strikethrough-faces (point-min) (point-max))
+    (goto-char (point-min))
+    (search-forward "still")
+    (should-not (get-text-property (match-beginning 0) 'font-lock-face))))
+
+(ert-deftest test-shipit--apply-strikethrough-faces-single-tilde-line-bound ()
+  "GIVEN two single tildes on different lines (e.g. two home-directory
+     paths -- not strikethrough markup)
+WHEN `shipit--apply-strikethrough-faces' decorates the region
+THEN nothing is struck -- only ~~...~~ may span wrapped lines."
+  (with-temp-buffer
+    (insert "run ~/bin/a then\nrun ~/bin/b now\n")
+    (shipit--apply-strikethrough-faces (point-min) (point-max))
+    (should-not (text-property-not-all (point-min) (point-max)
+                                       'font-lock-face nil))))
+
+(ert-deftest test-shipit--apply-comment-body-decorations-strikethrough ()
+  "GIVEN a buffer with ~~strikethrough~~ markup in a comment body
+WHEN `shipit--apply-comment-body-decorations' decorates the region
+THEN `shipit-strikethrough-face' lives on `font-lock-face' -- so every
+     body renderer (comments, descriptions, activity bodies) shows
+     strikethrough through the shared decoration pass."
+  (with-temp-buffer
+    (insert "we ~~no longer~~ do this\n")
+    (shipit--apply-comment-body-decorations (point-min) (point-max))
+    (let ((flf (get-text-property 6 'font-lock-face)))
+      (should (or (eq flf 'shipit-strikethrough-face)
+                  (and (listp flf)
+                       (memq 'shipit-strikethrough-face flf)))))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

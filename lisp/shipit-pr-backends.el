@@ -56,6 +56,7 @@
 ;;   :fetch-available-labels  — (config) → list of label alists
 ;;   :fetch-labels            — (config number) → minimal PR data with labels
 ;;   :fetch-commit            — (config sha) → commit data with files
+;;   :fetch-commit-comments   — (config sha) → list of commit-comment alists [GitHub-only]
 ;;   :add-reviewers-batch     — (config number usernames) → result
 ;;   :add-assignees-batch     — (config number usernames) → result
 ;;   :set-labels              — (config number label-names) → result
@@ -75,6 +76,7 @@
 ;;   :editor-reference-hints  — string for editor header line, e.g. "#: PR" or "#: Issue, !: MR"
 ;;   :browse-issue-url        — (config number) → URL string for issue
 ;;   :browse-commit-url       — (config sha) → URL string for commit
+;;   :browse-compare-url      — (config base head) → browser URL for the compare view
 ;;   :browse-user-url         — (config username) → URL string for user profile
 ;;   :get-current-username    — (config) → authenticated username string
 ;;   :extract-username-from-email — (config email) → username or nil

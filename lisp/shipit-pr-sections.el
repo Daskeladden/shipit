@@ -185,6 +185,13 @@
     map)
   "Keymap for shipit PR header line.")
 
+(defvar-local shipit--commit-files-force-api nil
+  "When non-nil, commit sections lazy-load their files via the backend
+API even without a PR number.  Set buffer-locally by PR-less buffers
+whose data comes from the API (branch commit-comments buffers) so
+commit expansion doesn't depend on the local clone having the
+commits.")
+
 (defvar shipit--pending-commit-for-comments nil
   "SHA of commit that needs comment insertion via flag-based system.")
 
@@ -2653,7 +2660,11 @@ The :raw-date contains the ISO timestamp for property storage."
                     (insert "\n"))))
 
               ;; Files subsection (independently collapsible, lazy-loaded)
-              (if (and repo pr-number)
+              ;; API mode also applies without a PR number when the buffer
+              ;; opted in via `shipit--commit-files-force-api' (branch
+              ;; commit-comments buffers: their commits may not exist in
+              ;; the local clone, e.g. when reached from a notification).
+              (if (and repo (or pr-number shipit--commit-files-force-api))
                   ;; API mode: lazy-load files from GitHub
                   (magit-insert-section (commit-files sha t)
                     (magit-insert-heading (format "           %s Files Changed (will load on expand)" (shipit--get-files-icon "📄")))

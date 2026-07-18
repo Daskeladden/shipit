@@ -39,6 +39,7 @@
 (declare-function shipit--in-general-comments-section-p "shipit-diff")
 (declare-function shipit--toggle-reaction-interactive "shipit-http")
 (declare-function shipit--update-comment-face-colors "shipit-http")
+(declare-function shipit-commit-comments-open-branch "shipit-commit-comments-buffer")
 (declare-function magit-git-lines "magit-git")
 (declare-function magit-refresh "magit-mode")
 (declare-function shipit--display-selected-pr "shipit-pr-search")
@@ -1231,7 +1232,30 @@ Works with:
                                 (when (buffer-live-p target-buffer)
                                   (with-current-buffer target-buffer
                                     (shipit--display-selected-pr pr-data captured-repo))))))
-             (message "No PR found for branch '%s' in repository '%s'" captured-branch captured-repo)))
+             ;; No PR — the branch may still have commit comments
+             ;; (GitHub compare-page comments); show those instead of
+             ;; dead-ending.  Deferred out of the response sentinel via
+             ;; run-at-time (same pattern as the PR-found branch above):
+             ;; the sentinel context is unsafe for sync HTTP and
+             ;; switch-to-buffer, and errors raised there vanish
+             ;; without a trace.
+             (progn
+               (message "No PR found for branch '%s'; checking for commit comments..."
+                        captured-branch)
+               (run-at-time 0 nil
+                            (lambda ()
+                              (when (buffer-live-p target-buffer)
+                                (with-current-buffer target-buffer
+                                  (condition-case err
+                                      (progn
+                                        (require 'shipit-commit-comments-buffer)
+                                        (shipit-commit-comments-open-branch
+                                         captured-repo captured-branch))
+                                    (error
+                                     (shipit--debug-log "Branch view fallback error: %S" err)
+                                     (message "Branch view for '%s' failed: %s"
+                                              captured-branch
+                                              (error-message-string err)))))))))))
          repo)))
 
      ;; Case 2: Detached HEAD - check for shipit worktree or PR ref

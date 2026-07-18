@@ -41,6 +41,7 @@
 (declare-function shipit--check-notifications-background-async "shipit-notifications")
 (declare-function shipit--notifications-header-actions "shipit-notifications")
 (declare-function shipit-discussion--resolve-for-repo "shipit-discussion-backends")
+(declare-function shipit-commit-comments-open-commit "shipit-commit-comments-buffer")
 
 ;; Magit section types - declare for byte compiler
 (declare-function magit-insert-section "magit-section")
@@ -2511,6 +2512,30 @@ C-u prefix opens in browser instead."
               (error nil))))
       (require 'shipit-discussions-buffer)
       (shipit-discussions-open-buffer number repo))))
+
+(defun shipit--open-notification-commit (number repo activity)
+  "Open the commit comments for a Commit notification in shipit.
+NUMBER is the notification thread id (Commit subjects have no
+numeric id of their own), REPO the repository, and ACTIVITY the
+notification activity alist whose `browse-url' carries the commit
+SHA (\"…/commit/SHA\").  Marks the notification read.  With C-u
+prefix, or when no SHA can be extracted, falls back to the
+browser."
+  (let* ((url (cdr (assq 'browse-url activity)))
+         (sha (and url
+                   (string-match "/commit/\\([0-9a-f]+\\)" url)
+                   (match-string 1 url)))
+         (activity-key (shipit--notification-activity-key repo "commit" number)))
+    (when (and shipit--notification-pr-activities
+               (gethash activity-key shipit--notification-pr-activities))
+      (shipit--debug-log "Auto-clearing notification for Commit %s" (or sha number))
+      (shipit--mark-notification-read number repo t "commit"))
+    (cond
+     ((and sha (not current-prefix-arg))
+      (require 'shipit-commit-comments-buffer)
+      (shipit-commit-comments-open-commit repo sha))
+     (url (browse-url url))
+     (t (message "No commit URL for this notification")))))
 
 (defun shipit--open-pr-cross-repo (pr-number repo)
   "Open PR in shipit, switching repositories if necessary."

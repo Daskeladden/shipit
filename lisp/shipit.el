@@ -178,6 +178,9 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
 ;; Releases (shipit-releases-buffer) - GitHub Releases and tags
 ;;;###autoload (autoload 'shipit-open-releases-buffer "shipit-releases-buffer" nil t)
 
+;; Commit comments (shipit-commit-comments-buffer) - comments on non-PR branches
+;;;###autoload (autoload 'shipit-branch-comments "shipit-commit-comments-buffer" nil t)
+
 ;; Functions that remain immediately available (moved to core modules or are lightweight)
 (declare-function shipit-cache-menu "shipit-cache")
 (declare-function shipit-config "shipit-commands")
@@ -204,6 +207,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
    ("u" "Open URL" shipit-open-url)
    ("W" "Workflows" shipit-open-actions-list)
    ("S" "Subscriptions" shipit-subscriptions)
+   ("m" "Branch commit comments" shipit-branch-comments)
    ("n" "Notifications buffer" shipit--view-notifications)
    ("A" "Atlassian dashboard" shipit-atlassian-dashboard
     :if shipit-atlassian-dashboard-available-p)]

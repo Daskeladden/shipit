@@ -362,6 +362,18 @@ during a session."
         (puthash dir result shipit--repo-from-remote-cache)
         result)))))
 
+(defun shipit--upstream-default-branch ()
+  "Return the default branch of the upstream remote.
+Reads `refs/remotes/origin/HEAD' (set by clone or `git remote
+set-head'); falls back to \"main\" when unset."
+  (let ((result (string-trim
+                 (shell-command-to-string
+                  "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+| sed 's@^refs/remotes/origin/@@'"))))
+    (if (string-empty-p result)
+        "main"
+      result)))
+
 (defun shipit--detect-backend-from-remote ()
   "Detect PR backend symbol from the git remote URL.
 Iterates registered PR backends looking for a `:detect-url-pattern'

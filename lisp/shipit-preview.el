@@ -1211,16 +1211,6 @@ If FILE-LEVEL-ONLY is non-nil, delete only file-level comments."
 
 ;;; Entry point
 
-(defun shipit-preview--get-upstream-default-branch ()
-  "Get the default branch of the upstream remote."
-  (let ((result (string-trim
-                 (shell-command-to-string
-                  "git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
-| sed 's@^refs/remotes/origin/@@'"))))
-    (if (string-empty-p result)
-        "main"
-      result)))
-
 (defun shipit-preview--get-remote-branches ()
   "Get list of remote branches from origin."
   (let ((output (shell-command-to-string "git branch -r 2>/dev/null")))
@@ -1582,7 +1572,7 @@ If a PR already exists for this branch, offers to open it instead."
                 (shipit-open-pr-buffer pr-number repo)
               (message "PR #%d exists for this branch" pr-number)))
         ;; No existing PR - open preview
-        (let ((base-ref (shipit-preview--get-upstream-default-branch))
+        (let ((base-ref (shipit--upstream-default-branch))
               (buf-name (shipit-preview--buffer-name repo branch)))
           (with-current-buffer (get-buffer-create buf-name)
             (shipit-preview-mode)

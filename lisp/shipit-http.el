@@ -302,8 +302,13 @@ parameter.  Returns an integer or nil if not found."
 ;; Helper functions for cache keys
 (defun shipit--reaction-cache-key (repo comment-id is-inline)
   "Generate a repository-specific cache key for reactions.
-Uses format: 'repo:comment-id-type' where type is 'inline' or 'general'."
-  (format "%s:%s-%s" repo comment-id (if is-inline "inline" "general")))
+IS-INLINE is tri-state: nil for issue (general) comments, non-nil
+for PR review (inline) comments, and the symbol `commit' for
+commit comments.  Format: \"repo:comment-id-type\"."
+  (format "%s:%s-%s" repo comment-id
+          (cond ((eq is-inline 'commit) "commit")
+                (is-inline "inline")
+                (t "general"))))
 
 ;; Variables
 (defvar shipit-current-pr nil

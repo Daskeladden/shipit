@@ -123,22 +123,34 @@ Signals error on non-200/204 response.  Returns t on success."
 
 (defun shipit-comment-github--toggle-reaction (config comment-id reaction &optional is-inline)
   "Toggle REACTION on comment COMMENT-ID using CONFIG.
-If IS-INLINE, uses pull request review comment endpoint."
+IS-INLINE is tri-state: nil uses the issue comment endpoint,
+non-nil the PR review comment endpoint, and the symbol `commit'
+the commit comment endpoint."
   (let* ((repo (plist-get config :repo))
-         (endpoint (if is-inline
-                       (format "/repos/%s/pulls/comments/%s/reactions" repo comment-id)
-                     (format "/repos/%s/issues/comments/%s/reactions" repo comment-id)))
+         (endpoint (cond
+                    ((eq is-inline 'commit)
+                     (format "/repos/%s/comments/%s/reactions" repo comment-id))
+                    (is-inline
+                     (format "/repos/%s/pulls/comments/%s/reactions" repo comment-id))
+                    (t
+                     (format "/repos/%s/issues/comments/%s/reactions" repo comment-id))))
          (data `((content . ,reaction))))
     (shipit--debug-log "GitHub comment backend: toggling reaction %s on comment %s" reaction comment-id)
     (shipit--api-request-post endpoint data)))
 
 (defun shipit-comment-github--fetch-reactions (config comment-id &optional is-inline)
   "Fetch reactions for comment COMMENT-ID using CONFIG.
-If IS-INLINE, uses pull request review comment endpoint."
+IS-INLINE is tri-state: nil uses the issue comment endpoint,
+non-nil the PR review comment endpoint, and the symbol `commit'
+the commit comment endpoint."
   (let* ((repo (plist-get config :repo))
-         (endpoint (if is-inline
-                       (format "/repos/%s/pulls/comments/%s/reactions" repo comment-id)
-                     (format "/repos/%s/issues/comments/%s/reactions" repo comment-id))))
+         (endpoint (cond
+                    ((eq is-inline 'commit)
+                     (format "/repos/%s/comments/%s/reactions" repo comment-id))
+                    (is-inline
+                     (format "/repos/%s/pulls/comments/%s/reactions" repo comment-id))
+                    (t
+                     (format "/repos/%s/issues/comments/%s/reactions" repo comment-id)))))
     (shipit--debug-log "GitHub comment backend: fetching reactions for comment %s" comment-id)
     (shipit--api-request-paginated endpoint)))
 
@@ -268,12 +280,18 @@ all responses have arrived (no UI thread blocking)."
 
 (defun shipit-comment-github--delete-reaction (config comment-id reaction-id &optional is-inline)
   "Delete reaction REACTION-ID from comment COMMENT-ID using CONFIG.
-If IS-INLINE, uses pull request review comment endpoint.
+IS-INLINE is tri-state: nil uses the issue comment endpoint,
+non-nil the PR review comment endpoint, and the symbol `commit'
+the commit comment endpoint.
 Signals error on non-200/204 response.  Returns t on success."
   (let* ((repo (plist-get config :repo))
-         (base (if is-inline
-                   (format "/repos/%s/pulls/comments/%s/reactions" repo comment-id)
-                 (format "/repos/%s/issues/comments/%s/reactions" repo comment-id)))
+         (base (cond
+                ((eq is-inline 'commit)
+                 (format "/repos/%s/comments/%s/reactions" repo comment-id))
+                (is-inline
+                 (format "/repos/%s/pulls/comments/%s/reactions" repo comment-id))
+                (t
+                 (format "/repos/%s/issues/comments/%s/reactions" repo comment-id))))
          (endpoint (format "%s/%s" base reaction-id))
          (url (concat shipit-api-url endpoint))
          (headers (list (shipit--get-auth-header)

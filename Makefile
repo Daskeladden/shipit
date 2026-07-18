@@ -80,6 +80,7 @@ test-unit: compile
 		-l test/test-shipit-subscriptions.el \
 		-l test/test-thread-subscription.el \
 		-l test/test-shipit-releases-buffer.el \
+		-l test/test-shipit-commit-comments.el \
 		-l test/test-shipit-buffer-ready-hook.el \
 		-l test/test-shipit-activity-dispatch.el \
 		-l test/test-shipit-notifications-activity-nav.el \

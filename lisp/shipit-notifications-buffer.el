@@ -61,6 +61,7 @@
 (declare-function shipit-issue-jira--fetch-last-activity-async "shipit-issue-jira")
 (declare-function shipit--open-notification-issue "shipit-notifications")
 (declare-function shipit--open-notification-discussion "shipit-notifications")
+(declare-function shipit--open-notification-commit "shipit-notifications")
 
 (defconst shipit-notifications-buffer-name "*shipit-notifications*"
   "Name of the notifications buffer.")
@@ -2042,6 +2043,7 @@ With prefix arg (C-u), show action menu instead."
                  (shipit-notifications-buffer--schedule-activity-nav
                   buffer activity-props))))
             ("discussion" (shipit--open-notification-discussion number repo))
+            ("commit" (shipit--open-notification-commit number repo activity))
             ("workflow"
              ;; Workflow runs (esp. approval_requested) belong in the
              ;; actions buffer where the user can review/approve from

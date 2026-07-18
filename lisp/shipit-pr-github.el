@@ -522,6 +522,17 @@ CONFIG provides :repo.  Returns file content as a string, or nil."
     (shipit--debug-log "GitHub PR backend: fetching compare %s...%s in %s" base head repo)
     (shipit--api-request endpoint)))
 
+(defun shipit-pr-github--fetch-commit-comments (config sha)
+  "Fetch commit comments for SHA using CONFIG.
+Commit comments are the comments GitHub shows on commit pages and
+on the compare view of branches without a PR.  Returns a list of
+comment alists (id, user, body, path, position, line, created_at,
+html_url)."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/commits/%s/comments" repo sha)))
+    (shipit--debug-log "GitHub PR backend: fetching commit comments for %s in %s" sha repo)
+    (append (shipit--api-request endpoint) nil)))
+
 (defun shipit-pr-github--search-repos (_config query)
   "Search GitHub repositories matching QUERY.
 Returns list of alists with `full_name' and `description' keys."
@@ -844,6 +855,11 @@ Returns plist (:type TYPE :repo REPO :number N) or nil."
 (defun shipit-pr-github--browse-commit-url (config sha)
   "Return browser URL for commit SHA using CONFIG."
   (format "https://github.com/%s/commit/%s" (plist-get config :repo) sha))
+
+(defun shipit-pr-github--browse-compare-url (config base head)
+  "Return browser URL for the BASE...HEAD compare view using CONFIG."
+  (format "https://github.com/%s/compare/%s...%s"
+          (plist-get config :repo) base head))
 
 (defun shipit-pr-github--browse-user-url (_config username)
   "Return browser URL for USERNAME's GitHub profile."
@@ -1521,6 +1537,7 @@ PAGE defaults to 1.  Returns the parsed JSON list."
        :fetch-available-labels #'shipit-pr-github--fetch-available-labels
        :fetch-labels #'shipit-pr-github--fetch-labels
        :fetch-commit #'shipit-pr-github--fetch-commit
+       :fetch-commit-comments #'shipit-pr-github--fetch-commit-comments
        :add-reviewers-batch #'shipit-pr-github--add-reviewers-batch
        :add-assignees-batch #'shipit-pr-github--add-assignees-batch
        :set-labels #'shipit-pr-github--set-labels
@@ -1540,6 +1557,7 @@ PAGE defaults to 1.  Returns the parsed JSON list."
        :get-file-line-content #'shipit-pr-github--get-file-line-content
        :browse-issue-url #'shipit-pr-github--browse-issue-url
        :browse-commit-url #'shipit-pr-github--browse-commit-url
+       :browse-compare-url #'shipit-pr-github--browse-compare-url
        :browse-user-url #'shipit-pr-github--browse-user-url
        :get-current-username #'shipit-pr-github--get-current-username
        :extract-username-from-email #'shipit-pr-github--extract-username-from-email

@@ -44,6 +44,7 @@
 (declare-function shipit--codeowners-pattern-to-regexp "shipit-lib")
 (declare-function shipit--insert-files-content "shipit-pr-sections")
 (declare-function shipit-preview--refresh-files-section-only "shipit-preview")
+(declare-function shipit-commit-comments-refresh-files-section "shipit-commit-comments-buffer")
 (declare-function shipit-review-queue--render "shipit-review-queue")
 (declare-function shipit-review-queue--render-badges "shipit-review-queue")
 
@@ -380,14 +381,22 @@ Works from any buffer - refreshes all visible shipit-mode buffers with files sec
               (when (buffer-live-p buffer)
                 (with-current-buffer buffer
                   (when (and (or (derived-mode-p 'shipit-mode)
-                                 (derived-mode-p 'shipit-preview-mode))
+                                 (derived-mode-p 'shipit-preview-mode)
+                                 (derived-mode-p 'shipit-commit-comments-mode))
                              (fboundp 'magit-current-section))
                     (let ((refresh-start (float-time)))
-                      ;; For preview mode, do targeted files section refresh
-                      (if (derived-mode-p 'shipit-preview-mode)
-                          (when (fboundp 'shipit-preview--refresh-files-section-only)
+                      ;; Preview and commit-comments modes have their own
+                      ;; targeted refreshes; plain shipit-mode is handled below
+                      (if (or (derived-mode-p 'shipit-preview-mode)
+                              (derived-mode-p 'shipit-commit-comments-mode))
+                          (cond
+                           ((derived-mode-p 'shipit-commit-comments-mode)
+                            (when (fboundp 'shipit-commit-comments-refresh-files-section)
+                              (shipit-commit-comments-refresh-files-section)
+                              (setq refreshed-count (1+ refreshed-count))))
+                           ((fboundp 'shipit-preview--refresh-files-section-only)
                             (shipit-preview--refresh-files-section-only)
-                            (setq refreshed-count (1+ refreshed-count)))
+                            (setq refreshed-count (1+ refreshed-count))))
                         ;; For shipit-mode, do targeted section refresh
                         (save-excursion
                           (goto-char (point-min))

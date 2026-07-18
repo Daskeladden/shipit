@@ -33,6 +33,8 @@
 ;;   :edit-comment           — (config comment-id body &optional is-inline pr-number) → comment alist
 ;;   :delete-comment         — (config comment-id &optional is-inline) → result
 ;;   :toggle-reaction        — (config comment-id reaction &optional is-inline) → reaction alist
+;;     (is-inline is tri-state: nil=issue comment, t=PR review comment, commit=commit comment;
+;;      the same tri-state applies to :fetch-reactions and :delete-reaction)
 ;;   :fetch-reactions        — (config comment-id &optional is-inline) → list of reaction alists
 ;;
 ;; Optional plist keys:

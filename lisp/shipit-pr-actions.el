@@ -122,7 +122,6 @@ If COMMENT-ID is nil, attempts to find it from text properties or operates on PR
               (shipit--add-reaction-to-pr pr-number reaction-type)))
         ;; COMMENT PATH - original logic for comments
         (let* ((in-general-section (shipit--in-general-comments-section-p))
-               (is-inline (not in-general-section))
                ;; Get repo from buffer context first, fall back to git remote detection
                (current-repo (or (get-text-property (point) 'shipit-repo)
                                  (when (boundp 'shipit-buffer-repo) shipit-buffer-repo)
@@ -132,6 +131,13 @@ If COMMENT-ID is nil, attempts to find it from text properties or operates on PR
                                             shipit--cached-general-comments)
                                 (cl-find-if (lambda (c) (equal (cdr (assq 'id c)) comment-id))
                                             shipit--cached-inline-comments)))
+               ;; Tri-state endpoint selector: commit comments (branch
+               ;; commit-comments buffer) have their own reactions
+               ;; endpoint regardless of where they render; otherwise
+               ;; inline iff outside the general-comments section
+               (is-inline (if (equal (cdr (assq 'shipit-comment-type comment-obj)) "commit")
+                              'commit
+                            (not in-general-section)))
                (pr-number (or (get-text-property (point) 'shipit-pr-number)
                               (when comment-obj (cdr (assq 'shipit-pr-number comment-obj)))
                               (when (boundp 'shipit-buffer-pr-number) shipit-buffer-pr-number)

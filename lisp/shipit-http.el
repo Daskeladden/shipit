@@ -39,6 +39,85 @@
 (require 'shipit-pr-backends)
 (require 'shipit-comment-backends)
 
+;;; HTTP request guard — ASCII dates, no cache headers, no token leaks
+
+(defun shipit--scrub-auth-in-error-data (data)
+  "Redact Authorization credentials in the strings of error DATA.
+url.el errors (e.g. \"Multibyte text in HTTP request\") embed the
+full request text -- Authorization token included -- which would
+otherwise land verbatim in *Messages*."
+  (let ((case-fold-search t))
+    (mapcar (lambda (element)
+              (if (stringp element)
+                  (replace-regexp-in-string
+                   "\\(Authorization: *\\)\\(?:Bearer\\|token\\|Basic\\) +[^ \t\r\n]+"
+                   "\\1***" element)
+                element))
+            data)))
+
+(defun shipit--force-unibyte (value)
+  "Return VALUE with a multibyte string encoded to unibyte UTF-8.
+Pure-ASCII multibyte strings keep their exact bytes; unibyte
+strings and non-strings are returned unchanged."
+  (if (and (stringp value) (multibyte-string-p value))
+      (encode-coding-string value 'utf-8)
+    value))
+
+(defun shipit--url-http-normalize-request-pieces ()
+  "Force the pending request's body and extra headers to unibyte.
+Runs in the url.el connection buffer, where `url-http-data' and
+`url-http-extra-headers' are buffer-local.  The headers are copied,
+not mutated, so the caller's alist is untouched."
+  (when (bound-and-true-p url-http-data)
+    (setq-local url-http-data (shipit--force-unibyte url-http-data)))
+  (when (bound-and-true-p url-http-extra-headers)
+    (setq-local url-http-extra-headers
+                (mapcar (lambda (header)
+                          (cons (shipit--force-unibyte (car header))
+                                (shipit--force-unibyte (cdr header))))
+                        url-http-extra-headers))))
+
+(defun shipit--url-http-request-guard (orig &rest args)
+  "Around-advice for `url-http-create-request' hardening every request.
+
+1. Binds `system-time-locale' to \"C\" so any date header url.el
+   formats (notably the cache-driven If-modified-since) is ASCII
+   RFC-7231 English.  With LC_TIME set to a non-English locale and
+   the global `system-time-locale' reset by a downstream package,
+   weekend day abbreviations like \"sø.\" produce multibyte
+   headers and url.el rejects the whole request (\"Multibyte text
+   in HTTP request\").  This must live here, not around callers:
+   keep-alive retries rebuild the request inside the process
+   sentinel, outside any caller's let-binding.
+2. Disables `url-automatic-caching' for requests to shipit's API
+   host -- shipit manages If-Modified-Since / ETags itself, and
+   url.el's own cache header would reintroduce the stale-response
+   bugs the ETag layer already fights.
+3. Normalizes the request body and extra headers to unibyte UTF-8
+   before assembly.  auth-source hands shipit a multibyte token
+   string; `url-http-create-request' concatenates every header
+   with the (correctly UTF-8-encoded, unibyte) body, and that mix
+   has more bytes than chars, so url.el rejects the whole request
+   -- first seen as a failed create-PR whose description contained
+   an em dash.
+4. Re-signals request-construction errors with Authorization
+   credentials redacted."
+  (let* ((target (bound-and-true-p url-http-target-url))
+         (host (and target (url-host target)))
+         (shipit-host (url-host (url-generic-parse-url shipit-api-url)))
+         (url-automatic-caching (if (and host shipit-host
+                                         (string= host shipit-host))
+                                    nil
+                                  url-automatic-caching))
+         (system-time-locale "C"))
+    (shipit--url-http-normalize-request-pieces)
+    (condition-case err
+        (apply orig args)
+      (error (signal (car err)
+                     (shipit--scrub-auth-in-error-data (cdr err)))))))
+
+(advice-add 'url-http-create-request :around #'shipit--url-http-request-guard)
+
 ;; Forward declarations for buffer-local variables
 (defvar shipit--inline-comments-fetched)  ; from shipit-diff.el
 (defvar shipit--general-comments-fetched) ; from shipit-core.el
@@ -589,7 +668,8 @@ If CALLBACK is provided, make an async request."
                      (is-reactions (string-match-p "/reactions" url)))
                 (shipit--debug-log "API ERROR: %s - HTTP %s" url status-code)
                 (unless (and is-404 is-reactions)
-                  (message "API error: HTTP %s" status-code))
+                  (message "API error: %s"
+                           (shipit--format-api-error status-code data)))
                 nil))))
         (error
          ;; Log the error for debugging but then re-throw it
@@ -597,6 +677,34 @@ If CALLBACK is provided, make an async request."
            (shipit--debug-log "❌ API ERROR: %s - %s" url (error-message-string err)))
          ;; Re-throw the error instead of silently returning nil
          (signal (car err) (cdr err)))))))
+
+(defun shipit--api-error-detail (response-data)
+  "Extract a human-readable error message from RESPONSE-DATA.
+GitHub error bodies carry `message' plus an optional `errors' list
+with per-field details.  Return nil when nothing usable is found."
+  (when (listp response-data)
+    (let* ((msg (cdr (assq 'message response-data)))
+           (errors (cdr (assq 'errors response-data)))
+           (details (delq nil
+                          (mapcar
+                           (lambda (e)
+                             (when (listp e)
+                               (or (cdr (assq 'message e))
+                                   (let ((field (cdr (assq 'field e)))
+                                         (code (cdr (assq 'code e))))
+                                     (when field (format "%s %s" field code))))))
+                           (and (listp errors) errors)))))
+      (cond
+       ((and msg details)
+        (format "%s (%s)" msg (mapconcat #'identity details "; ")))
+       (msg msg)
+       (details (mapconcat #'identity details "; "))))))
+
+(defun shipit--format-api-error (status-code response-data)
+  "Format \"HTTP STATUS-CODE\" plus any detail found in RESPONSE-DATA."
+  (let ((detail (shipit--api-error-detail response-data)))
+    (concat (format "HTTP %s" status-code)
+            (if detail (concat ": " detail) ""))))
 
 (defun shipit--api-request-post-async (endpoint data callback &optional method)
   "Make async GitHub API POST request to ENDPOINT with DATA payload.
@@ -640,8 +748,10 @@ METHOD defaults to POST but can be PATCH, PUT, etc."
           (if (and status-code (>= status-code 200) (< status-code 300))
               response-data
             (progn
-              (message "API error: HTTP %s" status-code)
-              (shipit--debug-log "API ERROR: %s - HTTP %s" url status-code)
+              (message "API error: %s"
+                       (shipit--format-api-error status-code response-data))
+              (shipit--debug-log "API ERROR: %s - HTTP %s %S"
+                                 url status-code response-data)
               nil)))
       (error
        (message "API error: %s" (error-message-string err))

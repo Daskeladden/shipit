@@ -3353,5 +3353,54 @@ THEN it returns nil."
            (matcher (cdr (assq 'matcher handler))))
       (should-not (funcall matcher)))))
 
+(ert-deftest test-shipit-api-error-detail-extraction ()
+  "GIVEN GitHub error bodies of varying shapes
+WHEN extracting a human-readable detail
+THEN message and per-field errors are combined and junk yields nil."
+  ;; Message plus field errors -- the invalid-base create-PR shape
+  (should (equal (shipit--api-error-detail
+                  '((message . "Validation Failed")
+                    (errors . (((resource . "PullRequest")
+                                (field . "base")
+                                (code . "invalid"))))))
+                 "Validation Failed (base invalid)"))
+  ;; Errors carrying their own message text
+  (should (equal (shipit--api-error-detail
+                  '((message . "Validation Failed")
+                    (errors . (((message . "A pull request already exists"))))))
+                 "Validation Failed (A pull request already exists)"))
+  ;; Message only
+  (should (equal (shipit--api-error-detail '((message . "Not Found")))
+                 "Not Found"))
+  ;; Nothing usable
+  (should-not (shipit--api-error-detail nil))
+  (should-not (shipit--api-error-detail "plain string"))
+  (should-not (shipit--api-error-detail '((documentation_url . "x")))))
+
+(ert-deftest test-shipit-api-request-post-surfaces-error-detail ()
+  "GIVEN a POST endpoint answering 422 with a GitHub validation body
+WHEN the sync POST helper reports the failure
+THEN the user-visible message carries the API's own explanation
+     instead of a bare status code."
+  (let (captured)
+    (cl-letf (((symbol-function 'shipit--github-token) (lambda () "tok"))
+              ((symbol-function 'shipit--url-retrieve-sync)
+               (lambda (&rest _)
+                 (cons '((message . "Validation Failed")
+                         (errors . (((resource . "PullRequest")
+                                     (field . "base")
+                                     (code . "invalid")))))
+                       422)))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (push (apply #'format fmt args) captured)
+                 nil)))
+      (should-not (shipit--api-request-post "/repos/o/r/pulls"
+                                            '((title . "t")))))
+    (should (cl-find-if
+             (lambda (m)
+               (string-match-p "HTTP 422: Validation Failed (base invalid)" m))
+             captured))))
+
 (provide 'test-shipit)
 ;;; test-shipit.el ends here

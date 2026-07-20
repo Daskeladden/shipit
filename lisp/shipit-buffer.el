@@ -1078,8 +1078,7 @@ REPO is the repository, PR-NUMBER is the PR number."
       ;; Priority: merged > closed > draft > open
       (shipit--time-operation "insert simple state"
         (let* ((state (shipit--get-pr-actual-state pr-data))
-               (draft (cdr (assq 'draft pr-data)))
-               (is-draft (and draft (not (eq draft :json-false)) (not (null draft))))
+               (is-draft (shipit--pr-draft-p pr-data))
                (display-state (cond
                                ((string= state "merged") "merged")
                                ((string= state "closed") "closed")

@@ -129,11 +129,26 @@ THEN 'Edit title' is NOT included in the actions list."
 ;;; Tests — state action label gating
 
 (ert-deftest test-shipit-pr-state-action-labels-open-author ()
-  "GIVEN an open PR where the current user is the author
+  "GIVEN an open non-draft PR where the current user is the author
 WHEN building the state action labels
-THEN close, close-with-comment and merge are offered."
-  (should (equal '("Close PR" "Close PR with comment" "Merge")
+THEN close, close-with-comment, convert-to-draft and merge are offered."
+  (should (equal '("Close PR" "Close PR with comment" "Convert to draft" "Merge")
                  (shipit--pr-state-action-labels "open" t))))
+
+(ert-deftest test-shipit-pr-state-action-labels-open-draft-author ()
+  "GIVEN an open draft PR where the current user is the author
+WHEN building the state action labels
+THEN mark-ready-for-review leads and merge is NOT offered
+     (GitHub refuses to merge drafts)."
+  (should (equal '("Mark ready for review" "Close PR" "Close PR with comment")
+                 (shipit--pr-state-action-labels "open" t t))))
+
+(ert-deftest test-shipit-pr-state-action-labels-open-draft-non-author ()
+  "GIVEN an open draft PR where the current user is NOT the author
+WHEN building the state action labels
+THEN no state actions are offered (drafts cannot be merged and only
+     the author may mark them ready)."
+  (should (null (shipit--pr-state-action-labels "open" nil t))))
 
 (ert-deftest test-shipit-pr-state-action-labels-open-non-author ()
   "GIVEN an open PR where the current user is NOT the author
@@ -317,6 +332,124 @@ THEN a user-error explains only the author can reopen."
                (lambda () "testuser")))
       (with-temp-buffer
         (should-error (shipit--pr-state-actions) :type 'user-error)))))
+
+;;; Tests — draft state toggling
+
+(ert-deftest test-shipit-pr-state-actions-marks-draft-ready ()
+  "GIVEN an open draft PR authored by the current user
+WHEN running the state dwim action and choosing 'Mark ready for review'
+THEN backend :set-pr-draft is called with draft-p nil."
+  (let ((captured nil))
+    (test-pr-actions--with-mock-backend
+        (:set-pr-draft
+         (lambda (config number draft-p)
+           (setq captured (list :repo (plist-get config :repo)
+                                :number number :draft draft-p))
+           t))
+      (cl-letf (((symbol-function 'shipit-get-pull-request)
+                 (lambda (_num &optional _repo)
+                   '((state . "open")
+                     (draft . t)
+                     (user (login . "testuser")))))
+                ((symbol-function 'shipit--get-current-user)
+                 (lambda () "testuser"))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _args)
+                   (should (member "Mark ready for review" collection))
+                   (should-not (member "Merge" collection))
+                   "Mark ready for review"))
+                ((symbol-function 'yes-or-no-p) (lambda (_prompt) t))
+                ((symbol-function 'shipit-gh-etag-invalidate-endpoint) #'ignore)
+                ((symbol-function 'shipit-clear-etag-cache-for-repo) #'ignore)
+                ((symbol-function 'shipit-clear-stale-cache-files) #'ignore)
+                ((symbol-function 'shipit-buffer-refresh) #'ignore))
+        (with-temp-buffer
+          (shipit--pr-state-actions))
+        (should (string= "owner/repo" (plist-get captured :repo)))
+        (should (= 42 (plist-get captured :number)))
+        (should (plist-member captured :draft))
+        (should-not (plist-get captured :draft))))))
+
+(ert-deftest test-shipit-pr-state-actions-converts-open-pr-to-draft ()
+  "GIVEN an open non-draft PR authored by the current user
+WHEN running the state dwim action and choosing 'Convert to draft'
+THEN backend :set-pr-draft is called with draft-p t."
+  (let ((captured nil))
+    (test-pr-actions--with-mock-backend
+        (:set-pr-draft
+         (lambda (_config number draft-p)
+           (setq captured (list :number number :draft draft-p))
+           t))
+      (cl-letf (((symbol-function 'shipit-get-pull-request)
+                 (lambda (_num &optional _repo)
+                   '((state . "open")
+                     (user (login . "testuser")))))
+                ((symbol-function 'shipit--get-current-user)
+                 (lambda () "testuser"))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _args)
+                   (should (member "Convert to draft" collection))
+                   (should (member "Merge" collection))
+                   "Convert to draft"))
+                ((symbol-function 'yes-or-no-p) (lambda (_prompt) t))
+                ((symbol-function 'shipit-gh-etag-invalidate-endpoint) #'ignore)
+                ((symbol-function 'shipit-clear-etag-cache-for-repo) #'ignore)
+                ((symbol-function 'shipit-clear-stale-cache-files) #'ignore)
+                ((symbol-function 'shipit-buffer-refresh) #'ignore))
+        (with-temp-buffer
+          (shipit--pr-state-actions))
+        (should (= 42 (plist-get captured :number)))
+        (should (eq t (plist-get captured :draft)))))))
+
+(ert-deftest test-shipit-pr-state-actions-errors-when-backend-lacks-draft-support ()
+  "GIVEN an open draft PR on a backend without :set-pr-draft
+WHEN running the state dwim action and choosing 'Mark ready for review'
+THEN a clear user-error is signaled instead of failing silently."
+  (test-pr-actions--with-mock-backend ()
+    (cl-letf (((symbol-function 'shipit-get-pull-request)
+               (lambda (_num &optional _repo)
+                 '((state . "open")
+                   (draft . t)
+                   (user (login . "testuser")))))
+              ((symbol-function 'shipit--get-current-user)
+               (lambda () "testuser"))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt _collection &rest _args)
+                 "Mark ready for review"))
+              ((symbol-function 'yes-or-no-p) (lambda (_prompt) t)))
+      (with-temp-buffer
+        (should-error (shipit--pr-state-actions) :type 'user-error)))))
+
+(ert-deftest test-shipit-pr-header-actions-includes-mark-ready-for-draft ()
+  "GIVEN an open draft PR authored by the current user
+WHEN building the PR header action menu
+THEN 'Mark ready for review' is offered while 'Merge' and
+     'Convert to draft' are not."
+  (let ((captured-actions nil))
+    (cl-letf (((symbol-function 'get-text-property)
+               (lambda (_pos prop)
+                 (pcase prop
+                   ('shipit-pr-number 42)
+                   ('shipit-repo "owner/repo")
+                   (_ nil))))
+              ((symbol-function 'shipit-get-pull-request)
+               (lambda (_num _repo)
+                 '((state . "open")
+                   (draft . t)
+                   (user (login . "testuser"))
+                   (html_url . "https://github.com/owner/repo/pull/42")
+                   (title . "My draft"))))
+              ((symbol-function 'shipit--get-current-user)
+               (lambda () "testuser"))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _args)
+                 (setq captured-actions collection)
+                 "Open on GitHub"))
+              ((symbol-function 'browse-url) #'ignore))
+      (shipit--pr-header-actions)
+      (should (member "Mark ready for review" captured-actions))
+      (should-not (member "Merge" captured-actions))
+      (should-not (member "Convert to draft" captured-actions)))))
 
 ;;; Tests — generic URL overlays
 

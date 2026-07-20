@@ -108,6 +108,28 @@ Results are cached per-repo for the session."
     (shipit--debug-log "GitHub PR backend: updating PR #%s in %s" number repo)
     (shipit--api-request-post endpoint data "PATCH")))
 
+(defun shipit-pr-github--set-pr-draft (config number draft-p)
+  "Set the draft state of PR NUMBER to DRAFT-P using CONFIG.
+Draft state cannot be changed through the REST update endpoint;
+GitHub only exposes it via the GraphQL mutations
+convertPullRequestToDraft / markPullRequestReadyForReview, keyed
+on the PR's node id.  Returns non-nil on success."
+  (let* ((repo (plist-get config :repo))
+         (node-id (shipit--get-pr-id repo number)))
+    (shipit--debug-log "GitHub PR backend: set draft=%s for PR #%s in %s (node %s)"
+                       draft-p number repo node-id)
+    (when node-id
+      (let* ((mutation
+              (if draft-p
+                  "mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { pullRequest { isDraft } } }"
+                "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }"))
+             (response (shipit--graphql-request mutation `((id . ,node-id))))
+             (errors (cdr (assq 'errors response))))
+        (when errors
+          (message "GitHub draft toggle failed: %s"
+                   (or (cdr (assq 'message (car errors))) "GraphQL error")))
+        (and (null errors) (cdr (assq 'data response)))))))
+
 (defun shipit-pr-github--fetch-reviews (config number)
   "Fetch reviews for PR NUMBER using CONFIG."
   (let ((repo (plist-get config :repo)))
@@ -1503,6 +1525,7 @@ PAGE defaults to 1.  Returns the parsed JSON list."
        :create-pr #'shipit-pr-github--create-pr
        :merge-pr #'shipit-pr-github--merge-pr
        :update-pr #'shipit-pr-github--update-pr
+       :set-pr-draft #'shipit-pr-github--set-pr-draft
        :fetch-reviews #'shipit-pr-github--fetch-reviews
        :submit-review #'shipit-pr-github--submit-review
        :fetch-review-decision #'shipit-pr-github--fetch-review-decision

@@ -2449,5 +2449,65 @@ THEN the Authorization header is NOT included."
       (let ((auth (cdr (assoc "Authorization" captured-headers))))
         (should-not auth)))))
 
+;;; Draft state toggling (title-prefix based on GitLab)
+
+(ert-deftest test-shipit-pr-gitlab-set-pr-draft-ready-strips-title-prefix ()
+  "GIVEN a draft MR titled \"Draft: My feature\"
+WHEN marking it ready for review through the backend op
+THEN the MR title is PUT back without the draft prefix."
+  (require 'shipit-pr-gitlab)
+  (let (captured-path captured-data captured-method)
+    (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+               (lambda (_config _path)
+                 '((iid . 42) (title . "Draft: My feature") (state . "opened"))))
+              ((symbol-function 'shipit-gitlab--api-request-method)
+               (lambda (_config path data method)
+                 (setq captured-path path
+                       captured-data data
+                       captured-method method)
+                 '((iid . 42) (title . "My feature") (state . "opened")))))
+      (should (shipit-pr-gitlab--set-pr-draft '(:project-id 7) 42 nil))
+      (should (equal "PUT" captured-method))
+      (should (equal '((title . "My feature")) captured-data))
+      (should (string-match-p "merge_requests/42" captured-path)))))
+
+(ert-deftest test-shipit-pr-gitlab-set-pr-draft-convert-adds-title-prefix ()
+  "GIVEN an open non-draft MR titled \"My feature\"
+WHEN converting it to draft through the backend op
+THEN the MR title is PUT back with a \"Draft: \" prefix."
+  (require 'shipit-pr-gitlab)
+  (let (captured-data)
+    (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+               (lambda (_config _path)
+                 '((iid . 42) (title . "My feature") (state . "opened"))))
+              ((symbol-function 'shipit-gitlab--api-request-method)
+               (lambda (_config _path data _method)
+                 (setq captured-data data)
+                 '((iid . 42) (title . "Draft: My feature") (state . "opened")))))
+      (should (shipit-pr-gitlab--set-pr-draft '(:project-id 7) 42 t))
+      (should (equal '((title . "Draft: My feature")) captured-data)))))
+
+(ert-deftest test-shipit-pr-gitlab-set-pr-draft-noop-when-already-in-state ()
+  "GIVEN an MR already in the requested draft state
+WHEN toggling draft state through the backend op
+THEN no update is sent and the op still reports success."
+  (require 'shipit-pr-gitlab)
+  (let (update-called)
+    (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+               (lambda (_config _path)
+                 '((iid . 42) (title . "Draft: My feature") (state . "opened"))))
+              ((symbol-function 'shipit-gitlab--api-request-method)
+               (lambda (&rest _) (setq update-called t) nil)))
+      (should (shipit-pr-gitlab--set-pr-draft '(:project-id 7) 42 t))
+      (should-not update-called))))
+
+(ert-deftest test-shipit-pr-gitlab-registers-set-pr-draft ()
+  "GIVEN the GitLab backend is loaded
+WHEN inspecting its registration
+THEN the :set-pr-draft operation is present."
+  (require 'shipit-pr-gitlab)
+  (should (functionp (plist-get (cdr (assq 'gitlab shipit-pr-backends))
+                                :set-pr-draft))))
+
 (provide 'test-shipit-pr-gitlab)
 ;;; test-shipit-pr-gitlab.el ends here

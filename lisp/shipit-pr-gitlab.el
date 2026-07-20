@@ -422,6 +422,28 @@ Translates common shipit field names to GitLab equivalents."
           (_ (push pair result)))))
     (nreverse result)))
 
+(defun shipit-pr-gitlab--strip-draft-prefix (title)
+  "Return TITLE without a leading GitLab draft marker."
+  (let ((case-fold-search t))
+    (replace-regexp-in-string
+     "\\`\\(?:draft:\\|\\[draft\\]\\|(draft)\\)[ \t]*" "" title)))
+
+(defun shipit-pr-gitlab--set-pr-draft (config number draft-p)
+  "Set the draft state of MR NUMBER to DRAFT-P using CONFIG.
+GitLab tracks draft state via a \"Draft: \" title prefix, so this
+rewrites the title through the update endpoint.  Returns non-nil
+on success; when the MR is already in the requested state the
+fetched MR is returned without an update."
+  (let* ((mr (shipit-pr-gitlab--fetch-pr config number))
+         (title (cdr (assq 'title mr))))
+    (when title
+      (let* ((bare (shipit-pr-gitlab--strip-draft-prefix title))
+             (new-title (if draft-p (concat "Draft: " bare) bare)))
+        (if (string= new-title title)
+            mr
+          (shipit-pr-gitlab--update-pr config number
+                                       `((title . ,new-title))))))))
+
 (defun shipit-pr-gitlab--submit-review (config number event body _comments)
   "Submit a review for MR NUMBER using CONFIG.
 EVENT: \"APPROVE\" posts approval, others post a note with BODY."
@@ -1808,6 +1830,7 @@ deduplicating by path. Returns normalized repo alists."
        :create-pr #'shipit-pr-gitlab--create-pr
        :merge-pr #'shipit-pr-gitlab--merge-pr
        :update-pr #'shipit-pr-gitlab--update-pr
+       :set-pr-draft #'shipit-pr-gitlab--set-pr-draft
        :fetch-reviews #'shipit-pr-gitlab--fetch-reviews
        :submit-review #'shipit-pr-gitlab--submit-review
        :fetch-review-decision #'shipit-pr-gitlab--fetch-review-decision

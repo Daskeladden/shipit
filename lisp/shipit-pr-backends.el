@@ -104,6 +104,7 @@
 ;;   :fetch-watched-repos     — (config) → list of repo alists
 ;;   :get-thread-subscription — (config repo type number) → state string or nil
 ;;   :set-thread-subscription — (config repo type number subscribed) → t on success
+;;   :set-pr-draft            — (config number draft-p) → non-nil on success
 
 ;;; Code:
 

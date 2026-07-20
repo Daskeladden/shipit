@@ -506,6 +506,44 @@ If point is on a URL, includes Open URL option in the action menu."
                             (error-message-string err))
          nil))))
 
+(defun shipit--invalidate-pr-caches-and-refresh (pr-number repo)
+  "Invalidate cached data for PR-NUMBER in REPO and refresh the buffer.
+The refresh only happens inside a shipit buffer -- callers may run
+from the editor."
+  ;; Invalidate all caches for this PR endpoint (persistent + refresh)
+  (let ((endpoint (format "/repos/%s/pulls/%d" repo pr-number)))
+    (when (fboundp 'shipit-gh-etag-invalidate-endpoint)
+      (shipit-gh-etag-invalidate-endpoint endpoint)))
+  ;; Also clear repo-level ETag cache to be thorough
+  (when (fboundp 'shipit-clear-etag-cache-for-repo)
+    (shipit-clear-etag-cache-for-repo repo))
+  ;; Clear url.el disk cache files for GitHub API
+  (when (fboundp 'shipit-clear-stale-cache-files)
+    (shipit-clear-stale-cache-files))
+  ;; Refresh the display
+  (when (and (fboundp 'shipit-buffer-refresh)
+             (derived-mode-p 'shipit-mode))
+    (shipit-buffer-refresh)))
+
+(defun shipit--set-pr-draft (pr-number repo draft-p)
+  "Set the draft state of PR-NUMBER in REPO to DRAFT-P.
+Dispatches to the active PR backend's :set-pr-draft, invalidates
+caches and refreshes the buffer on success."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :set-pr-draft))
+         (verb (if draft-p "convert to draft" "mark ready for review")))
+    (unless fn
+      (user-error "The %s backend does not support changing draft state"
+                  (plist-get backend :name)))
+    (if (funcall fn config pr-number draft-p)
+        (progn
+          (message "PR #%d %s" pr-number
+                   (if draft-p "converted to draft" "marked ready for review"))
+          (shipit--invalidate-pr-caches-and-refresh pr-number repo))
+      (user-error "Failed to %s PR #%d" verb pr-number))))
+
 (defun shipit--update-pr-state (pr-number repo state)
   "Set PR-NUMBER in REPO to STATE, either \"open\" or \"closed\".
 Dispatches to the active PR backend's :update-pr, invalidates
@@ -520,20 +558,7 @@ caches and refreshes the buffer on success."
     (if result
         (progn
           (message "PR #%d %s" pr-number done)
-          ;; Invalidate all caches for this PR endpoint (persistent + refresh)
-          (let ((endpoint (format "/repos/%s/pulls/%d" repo pr-number)))
-            (when (fboundp 'shipit-gh-etag-invalidate-endpoint)
-              (shipit-gh-etag-invalidate-endpoint endpoint)))
-          ;; Also clear repo-level ETag cache to be thorough
-          (when (fboundp 'shipit-clear-etag-cache-for-repo)
-            (shipit-clear-etag-cache-for-repo repo))
-          ;; Clear url.el disk cache files for GitHub API
-          (when (fboundp 'shipit-clear-stale-cache-files)
-            (shipit-clear-stale-cache-files))
-          ;; Refresh the display (only if in shipit buffer - may be called from editor)
-          (when (and (fboundp 'shipit-buffer-refresh)
-                     (derived-mode-p 'shipit-mode))
-            (shipit-buffer-refresh)))
+          (shipit--invalidate-pr-caches-and-refresh pr-number repo))
       (user-error "Failed to %s PR #%d" verb pr-number))))
 
 (defun shipit--close-pr (pr-number repo &optional comment)
@@ -552,16 +577,26 @@ Dispatches to the active PR backend's :update-pr and comment backend."
 Dispatches to the active PR backend's :update-pr with state=open."
   (shipit--update-pr-state pr-number repo "open"))
 
-(defun shipit--pr-state-action-labels (pr-state is-author)
+(defun shipit--pr-state-action-labels (pr-state is-author &optional is-draft)
   "Return state-changing action labels for PR-STATE and IS-AUTHOR.
-Open PRs offer close (author only) and merge; closed PRs offer
-reopen (author only); merged PRs offer nothing."
+Open PRs offer close (author only) and merge; open drafts swap
+merge for mark-ready-for-review (author only -- GitHub refuses to
+merge drafts); open non-drafts offer convert-to-draft (author
+only); closed PRs offer reopen (author only); merged PRs offer
+nothing.  IS-DRAFT distinguishes draft PRs, whose PR-STATE is
+still \"open\"."
   (append
+   ;; Ready-for-review leads for drafts -- the overwhelmingly likely intent
+   (when (and is-author (string= pr-state "open") is-draft)
+     '("Mark ready for review"))
    ;; Close option only for author and open PRs
    (when (and is-author (string= pr-state "open"))
      '("Close PR" "Close PR with comment"))
-   ;; Merge option for open PRs (available to all users, not just author)
-   (when (string= pr-state "open")
+   ;; Convert option only for author and open non-draft PRs
+   (when (and is-author (string= pr-state "open") (not is-draft))
+     '("Convert to draft"))
+   ;; Merge option for open non-draft PRs (all users, not just author)
+   (when (and (string= pr-state "open") (not is-draft))
      '("Merge"))
    ;; Reopen option only for author and closed (not merged) PRs
    (when (and is-author (string= pr-state "closed"))
@@ -586,6 +621,14 @@ Return non-nil when CHOICE was one of the state actions."
     (when (yes-or-no-p (format "Reopen PR #%d? " pr-number))
       (shipit--reopen-pr pr-number repo))
     t)
+   ((string= choice "Mark ready for review")
+    (when (yes-or-no-p (format "Mark PR #%d as ready for review? " pr-number))
+      (shipit--set-pr-draft pr-number repo nil))
+    t)
+   ((string= choice "Convert to draft")
+    (when (yes-or-no-p (format "Convert PR #%d to draft? " pr-number))
+      (shipit--set-pr-draft pr-number repo t))
+    t)
    ((string= choice "Merge")
     (shipit-merge)
     t)))
@@ -603,7 +646,8 @@ Return non-nil when CHOICE was one of the state actions."
          (actions (append '("Open on GitHub" "Copy PR URL")
                           ;; Author-only options
                           (when is-author '("Edit title"))
-                          (shipit--pr-state-action-labels pr-state is-author))))
+                          (shipit--pr-state-action-labels
+                           pr-state is-author (shipit--pr-draft-p pr-data)))))
     (let ((choice (completing-read "PR action: " actions nil t)))
       (cond
        ((string= choice "Open on GitHub")
@@ -638,19 +682,24 @@ Return non-nil when CHOICE was one of the state actions."
       (user-error "No PR context found at point"))
     (let* ((pr-data (shipit-get-pull-request pr-number repo))
            (pr-state (shipit--get-pr-actual-state pr-data))
+           (is-draft (shipit--pr-draft-p pr-data))
            (pr-author (cdr (assq 'login (cdr (assq 'user pr-data)))))
            (current-user (shipit--get-current-user))
            (is-author (and pr-author current-user (string= pr-author current-user)))
-           (labels (shipit--pr-state-action-labels pr-state is-author)))
+           (labels (shipit--pr-state-action-labels pr-state is-author is-draft)))
       (cond
        ((string= pr-state "merged")
         (user-error "PR #%s is merged — state cannot be changed" pr-number))
        ((null labels)
         (user-error "Only the PR author can %s this PR"
-                    (if (string= pr-state "closed") "reopen" "close")))
+                    (cond ((string= pr-state "closed") "reopen")
+                          (is-draft "modify")
+                          (t "close"))))
        (t
         (shipit--pr-dispatch-state-action
-         (completing-read (format "PR is %s — action: " pr-state) labels nil t)
+         (completing-read (format "PR is %s — action: "
+                                  (if is-draft "a draft" pr-state))
+                          labels nil t)
          pr-number repo))))))
 
 (defun shipit--edit-description ()

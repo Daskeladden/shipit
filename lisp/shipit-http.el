@@ -4580,6 +4580,11 @@ REPO should be like \"owner/name\"."
         "merged"
       raw-state)))
 
+(defun shipit--pr-draft-p (pr-data)
+  "Return non-nil when PR-DATA describes a draft PR."
+  (let ((draft (cdr (assq 'draft pr-data))))
+    (and draft (not (eq draft :json-false)))))
+
 (defun shipit--get-comprehensive-pr-status (repo pr-number draft state)
   "Get comprehensive PR status combining state, draft, and merge readiness."
   (let* ((pr-data (shipit-get-pull-request pr-number repo))

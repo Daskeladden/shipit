@@ -1870,7 +1870,7 @@ Dispatches to the active PR backend's :remove-assignee."
                                                                   all-assignees))
                                             (name (when user-obj (cdr (assq 'name user-obj))))
                                             (display (if name
-                                                         (format "✓ %s (%s)%s" username name)
+                                                         (format "✓ %s (%s)" username name)
                                                        (format "✓ %s" username))))
                                        (cons display username)))
                                    current-usernames))
@@ -1879,7 +1879,7 @@ Dispatches to the active PR backend's :remove-assignee."
                                    (let* ((username (cdr (assq 'login user)))
                                           (name (cdr (assq 'name user)))
                                           (display (if name
-                                                       (format "  %s (%s)%s" username name)
+                                                       (format "  %s (%s)" username name)
                                                      (format "  %s" username))))
                                      (cons display username)))
                                  (cl-remove-if (lambda (user)

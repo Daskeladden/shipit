@@ -354,6 +354,17 @@ Returns the API result, or nil if no dismissable review found."
     (shipit--debug-log "GitHub PR backend: removing reviewer %s from PR #%s in %s" username number repo)
     (shipit--api-request-post endpoint data "DELETE")))
 
+(defconst shipit-pr-github--bot-reviewers
+  '(("Copilot" . "copilot-pull-request-reviewer[bot]"))
+  "Requestable bot reviewers as (DISPLAY . LOGIN) pairs.
+Requesting the copilot-pull-request-reviewer bot asks Copilot code
+review for the PR, same as picking \"Copilot\" in the reviewers
+menu on github.com.")
+
+(defun shipit-pr-github--reviewer-bot-candidates (_config)
+  "Return requestable bot reviewers as (DISPLAY . LOGIN) pairs."
+  shipit-pr-github--bot-reviewers)
+
 (defun shipit-pr-github--fetch-requested-reviewers (config number)
   "Fetch requested reviewers for PR NUMBER using CONFIG."
   (let* ((repo (plist-get config :repo))
@@ -1562,6 +1573,7 @@ PAGE defaults to 1.  Returns the parsed JSON list."
        :fetch-commit #'shipit-pr-github--fetch-commit
        :fetch-commit-comments #'shipit-pr-github--fetch-commit-comments
        :add-reviewers-batch #'shipit-pr-github--add-reviewers-batch
+       :reviewer-bot-candidates #'shipit-pr-github--reviewer-bot-candidates
        :add-assignees-batch #'shipit-pr-github--add-assignees-batch
        :set-labels #'shipit-pr-github--set-labels
        :fetch-check-suites #'shipit-pr-github--fetch-check-suites

@@ -119,5 +119,14 @@ THEN the :set-pr-draft operation is present."
   (should (functionp (plist-get (cdr (assq 'github shipit-pr-backends))
                                 :set-pr-draft))))
 
+(ert-deftest test-shipit-pr-github-registers-copilot-reviewer-candidate ()
+  "GIVEN the GitHub backend
+WHEN asking for bot reviewer candidates
+THEN Copilot maps to the copilot-pull-request-reviewer bot login."
+  (should (equal '(("Copilot" . "copilot-pull-request-reviewer[bot]"))
+                 (funcall (plist-get (cdr (assq 'github shipit-pr-backends))
+                                     :reviewer-bot-candidates)
+                          '(:repo "owner/repo")))))
+
 (provide 'test-shipit-pr-github)
 ;;; test-shipit-pr-github.el ends here

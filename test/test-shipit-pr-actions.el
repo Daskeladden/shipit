@@ -11,6 +11,7 @@
 (require 'shipit-pr-backends)
 (require 'shipit-pr-actions)
 (require 'shipit-render)
+(require 'shipit-pr-sections)  ; shipit--get-requested-reviewers
 
 ;;; Test helpers
 
@@ -450,6 +451,120 @@ THEN 'Mark ready for review' is offered while 'Merge' and
       (should (member "Mark ready for review" captured-actions))
       (should-not (member "Merge" captured-actions))
       (should-not (member "Convert to draft" captured-actions)))))
+
+;;; Tests — bot reviewers (Copilot code review)
+
+(ert-deftest test-shipit-reviewer-add-choices-and-mapping ()
+  "GIVEN a backend exposing Copilot as a requestable bot reviewer
+WHEN assembling reviewer choices and mapping picker choices
+THEN bots lead the list, requested logins are filtered on both kinds,
+     and display names translate to logins and back."
+  (test-pr-actions--with-mock-backend
+      (:reviewer-bot-candidates
+       (lambda (_config)
+         '(("Copilot" . "copilot-pull-request-reviewer[bot]"))))
+    (should (equal '("Copilot" "alice")
+                   (shipit-pr--reviewer-add-choices
+                    "owner/repo" '("bob") '("alice" "bob"))))
+    (should (equal '("alice")
+                   (shipit-pr--reviewer-add-choices
+                    "owner/repo"
+                    '("copilot-pull-request-reviewer[bot]")
+                    '("alice"))))
+    (should (equal "copilot-pull-request-reviewer[bot]"
+                   (shipit-pr--reviewer-choice-to-login "owner/repo" "Copilot")))
+    (should (equal "alice"
+                   (shipit-pr--reviewer-choice-to-login "owner/repo" "alice")))
+    (should (equal "Copilot"
+                   (shipit-pr--reviewer-login-to-display
+                    "owner/repo" "copilot-pull-request-reviewer[bot]")))
+    (should (equal "alice"
+                   (shipit-pr--reviewer-login-to-display "owner/repo" "alice")))))
+
+(ert-deftest test-shipit-manage-reviewers-offers-and-requests-copilot ()
+  "GIVEN a backend exposing Copilot as a requestable bot reviewer
+WHEN adding a reviewer via manage-reviewers and choosing Copilot
+THEN the backend :add-reviewer receives the bot login, not the label."
+  (let ((captured nil))
+    (test-pr-actions--with-mock-backend
+        (:reviewer-bot-candidates
+         (lambda (_config)
+           '(("Copilot" . "copilot-pull-request-reviewer[bot]")))
+         :fetch-requested-reviewers
+         (lambda (_config _number) '((users . ()) (teams . ())))
+         :fetch-available-assignees
+         (lambda (_config) '(((login . "alice"))))
+         :add-reviewer
+         (lambda (_config number username)
+           (setq captured (list number username))
+           '((ok . t))))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest _args)
+                   (if (string-match-p "action" prompt)
+                       "Add reviewer"
+                     (progn
+                       (should (member "Copilot" collection))
+                       (should (member "alice" collection))
+                       "Copilot"))))
+                ((symbol-function 'shipit-gh-etag-invalidate-endpoint) #'ignore)
+                ((symbol-function 'shipit-buffer-refresh) #'ignore))
+        (with-temp-buffer
+          (shipit--manage-reviewers 42 "owner/repo"))
+        (should (equal '(42 "copilot-pull-request-reviewer[bot]") captured))))))
+
+(ert-deftest test-shipit-manage-reviewers-removes-copilot-by-login ()
+  "GIVEN Copilot is already a requested reviewer
+WHEN removing a reviewer via manage-reviewers
+THEN it is offered under its display name and removed by bot login."
+  (let ((captured nil))
+    (test-pr-actions--with-mock-backend
+        (:reviewer-bot-candidates
+         (lambda (_config)
+           '(("Copilot" . "copilot-pull-request-reviewer[bot]")))
+         :fetch-requested-reviewers
+         (lambda (_config _number)
+           '((users . (((login . "copilot-pull-request-reviewer[bot]"))
+                       ((login . "alice"))))))
+         :remove-reviewer
+         (lambda (_config number username)
+           (setq captured (list number username))
+           '((ok . t))))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest _args)
+                   (if (string-match-p "action" prompt)
+                       "Remove reviewer"
+                     (progn
+                       (should (member "Copilot" collection))
+                       (should (member "alice" collection))
+                       "Copilot"))))
+                ((symbol-function 'shipit-gh-etag-invalidate-endpoint) #'ignore)
+                ((symbol-function 'shipit-buffer-refresh) #'ignore))
+        (with-temp-buffer
+          (shipit--manage-reviewers 42 "owner/repo"))
+        (should (equal '(42 "copilot-pull-request-reviewer[bot]") captured))))))
+
+(ert-deftest test-shipit-manage-reviewers-without-bot-op ()
+  "GIVEN a backend without :reviewer-bot-candidates
+WHEN adding a reviewer
+THEN only collaborators are offered and the flow is unchanged."
+  (let (offered)
+    (test-pr-actions--with-mock-backend
+        (:fetch-requested-reviewers
+         (lambda (_config _number) '((users . ())))
+         :fetch-available-assignees
+         (lambda (_config) '(((login . "alice"))))
+         :add-reviewer
+         (lambda (&rest _) '((ok . t))))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest _args)
+                   (if (string-match-p "action" prompt)
+                       "Add reviewer"
+                     (progn (setq offered collection) "alice"))))
+                ((symbol-function 'shipit-gh-etag-invalidate-endpoint) #'ignore)
+                ((symbol-function 'shipit-buffer-refresh) #'ignore))
+        (with-temp-buffer
+          (shipit--manage-reviewers 42 "owner/repo"))
+        (should (equal '("alice") offered))))))
 
 ;;; Tests — generic URL overlays
 

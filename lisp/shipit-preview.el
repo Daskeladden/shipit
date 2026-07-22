@@ -329,23 +329,31 @@ CURRENT-DESC is the current description text."
                                   nil t)))
     (cond
      ((string= action "Add reviewer")
-      ;; Use same endpoint as assignees - collaborators can be reviewers
-      (let* ((available-users (shipit--get-available-assignees shipit-preview--repo))
-             (unrequested-users (seq-filter (lambda (user)
-                                              (not (member user current-usernames)))
-                                            available-users)))
-        (if unrequested-users
-            (let ((username (completing-read "Request review from: " unrequested-users nil t)))
-              (push username shipit-preview--reviewers)
+      ;; Collaborators plus requestable bot reviewers (e.g. Copilot)
+      (let ((choices (shipit-pr--reviewer-add-choices
+                      shipit-preview--repo current-usernames
+                      (shipit--get-available-assignees shipit-preview--repo))))
+        (if choices
+            (let ((choice (completing-read "Request review from: " choices nil t)))
+              (push (shipit-pr--reviewer-choice-to-login
+                     shipit-preview--repo choice)
+                    shipit-preview--reviewers)
               (shipit-preview--refresh)
-              (message "Added %s to reviewers" username))
+              (message "Added %s to reviewers" choice))
           (message "All available users are already requested"))))
      ((string= action "Remove reviewer")
       (if current-usernames
-          (let ((username (completing-read "Remove reviewer: " current-usernames nil t)))
-            (setq shipit-preview--reviewers (delete username shipit-preview--reviewers))
+          (let* ((displays (mapcar (lambda (login)
+                                     (shipit-pr--reviewer-login-to-display
+                                      shipit-preview--repo login))
+                                   current-usernames))
+                 (choice (completing-read "Remove reviewer: " displays nil t)))
+            (setq shipit-preview--reviewers
+                  (delete (shipit-pr--reviewer-choice-to-login
+                           shipit-preview--repo choice)
+                          shipit-preview--reviewers))
             (shipit-preview--refresh)
-            (message "Removed %s from reviewers" username))
+            (message "Removed %s from reviewers" choice))
         (message "No reviewers to remove")))
      (t (message "No action selected")))))
 

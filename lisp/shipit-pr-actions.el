@@ -1126,19 +1126,24 @@ Dispatches to the active PR backend's :remove-reviewer."
                                   nil t)))
     (cond
      ((string= action "Add reviewer")
-      ;; Use same list as assignees - collaborators can be reviewers
-      (let* ((available-users (shipit--get-available-assignees repo))
-             (unrequested-users (seq-filter (lambda (user)
-                                              (not (member user current-reviewers)))
-                                            available-users)))
-        (if unrequested-users
-            (let ((username (completing-read "Request review from: " unrequested-users nil t)))
-              (shipit--add-reviewer-to-pr pr-number repo username))
+      ;; Collaborators plus requestable bot reviewers (e.g. Copilot)
+      (let ((choices (shipit-pr--reviewer-add-choices
+                      repo current-reviewers
+                      (shipit--get-available-assignees repo))))
+        (if choices
+            (let ((choice (completing-read "Request review from: " choices nil t)))
+              (shipit--add-reviewer-to-pr
+               pr-number repo (shipit-pr--reviewer-choice-to-login repo choice)))
           (message "All available users are already requested"))))
      ((string= action "Remove reviewer")
       (if current-reviewers
-          (let ((username (completing-read "Remove reviewer: " current-reviewers nil t)))
-            (shipit--remove-reviewer-from-pr pr-number repo username))
+          (let* ((displays (mapcar (lambda (login)
+                                     (shipit-pr--reviewer-login-to-display
+                                      repo login))
+                                   current-reviewers))
+                 (choice (completing-read "Remove reviewer: " displays nil t)))
+            (shipit--remove-reviewer-from-pr
+             pr-number repo (shipit-pr--reviewer-choice-to-login repo choice)))
         (message "No pending reviewers to remove")))
      (t (message "No action selected")))))
 

@@ -58,6 +58,7 @@
 ;;   :fetch-commit            — (config sha) → commit data with files
 ;;   :fetch-commit-comments   — (config sha) → list of commit-comment alists [GitHub-only]
 ;;   :add-reviewers-batch     — (config number usernames) → result
+;;   :reviewer-bot-candidates — (config) → alist of (display . login) requestable bot reviewers
 ;;   :add-assignees-batch     — (config number usernames) → result
 ;;   :set-labels              — (config number label-names) → result
 ;;   :fetch-check-suites      — (config ref page per-page) → check suites response
@@ -280,6 +281,41 @@ Returns t on success, nil if unsupported."
          (config (cdr resolved))
          (fn (plist-get backend :set-thread-subscription)))
     (when fn (funcall fn config repo type number subscribed))))
+
+;;; Bot reviewers
+
+(defun shipit-pr--reviewer-bot-candidates (repo)
+  "Return requestable bot reviewers for REPO as (DISPLAY . LOGIN) pairs.
+Resolved through the active backend's optional
+:reviewer-bot-candidates operation; nil when unsupported."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :reviewer-bot-candidates)))
+    (when fn (funcall fn config))))
+
+(defun shipit-pr--reviewer-add-choices (repo current-logins available-users)
+  "Reviewer picker choices for REPO: bot display names, then AVAILABLE-USERS.
+Entries whose login is already in CURRENT-LOGINS are dropped."
+  (append
+   (mapcar #'car
+           (seq-filter (lambda (pair)
+                         (not (member (cdr pair) current-logins)))
+                       (shipit-pr--reviewer-bot-candidates repo)))
+   (seq-filter (lambda (user) (not (member user current-logins)))
+               available-users)))
+
+(defun shipit-pr--reviewer-choice-to-login (repo choice)
+  "Map picker CHOICE to an API login for REPO.
+Bot display names translate to their bot login; anything else is
+already a login."
+  (or (cdr (assoc choice (shipit-pr--reviewer-bot-candidates repo)))
+      choice))
+
+(defun shipit-pr--reviewer-login-to-display (repo login)
+  "Map LOGIN to its display name when it is a known bot reviewer in REPO."
+  (or (car (rassoc login (shipit-pr--reviewer-bot-candidates repo)))
+      login))
 
 (provide 'shipit-pr-backends)
 ;;; shipit-pr-backends.el ends here

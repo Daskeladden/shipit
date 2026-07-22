@@ -195,11 +195,54 @@ when all pages are fetched."
        (puthash cache-key '() shipit--reaction-cache))
      (puthash comment-id t results))))
 
+(defun shipit-comment-github--store-review-reactions (repo review-pairs is-inline by-node)
+  "Store BY-NODE reactions for REVIEW-PAIRS under REPO cache keys.
+REVIEW-PAIRS holds (comment-id . node-id); IS-INLINE carries the
+caller's endpoint type so the keys match the display lookups."
+  (dolist (pair review-pairs)
+    (puthash (shipit--reaction-cache-key repo (car pair) is-inline)
+             (or (cdr (assoc (cdr pair) by-node)) '())
+             shipit--reaction-cache)))
+
+(defun shipit-comment-github--cache-review-reactions (repo review-pairs is-inline)
+  "Cache reactions for REVIEW-PAIRS of (comment-id . node-id) in REPO.
+Review-body reactions only exist in GraphQL, so they are fetched in
+one batched query and stored under the same cache keys the REST
+batch uses.  Synchronous -- only for the blocking batch path."
+  (condition-case err
+      (shipit-comment-github--store-review-reactions
+       repo review-pairs is-inline
+       (shipit--fetch-review-reactions-batch-graphql
+        (mapcar #'cdr review-pairs)))
+    (error
+     (shipit--debug-log "[reactions-batch] review reactions GraphQL failed: %s"
+                        (error-message-string err)))))
+
+(defun shipit-comment-github--cache-review-reactions-async (repo review-pairs is-inline results)
+  "Asynchronously cache reactions for REVIEW-PAIRS of (comment-id . node-id).
+Uses the async GraphQL entry point -- synchronous HTTP inside async
+render callbacks can re-enter pending handlers mid-render.  Marks
+RESULTS under `review-reactions' once stored so the batch completion
+poll accounts for this request."
+  (shipit--graphql-request
+   shipit--review-reactions-nodes-query
+   `((nodeIds . ,(mapcar #'cdr review-pairs)))
+   (lambda (response)
+     (condition-case err
+         (shipit-comment-github--store-review-reactions
+          repo review-pairs is-inline
+          (shipit--parse-review-reactions-nodes (cdr (assq 'data response))))
+       (error
+        (shipit--debug-log "[reactions-batch] async review reactions failed: %s"
+                           (error-message-string err))))
+     (puthash 'review-reactions t results))))
+
 (defun shipit-comment-github--fetch-reactions-batch (config comments is-inline &optional done-callback)
   "Fetch reactions for COMMENTS in parallel and cache them.
 CONFIG provides :repo.  IS-INLINE selects the reaction endpoint type.
 Uses `url-retrieve' with ETag caching for fast parallel fetching.
-Skips review comments (they use GraphQL).
+Review-body reactions are invisible to the REST reaction endpoints,
+so reviews are resolved separately in one batched GraphQL query.
 
 When DONE-CALLBACK is nil, blocks until all responses arrive (10s
 timeout), preserving existing behavior for callers that render
@@ -209,6 +252,7 @@ all responses have arrived (no UI thread blocking)."
   (let* ((repo (plist-get config :repo))
          (start-time (float-time))
          (pending-requests nil)
+         (review-pairs nil)
          (results (make-hash-table :test 'equal))
          (system-time-locale "C")
          (url-request-method "GET")
@@ -240,14 +284,29 @@ all responses have arrived (no UI thread blocking)."
                   #'shipit-comment-github--handle-reaction-page
                   (list comment-id cache-key endpoint 1 results)
                   t t))
-           pending-requests))))
+           pending-requests))
+        (when (and comment-id is-review)
+          (let ((node-id (cdr (assq 'node_id comment))))
+            (when node-id
+              (push (cons comment-id node-id) review-pairs))))))
+
+    ;; Review bodies carry reactions only in GraphQL -- fetch them all
+    ;; in one round trip into the same cache the REST batch fills.
+    ;; Async when a done-callback is given: no sync HTTP in callbacks.
+    (when review-pairs
+      (if done-callback
+          (shipit-comment-github--cache-review-reactions-async
+           repo review-pairs is-inline results)
+        (shipit-comment-github--cache-review-reactions
+         repo review-pairs is-inline)))
 
     (cond
      (done-callback
       ;; Async path: schedule a poll-timer that fires DONE-CALLBACK once
       ;; results matches dispatched count (or after 10s safety timeout).
       ;; Polling via run-at-time avoids blocking the UI thread.
-      (let* ((expected (length pending-requests))
+      (let* ((expected (+ (length pending-requests)
+                          (if review-pairs 1 0)))
              (deadline (+ (float-time) 10.0))
              (poll-fn (make-symbol "shipit-reactions-batch-poll")))
         (fset poll-fn

@@ -188,7 +188,8 @@ COMMENTS is a list of all comment objects to search through for parent comments.
   "Fetch reactions for COMMENTS via backend dispatch and cache them.
 REPO is the repository.  IS-INLINE selects the endpoint type.
 Uses :fetch-reactions-batch if available, otherwise loops :fetch-reactions.
-Skips review comments (they use GraphQL).
+The GitHub batch resolves review-body reactions via GraphQL; the
+generic :fetch-reactions fallback still skips review comments.
 
 When DONE-CALLBACK is non-nil, the backend's batch implementation may
 return immediately and invoke DONE-CALLBACK after all responses arrive

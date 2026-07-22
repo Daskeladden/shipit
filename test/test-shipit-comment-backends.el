@@ -527,5 +527,145 @@ THEN :fetch-reactions is called and result is cached."
         (should cached)
         (should (= 1 (length cached)))))))
 
+;;; Review-body reactions (GraphQL-only on GitHub)
+
+(defconst test-shipit-comment--graphql-reaction-node
+  '((id . "REA_1")
+    (content . "HOORAY")
+    (user . ((login . "Daskeladden")
+             (avatarUrl . "https://a/u.png")))
+    (createdAt . "2026-07-20T10:00:00Z"))
+  "A GraphQL reaction node as returned inside reactions.nodes.")
+
+(defun test-shipit-comment--graphql-nodes-response (&rest node-specs)
+  "Build a GraphQL nodes response.
+Each spec in NODE-SPECS is (NODE-ID . REACTION-NODES)."
+  (list (cons 'nodes
+              (mapcar (lambda (spec)
+                        (list (cons 'id (car spec))
+                              (cons 'reactions
+                                    (list (cons 'nodes (cdr spec))))))
+                      node-specs))))
+
+(ert-deftest test-shipit-graphql-reaction-node-to-rest-shape ()
+  "GIVEN a GraphQL reaction node
+WHEN converting to the REST shape
+THEN content, user and timestamp map to REST field names."
+  (should (equal '((id . "REA_1")
+                   (content . "hooray")
+                   (user . ((login . "Daskeladden")
+                            (avatar_url . "https://a/u.png")))
+                   (created_at . "2026-07-20T10:00:00Z"))
+                 (shipit--graphql-reaction-node-to-rest
+                  test-shipit-comment--graphql-reaction-node))))
+
+(ert-deftest test-shipit-fetch-review-reactions-batch-graphql ()
+  "GIVEN two review node ids
+WHEN fetching their reactions as a batch
+THEN one GraphQL query is made and reactions come back per node id."
+  (let (captured-query captured-vars (call-count 0))
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (query variables)
+                 (setq captured-query query
+                       captured-vars variables
+                       call-count (1+ call-count))
+                 (test-shipit-comment--graphql-nodes-response
+                  (cons "PRR_a" (list test-shipit-comment--graphql-reaction-node))
+                  (cons "PRR_b" nil)))))
+      (let ((result (shipit--fetch-review-reactions-batch-graphql
+                     '("PRR_a" "PRR_b"))))
+        (should (= 1 call-count))
+        (should (string-match-p (regexp-quote "nodes(ids: $nodeIds)")
+                                captured-query))
+        (should (equal '((nodeIds . ("PRR_a" "PRR_b"))) captured-vars))
+        (should (equal "hooray"
+                       (cdr (assq 'content
+                                  (car (cdr (assoc "PRR_a" result)))))))
+        (should (equal '() (cdr (assoc "PRR_b" result))))))))
+
+(ert-deftest test-shipit-github-reactions-batch-fetches-review-reactions ()
+  "GIVEN general comments holding an issue comment and a review body
+      with a node id -- the shape the PR buffer weaves into the timeline
+WHEN the GitHub reactions batch fetch runs
+THEN the review's reactions land in the cache under its general key via
+     one GraphQL query, no REST request is made for the review, and the
+     issue comment still goes through REST."
+  (require 'shipit-comment-github)
+  (let (rest-urls graphql-calls
+        (shipit--reaction-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (url _callback cbargs &rest _)
+                 (push url rest-urls)
+                 ;; Unblock the sync wait loop: mark this request done
+                 (puthash (nth 0 cbargs) '() (nth 4 cbargs))
+                 nil))
+              ((symbol-function 'shipit--github-token) (lambda () "tok"))
+              ((symbol-function 'shipit--graphql-query)
+               (lambda (_query variables)
+                 (push variables graphql-calls)
+                 (test-shipit-comment--graphql-nodes-response
+                  (cons "PRR_rev1"
+                        (list test-shipit-comment--graphql-reaction-node))))))
+      (shipit-comment-github--fetch-reactions-batch
+       '(:repo "owner/repo")
+       '(((id . 111) (shipit-comment-type . "issue") (body . "hi"))
+         ((id . 4734698077) (node_id . "PRR_rev1")
+          (shipit-comment-type . "review") (body . "LGTM")))
+       nil)
+      (should (= 1 (length graphql-calls)))
+      (should (equal '((nodeIds . ("PRR_rev1"))) (car graphql-calls)))
+      (let ((cached (gethash "owner/repo:4734698077-general"
+                             shipit--reaction-cache)))
+        (should (= 1 (length cached)))
+        (should (equal "hooray" (cdr (assq 'content (car cached)))))
+        (should (equal "Daskeladden"
+                       (cdr (assq 'login (cdr (assq 'user (car cached))))))))
+      (should (= 1 (length rest-urls)))
+      (should (string-match-p "issues/comments/111/reactions"
+                              (car rest-urls))))))
+
+(ert-deftest test-shipit-github-reactions-batch-async-uses-async-graphql ()
+  "GIVEN a review comment and an async batch fetch (done-callback given)
+WHEN the batch runs
+THEN review reactions go through the async GraphQL entry point -- no
+     synchronous HTTP may run inside async render callbacks -- the
+     cache is filled and the done callback still fires."
+  (require 'shipit-comment-github)
+  (let (async-calls sync-calls done
+        (shipit--reaction-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (_url _callback cbargs &rest _)
+                 (puthash (nth 0 cbargs) '() (nth 4 cbargs))
+                 nil))
+              ((symbol-function 'shipit--github-token) (lambda () "tok"))
+              ((symbol-function 'shipit--graphql-query)
+               (lambda (&rest args) (push args sync-calls) nil))
+              ((symbol-function 'shipit--graphql-request)
+               (lambda (_query variables callback)
+                 (push variables async-calls)
+                 (funcall
+                  callback
+                  (list (cons 'data
+                              (test-shipit-comment--graphql-nodes-response
+                               (cons "PRR_rev1"
+                                     (list test-shipit-comment--graphql-reaction-node)))))))))
+      (shipit-comment-github--fetch-reactions-batch
+       '(:repo "owner/repo")
+       '(((id . 4734698077) (node_id . "PRR_rev1")
+          (shipit-comment-type . "review") (body . "LGTM")))
+       nil
+       (lambda () (setq done t)))
+      ;; Pump timers so the completion poll can fire
+      (let ((deadline (+ (float-time) 3)))
+        (while (and (not done) (< (float-time) deadline))
+          (sit-for 0.05)))
+      (should done)
+      (should (null sync-calls))
+      (should (equal '(((nodeIds . ("PRR_rev1")))) async-calls))
+      (let ((cached (gethash "owner/repo:4734698077-general"
+                             shipit--reaction-cache)))
+        (should (= 1 (length cached)))
+        (should (equal "hooray" (cdr (assq 'content (car cached)))))))))
+
 (provide 'test-shipit-comment-backends)
 ;;; test-shipit-comment-backends.el ends here

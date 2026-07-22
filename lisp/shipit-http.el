@@ -494,16 +494,56 @@ Returns a list of reactions in the same format as REST API."
                        (length nodes) node-id)
 
     ;; Convert GraphQL format to REST API format for compatibility
-    (mapcar (lambda (reaction)
-              (let ((content (cdr (assq 'content reaction)))
-                    (user (cdr (assq 'user reaction)))
-                    (created-at (cdr (assq 'createdAt reaction))))
-                `((id . ,(cdr (assq 'id reaction)))
-                  (content . ,(shipit--graphql-reaction-to-rest content))
-                  (user . ((login . ,(cdr (assq 'login user)))
-                          (avatar_url . ,(cdr (assq 'avatarUrl user)))))
-                  (created_at . ,created-at))))
-            nodes)))
+    (mapcar #'shipit--graphql-reaction-node-to-rest nodes)))
+
+(defun shipit--graphql-reaction-node-to-rest (reaction)
+  "Convert a GraphQL REACTION node to the REST API alist shape."
+  (let ((user (cdr (assq 'user reaction))))
+    `((id . ,(cdr (assq 'id reaction)))
+      (content . ,(shipit--graphql-reaction-to-rest
+                   (cdr (assq 'content reaction))))
+      (user . ((login . ,(cdr (assq 'login user)))
+               (avatar_url . ,(cdr (assq 'avatarUrl user)))))
+      (created_at . ,(cdr (assq 'createdAt reaction))))))
+
+(defconst shipit--review-reactions-nodes-query "query($nodeIds: [ID!]!) {
+  nodes(ids: $nodeIds) {
+    ... on PullRequestReview {
+      id
+      reactions(first: 100) {
+        nodes {
+          id
+          content
+          user {
+            login
+            avatarUrl
+          }
+          createdAt
+        }
+      }
+    }
+  }
+}"
+  "GraphQL query fetching reactions for a set of review node ids.")
+
+(defun shipit--parse-review-reactions-nodes (data)
+  "Convert the DATA portion of the nodes query response.
+Returns an alist of \(node-id . reactions) with reactions in the
+REST API shape."
+  (mapcar (lambda (node)
+            (cons (cdr (assq 'id node))
+                  (mapcar #'shipit--graphql-reaction-node-to-rest
+                          (cdr (assq 'nodes (cdr (assq 'reactions node)))))))
+          (cdr (assq 'nodes data))))
+
+(defun shipit--fetch-review-reactions-batch-graphql (node-ids)
+  "Fetch reactions for several PR reviews in one GraphQL round trip.
+NODE-IDS is a list of review node ids.  Returns an alist of
+\(node-id . reactions) with reactions in the REST API shape."
+  (when node-ids
+    (shipit--parse-review-reactions-nodes
+     (shipit--graphql-query shipit--review-reactions-nodes-query
+                            `((nodeIds . ,node-ids))))))
 
 (defun shipit--add-review-reaction-graphql (node-id reaction-content)
   "Add a reaction to a PR review using GraphQL.

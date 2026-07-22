@@ -3402,5 +3402,72 @@ THEN the user-visible message carries the API's own explanation
                (string-match-p "HTTP 422: Validation Failed (base invalid)" m))
              captured))))
 
+(ert-deftest test-shipit-categorize-checks-buckets ()
+  "GIVEN checks across conclusions and statuses
+WHEN bucketing them for display
+THEN each lands in the same bucket the section body uses,
+     with unknown combinations counted as failing for visibility."
+  (require 'shipit-checks)
+  (let* ((checks '(((name . "a") (status . "completed") (conclusion . "success"))
+                   ((name . "b") (status . "completed") (conclusion . "failure"))
+                   ((name . "c") (status . "completed") (conclusion . "timed_out"))
+                   ((name . "d") (status . "completed") (conclusion . "cancelled"))
+                   ((name . "e") (status . "completed") (conclusion . "skipped"))
+                   ((name . "f") (status . "in_progress"))
+                   ((name . "g") (status . "queued"))
+                   ((name . "h") (status . "weird"))))
+         (buckets (shipit--categorize-checks checks)))
+    (should (= 3 (length (cdr (assq 'failing buckets)))))
+    (should (= 1 (length (cdr (assq 'successful buckets)))))
+    (should (= 1 (length (cdr (assq 'cancelled buckets)))))
+    (should (= 1 (length (cdr (assq 'skipped buckets)))))
+    (should (= 1 (length (cdr (assq 'in-progress buckets)))))
+    (should (= 1 (length (cdr (assq 'pending buckets)))))))
+
+(ert-deftest test-shipit-checks-heading-summary-strings ()
+  "GIVEN check sets in various overall states
+WHEN formatting the heading summary
+THEN noteworthy counts appear, all-green collapses to `all passed',
+     and empty or skipped-only sets stay honest."
+  (require 'shipit-checks)
+  (should (equal "5, 2 failing, 1 running"
+                 (shipit--checks-heading-summary
+                  '(((status . "completed") (conclusion . "failure"))
+                    ((status . "completed") (conclusion . "failure"))
+                    ((status . "in_progress"))
+                    ((status . "completed") (conclusion . "success"))
+                    ((status . "completed") (conclusion . "success"))))))
+  (should (equal "3, all passed"
+                 (shipit--checks-heading-summary
+                  '(((status . "completed") (conclusion . "success"))
+                    ((status . "completed") (conclusion . "success"))
+                    ((status . "completed") (conclusion . "skipped"))))))
+  (should (equal "2, all skipped"
+                 (shipit--checks-heading-summary
+                  '(((status . "completed") (conclusion . "skipped"))
+                    ((status . "completed") (conclusion . "neutral"))))))
+  (should (equal "1, 1 cancelled"
+                 (shipit--checks-heading-summary
+                  '(((status . "completed") (conclusion . "cancelled"))))))
+  (should (equal "0" (shipit--checks-heading-summary nil))))
+
+(ert-deftest test-shipit-checks-heading-shows-aggregate-status ()
+  "GIVEN checks with a failure and a running entry
+WHEN rendering the checks section
+THEN the collapsed heading already carries the failing/running counts."
+  (require 'shipit-pr-sections)
+  (require 'magit)
+  (with-temp-buffer
+    (magit-section-mode)
+    (let ((inhibit-read-only t))
+      (magit-insert-section (root)
+        (shipit--render-checks-section-content
+         "owner/repo" 42
+         '(((name . "unit") (status . "completed") (conclusion . "failure"))
+           ((name . "lint") (status . "completed") (conclusion . "success"))
+           ((name . "build") (status . "in_progress"))))))
+    (goto-char (point-min))
+    (should (search-forward "Checks (3, 1 failing, 1 running)" nil t))))
+
 (provide 'test-shipit)
 ;;; test-shipit.el ends here

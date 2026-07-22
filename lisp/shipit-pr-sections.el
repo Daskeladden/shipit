@@ -2251,31 +2251,20 @@ or a symbol like \\='closed for closed PRs or nil for disabled/error."
 (defun shipit--render-checks-section-content (repo pr-number checks)
   "Render the checks section content with CHECKS grouped by status.
 Returns the created magit section."
-  (let* ((failing-checks '())
-         (in-progress-checks '())
-         (pending-checks '())
-         (cancelled-checks '())
-         (skipped-checks '())
-         (successful-checks '())
+  (let* ((buckets (shipit--categorize-checks checks))
+         (failing-checks (cdr (assq 'failing buckets)))
+         (in-progress-checks (cdr (assq 'in-progress buckets)))
+         (pending-checks (cdr (assq 'pending buckets)))
+         (cancelled-checks (cdr (assq 'cancelled buckets)))
+         (skipped-checks (cdr (assq 'skipped buckets)))
+         (successful-checks (cdr (assq 'successful buckets)))
          (status-emoji (shipit--get-checks-status-emoji checks)))
-
-    ;; Categorize checks
-    (dolist (check checks)
-      (let ((status (cdr (assq 'status check)))
-            (conclusion (cdr (assq 'conclusion check))))
-        (cond
-         ((string= conclusion "success") (push check successful-checks))
-         ((or (string= conclusion "failure") (string= conclusion "timed_out")) (push check failing-checks))
-         ((string= conclusion "cancelled") (push check cancelled-checks))
-         ((or (string= conclusion "skipped") (string= conclusion "neutral")) (push check skipped-checks))
-         ((string= status "in_progress") (push check in-progress-checks))
-         ((or (string= status "queued") (string= status "pending")) (push check pending-checks))
-         ((string= status "cancelled") (push check cancelled-checks))
-         (t (push check failing-checks)))))  ; Unknown goes to failing for visibility
 
     (magit-insert-section (checks nil t)
       (magit-insert-heading
-        (format "%s Checks (%d)" (shipit--get-pr-field-icon "checks" status-emoji) (length checks)))
+        (format "%s Checks (%s)"
+                (shipit--get-checks-status-emoji-svg checks status-emoji)
+                (shipit--checks-heading-summary checks)))
       (magit-insert-section-body
         ;; In-progress checks first
         (when in-progress-checks

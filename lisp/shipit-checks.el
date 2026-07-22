@@ -130,6 +130,59 @@ Called by magit-section-visibility-hook when section visibility changes."
             (setq shipit--checks-loading t)
             (shipit--fetch-pr-checks repo pr-number)))))))
 
+(defun shipit--categorize-checks (checks)
+  "Bucket CHECKS by outcome for display.
+Returns an alist with the keys `failing', `in-progress', `pending',
+`cancelled', `skipped' and `successful' holding lists of checks.
+Unknown status/conclusion combinations land in `failing' so they
+stay visible."
+  (let (failing in-progress pending cancelled skipped successful)
+    (dolist (check checks)
+      (let ((status (cdr (assq 'status check)))
+            (conclusion (cdr (assq 'conclusion check))))
+        (cond
+         ((string= conclusion "success") (push check successful))
+         ((or (string= conclusion "failure") (string= conclusion "timed_out"))
+          (push check failing))
+         ((string= conclusion "cancelled") (push check cancelled))
+         ((or (string= conclusion "skipped") (string= conclusion "neutral"))
+          (push check skipped))
+         ((string= status "in_progress") (push check in-progress))
+         ((or (string= status "queued") (string= status "pending"))
+          (push check pending))
+         ((string= status "cancelled") (push check cancelled))
+         (t (push check failing)))))
+    `((failing . ,(nreverse failing))
+      (in-progress . ,(nreverse in-progress))
+      (pending . ,(nreverse pending))
+      (cancelled . ,(nreverse cancelled))
+      (skipped . ,(nreverse skipped))
+      (successful . ,(nreverse successful)))))
+
+(defun shipit--checks-heading-summary (checks)
+  "Return the heading detail for CHECKS, e.g. \"12, 2 failing, 1 running\".
+Starts with the total count; noteworthy states (failing, cancelled,
+running, pending) follow when present so the collapsed section
+already answers \"is anything wrong?\".  When everything completed
+fine the summary reads \"12, all passed\" (or \"all skipped\")."
+  (let* ((buckets (shipit--categorize-checks checks))
+         (total (length checks))
+         (failing (length (cdr (assq 'failing buckets))))
+         (cancelled (length (cdr (assq 'cancelled buckets))))
+         (running (length (cdr (assq 'in-progress buckets))))
+         (pending (length (cdr (assq 'pending buckets))))
+         (successful (length (cdr (assq 'successful buckets))))
+         (parts (delq nil
+                      (list (when (> failing 0) (format "%d failing" failing))
+                            (when (> cancelled 0) (format "%d cancelled" cancelled))
+                            (when (> running 0) (format "%d running" running))
+                            (when (> pending 0) (format "%d pending" pending))))))
+    (cond
+     (parts (format "%d, %s" total (mapconcat #'identity parts ", ")))
+     ((> successful 0) (format "%d, all passed" total))
+     ((> total 0) (format "%d, all skipped" total))
+     (t "0"))))
+
 (defun shipit--get-checks-status-emoji (checks)
   "Return emoji representing overall status of CHECKS."
   (if (not checks)
@@ -795,9 +848,9 @@ BACKEND is the backend plist, CONFIG provides repo context."
           (progn
             (shipit--debug-log "CHECKS-SECTION: Rendering cached checks section with %d checks" (length shipit--cached-pr-checks))
             (magit-insert-section (checks nil t)
-                                  (magit-insert-heading (format "%s Checks (%d)"
-                                                                (shipit--get-pr-field-icon "checks" (shipit--get-checks-status-emoji shipit--cached-pr-checks))
-                                                                (length shipit--cached-pr-checks)))
+                                  (magit-insert-heading (format "%s Checks (%s)"
+                                                                (shipit--get-checks-status-emoji-svg shipit--cached-pr-checks (shipit--get-checks-status-emoji shipit--cached-pr-checks))
+                                                                (shipit--checks-heading-summary shipit--cached-pr-checks)))
                                   (progn
                                    (if (= (length shipit--cached-pr-checks) 0)
                                        (progn

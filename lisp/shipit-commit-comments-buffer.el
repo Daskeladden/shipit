@@ -419,9 +419,10 @@ killing the whole buffer render."
           (let ((checks (funcall fetch (plist-get ops :config) head-sha)))
             (magit-insert-section (checks nil t)
               (magit-insert-heading
-                (format "%s Checks (%d)"
-                        (shipit--get-pr-field-icon "checks" "🧪")
-                        (length checks)))
+                (format "%s Checks (%s)"
+                        (shipit--get-checks-status-emoji-svg
+                         checks (shipit--get-checks-status-emoji checks))
+                        (shipit--checks-heading-summary checks)))
               (magit-insert-section-body
                 (if (null checks)
                     (insert "   No checks found\n")

@@ -1436,6 +1436,12 @@ Marks all activities as read on first view, or when user just performed a mutati
         ;; Clear the mutation flag
         (setq shipit--user-mutated-pr nil)))))
 
+(defvar-local shipit--activity-render-args nil
+  "Arguments of the last Activity render in this buffer.
+List of (REPO PR-DATA PR-NUMBER EVENTS) captured by
+`shipit--replace-activity-section-with-content' so the section can be
+re-rendered (e.g. after a sort-order toggle) without refetching.")
+
 (defun shipit--replace-activity-section-with-content (repo pr-data pr-number events)
   "Replace the activity placeholder section with actual content.
 REPO is the repository, PR-DATA is the PR data, PR-NUMBER is the PR number,
@@ -1445,6 +1451,8 @@ magit section structure for nested activity-event subsections."
   (shipit--debug-log "ASYNC: Replacing activity placeholder with %d events" (length events))
   ;; Establish baseline on first view so only new activities show red dots
   (shipit--establish-activity-baseline repo pr-number events)
+  (setq-local shipit--activity-render-args (list repo pr-data pr-number events))
+  (setq-local shipit--activity-rerender-function #'shipit-pr--rerender-activity)
   (when shipit-show-activity-timeline
     (let ((section (shipit--find-section-by-type 'pr-activity)))
       (if section
@@ -1498,29 +1506,7 @@ magit section structure for nested activity-event subsections."
                                 (insert "   No activity events found\n")
                               ;; Build mapping from Git author names to GitHub usernames
                               (let* ((author-mapping (shipit--build-author-username-mapping events pr-data repo pr-number))
-                                     ;; Sort events by created_at timestamp
-                                     ;; Note: commit events use author.date or committer.date instead of created_at
-                                     (sorted-by-time (sort (copy-sequence all-events)
-                                                           (lambda (a b)
-                                                             (let ((time-a (or (cdr (assq 'created_at a))
-                                                                               (cdr (assq 'submitted_at a))
-                                                                               (let ((author (cdr (assq 'author a))))
-                                                                                 (when author (cdr (assq 'date author))))
-                                                                               (let ((committer (cdr (assq 'committer a))))
-                                                                                 (when committer (cdr (assq 'date committer))))
-                                                                               ""))
-                                                                   (time-b (or (cdr (assq 'created_at b))
-                                                                               (cdr (assq 'submitted_at b))
-                                                                               (let ((author (cdr (assq 'author b))))
-                                                                                 (when author (cdr (assq 'date author))))
-                                                                               (let ((committer (cdr (assq 'committer b))))
-                                                                                 (when committer (cdr (assq 'date committer))))
-                                                                               "")))
-                                                               (string< time-a time-b)))))
-                                     ;; Apply order preference
-                                     (sorted-events (if (eq shipit-activity-timeline-order 'reverse-chronological)
-                                                        (reverse sorted-by-time)
-                                                      sorted-by-time)))
+                                     (sorted-events (shipit--sort-activity-events all-events)))
                                 (dolist (event sorted-events)
                                   (shipit--insert-activity-event event repo pr-number author-mapping))))
                             (insert "\n"))))
@@ -1546,6 +1532,18 @@ magit section structure for nested activity-event subsections."
               (shipit--update-section-unread-indicators)
               (shipit--debug-log "ASYNC: Activity section replaced successfully")))
         (shipit--debug-log "ASYNC: Could not find activity section to replace")))))
+
+(defun shipit-pr--rerender-activity ()
+  "Re-render the Activity section from the cached render arguments.
+Preserves the section's collapsed/expanded state across the rebuild."
+  (when shipit--activity-render-args
+    (let* ((section (shipit--find-section-by-type 'pr-activity))
+           (was-shown (and section (not (oref section hidden)))))
+      (apply #'shipit--replace-activity-section-with-content
+             shipit--activity-render-args)
+      (when was-shown
+        (when-let* ((new-section (shipit--find-section-by-type 'pr-activity)))
+          (magit-section-show new-section))))))
 
 (defun shipit--replace-general-comments-section-with-content (repo pr-number comments)
   "Replace the general comments placeholder section with actual content.

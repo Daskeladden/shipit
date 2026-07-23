@@ -63,6 +63,7 @@
 (declare-function shipit--add-reaction-to-comment "shipit-http")
 (declare-function shipit--remove-reaction-from-comment "shipit-http")
 (declare-function shipit-dwim "shipit-pr-actions")
+(declare-function shipit-activity-menu "shipit-pr-actions")
 (declare-function shipit--fetch-pr-reactions-sync "shipit-http")
 (declare-function shipit--insert-description-reactions "shipit-http")
 (declare-function shipit--update-description-reactions "shipit-http")
@@ -1151,6 +1152,11 @@ in place."
              (w (string-width user)))
         (when (> w max-w) (setq max-w w))))))
 
+(defvar-local shipit-issue--cached-changelog nil
+  "Changelog entries of the last Activity render in this buffer.
+Kept so `shipit-issue--rerender-activity' can re-render the section
+\(e.g. after a sort-order toggle) without refetching.")
+
 (defun shipit-issue--insert-activity-section (_repo issue-data &optional loading-p)
   "Insert activity/changelog section for ISSUE-DATA.
 When LOADING-P is non-nil, render a \"Loading activity…\" placeholder
@@ -1158,6 +1164,10 @@ that `shipit-issue--refresh-activity-section' replaces once the async
 events fetch completes.  Otherwise the caller has the final changelog
 and we render it directly (empty list → \"No activity yet\")."
   (let ((changelog (cdr (assq 'changelog issue-data))))
+    (unless loading-p
+      (setq-local shipit-issue--cached-changelog changelog)
+      (setq-local shipit--activity-rerender-function
+                  #'shipit-issue--rerender-activity))
     (magit-insert-section (issue-activity nil nil)
       (magit-insert-heading
         (format "%s %s"
@@ -1172,7 +1182,7 @@ and we render it directly (empty list → \"No activity yet\")."
                             'font-lock-face 'font-lock-comment-face)))
        ((and changelog (> (length changelog) 0))
         (let ((user-col-width (shipit-issue--changelog-max-user-width changelog)))
-          (dolist (entry (reverse changelog))
+          (dolist (entry (shipit--sort-activity-events changelog))
             (shipit-issue--insert-activity-event entry user-col-width))))
        (t
         (insert (propertize "   No activity yet\n"
@@ -1183,6 +1193,9 @@ and we render it directly (empty list → \"No activity yet\")."
   "Replace the Activity section body with CHANGELOG entries.
 Updates the heading count and rebuilds the body from CHANGELOG.
 Called from the async events callback once the paginated fetch is done."
+  (setq-local shipit-issue--cached-changelog changelog)
+  (setq-local shipit--activity-rerender-function
+              #'shipit-issue--rerender-activity)
   (shipit--refresh-section-targeted
    'issue-activity
    "Activity (\\(…\\|[0-9]+\\))"
@@ -1190,10 +1203,14 @@ Called from the async events callback once the paginated fetch is done."
    (lambda (_section)
      (if (and changelog (> (length changelog) 0))
          (let ((user-col-width (shipit-issue--changelog-max-user-width changelog)))
-           (dolist (entry (reverse changelog))
+           (dolist (entry (shipit--sort-activity-events changelog))
              (shipit-issue--insert-activity-event entry user-col-width)))
        (insert (propertize "   No activity yet\n"
                            'font-lock-face 'font-lock-comment-face))))))
+
+(defun shipit-issue--rerender-activity ()
+  "Re-render the Activity section from the cached changelog."
+  (shipit-issue--refresh-activity-section shipit-issue--cached-changelog))
 
 (defun shipit-issue--insert-activity-event (entry user-col-width)
   "Insert a single activity ENTRY as a magit subsection.
@@ -2325,6 +2342,17 @@ Called both at load time (if shipit-magit loaded) and via `with-eval-after-load'
                      (magit-section-match '(issue-comments) (magit-current-section))
                      (not (get-text-property (point) 'shipit-comment-id))))
      #'shipit-issue--comments-header-actions)
+
+    ;; Activity section header — sort-order menu
+    (shipit-register-dwim-handler
+     'issue-activity-header
+     (lambda () (and (derived-mode-p 'shipit-issue-mode)
+                     (fboundp 'magit-current-section)
+                     (magit-section-match '(issue-activity) (magit-current-section))))
+     (lambda ()
+       (if (fboundp 'shipit-activity-menu)
+           (call-interactively #'shipit-activity-menu)
+         (shipit-activity-toggle-sort-order))))
 
     ;; Issue description — add new comment
     (shipit-register-dwim-handler

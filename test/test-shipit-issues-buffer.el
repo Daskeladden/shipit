@@ -872,5 +872,114 @@ THEN no Component row is inserted (avoids a blank label for non-Jira issues)."
           (shipit-issue--insert-metadata-section "test/repo" issue-data))
         (should-not (string-match-p "Component:" (buffer-string)))))))
 
+;;; Activity Section Sort Order Tests
+
+(defconst test-shipit-issue--changelog-newest-first
+  '(((id . "e3") (created_at . "2026-03-03T10:00:00Z")
+     (user . ((login . "carol")))
+     (items . (((field . "status") (from . "Open") (to . "Done")))))
+    ((id . "e2") (created_at . "2026-02-02T10:00:00Z")
+     (user . ((login . "bob")))
+     (items . (((field . "comment")))))
+    ((id . "e1") (created_at . "2026-01-01T10:00:00Z")
+     (user . ((login . "alice")))
+     (items . (((field . "status") (from . "New") (to . "Open"))))))
+  "Changelog fixture delivered newest-first (Jira API delivery order).")
+
+(defconst test-shipit-issue--activity-timestamps-descending
+  '("2026-03-03T10:00:00Z" "2026-02-02T10:00:00Z" "2026-01-01T10:00:00Z")
+  "The fixture's timestamps in newest-first order.")
+
+(defun test-shipit-issue--activity-raw-timestamps ()
+  "Collect the shipit-raw-timestamp property values in buffer order."
+  (let ((stamps nil)
+        (pos (point-min)))
+    (while (setq pos (next-single-property-change pos 'shipit-raw-timestamp))
+      (let ((ts (get-text-property pos 'shipit-raw-timestamp)))
+        (when ts (push ts stamps)))
+      (setq pos (1+ pos)))
+    (nreverse stamps)))
+
+(defun test-shipit-issue--render-activity (changelog &optional loading-p)
+  "Render CHANGELOG's activity section in the current buffer.
+CHANGELOG and LOADING-P are passed to the section inserter."
+  (magit-section-mode)
+  (let ((inhibit-read-only t))
+    (magit-insert-section (root)
+      (shipit-issue--insert-activity-section
+       "test/repo" `((changelog . ,changelog)) loading-p))))
+
+(ert-deftest test-shipit-issue-activity-renders-newest-first-by-default ()
+  "GIVEN a changelog delivered newest-first (Jira delivery order)
+WHEN rendering the activity section under the default order
+THEN events appear newest-first in the buffer."
+  (let ((shipit-activity-timeline-order 'reverse-chronological))
+    (with-temp-buffer
+      (test-shipit-issue--render-activity
+       test-shipit-issue--changelog-newest-first)
+      (should (equal test-shipit-issue--activity-timestamps-descending
+                     (test-shipit-issue--activity-raw-timestamps))))))
+
+(ert-deftest test-shipit-issue-activity-order-independent-of-delivery ()
+  "GIVEN a changelog delivered oldest-first (GitHub delivery order)
+WHEN rendering the activity section under the default order
+THEN events still appear newest-first in the buffer."
+  (let ((shipit-activity-timeline-order 'reverse-chronological))
+    (with-temp-buffer
+      (test-shipit-issue--render-activity
+       (reverse test-shipit-issue--changelog-newest-first))
+      (should (equal test-shipit-issue--activity-timestamps-descending
+                     (test-shipit-issue--activity-raw-timestamps))))))
+
+(ert-deftest test-shipit-issue-activity-chronological-variant ()
+  "GIVEN a changelog delivered newest-first
+WHEN rendering under chronological order
+THEN events appear oldest-first in the buffer."
+  (let ((shipit-activity-timeline-order 'chronological))
+    (with-temp-buffer
+      (test-shipit-issue--render-activity
+       test-shipit-issue--changelog-newest-first)
+      (should (equal (reverse test-shipit-issue--activity-timestamps-descending)
+                     (test-shipit-issue--activity-raw-timestamps))))))
+
+(ert-deftest test-shipit-issue-activity-refresh-honors-order ()
+  "GIVEN an activity section rendered as a loading placeholder
+WHEN the async refresh delivers a newest-first changelog
+THEN the refreshed section renders events newest-first."
+  (let ((shipit-activity-timeline-order 'reverse-chronological))
+    (with-temp-buffer
+      (test-shipit-issue--render-activity nil t)
+      (shipit-issue--refresh-activity-section
+       test-shipit-issue--changelog-newest-first)
+      (should (equal test-shipit-issue--activity-timestamps-descending
+                     (test-shipit-issue--activity-raw-timestamps)))
+      (should (search-backward "Activity (3)" nil t)))))
+
+(ert-deftest test-shipit-issue-activity-toggle-rerenders-buffer ()
+  "GIVEN a rendered activity section under the default newest-first order
+WHEN toggling the sort order
+THEN the buffer re-renders oldest-first without a refetch
+     AND toggling again restores newest-first."
+  (let ((shipit-activity-timeline-order 'reverse-chronological))
+    (with-temp-buffer
+      (test-shipit-issue--render-activity
+       test-shipit-issue--changelog-newest-first)
+      (shipit-activity-toggle-sort-order)
+      (should (equal (reverse test-shipit-issue--activity-timestamps-descending)
+                     (test-shipit-issue--activity-raw-timestamps)))
+      (shipit-activity-toggle-sort-order)
+      (should (equal test-shipit-issue--activity-timestamps-descending
+                     (test-shipit-issue--activity-raw-timestamps))))))
+
+(ert-deftest test-shipit-issue-activity-dwim-handler-registered ()
+  "GIVEN shipit-pr-actions and the issue buffer are loaded
+WHEN the issue DWIM handlers are registered
+THEN an issue-activity-header handler exists in the dispatch list."
+  (require 'shipit-pr-actions)
+  (shipit-issue--register-dwim-handlers)
+  (let ((handler (assq 'issue-activity-header shipit--dwim-handlers)))
+    (should handler)
+    (should (functionp (cdr (assq 'action (cdr handler)))))))
+
 (provide 'test-shipit-issues-buffer)
 ;;; test-shipit-issues-buffer.el ends here

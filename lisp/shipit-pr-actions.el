@@ -1998,14 +1998,26 @@ Handles both PR files (shipit-pr-file property) and commit files
 
 ;;; Region I: Activity section header actions
 
+(defun shipit--activity-order-description ()
+  "Describe the sort-order toggle with the current state."
+  (format "Toggle sort order (now: %s)"
+          (if (eq shipit-activity-timeline-order 'reverse-chronological)
+              "newest first"
+            "oldest first")))
+
+(transient-define-prefix shipit-activity-menu ()
+  "Actions for the Activity section heading."
+  ["Activity"
+   ("o" shipit-activity-toggle-sort-order
+    :description shipit--activity-order-description)
+   ("m" "Mark all as read" shipit-mark-activities-read
+    :if (lambda () (and (derived-mode-p 'shipit-mode)
+                        (fboundp 'shipit-mark-activities-read))))])
+
 (defun shipit--activity-section-header-actions ()
-  "Handle DWIM actions for the Activity section header."
+  "Open the Activity section heading menu."
   (interactive)
-  (let* ((actions '("Mark all as read"))
-         (choice (completing-read "Activity action: " actions nil t)))
-    (cond
-     ((string= choice "Mark all as read")
-      (shipit-mark-activities-read)))))
+  (call-interactively #'shipit-activity-menu))
 
 ;;; Region J: Activity event actions
 

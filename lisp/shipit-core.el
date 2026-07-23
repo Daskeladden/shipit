@@ -1209,9 +1209,11 @@ When enabled, displays chronological events like reviews, comments, labels, etc.
   :group 'shipit)
 
 (defcustom shipit-activity-timeline-order 'reverse-chronological
-  "Sort order for activity timeline events.
+  "Sort order for Activity sections in PR and issue buffers.
 reverse-chronological: Newest events first (default)
-chronological: Oldest events first"
+chronological: Oldest events first
+Toggle at runtime with `shipit-activity-toggle-sort-order', also
+available from the Activity heading menu via `shipit-dwim'."
   :type '(choice (const :tag "Newest first" reverse-chronological)
                  (const :tag "Oldest first" chronological))
   :group 'shipit)
@@ -1230,6 +1232,51 @@ chronological: Oldest events first"
   "Whether to show assignment changes in the activity timeline."
   :type 'boolean
   :group 'shipit)
+
+(defun shipit--activity-event-time (event)
+  "Return the best-effort ISO timestamp string for activity EVENT.
+Checks `created_at', `submitted_at', then commit author/committer
+dates.  Returns an empty string when EVENT carries no timestamp."
+  (or (cdr (assq 'created_at event))
+      (cdr (assq 'submitted_at event))
+      (let ((author (cdr (assq 'author event))))
+        (when author (cdr (assq 'date author))))
+      (let ((committer (cdr (assq 'committer event))))
+        (when committer (cdr (assq 'date committer))))
+      ""))
+
+(defun shipit--sort-activity-events (events)
+  "Return EVENTS sorted per `shipit-activity-timeline-order'.
+Sorts by event timestamp without modifying EVENTS.  API delivery
+order is deliberately ignored — backends disagree on it."
+  (let ((ascending (sort (copy-sequence events)
+                         (lambda (a b)
+                           (string< (shipit--activity-event-time a)
+                                    (shipit--activity-event-time b))))))
+    (if (eq shipit-activity-timeline-order 'reverse-chronological)
+        (nreverse ascending)
+      ascending)))
+
+(defvar-local shipit--activity-rerender-function nil
+  "Function re-rendering this buffer's Activity section from cached data.
+Set buffer-locally by each Activity-rendering UI so
+`shipit-activity-toggle-sort-order' can re-render without refetching.")
+
+(defun shipit-activity-toggle-sort-order ()
+  "Toggle the Activity sort order and re-render open Activity sections."
+  (interactive)
+  (setq shipit-activity-timeline-order
+        (if (eq shipit-activity-timeline-order 'reverse-chronological)
+            'chronological
+          'reverse-chronological))
+  (dolist (buf (buffer-list))
+    (with-current-buffer buf
+      (when shipit--activity-rerender-function
+        (funcall shipit--activity-rerender-function))))
+  (message "Activity order: %s"
+           (if (eq shipit-activity-timeline-order 'reverse-chronological)
+               "newest first"
+             "oldest first")))
 
 (defcustom shipit-use-svglib-icons nil
   "Whether to use SVG icons (via svglib) instead of emoji throughout shipit.

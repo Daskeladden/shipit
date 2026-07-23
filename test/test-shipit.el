@@ -3469,5 +3469,65 @@ THEN the collapsed heading already carries the failing/running counts."
     (goto-char (point-min))
     (should (search-forward "Checks (3, 1 failing, 1 running)" nil t))))
 
+;;; Activity sort order
+
+(ert-deftest test-shipit-activity-event-time-fallbacks ()
+  "GIVEN events with created_at, submitted_at, author.date, committer.date, or nothing
+WHEN extracting the event time
+THEN each fallback is used in priority order
+     AND missing data yields an empty string."
+  (should (equal "A" (shipit--activity-event-time
+                      '((created_at . "A") (submitted_at . "B")))))
+  (should (equal "B" (shipit--activity-event-time '((submitted_at . "B")))))
+  (should (equal "C" (shipit--activity-event-time '((author . ((date . "C")))))))
+  (should (equal "D" (shipit--activity-event-time '((committer . ((date . "D")))))))
+  (should (equal "" (shipit--activity-event-time '((event . "labeled"))))))
+
+(ert-deftest test-shipit-sort-activity-events-newest-first ()
+  "GIVEN events delivered out of order with mixed timestamp fields
+WHEN sorting under the default reverse-chronological order
+THEN newest events come first regardless of delivery order
+     AND the input list is not mutated."
+  (let* ((shipit-activity-timeline-order 'reverse-chronological)
+         (events '(((id . 1) (created_at . "2026-01-01T00:00:00Z"))
+                   ((id . 3) (submitted_at . "2026-03-01T00:00:00Z"))
+                   ((id . 2) (author . ((date . "2026-02-01T00:00:00Z"))))))
+         (sorted (shipit--sort-activity-events events)))
+    (should (equal '(3 2 1) (mapcar (lambda (e) (cdr (assq 'id e))) sorted)))
+    (should (equal '(1 3 2) (mapcar (lambda (e) (cdr (assq 'id e))) events)))))
+
+(ert-deftest test-shipit-sort-activity-events-oldest-first ()
+  "GIVEN the same out-of-order events
+WHEN sorting under chronological order
+THEN oldest events come first."
+  (let* ((shipit-activity-timeline-order 'chronological)
+         (events '(((id . 1) (created_at . "2026-01-01T00:00:00Z"))
+                   ((id . 3) (submitted_at . "2026-03-01T00:00:00Z"))
+                   ((id . 2) (author . ((date . "2026-02-01T00:00:00Z"))))))
+         (sorted (shipit--sort-activity-events events)))
+    (should (equal '(1 2 3) (mapcar (lambda (e) (cdr (assq 'id e))) sorted)))))
+
+(ert-deftest test-shipit-activity-toggle-sort-order ()
+  "GIVEN newest-first order and two buffers with activity rerender functions
+WHEN toggling the sort order twice
+THEN the order flips each time
+     AND every registered buffer re-renders on each toggle."
+  (let ((shipit-activity-timeline-order 'reverse-chronological)
+        (calls nil))
+    (with-temp-buffer
+      (setq-local shipit--activity-rerender-function
+                  (lambda () (push 'first calls)))
+      (with-temp-buffer
+        (setq-local shipit--activity-rerender-function
+                    (lambda () (push 'second calls)))
+        (shipit-activity-toggle-sort-order)
+        (should (eq shipit-activity-timeline-order 'chronological))
+        (should (= 2 (length calls)))
+        (should (memq 'first calls))
+        (should (memq 'second calls))
+        (shipit-activity-toggle-sort-order)
+        (should (eq shipit-activity-timeline-order 'reverse-chronological))
+        (should (= 4 (length calls)))))))
+
 (provide 'test-shipit)
 ;;; test-shipit.el ends here

@@ -661,5 +661,30 @@ THEN it returns nil."
     (goto-char 5)
     (should-not (shipit--try-overlay-action-at-point))))
 
+;;; Activity Heading Menu Tests
+
+(ert-deftest test-pr-actions-activity-menu-is-transient ()
+  "GIVEN shipit-pr-actions is loaded
+THEN the Activity heading menu is a transient prefix
+     AND it binds the sort-order toggle and mark-all-read."
+  (should (fboundp 'shipit-activity-menu))
+  (should (get 'shipit-activity-menu 'transient--prefix))
+  (let ((toggle (transient-get-suffix 'shipit-activity-menu "o"))
+        (mark-read (transient-get-suffix 'shipit-activity-menu "m")))
+    (should (eq (plist-get (cdr toggle) :command)
+                'shipit-activity-toggle-sort-order))
+    (should (eq (plist-get (cdr mark-read) :command)
+                'shipit-mark-activities-read))))
+
+(ert-deftest test-pr-actions-activity-header-opens-menu ()
+  "GIVEN point is on the Activity section heading
+WHEN the header DWIM action runs
+THEN the Activity transient menu opens."
+  (let ((opened nil))
+    (cl-letf (((symbol-function 'shipit-activity-menu)
+               (lambda () (interactive) (setq opened t))))
+      (shipit--activity-section-header-actions)
+      (should opened))))
+
 (provide 'test-shipit-pr-actions)
 ;;; test-shipit-pr-actions.el ends here

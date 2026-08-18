@@ -247,7 +247,7 @@ THEN What's Next section appears with items."
            (cdr (assq 'jira shipit-issue-backends)))
           (shipit-atlassian-dashboard--whats-next
            '(((id . "PROJ-10") (title . "Implement login") (state . "To Do"))))
-          (shipit-atlassian-board-id 42))
+          (shipit-atlassian-board-ids '(42)))
       (magit-insert-section (atlassian-dashboard)
         (shipit-atlassian-dashboard--insert-whats-next-section))
       (let ((text (buffer-string)))
@@ -255,12 +255,12 @@ THEN What's Next section appears with items."
         (should (string-match-p "PROJ-10" text))))))
 
 (ert-deftest test-atlassian-dashboard-whats-next-no-board ()
-  "GIVEN no board ID configured
+  "GIVEN no board IDs configured
 WHEN rendering what's next section
 THEN a configuration message is shown."
   (with-temp-buffer
     (let ((magit-insert-section--parent nil)
-          (shipit-atlassian-board-id nil)
+          (shipit-atlassian-board-ids nil)
           (shipit-atlassian-dashboard--whats-next nil))
       (magit-insert-section (atlassian-dashboard)
         (shipit-atlassian-dashboard--insert-whats-next-section))
@@ -273,7 +273,7 @@ WHEN rendering what's next section
 THEN 'No items in current sprint' message is shown."
   (with-temp-buffer
     (let ((magit-insert-section--parent nil)
-          (shipit-atlassian-board-id 42)
+          (shipit-atlassian-board-ids '(42))
           (shipit-atlassian-dashboard--whats-next nil))
       (magit-insert-section (atlassian-dashboard)
         (shipit-atlassian-dashboard--insert-whats-next-section))
@@ -286,7 +286,7 @@ WHEN fetching what's next items
 THEN active sprint is resolved and issues returned."
   (let ((shipit-atlassian-dashboard--config
          '(:base-url "https://test.atlassian.net"))
-        (shipit-atlassian-board-id 42))
+        (shipit-atlassian-board-ids '(42)))
     (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
                (lambda (_config path)
                  (cond
@@ -309,15 +309,43 @@ THEN active sprint is resolved and issues returned."
         (should (equal "PROJ-1" (cdr (assq 'id (car result)))))))))
 
 (ert-deftest test-atlassian-dashboard-fetch-whats-next-no-board ()
-  "GIVEN no board ID configured
+  "GIVEN no board IDs configured
 WHEN fetching what's next items
 THEN nil is returned without any API calls."
-  (let ((shipit-atlassian-board-id nil)
+  (let ((shipit-atlassian-board-ids nil)
         (api-called nil))
     (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
                (lambda (_config _path) (setq api-called t) nil)))
       (should (null (shipit-atlassian-dashboard--fetch-whats-next)))
       (should (null api-called)))))
+
+(ert-deftest test-atlassian-dashboard-fetch-whats-next-multiple-boards ()
+  "GIVEN two configured boards with different active sprints
+  AND one issue appearing in both sprints
+WHEN fetching what's next items
+THEN items from both sprints are aggregated in board order
+     AND the duplicate issue appears only once."
+  (let ((shipit-atlassian-dashboard--config
+         '(:base-url "https://test.atlassian.net"))
+        (shipit-atlassian-board-ids '(42 57)))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (cond
+                  ((string-match-p "board/42/sprint" path)
+                   '((values . [((id . 100) (name . "Sprint A") (state . "active"))])))
+                  ((string-match-p "board/57/sprint" path)
+                   '((values . [((id . 200) (name . "Sprint B") (state . "active"))])))
+                  ((string-match-p "sprint/100/issue" path)
+                   '((issues . [((key . "PROJ-1")) ((key . "PROJ-2"))])))
+                  ((string-match-p "sprint/200/issue" path)
+                   '((issues . [((key . "PROJ-2")) ((key . "PROJ-3"))])))
+                  (t nil))))
+              ((symbol-function 'shipit-issue-jira--normalize-issue)
+               (lambda (data)
+                 `((id . ,(cdr (assq 'key data)))))))
+      (let ((result (shipit-atlassian-dashboard--fetch-whats-next)))
+        (should (equal '("PROJ-1" "PROJ-2" "PROJ-3")
+                       (mapcar (lambda (i) (cdr (assq 'id i))) result)))))))
 
 ;;; Board tests
 
@@ -428,18 +456,19 @@ THEN the issue-derived name wins (live state is canonical) so the
       (should (equal '("In Progress")
                      (cdr (assq 'statuses (car grouped))))))))
 
-(ert-deftest test-atlassian-board-fetch ()
+(ert-deftest test-atlassian-board-fetch-all ()
   "GIVEN mock board configuration and issues API responses
-WHEN fetching board data
-THEN issues are grouped into columns."
+WHEN fetching all configured boards
+THEN a board alist with id, name, and grouped columns is returned."
   (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
              (lambda (_config path)
                (cond
                 ((string-match-p "configuration" path)
-                 '((columnConfig . ((columns . [((name . "To Do")
-                                                  (statuses . [((id . "1"))]))
+                 '((name . "Team Board")
+                   (columnConfig . ((columns . [((name . "To Do")
+                                                 (statuses . [((id . "1"))]))
                                                 ((name . "Done")
-                                                  (statuses . [((id . "4"))]))])))))
+                                                 (statuses . [((id . "4"))]))])))))
                 ((string-match-p "/rest/api/2/status" path)
                  [((id . "1") (name . "Open"))
                   ((id . "4") (name . "Done"))])
@@ -460,67 +489,154 @@ THEN issues are grouped into columns."
                    (state . ,(cdr (assq 'name (cdr (assq 'status fields)))))
                    (state-id . ,(cdr (assq 'id (cdr (assq 'status fields))))))))))
     (let* ((config '(:base-url "https://test.atlassian.net"))
-           (result (shipit-atlassian-board--fetch config 42)))
-      (should (= 2 (length result)))
-      (should (equal "To Do" (cdr (assq 'name (nth 0 result)))))
-      (should (= 1 (length (cdr (assq 'issues (nth 0 result))))))
-      (should (equal "P-1" (cdr (assq 'id (car (cdr (assq 'issues (nth 0 result))))))))
-      (should (equal "Done" (cdr (assq 'name (nth 1 result)))))
-      (should (= 0 (length (cdr (assq 'issues (nth 1 result)))))))))
+           (boards (shipit-atlassian-board--fetch-all config '(42)))
+           (board (car boards))
+           (cols (cdr (assq 'columns board))))
+      (should (= 1 (length boards)))
+      (should (= 42 (cdr (assq 'id board))))
+      (should (equal "Team Board" (cdr (assq 'name board))))
+      (should (= 2 (length cols)))
+      (should (equal "To Do" (cdr (assq 'name (nth 0 cols)))))
+      (should (= 1 (length (cdr (assq 'issues (nth 0 cols))))))
+      (should (equal "P-1" (cdr (assq 'id (car (cdr (assq 'issues (nth 0 cols))))))))
+      (should (equal "Done" (cdr (assq 'name (nth 1 cols)))))
+      (should (= 0 (length (cdr (assq 'issues (nth 1 cols)))))))))
 
-(ert-deftest test-atlassian-board-render-columns ()
-  "GIVEN grouped board data
-WHEN rendering the board section
-THEN column headers and issue keys appear."
+(ert-deftest test-atlassian-board-fetch-all-multiple-boards ()
+  "GIVEN two configured board IDs with distinct configurations
+WHEN fetching all boards
+THEN both boards are returned in configured order with their own
+     names and columns, falling back to a generated name when the
+     configuration response carries no name."
+  (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+             (lambda (_config path)
+               (cond
+                ((string-match-p "board/42/configuration" path)
+                 '((name . "Alpha")
+                   (columnConfig . ((columns . [((name . "Open")
+                                                 (statuses . [((id . "1"))]))])))))
+                ((string-match-p "board/57/configuration" path)
+                 '((columnConfig . ((columns . [((name . "Triage")
+                                                 (statuses . [((id . "2"))]))])))))
+                ((string-match-p "/rest/api/2/status" path)
+                 [((id . "1") (name . "Open"))
+                  ((id . "2") (name . "Triage"))])
+                ((string-match-p "board/42/issue" path)
+                 '((total . 1)
+                   (issues . [((key . "A-1")
+                               (fields . ((summary . "A task")
+                                          (status . ((name . "Open") (id . "1"))))))])))
+                ((string-match-p "board/57/issue" path)
+                 '((total . 0) (issues . [])))
+                (t nil))))
+            ((symbol-function 'shipit-issue-jira--normalize-issue)
+             (lambda (data)
+               (let ((fields (cdr (assq 'fields data))))
+                 `((id . ,(cdr (assq 'key data)))
+                   (state . ,(cdr (assq 'name (cdr (assq 'status fields)))))
+                   (state-id . ,(cdr (assq 'id (cdr (assq 'status fields))))))))))
+    (let* ((config '(:base-url "https://test.atlassian.net"))
+           (boards (shipit-atlassian-board--fetch-all config '(42 57))))
+      (should (= 2 (length boards)))
+      (should (= 42 (cdr (assq 'id (nth 0 boards)))))
+      (should (equal "Alpha" (cdr (assq 'name (nth 0 boards)))))
+      (should (= 57 (cdr (assq 'id (nth 1 boards)))))
+      (should (equal "Board 57" (cdr (assq 'name (nth 1 boards)))))
+      (should (= 1 (length (cdr (assq 'issues
+                                      (car (cdr (assq 'columns (nth 0 boards))))))))))))
+
+(ert-deftest test-atlassian-boards-render-columns ()
+  "GIVEN grouped data for one board
+WHEN rendering the Boards section
+THEN the Boards heading, board name, column headers, and issue keys appear."
   (with-temp-buffer
     (let ((magit-insert-section--parent nil)
           (shipit-atlassian-dashboard--backend-plist
            (cdr (assq 'jira shipit-issue-backends)))
           (shipit-atlassian-dashboard--board-data
-           '(((name . "To Do")
-              (issues . (((id . "P-1") (title . "Fix bug") (state . "To Do")))))
-             ((name . "Done")
-              (issues . (((id . "P-2") (title . "Add tests") (state . "Done")))))))
-          (shipit-atlassian-board-id 42))
+           '(((id . 42)
+              (name . "Team Board")
+              (columns . (((name . "To Do")
+                           (issues . (((id . "P-1") (title . "Fix bug") (state . "To Do")))))
+                          ((name . "Done")
+                           (issues . (((id . "P-2") (title . "Add tests") (state . "Done"))))))))))
+          (shipit-atlassian-board-ids '(42)))
       (magit-insert-section (atlassian-dashboard)
-        (shipit-atlassian-dashboard--insert-board-section))
+        (shipit-atlassian-dashboard--insert-boards-section))
       (let ((text (buffer-string)))
-        (should (string-match-p "Board" text))
+        (should (string-match-p "Boards" text))
+        (should (string-match-p "Team Board" text))
         (should (string-match-p "To Do" text))
         (should (string-match-p "P-1" text))
         (should (string-match-p "Done" text))
         (should (string-match-p "P-2" text))))))
 
-(ert-deftest test-atlassian-board-render-no-board-id ()
-  "GIVEN no board ID configured
-WHEN rendering the board section
+(ert-deftest test-atlassian-boards-render-multiple-boards ()
+  "GIVEN grouped data for two boards
+WHEN rendering the Boards section
+THEN each board renders as its own atlassian-board section carrying
+     the board ID as section value, with its own columns."
+  (with-temp-buffer
+    (let ((magit-insert-section--parent nil)
+          (shipit-atlassian-dashboard--backend-plist
+           (cdr (assq 'jira shipit-issue-backends)))
+          (shipit-atlassian-dashboard--board-data
+           '(((id . 42)
+              (name . "Alpha")
+              (columns . (((name . "Open")
+                           (issues . (((id . "A-1") (title . "A task") (state . "Open"))))))))
+             ((id . 57)
+              (name . "Beta")
+              (columns . (((name . "Triage")
+                           (issues . (((id . "B-1") (title . "B task") (state . "Triage"))))))))))
+          (shipit-atlassian-board-ids '(42 57)))
+      (magit-insert-section (atlassian-dashboard)
+        (shipit-atlassian-dashboard--insert-boards-section))
+      (let ((text (buffer-string))
+            (board-values nil)
+            (pos (point-min)))
+        (should (string-match-p "Alpha" text))
+        (should (string-match-p "A-1" text))
+        (should (string-match-p "Beta" text))
+        (should (string-match-p "B-1" text))
+        (while (< pos (point-max))
+          (let ((s (get-text-property pos 'magit-section)))
+            (when (and s (eq (oref s type) 'atlassian-board)
+                       (not (memq (oref s value) board-values)))
+              (push (oref s value) board-values)))
+          (setq pos (1+ pos)))
+        (should (equal '(42 57) (nreverse board-values)))))))
+
+(ert-deftest test-atlassian-boards-render-no-board-ids ()
+  "GIVEN no board IDs configured
+WHEN rendering the Boards section
 THEN a configuration message is shown."
   (with-temp-buffer
     (let ((magit-insert-section--parent nil)
-          (shipit-atlassian-board-id nil)
+          (shipit-atlassian-board-ids nil)
           (shipit-atlassian-dashboard--board-data nil))
       (magit-insert-section (atlassian-dashboard)
-        (shipit-atlassian-dashboard--insert-board-section))
+        (shipit-atlassian-dashboard--insert-boards-section))
       (let ((text (buffer-string)))
-        (should (string-match-p "Board" text))
+        (should (string-match-p "Boards" text))
         (should (string-match-p "Press RET to configure" text))
         ;; THEN the configure line has the text property for RET handling
         (goto-char (point-min))
         (search-forward "Press RET")
-        (should (eq 'board-id (get-text-property (point) 'shipit-atlassian-configure)))))))
+        (should (eq 'board-ids (get-text-property (point) 'shipit-atlassian-configure)))))))
 
-(ert-deftest test-atlassian-board-render-no-data ()
-  "GIVEN a board ID but no board data
-WHEN rendering the board section
+(ert-deftest test-atlassian-boards-render-no-data ()
+  "GIVEN board IDs but no board data
+WHEN rendering the Boards section
 THEN 'No board data' message is shown."
   (with-temp-buffer
     (let ((magit-insert-section--parent nil)
-          (shipit-atlassian-board-id 42)
+          (shipit-atlassian-board-ids '(42))
           (shipit-atlassian-dashboard--board-data nil))
       (magit-insert-section (atlassian-dashboard)
-        (shipit-atlassian-dashboard--insert-board-section))
+        (shipit-atlassian-dashboard--insert-boards-section))
       (let ((text (buffer-string)))
-        (should (string-match-p "Board" text))
+        (should (string-match-p "Boards" text))
         (should (string-match-p "No board data" text))))))
 
 ;;; Frequently Visited tests
@@ -637,14 +753,17 @@ THEN all sections are rendered."
     (setq shipit-atlassian-dashboard--whats-next
           '(((id . "P-2") (title . "Task") (state . "To Do"))))
     (setq shipit-atlassian-dashboard--board-data
-          '(((name . "To Do") (issues . (((id . "P-3") (title . "X") (state . "To Do")))))))
-    (setq shipit-atlassian-board-id 42)
+          '(((id . 42) (name . "Team Board")
+             (columns . (((name . "To Do")
+                          (issues . (((id . "P-3") (title . "X") (state . "To Do"))))))))))
+    (setq shipit-atlassian-board-ids '(42))
     (shipit-atlassian-dashboard--render)
     (let ((text (buffer-string)))
       (should (string-match-p "Atlassian Dashboard" text))
       (should (string-match-p "What's Next" text))
       (should (string-match-p "My Open Issues" text))
-      (should (string-match-p "Board" text))
+      (should (string-match-p "Boards" text))
+      (should (string-match-p "Team Board" text))
       (should (string-match-p "Frequently Visited" text)))))
 
 (ert-deftest test-atlassian-dashboard-refresh-data-fetches-and-renders ()
@@ -655,15 +774,16 @@ THEN all data is fetched and render is called."
     (shipit-atlassian-dashboard-mode)
     (setq shipit-atlassian-dashboard--repo "test/repo")
     (setq shipit-atlassian-dashboard--config '(:base-url "https://test.atlassian.net"))
-    (setq shipit-atlassian-board-id 42)
+    (setq shipit-atlassian-board-ids '(42))
     (let ((render-called nil)
           (shipit-atlassian-dashboard-defer-fetches nil))
       (cl-letf (((symbol-function 'shipit-atlassian-dashboard--fetch-my-issues)
                  (lambda () '(((id . "P-1") (title . "Bug") (state . "Open")))))
                 ((symbol-function 'shipit-atlassian-dashboard--fetch-whats-next)
                  (lambda () '(((id . "P-2") (title . "Task") (state . "To Do")))))
-                ((symbol-function 'shipit-atlassian-dashboard--fetch-board)
-                 (lambda () '(((name . "Col") (issues . nil)))))
+                ((symbol-function 'shipit-atlassian-dashboard--fetch-boards)
+                 (lambda () '(((id . 42) (name . "B")
+                               (columns . (((name . "Col") (issues . nil))))))))
                 ((symbol-function 'shipit-atlassian-dashboard--render)
                  (lambda () (setq render-called t))))
         (shipit-atlassian-dashboard--refresh-data)
@@ -672,7 +792,8 @@ THEN all data is fetched and render is called."
                        shipit-atlassian-dashboard--my-issues))
         (should (equal '(((id . "P-2") (title . "Task") (state . "To Do")))
                        shipit-atlassian-dashboard--whats-next))
-        (should (equal '(((name . "Col") (issues . nil)))
+        (should (equal '(((id . 42) (name . "B")
+                          (columns . (((name . "Col") (issues . nil))))))
                        shipit-atlassian-dashboard--board-data))))))
 
 (ert-deftest test-atlassian-dashboard-refresh-data-handles-fetch-error ()
@@ -683,14 +804,14 @@ THEN partial data is kept and render is still called."
     (shipit-atlassian-dashboard-mode)
     (setq shipit-atlassian-dashboard--repo "test/repo")
     (setq shipit-atlassian-dashboard--config '(:base-url "https://test.atlassian.net"))
-    (setq shipit-atlassian-board-id nil)
+    (setq shipit-atlassian-board-ids nil)
     (let ((render-called nil)
           (shipit-atlassian-dashboard-defer-fetches nil))
       (cl-letf (((symbol-function 'shipit-atlassian-dashboard--fetch-my-issues)
                  (lambda () (error "API timeout")))
                 ((symbol-function 'shipit-atlassian-dashboard--fetch-whats-next)
                  (lambda () nil))
-                ((symbol-function 'shipit-atlassian-dashboard--fetch-board)
+                ((symbol-function 'shipit-atlassian-dashboard--fetch-boards)
                  (lambda () nil))
                 ((symbol-function 'shipit-atlassian-dashboard--render)
                  (lambda () (setq render-called t))))
@@ -761,6 +882,21 @@ THEN numeric board ID is extracted."
   (should-not (shipit-atlassian-dashboard--parse-board-input "hello"))
   (should-not (shipit-atlassian-dashboard--parse-board-input "")))
 
+(ert-deftest test-atlassian-dashboard-parse-board-ids-input ()
+  "GIVEN comma- or space-separated board IDs and URLs
+WHEN parsing the multi-board input
+THEN all numeric board IDs are extracted in order; unparsable
+     tokens are dropped and all-garbage input yields nil."
+  (should (equal '(42 57)
+                 (shipit-atlassian-dashboard--parse-board-ids-input "42, 57")))
+  (should (equal '(42 7)
+                 (shipit-atlassian-dashboard--parse-board-ids-input
+                  "42 https://foo.atlassian.net/jira/software/projects/X/boards/7")))
+  (should (equal '(99)
+                 (shipit-atlassian-dashboard--parse-board-ids-input "hello,99")))
+  (should-not (shipit-atlassian-dashboard--parse-board-ids-input "hello"))
+  (should-not (shipit-atlassian-dashboard--parse-board-ids-input "")))
+
 (ert-deftest test-atlassian-dashboard-section-visibility ()
   "GIVEN all dashboard section types
 WHEN checking initial visibility
@@ -772,7 +908,7 @@ THEN all are hidden by default, unknown types return nil."
     (should (eq 'hide (shipit-atlassian-dashboard--section-visibility proj-section))))
   ;; Top-level sections also hidden
   (dolist (type '(atlassian-dashboard atlassian-my-issues
-                  atlassian-whats-next atlassian-board
+                  atlassian-whats-next atlassian-boards atlassian-board
                   atlassian-frequently-visited))
     (let ((section (make-instance 'magit-section :type type)))
       (should (eq 'hide (shipit-atlassian-dashboard--section-visibility section)))))
@@ -1040,11 +1176,12 @@ THEN the transition whose `to.name\=' equals the target is
 WHEN `shipit-atlassian-dashboard--find-issue-in-board-data\=' is queried
 THEN the issue alist is returned (case-insensitive on the key)."
   (let ((shipit-atlassian-dashboard--board-data
-         '(((name . "In Progress")
-            (issues . (((key . "PROJ-1") (status . "In Progress"))
-                       ((key . "PROJ-2") (status . "In Progress")))))
-           ((name . "Done")
-            (issues . (((key . "PROJ-3") (status . "Done"))))))))
+         '(((id . 1) (name . "Alpha")
+            (columns . (((name . "In Progress")
+                         (issues . (((key . "PROJ-1") (status . "In Progress"))
+                                    ((key . "PROJ-2") (status . "In Progress")))))
+                        ((name . "Done")
+                         (issues . (((key . "PROJ-3") (status . "Done")))))))))))
     (should (equal (cdr (assq 'key (shipit-atlassian-dashboard--find-issue-in-board-data
                                       "PROJ-2")))
                    "PROJ-2"))
@@ -1056,27 +1193,53 @@ THEN the issue alist is returned (case-insensitive on the key)."
 
 (ert-deftest test-atlassian-dashboard-pending-arrivals-into-column ()
   "GIVEN pending transitions targeting various status columns
-WHEN `shipit-atlassian-dashboard--pending-arrivals-into-column\=' is queried
+WHEN `shipit-atlassian-dashboard--pending-arrivals-into-column\=' is
+     queried for a column of the board the issues live on
 THEN issues whose target matches the column (case-insensitive)
      are returned with their issue alists."
-  (let ((shipit-atlassian-dashboard--pending-transitions
-         '(("PROJ-1" . "In Review")
-           ("PROJ-2" . "Done")
-           ("PROJ-3" . "In Review")))
-        (shipit-atlassian-dashboard--board-data
-         '(((name . "In Progress")
-            (issues . (((key . "PROJ-1") (status . "In Progress"))
-                       ((key . "PROJ-3") (status . "In Progress")))))
-           ((name . "Done")
-            (issues . (((key . "PROJ-2") (status . "Done"))))))))
+  (let* ((board '((id . 1) (name . "Alpha")
+                  (columns . (((name . "In Progress")
+                               (issues . (((key . "PROJ-1") (status . "In Progress"))
+                                          ((key . "PROJ-3") (status . "In Progress")))))
+                              ((name . "Done")
+                               (issues . (((key . "PROJ-2") (status . "Done")))))))))
+         (shipit-atlassian-dashboard--pending-transitions
+          '(("PROJ-1" . "In Review")
+            ("PROJ-2" . "Done")
+            ("PROJ-3" . "In Review")))
+         (shipit-atlassian-dashboard--board-data (list board)))
     (let ((arrivals (shipit-atlassian-dashboard--pending-arrivals-into-column
-                     "in review")))
+                     board "in review")))
       (should (= (length arrivals) 2))
       (should (cl-some (lambda (a) (equal "PROJ-1" (cdr (assq 'key a)))) arrivals))
       (should (cl-some (lambda (a) (equal "PROJ-3" (cdr (assq 'key a)))) arrivals)))
     ;; A column with no pending arrivals returns nil.
     (should (null (shipit-atlassian-dashboard--pending-arrivals-into-column
-                   "Backlog")))))
+                   board "Backlog")))))
+
+(ert-deftest test-atlassian-dashboard-pending-arrivals-scoped-to-board ()
+  "GIVEN two boards with identically named columns
+  AND a pending transition for an issue that lives only on the first board
+WHEN querying arrivals for the same-named column on each board
+THEN only the board that displays the issue reports the arrival."
+  (let* ((board-a '((id . 1) (name . "Alpha")
+                    (columns . (((name . "Open")
+                                 (statuses . ("Open"))
+                                 (issues . (((key . "PROJ-1") (status . "Open")))))
+                                ((name . "Code Review")
+                                 (statuses . ("In Review"))
+                                 (issues . ()))))))
+         (board-b '((id . 2) (name . "Beta")
+                    (columns . (((name . "Code Review")
+                                 (statuses . ("In Review"))
+                                 (issues . ()))))))
+         (shipit-atlassian-dashboard--pending-transitions
+          '(("PROJ-1" . "In Review")))
+         (shipit-atlassian-dashboard--board-data (list board-a board-b)))
+    (should (= 1 (length (shipit-atlassian-dashboard--pending-arrivals-into-column
+                          board-a "Code Review"))))
+    (should (null (shipit-atlassian-dashboard--pending-arrivals-into-column
+                   board-b "Code Review")))))
 
 (ert-deftest test-atlassian-dashboard-column-name-for-status ()
   "GIVEN board data where columns advertise their accepted statuses
@@ -1089,13 +1252,19 @@ The lookup is what lets a canonical-order target like
 \"Code Review\" -- the link is the column\='s configured
 `statuses\=' list, not its display name."
   (let ((shipit-atlassian-dashboard--board-data
-         '(((name . "Open") (statuses . ("Open" "Reopened")))
-           ((name . "Code Review") (statuses . ("In Review" "Awaiting Review")))
-           ((name . "Done") (statuses . ("Done" "Closed"))))))
+         '(((id . 1) (name . "Alpha")
+            (columns . (((name . "Open") (statuses . ("Open" "Reopened")))
+                        ((name . "Code Review") (statuses . ("In Review" "Awaiting Review")))
+                        ((name . "Done") (statuses . ("Done" "Closed"))))))
+           ((id . 2) (name . "Beta")
+            (columns . (((name . "Building") (statuses . ("Building")))))))))
     (should (equal (shipit-atlassian-dashboard--column-name-for-status "in review")
                    "Code Review"))
     (should (equal (shipit-atlassian-dashboard--column-name-for-status "Closed")
                    "Done"))
+    ;; Statuses only present on a later board still resolve.
+    (should (equal (shipit-atlassian-dashboard--column-name-for-status "Building")
+                   "Building"))
     (should (null (shipit-atlassian-dashboard--column-name-for-status
                    "Mythical")))))
 
@@ -1106,19 +1275,55 @@ WHEN `shipit-atlassian-dashboard--pending-arrivals-into-column\=' is queried
 THEN the issue is included as an arrival -- routing happens
      through the column\='s status list, not by literal
      name match."
-  (let ((shipit-atlassian-dashboard--pending-transitions
-         '(("PROJ-1" . "In Review")))
-        (shipit-atlassian-dashboard--board-data
-         '(((name . "Open")
-            (statuses . ("Open"))
-            (issues . (((id . "PROJ-1") (number . "PROJ-1") (state . "Open")))))
-           ((name . "Code Review")
-            (statuses . ("In Review"))
-            (issues . ())))))
+  (let* ((board '((id . 1) (name . "Alpha")
+                  (columns . (((name . "Open")
+                               (statuses . ("Open"))
+                               (issues . (((id . "PROJ-1") (number . "PROJ-1") (state . "Open")))))
+                              ((name . "Code Review")
+                               (statuses . ("In Review"))
+                               (issues . ()))))))
+         (shipit-atlassian-dashboard--pending-transitions
+          '(("PROJ-1" . "In Review")))
+         (shipit-atlassian-dashboard--board-data (list board)))
     (let ((arrivals (shipit-atlassian-dashboard--pending-arrivals-into-column
-                     "Code Review")))
+                     board "Code Review")))
       (should (= (length arrivals) 1))
       (should (equal (cdr (assq 'number (car arrivals))) "PROJ-1")))))
+
+(ert-deftest test-atlassian-dashboard-board-target-status-scoped-to-board ()
+  "GIVEN two boards whose columns would be adjacent in a flat list
+WHEN stepping forward from the last column of the first board
+THEN no cross-board target is produced, while stepping inside the
+     second board (explicitly or via status lookup) works."
+  (let ((shipit-atlassian-dashboard--board-data
+         '(((id . 1) (name . "Alpha")
+            (columns . (((name . "Open") (statuses . ("Open")))
+                        ((name . "Done") (statuses . ("Done"))))))
+           ((id . 2) (name . "Beta")
+            (columns . (((name . "Triage") (statuses . ("Triage")))
+                        ((name . "Building") (statuses . ("Building")))
+                        ((name . "Shipped") (statuses . ("Shipped")))))))))
+    ;; Last column of board 1 must not step into board 2.
+    (should (null (shipit-atlassian-dashboard--board-target-status "Done" 'forward 1)))
+    ;; Explicit board scoping steps inside board 2.
+    (should (equal "Building"
+                   (shipit-atlassian-dashboard--board-target-status "Triage" 'forward 2)))
+    ;; Without a board ID the owning board is resolved from the status.
+    (should (equal "Shipped"
+                   (shipit-atlassian-dashboard--board-target-status "Building" 'forward)))
+    (should (null (shipit-atlassian-dashboard--board-target-status "Open" 'backward 1)))))
+
+(ert-deftest test-atlassian-dashboard-dedup-issues-by-key ()
+  "GIVEN issues where the same key appears twice (different case)
+WHEN deduplicating by work-item key
+THEN the first occurrence wins and order is preserved."
+  (let ((issues '(((id . "PROJ-1") (title . "First"))
+                  ((id . "PROJ-2") (title . "Second"))
+                  ((id . "proj-1") (title . "Duplicate")))))
+    (let ((result (shipit-atlassian-dashboard--dedup-issues-by-key issues)))
+      (should (= 2 (length result)))
+      (should (equal "First" (cdr (assq 'title (nth 0 result)))))
+      (should (equal "Second" (cdr (assq 'title (nth 1 result))))))))
 
 (provide 'test-shipit-atlassian-dashboard)
 ;;; test-shipit-atlassian-dashboard.el ends here

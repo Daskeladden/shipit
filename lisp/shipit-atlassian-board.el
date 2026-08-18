@@ -16,9 +16,10 @@
 ;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
-;; Fetches and renders Jira Agile board data as columns.
-;; Groups issues into board columns by matching issue status
-;; against each column's configured status list.
+;; Fetches Jira Agile board data, one or several boards at a time.
+;; Each board resolves to ((id . ID) (name . NAME) (columns . COLS))
+;; where issues are grouped into board columns by matching issue
+;; status against each column's configured status list.
 
 ;;; Code:
 
@@ -107,50 +108,93 @@ complete list of raw issues."
            (shipit-atlassian-board--fetch-all-issues-async
             config board-id callback all-issues new-start)))))))
 
-(defun shipit-atlassian-board--fetch-async (config board-id callback)
-  "Async version of `shipit-atlassian-board--fetch'.
-Fires the board-config request, the instance status catalogue,
-and the paginated issues request, then calls CALLBACK with the
-grouped columns list.  The catalogue lets columns that have no
-visible issue (e.g. empty `Review & Test') still expose a
-status name, which `--board-target-status' needs to stage a
-forward / backward move."
+(defun shipit-atlassian-board--make-board (board-id board-config columns)
+  "Assemble the board alist for BOARD-ID from BOARD-CONFIG and grouped COLUMNS.
+BOARD-CONFIG is the raw board-configuration API response; its `name'
+field labels the board in the dashboard, falling back to
+\"Board <id>\" when the response carries none."
+  `((id . ,board-id)
+    (name . ,(or (cdr (assq 'name board-config))
+                 (format "Board %d" board-id)))
+    (columns . ,columns)))
+
+(defun shipit-atlassian-board--config-columns (board-config)
+  "Extract the raw column list from BOARD-CONFIG."
+  (append (cdr (assq 'columns (cdr (assq 'columnConfig board-config)))) nil))
+
+(defun shipit-atlassian-board--fetch-one-async (config board-id status-name-map callback)
+  "Fetch one board's configuration and issues asynchronously.
+STATUS-NAME-MAP is the shared instance status catalogue (see
+`shipit-atlassian-board--fetch-all-async').  CALLBACK receives the
+assembled board alist ((id ...) (name ...) (columns ...))."
   (shipit-issue-jira--api-request-async
    config (shipit-atlassian-board--config-path board-id)
    (lambda (board-config)
-     (let ((columns (append (cdr (assq 'columns
-                                       (cdr (assq 'columnConfig board-config)))) nil)))
-       (shipit-atlassian-board--fetch-status-names-async
-        config
-        (lambda (status-name-map)
-          (shipit-atlassian-board--fetch-all-issues-async
-           config board-id
-           (lambda (raw-issues)
-             (let ((issues (mapcar #'shipit-issue-jira--normalize-issue raw-issues)))
-               (shipit--debug-log "Board async: %d columns, %d issues, %d status-names"
-                                  (length columns) (length issues)
-                                  (length status-name-map))
-               (funcall callback
-                        (shipit-atlassian-board--group-by-column
-                         columns issues status-name-map)))))))))))
+     (let ((columns (shipit-atlassian-board--config-columns board-config)))
+       (shipit-atlassian-board--fetch-all-issues-async
+        config board-id
+        (lambda (raw-issues)
+          (let ((issues (mapcar #'shipit-issue-jira--normalize-issue raw-issues)))
+            (shipit--debug-log "Board %d async: %d columns, %d issues"
+                               board-id (length columns) (length issues))
+            (funcall callback
+                     (shipit-atlassian-board--make-board
+                      board-id board-config
+                      (shipit-atlassian-board--group-by-column
+                       columns issues status-name-map))))))))))
 
-(defun shipit-atlassian-board--fetch (config board-id)
-  "Fetch board configuration and issues for BOARD-ID using CONFIG.
-Returns a list of column alists: ((name . \"col\") (issues . (...))).
-Also pulls the instance status catalogue so empty columns still
-resolve their status IDs to names -- otherwise advancing into a
-zero-issue column fails with `No forward column' even though the
-column exists in the board configuration."
+(defun shipit-atlassian-board--fetch-all-async (config board-ids callback)
+  "Fetch every board in BOARD-IDS concurrently; CALLBACK gets the list.
+The instance status catalogue is fetched once and shared across
+boards -- it lets columns that have no visible issue (e.g. an empty
+`Review & Test') still expose a status name, which the dashboard's
+edit mode needs to stage forward / backward moves.  CALLBACK
+receives the board alists in BOARD-IDS order once every board has
+reported back; it receives nil when BOARD-IDS is empty."
+  (if (null board-ids)
+      (funcall callback nil)
+    (shipit-atlassian-board--fetch-status-names-async
+     config
+     (lambda (status-name-map)
+       (let ((results (make-vector (length board-ids) nil))
+             (pending (length board-ids)))
+         (cl-loop for board-id in board-ids
+                  for i from 0
+                  do (let ((idx i))
+                       (shipit-atlassian-board--fetch-one-async
+                        config board-id status-name-map
+                        (lambda (board)
+                          (aset results idx board)
+                          (when (zerop (cl-decf pending))
+                            (funcall callback (append results nil))))))))))))
+
+(defun shipit-atlassian-board--fetch-one (config board-id status-name-map)
+  "Fetch configuration and issues for BOARD-ID synchronously.
+STATUS-NAME-MAP is the shared instance status catalogue.  Returns
+the board alist; see `shipit-atlassian-board--make-board'."
   (let* ((board-config (shipit-issue-jira--api-request
                         config (shipit-atlassian-board--config-path board-id)))
-         (columns (append (cdr (assq 'columns
-                                     (cdr (assq 'columnConfig board-config)))) nil))
-         (status-name-map (shipit-atlassian-board--fetch-status-names config))
+         (columns (shipit-atlassian-board--config-columns board-config))
          (raw-issues (shipit-atlassian-board--fetch-all-issues config board-id))
          (issues (mapcar #'shipit-issue-jira--normalize-issue raw-issues)))
-    (shipit--debug-log "Board: %d columns, %d issues, %d status-names"
-                       (length columns) (length issues) (length status-name-map))
-    (shipit-atlassian-board--group-by-column columns issues status-name-map)))
+    (shipit--debug-log "Board %d: %d columns, %d issues"
+                       board-id (length columns) (length issues))
+    (shipit-atlassian-board--make-board
+     board-id board-config
+     (shipit-atlassian-board--group-by-column columns issues status-name-map))))
+
+(defun shipit-atlassian-board--fetch-all (config board-ids)
+  "Fetch every board in BOARD-IDS synchronously, in order.
+Pulls the instance status catalogue once and shares it across
+boards so empty columns still resolve their status IDs to names --
+otherwise advancing into a zero-issue column fails with `No forward
+column' even though the column exists in the board configuration.
+Returns nil when BOARD-IDS is empty."
+  (when board-ids
+    (let ((status-name-map (shipit-atlassian-board--fetch-status-names config)))
+      (mapcar (lambda (board-id)
+                (shipit-atlassian-board--fetch-one config board-id status-name-map))
+              board-ids))))
 
 (defun shipit-atlassian-board--build-status-name-map (issues)
   "Build an alist of status-id -> status-name from ISSUES.

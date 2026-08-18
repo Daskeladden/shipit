@@ -17,7 +17,7 @@
 
 ;;; Commentary:
 ;; Dedicated dashboard buffer for Atlassian/Jira projects.
-;; Displays My Open Issues, What's Next, Kanban Board, and
+;; Displays My Open Issues, What's Next, Kanban Boards, and
 ;; Frequently Visited sections using magit-section for collapsible display.
 
 ;;; Code:
@@ -37,7 +37,7 @@
 (declare-function shipit-issue-jira--search-page "shipit-issue-jira")
 (declare-function shipit-issue-jira--normalize-issue "shipit-issue-jira")
 (declare-function shipit-issue-jira--api-request-async "shipit-issue-jira")
-(declare-function shipit-atlassian-board--fetch-async "shipit-atlassian-board")
+(declare-function shipit-atlassian-board--fetch-all-async "shipit-atlassian-board")
 (declare-function shipit-issue-create-buffer "shipit-issue-create")
 (declare-function shipit--get-pr-field-icon "shipit-render")
 (declare-function shipit-dwim "shipit-pr-actions")
@@ -65,8 +65,12 @@
   "Magit section identifier for What's Next.")
 (put 'atlassian-whats-next 'magit-section t)
 
+(defun atlassian-boards (&rest _args)
+  "Magit section identifier for the Boards wrapper section.")
+(put 'atlassian-boards 'magit-section t)
+
 (defun atlassian-board (&rest _args)
-  "Magit section identifier for Kanban Board.")
+  "Magit section identifier for one Kanban board.")
 (put 'atlassian-board 'magit-section t)
 
 (defun atlassian-board-column (&rest _args)
@@ -96,12 +100,15 @@
   :group 'shipit
   :prefix "shipit-atlassian-")
 
-(defcustom shipit-atlassian-board-id nil
-  "Jira board ID for the Kanban Board section.
-When nil, the board section is omitted."
-  :type '(choice (const :tag "None" nil)
-                 (integer :tag "Board ID"))
+(defcustom shipit-atlassian-board-ids nil
+  "List of Jira board IDs for the Boards section.
+Each board renders as its own collapsible subsection showing that
+board's columns.  When nil, the Boards section shows a
+configuration hint and What's Next has no sprint source."
+  :type '(repeat (integer :tag "Board ID"))
   :group 'shipit-atlassian)
+
+(make-obsolete-variable 'shipit-atlassian-board-id 'shipit-atlassian-board-ids "1.7")
 
 (defcustom shipit-atlassian-frequently-visited-max 10
   "Maximum number of items in the Frequently Visited section."
@@ -128,7 +135,9 @@ When nil, the board section is omitted."
   "Cached list of What's Next items.")
 
 (defvar-local shipit-atlassian-dashboard--board-data nil
-  "Cached Kanban board data.")
+  "Cached Kanban board data: a list of board alists.
+Each entry is ((id . ID) (name . NAME) (columns . COLUMNS)) as
+returned by `shipit-atlassian-board--fetch-all'.")
 
 (defvar-local shipit-atlassian-dashboard--backend-plist nil
   "Backend plist resolved for this dashboard buffer.")
@@ -194,12 +203,13 @@ Returns the transition alist, or nil if none match."
               transitions)))
 
 (defun shipit-atlassian-dashboard--issue-at-point ()
-  "Return a plist (:key K :status S :on-board P) for the issue at point, or nil.
+  "Return a plist (:key K :status S :on-board P :board-id ID) for point, or nil.
 Walks up to the nearest `atlassian-issue\=' section, reads the
 key / status text properties stashed on its heading, and notes
-whether the issue is inside a board-column section so the
-edit-mode commands can prefer board-column order over the
-canonical status list."
+whether the issue is inside a board-column section -- plus which
+board section it sits under -- so the edit-mode commands can step
+within that board's column order instead of the canonical status
+list."
   (let ((section (magit-current-section)))
     (while (and section (not (eq (oref section type) 'atlassian-issue)))
       (setq section (oref section parent)))
@@ -208,51 +218,69 @@ canonical status list."
              (key (get-text-property start 'shipit-issuelink-key))
              (status (get-text-property start 'shipit-issue-status))
              (on-board nil)
+             (board-id nil)
              (cur (oref section parent)))
-        (while (and cur (not on-board))
-          (when (eq (oref cur type) 'atlassian-board-column)
-            (setq on-board t))
+        (while cur
+          (pcase (oref cur type)
+            ('atlassian-board-column (setq on-board t))
+            ('atlassian-board (setq board-id (oref cur value))))
           (setq cur (oref cur parent)))
-        (let ((info (and key (list :key key :status status :on-board on-board))))
+        (let ((info (and key (list :key key :status status
+                                   :on-board on-board :board-id board-id))))
           (shipit--debug-log "edit: --issue-at-point => %S" info)
           info)))))
 
-(defun shipit-atlassian-dashboard--column-for-status (status)
-  "Return the board-column alist (full, including `statuses\=') accepting STATUS, or nil.
-Differs from `shipit-atlassian-dashboard--column-name-for-status\='
-by returning the column data, not just its name -- callers that
-need to derive a step-target from the column\='s configured
-status list use this."
-  (shipit--debug-log "edit: --column-for-status looking up %S in board-data: %S"
-                     status
-                     (mapcar (lambda (c)
-                               (list :name (cdr (assq 'name c))
-                                     :statuses (cdr (assq 'statuses c))))
-                             shipit-atlassian-dashboard--board-data))
+(defun shipit-atlassian-dashboard--board-columns (board)
+  "Return the columns list of BOARD (a board alist)."
+  (cdr (assq 'columns board)))
+
+(defun shipit-atlassian-dashboard--board-by-id (board-id)
+  "Return the board alist with BOARD-ID from the cached board data."
+  (cl-find board-id shipit-atlassian-dashboard--board-data
+           :key (lambda (board) (cdr (assq 'id board)))))
+
+(defun shipit-atlassian-dashboard--all-board-columns ()
+  "Concatenated columns of every cached board, in configured order."
+  (cl-mapcan (lambda (board)
+               (copy-sequence (shipit-atlassian-dashboard--board-columns board)))
+             shipit-atlassian-dashboard--board-data))
+
+(defun shipit-atlassian-dashboard--column-in (columns status)
+  "Return the column alist in COLUMNS accepting STATUS, or nil.
+Matches case-insensitively against each column\='s `statuses\=' list."
   (when status
     (cl-find-if
      (lambda (col)
-       (let ((statuses (cdr (assq 'statuses col))))
-         (cl-some (lambda (s)
-                    (and s (string-equal-ignore-case s status)))
-                  statuses)))
-     shipit-atlassian-dashboard--board-data)))
+       (cl-some (lambda (s)
+                  (and s (string-equal-ignore-case s status)))
+                (cdr (assq 'statuses col))))
+     columns)))
 
-(defun shipit-atlassian-dashboard--board-target-status (current direction)
-  "Return a target status name from the user\='s board, or nil.
-Walks `shipit-atlassian-dashboard--board-data\=' to find the
-column accepting CURRENT, steps DIRECTION (`forward\=' /
-`backward\=') one column, and returns the first status name
-listed for that column.  No-op when CURRENT isn\='t represented
-on the board, when there\='s no board data, or when stepping
-would move past either end."
-  (when (and current shipit-atlassian-dashboard--board-data)
-    (let* ((cols shipit-atlassian-dashboard--board-data)
-           (cur-col (shipit-atlassian-dashboard--column-for-status current))
-           (idx (cl-position cur-col cols :test #'eq)))
+(defun shipit-atlassian-dashboard--columns-accepting (status)
+  "Return the columns of the first cached board accepting STATUS, or nil."
+  (cl-loop for board in shipit-atlassian-dashboard--board-data
+           for cols = (shipit-atlassian-dashboard--board-columns board)
+           when (shipit-atlassian-dashboard--column-in cols status)
+           return cols))
+
+(defun shipit-atlassian-dashboard--board-target-status (current direction &optional board-id)
+  "Return a target status name one column DIRECTION from CURRENT, or nil.
+Steps within a single board's column order: BOARD-ID's board when
+given (the board the issue is displayed on), otherwise the first
+cached board with a column accepting CURRENT.  Returns the first
+status name listed for the destination column.  No-op when CURRENT
+isn\='t represented, or when stepping would move past either end --
+stepping never crosses a board boundary."
+  (when current
+    (let* ((cols (if board-id
+                     (shipit-atlassian-dashboard--board-columns
+                      (shipit-atlassian-dashboard--board-by-id board-id))
+                   (shipit-atlassian-dashboard--columns-accepting current)))
+           (cur-col (shipit-atlassian-dashboard--column-in cols current))
+           (idx (and cur-col (cl-position cur-col cols :test #'eq))))
       (shipit--debug-log
-       "edit: --board-target-status current=%S col=%S idx=%S total-cols=%d"
-       current
+       "edit: --board-target-status current=%S board=%S col=%S idx=%S total-cols=%d"
+       current board-id
        (and cur-col (cdr (assq 'name cur-col)))
        idx (length cols))
       (when idx
@@ -288,54 +316,58 @@ helper works for either the post-normalised dashboard format
 \(`key' field) or the Jira-normalised format (`number' field)."
   (cdr (assq 'key (shipit-issue--normalize-to-work-item issue))))
 
-(defun shipit-atlassian-dashboard--find-issue-in-board-data (key)
-  "Return the issue alist with KEY in `shipit-atlassian-dashboard--board-data', or nil.
+(defun shipit-atlassian-dashboard--find-issue-in-columns (columns key)
+  "Return the issue alist with KEY somewhere in COLUMNS, or nil.
 Case-insensitive match.  Normalises each candidate issue via
 `shipit-atlassian-dashboard--issue-key' so this works against
 both raw Jira agile data and the mapped work-item shape used
 in tests."
-  (cl-loop for col in shipit-atlassian-dashboard--board-data
+  (cl-loop for col in columns
            thereis (cl-find-if
                     (lambda (issue)
                       (let ((k (shipit-atlassian-dashboard--issue-key issue)))
                         (and k (string-equal-ignore-case k key))))
                     (cdr (assq 'issues col)))))
 
-(defun shipit-atlassian-dashboard--column-name-for-status (status-name)
-  "Return the board-column name that would accept STATUS-NAME, or nil.
-Walks `shipit-atlassian-dashboard--board-data\=' looking for a
-column whose `statuses\=' list contains STATUS-NAME (case
-insensitive).  When status-status-mapping comes from the board
-API (Jira agile boards), this is the right way to route a
-canonical-order target like \"In Review\" to whichever column
-the user has configured -- which might be \"Code Review\",
-\"In QA\", or anything else."
-  (when status-name
-    (cl-loop for col in shipit-atlassian-dashboard--board-data
-             for col-statuses = (cdr (assq 'statuses col))
-             when (cl-some (lambda (s)
-                             (and s (string-equal-ignore-case s status-name)))
-                           col-statuses)
-             return (cdr (assq 'name col)))))
+(defun shipit-atlassian-dashboard--find-issue-in-board-data (key)
+  "Return the issue alist with KEY on any cached board, or nil."
+  (cl-loop for board in shipit-atlassian-dashboard--board-data
+           thereis (shipit-atlassian-dashboard--find-issue-in-columns
+                    (shipit-atlassian-dashboard--board-columns board) key)))
 
-(defun shipit-atlassian-dashboard--pending-arrivals-into-column (col-name)
-  "Return issue alists whose pending target routes to COL-NAME.
+(defun shipit-atlassian-dashboard--column-name-for-status (status-name &optional columns)
+  "Return the column name that would accept STATUS-NAME, or nil.
+Searches COLUMNS when given (a single board's columns), otherwise
+every cached board in configured order.  When the status mapping
+comes from the board API (Jira agile boards), this is the right way
+to route a canonical-order target like \"In Review\" to whichever
+column the user has configured -- which might be \"Code Review\",
+\"In QA\", or anything else."
+  (cdr (assq 'name
+             (shipit-atlassian-dashboard--column-in
+              (or columns (shipit-atlassian-dashboard--all-board-columns))
+              status-name))))
+
+(defun shipit-atlassian-dashboard--pending-arrivals-into-column (board col-name)
+  "Return issue alists whose pending target routes to COL-NAME on BOARD.
 Routes via `shipit-atlassian-dashboard--column-name-for-status\='
-\(falling back to a direct case-insensitive match) so a target
-like \"In Review\" lands in whichever column the user\='s
-board configures to accept it -- not just a column literally
-named \"In Review\"."
+against BOARD's own columns \(falling back to a direct
+case-insensitive match) so a target like \"In Review\" lands in
+whichever column BOARD configures to accept it.  Only issues that
+BOARD actually displays are reported -- another board's same-named
+column must not claim the arrival."
   (when col-name
-    (let (acc)
+    (let ((cols (shipit-atlassian-dashboard--board-columns board))
+          acc)
       (dolist (entry shipit-atlassian-dashboard--pending-transitions)
         (let* ((target (cdr entry))
                (resolved-col
-                (or (shipit-atlassian-dashboard--column-name-for-status target)
+                (or (shipit-atlassian-dashboard--column-name-for-status target cols)
                     target)))
           (when (and resolved-col
                      (string-equal-ignore-case resolved-col col-name))
-            (let ((issue (shipit-atlassian-dashboard--find-issue-in-board-data
-                          (car entry))))
+            (let ((issue (shipit-atlassian-dashboard--find-issue-in-columns
+                          cols (car entry))))
               (when issue (push issue acc))))))
       (nreverse acc))))
 
@@ -464,45 +496,66 @@ isn\='t present (commit just removed it, etc.)."
         (push-mark nil t)
         (goto-char (oref target start))))))
 
+(defun shipit-atlassian-dashboard--pending-expand-targets ()
+  "Return an alist of (BOARD-ID . COLUMN-NAMES) for staged transitions.
+For each pending target, the destination column is resolved within
+each board that actually displays the issue, so only that board's
+column sections are expanded."
+  (let (result)
+    (dolist (board shipit-atlassian-dashboard--board-data)
+      (let ((cols (shipit-atlassian-dashboard--board-columns board))
+            (names nil))
+        (dolist (entry shipit-atlassian-dashboard--pending-transitions)
+          (when (shipit-atlassian-dashboard--find-issue-in-columns cols (car entry))
+            (let ((name (shipit-atlassian-dashboard--column-name-for-status
+                         (cdr entry) cols)))
+              (when name (push name names)))))
+        (when names
+          (push (cons (cdr (assq 'id board)) (delete-dups (nreverse names)))
+                result))))
+    (nreverse result)))
+
 (defun shipit-atlassian-dashboard--expand-columns-with-pending-arrivals ()
   "Make sure every board column that has a pending arrival is shown.
-Resolves each pending target to its column name, then walks the
-section tree showing any matching `atlassian-board-column\='
-\(plus its `atlassian-board\=' wrapper).  Comparison uses each
-column section\='s `value\=' field -- which is the column name
-since the renderer stores it there.  Other sections keep
+Resolves each pending target to (BOARD-ID . COLUMN-NAMES) pairs,
+then walks the section tree showing every matching
+`atlassian-board-column\=' \(plus its `atlassian-board\=' and
+`atlassian-boards\=' wrappers).  Comparison uses each column
+section\='s `value\=' field -- the column name -- under the board
+section whose `value\=' is the board ID.  Other sections keep
 whatever visibility state magit\='s cache held."
-  (let ((targets (delete-dups
-                  (delq nil
-                        (mapcar
-                         (lambda (entry)
-                           (shipit-atlassian-dashboard--column-name-for-status
-                            (cdr entry)))
-                         shipit-atlassian-dashboard--pending-transitions)))))
+  (let ((targets (shipit-atlassian-dashboard--pending-expand-targets)))
     (when targets
       (cl-labels
-          ((walk (section)
+          ((walk (section board-names)
              (when section
                (let ((type (oref section type)))
                  (cond
-                  ((eq type 'atlassian-board)
+                  ((eq type 'atlassian-boards)
                    (when (oref section hidden)
                      (magit-section-show section))
                    (dolist (child (oref section children))
-                     (walk child)))
+                     (walk child board-names)))
+                  ((eq type 'atlassian-board)
+                   (let ((names (cdr (assoc (oref section value) targets))))
+                     (when names
+                       (when (oref section hidden)
+                         (magit-section-show section))
+                       (dolist (child (oref section children))
+                         (walk child names)))))
                   ((eq type 'atlassian-board-column)
                    (let ((col-name (oref section value)))
                      (when (and col-name
                                 (cl-some (lambda (target)
                                            (and target
                                                 (string-equal-ignore-case target col-name)))
-                                         targets)
+                                         board-names)
                                 (oref section hidden))
                        (magit-section-show section))))
                   (t
                    (dolist (child (oref section children))
-                     (walk child))))))))
-        (walk magit-root-section)))))
+                     (walk child board-names))))))))
+        (walk magit-root-section nil)))))
 
 (defun shipit-atlassian-dashboard--stage-issue-at-point (direction)
   "Stage DIRECTION for the issue at point.
@@ -521,7 +574,7 @@ press twice to skip a column, three times to skip two."
                        key status))
            (target (and on-board
                         (shipit-atlassian-dashboard--board-target-status
-                         effective direction))))
+                         effective direction (plist-get info :board-id)))))
       (shipit--debug-log
        "edit: stage %s key=%S status=%S effective=%S on-board=%s target=%S"
        direction key status effective on-board target)
@@ -574,15 +627,15 @@ Mirror of `shipit-atlassian-dashboard-issue-forward\='."
     (user-error "Press C-x C-q to enter edit mode first"))
   (shipit-atlassian-dashboard--stage-issue-at-point 'backward))
 
-(defun shipit-atlassian-dashboard--column-index-for-status (status)
-  "Return STATUS\='s column index in `shipit-atlassian-dashboard--board-data', or nil."
+(defun shipit-atlassian-dashboard--column-index-for-status (status columns)
+  "Return STATUS\='s column index within COLUMNS, or nil."
   (when status
     (cl-position-if
      (lambda (col)
        (cl-some (lambda (s)
                   (and s (string-equal-ignore-case s status)))
                 (cdr (assq 'statuses col))))
-     shipit-atlassian-dashboard--board-data)))
+     columns)))
 
 (defun shipit-atlassian-dashboard--pick-step-transition (transitions target)
   "Choose a transition that moves toward TARGET column.
@@ -594,15 +647,17 @@ commit walker can step from \"To Do\" to \"Review & Test\" via
 \"In Progress\" automatically."
   (let* ((direct (shipit-atlassian-dashboard--match-transition
                   transitions target))
-         (target-idx (shipit-atlassian-dashboard--column-index-for-status
-                      target)))
+         (cols (shipit-atlassian-dashboard--columns-accepting target))
+         (target-idx (and cols
+                          (shipit-atlassian-dashboard--column-index-for-status
+                           target cols))))
     (or direct
         (and target-idx
              (let (best best-idx)
                (dolist (tr transitions)
                  (let* ((to-name (cdr (assq 'name (cdr (assq 'to tr)))))
                         (idx (shipit-atlassian-dashboard--column-index-for-status
-                              to-name)))
+                              to-name cols)))
                    (when (and idx
                               (or (null best-idx)
                                   (< (abs (- idx target-idx))
@@ -615,17 +670,18 @@ commit walker can step from \"To Do\" to \"Review & Test\" via
 Returns t on success, signals an error otherwise.  Caps the
 walk at 8 steps -- a safety net against pathological workflows
 that would otherwise loop indefinitely."
-  (let ((steps 0)
-        (last-fired nil)
-        (target-idx (shipit-atlassian-dashboard--column-index-for-status
-                     target)))
+  (let* ((steps 0)
+         (last-fired nil)
+         (target-cols (shipit-atlassian-dashboard--columns-accepting target))
+         (target-idx (shipit-atlassian-dashboard--column-index-for-status
+                      target target-cols)))
     (shipit--debug-log
      "commit: %s target=%S target-idx=%S board-cols=%S"
      key target target-idx
      (mapcar (lambda (c)
                (list :name (cdr (assq 'name c))
                      :statuses (cdr (assq 'statuses c))))
-             shipit-atlassian-dashboard--board-data))
+             target-cols))
     (catch 'done
       (while t
         (when (>= steps 8)
@@ -788,7 +844,7 @@ section; with a cached state we return nil and let magit apply
 it."
   (when (memq (oref section type)
               '(atlassian-dashboard atlassian-my-issues
-                atlassian-whats-next atlassian-board
+                atlassian-whats-next atlassian-boards atlassian-board
                 atlassian-frequently-visited
                 atlassian-board-column atlassian-my-issues-project
                 atlassian-issues atlassian-issues-project-group
@@ -803,7 +859,7 @@ it."
 (define-derived-mode shipit-atlassian-dashboard-mode magit-section-mode "Shipit-Atlassian"
   "Major mode for Atlassian/Jira project dashboard buffers.
 Displays project overview with My Open Issues, What\='s Next,
-Kanban Board, and Frequently Visited sections.
+Kanban Boards, and Frequently Visited sections.
 
 \\{shipit-atlassian-dashboard-mode-map}"
   :group 'shipit-atlassian
@@ -1023,34 +1079,52 @@ Returns list of (project-key . items) alists."
   (let ((issues (append (cdr (assq 'issues raw)) nil)))
     (mapcar #'shipit-issue-jira--normalize-issue issues)))
 
-(defun shipit-atlassian-dashboard--fetch-whats-next ()
-  "Fetch what's next items from active sprint.
-Returns nil when `shipit-atlassian-board-id' is not configured."
-  (when shipit-atlassian-board-id
-    (let* ((config shipit-atlassian-dashboard--config)
-           (sprint-raw (shipit-issue-jira--api-request
-                        config
-                        (shipit-atlassian-dashboard--active-sprint-path
-                         shipit-atlassian-board-id)))
-           (sprints (append (cdr (assq 'values sprint-raw)) nil))
-           (active-sprint (car sprints)))
-      (when active-sprint
-        (let* ((sprint-id (cdr (assq 'id active-sprint)))
-               (issues-raw (shipit-issue-jira--api-request
-                            config
-                            (shipit-atlassian-dashboard--sprint-issues-path sprint-id))))
-          (shipit--debug-log "Atlassian dashboard: fetched %d whats-next items from sprint %s"
-                             (length (append (cdr (assq 'issues issues-raw)) nil))
-                             (cdr (assq 'name active-sprint)))
-          (shipit-atlassian-dashboard--normalize-agile-issues issues-raw))))))
+(defun shipit-atlassian-dashboard--dedup-issues-by-key (issues)
+  "Drop later duplicates from ISSUES, comparing work-item keys.
+Comparison is case-insensitive; the first occurrence wins.  Issues
+without a resolvable key are kept."
+  (let (seen acc)
+    (dolist (issue issues)
+      (let ((key (shipit-atlassian-dashboard--issue-key issue)))
+        (unless (and key (member (upcase key) seen))
+          (when key (push (upcase key) seen))
+          (push issue acc))))
+    (nreverse acc)))
 
-(defun shipit-atlassian-dashboard--fetch-board ()
-  "Fetch board data.
-Returns nil when `shipit-atlassian-board-id' is not configured."
-  (when shipit-atlassian-board-id
-    (shipit-atlassian-board--fetch
-     shipit-atlassian-dashboard--config
-     shipit-atlassian-board-id)))
+(defun shipit-atlassian-dashboard--fetch-whats-next-for-board (board-id)
+  "Fetch what's-next items from BOARD-ID's active sprint.
+Returns nil when the board has no active sprint."
+  (let* ((config shipit-atlassian-dashboard--config)
+         (sprint-raw (shipit-issue-jira--api-request
+                      config
+                      (shipit-atlassian-dashboard--active-sprint-path board-id)))
+         (active-sprint (car (append (cdr (assq 'values sprint-raw)) nil))))
+    (when active-sprint
+      (let* ((sprint-id (cdr (assq 'id active-sprint)))
+             (issues-raw (shipit-issue-jira--api-request
+                          config
+                          (shipit-atlassian-dashboard--sprint-issues-path sprint-id))))
+        (shipit--debug-log
+         "Atlassian dashboard: fetched %d whats-next items from sprint %s (board %d)"
+         (length (append (cdr (assq 'issues issues-raw)) nil))
+         (cdr (assq 'name active-sprint)) board-id)
+        (shipit-atlassian-dashboard--normalize-agile-issues issues-raw)))))
+
+(defun shipit-atlassian-dashboard--fetch-whats-next ()
+  "Fetch what's-next items from every configured board's active sprint.
+Aggregates across `shipit-atlassian-board-ids' in order and drops
+issues that appear on more than one board.  Returns nil when no
+board is configured."
+  (shipit-atlassian-dashboard--dedup-issues-by-key
+   (cl-mapcan #'shipit-atlassian-dashboard--fetch-whats-next-for-board
+              shipit-atlassian-board-ids)))
+
+(defun shipit-atlassian-dashboard--fetch-boards ()
+  "Fetch data for every board in `shipit-atlassian-board-ids'.
+Returns nil when no board is configured."
+  (shipit-atlassian-board--fetch-all
+   shipit-atlassian-dashboard--config
+   shipit-atlassian-board-ids))
 
 ;;; Issues section — fetch and pagination
 
@@ -1148,7 +1222,11 @@ rendering:
                      pending transition.  Set nil from the
                      board renderer because the issue has
                      already been moved to the target column;
-                     the arrow would be redundant."
+                     the arrow would be redundant.
+  :indent STRING  -- line prefix before the row; defaults to
+                     three spaces.  Board columns pass their
+                     deeper indent so rows align under the
+                     column heading."
   (let* ((mapped (shipit-issue--normalize-to-work-item issue))
          (key (cdr (assq 'key mapped)))
          (status (cdr (assq 'status mapped)))
@@ -1158,7 +1236,7 @@ rendering:
                        t))
          (face-overlay (plist-get opts :face))
          (base (shipit-issue--format-work-item-line mapped columns widths))
-         (line (concat "   " base
+         (line (concat (or (plist-get opts :indent) "   ") base
                        (when (and show-arrow pending-target)
                          (concat " "
                                  (propertize (format "→ %s" pending-target)
@@ -1208,10 +1286,10 @@ rendering:
                                   (length shipit-atlassian-dashboard--whats-next))
                           'font-lock-face 'magit-section-heading)))
     (cond
-     ((null shipit-atlassian-board-id)
-      (insert (propertize "   Press RET to configure board ID\n"
+     ((null shipit-atlassian-board-ids)
+      (insert (propertize "   Press RET to configure board IDs\n"
                           'font-lock-face 'magit-dimmed
-                          'shipit-atlassian-configure 'board-id)))
+                          'shipit-atlassian-configure 'board-ids)))
      ((null shipit-atlassian-dashboard--whats-next)
       (insert (propertize "   No items in current sprint\n" 'font-lock-face 'magit-dimmed)))
      (t
@@ -1223,55 +1301,94 @@ rendering:
           (shipit-atlassian-dashboard--insert-issue-line issue columns widths)))))
     (insert "\n")))
 
-(defun shipit-atlassian-dashboard--insert-board-section ()
-  "Insert Kanban Board section."
-  (magit-insert-section (atlassian-board)
+(defconst shipit-atlassian-dashboard--board-indent "   "
+  "Indent prefix for a board heading under the Boards section.
+Column headings and issue rows derive their deeper indent from
+this, keeping every level one step (3 columns) inside its parent.")
+
+(defun shipit-atlassian-dashboard--board-issue-count (board)
+  "Total number of issues across BOARD's columns."
+  (cl-loop for col in (shipit-atlassian-dashboard--board-columns board)
+           sum (length (cdr (assq 'issues col)))))
+
+(defun shipit-atlassian-dashboard--insert-boards-section ()
+  "Insert the Boards section, one collapsible subsection per board."
+  (magit-insert-section (atlassian-boards)
     (magit-insert-heading
       (format "%s %s"
               (shipit--get-pr-field-icon "project" "\U0001f4ca")
-              (propertize "Board" 'font-lock-face 'magit-section-heading)))
+              (propertize (if shipit-atlassian-board-ids
+                              (format "Boards (%d)"
+                                      (length shipit-atlassian-board-ids))
+                            "Boards")
+                          'font-lock-face 'magit-section-heading)))
     (cond
-     ((null shipit-atlassian-board-id)
-      (insert (propertize "   Press RET to configure board ID\n"
+     ((null shipit-atlassian-board-ids)
+      (insert (propertize "   Press RET to configure board IDs\n"
                           'font-lock-face 'magit-dimmed
-                          'shipit-atlassian-configure 'board-id)))
+                          'shipit-atlassian-configure 'board-ids)))
      ((null shipit-atlassian-dashboard--board-data)
       (insert (propertize "   No board data\n" 'font-lock-face 'magit-dimmed)))
      (t
-      (let* ((all-issues (cl-mapcan (lambda (col)
-                                      (copy-sequence (cdr (assq 'issues col))))
-                                    shipit-atlassian-dashboard--board-data))
-             (prepared (shipit-atlassian-dashboard--prepare-widths all-issues))
-             (columns (car prepared))
-             (widths (cdr prepared)))
-          (dolist (col shipit-atlassian-dashboard--board-data)
-            (let* ((col-name (cdr (assq 'name col)))
-                   (col-issues (cdr (assq 'issues col)))
-                   (arrivals (shipit-atlassian-dashboard--pending-arrivals-into-column
-                              col-name))
-                   (visible-native
-                    (cl-remove-if
-                     (lambda (issue)
-                       (let* ((k (shipit-atlassian-dashboard--issue-key issue))
-                              (target (cdr (assoc k shipit-atlassian-dashboard--pending-transitions))))
-                         (and target
-                              (shipit-atlassian-dashboard--column-name-for-status
-                               target))))
-                     col-issues))
-                   (visible-count (+ (length visible-native) (length arrivals))))
-              (magit-insert-section (atlassian-board-column col-name)
-                (magit-insert-heading
-                  (propertize (format "   %s (%d)" col-name visible-count)
-                              'font-lock-face 'magit-section-heading))
-                (dolist (issue visible-native)
-                  (shipit-atlassian-dashboard--insert-issue-line
-                   issue columns widths))
-                (dolist (issue arrivals)
-                  (shipit-atlassian-dashboard--insert-issue-line
-                   issue columns widths
-                   '(:face shipit-atlassian-dashboard-pending-face
-                     :show-pending-arrow nil)))))))))
+      (dolist (board shipit-atlassian-dashboard--board-data)
+        (shipit-atlassian-dashboard--insert-one-board-section board))))
     (insert "\n")))
+
+(defun shipit-atlassian-dashboard--insert-one-board-section (board)
+  "Insert BOARD as a collapsible section containing its columns."
+  (let* ((board-id (cdr (assq 'id board)))
+         (board-name (or (cdr (assq 'name board)) (format "Board %s" board-id)))
+         (cols (shipit-atlassian-dashboard--board-columns board))
+         (all-issues (cl-mapcan (lambda (col)
+                                  (copy-sequence (cdr (assq 'issues col))))
+                                cols))
+         (prepared (shipit-atlassian-dashboard--prepare-widths all-issues))
+         (columns (car prepared))
+         (widths (cdr prepared))
+         (indent shipit-atlassian-dashboard--board-indent)
+         (col-indent (concat indent "   ")))
+    (magit-insert-section (atlassian-board board-id)
+      (magit-insert-heading
+        (propertize (format "%s%s (%d)" indent board-name
+                            (shipit-atlassian-dashboard--board-issue-count board))
+                    'font-lock-face 'magit-section-heading))
+      (dolist (col cols)
+        (shipit-atlassian-dashboard--insert-board-column-section
+         board col columns widths col-indent)))))
+
+(defun shipit-atlassian-dashboard--insert-board-column-section (board col columns widths indent)
+  "Insert COL of BOARD as a column section with its issue rows.
+COLUMNS and WIDTHS drive the row layout; INDENT prefixes the
+column heading and each row.  Issues staged away from COL are
+hidden while pending arrivals from elsewhere on BOARD render in
+the pending face."
+  (let* ((col-name (cdr (assq 'name col)))
+         (col-issues (cdr (assq 'issues col)))
+         (board-cols (shipit-atlassian-dashboard--board-columns board))
+         (arrivals (shipit-atlassian-dashboard--pending-arrivals-into-column
+                    board col-name))
+         (visible-native
+          (cl-remove-if
+           (lambda (issue)
+             (let* ((k (shipit-atlassian-dashboard--issue-key issue))
+                    (target (cdr (assoc k shipit-atlassian-dashboard--pending-transitions))))
+               (and target
+                    (shipit-atlassian-dashboard--column-name-for-status
+                     target board-cols))))
+           col-issues))
+         (visible-count (+ (length visible-native) (length arrivals))))
+    (magit-insert-section (atlassian-board-column col-name)
+      (magit-insert-heading
+        (propertize (format "%s%s (%d)" indent col-name visible-count)
+                    'font-lock-face 'magit-section-heading))
+      (dolist (issue visible-native)
+        (shipit-atlassian-dashboard--insert-issue-line
+         issue columns widths (list :indent indent)))
+      (dolist (issue arrivals)
+        (shipit-atlassian-dashboard--insert-issue-line
+         issue columns widths
+         (list :face 'shipit-atlassian-dashboard-pending-face
+               :show-pending-arrow nil :indent indent))))))
 
 ;;; Issues section — renderer
 
@@ -1397,7 +1514,7 @@ Deduplicates, pushes to front, trims to max, and persists."
       (shipit-atlassian-dashboard--insert-whats-next-section)
       (shipit-atlassian-dashboard--insert-my-issues-section)
       (shipit-atlassian-dashboard--insert-issues-section)
-      (shipit-atlassian-dashboard--insert-board-section)
+      (shipit-atlassian-dashboard--insert-boards-section)
       (shipit-atlassian-dashboard--insert-frequently-visited-section))
     ;; Propagate hidden state to overlays — root section doesn't go
     ;; through magit-section-show, so children need explicit show/hide.
@@ -1804,38 +1921,56 @@ Returns the deepest section that was expanded."
          (funcall callback
                   (mapcar #'shipit-issue-jira--normalize-issue issues)))))))
 
-(defun shipit-atlassian-dashboard--fetch-whats-next-async (callback)
-  "Fetch what's-next items asynchronously; call CALLBACK with the list.
-Chains two async requests: active sprint, then the sprint's issues."
-  (if (null shipit-atlassian-board-id)
-      (funcall callback nil)
-    (let ((config shipit-atlassian-dashboard--config))
-      (shipit-issue-jira--api-request-async
-       config (shipit-atlassian-dashboard--active-sprint-path
-               shipit-atlassian-board-id)
-       (lambda (sprint-raw)
-         (let* ((sprints (append (cdr (assq 'values sprint-raw)) nil))
-                (active-sprint (car sprints)))
-           (if (null active-sprint)
-               (funcall callback nil)
-             (let ((sprint-id (cdr (assq 'id active-sprint))))
-               (shipit-issue-jira--api-request-async
-                config (shipit-atlassian-dashboard--sprint-issues-path sprint-id)
-                (lambda (issues-raw)
-                  (funcall callback
-                           (shipit-atlassian-dashboard--normalize-agile-issues
-                            issues-raw))))))))))))
+(defun shipit-atlassian-dashboard--fetch-whats-next-for-board-async (board-id callback)
+  "Async variant of `shipit-atlassian-dashboard--fetch-whats-next-for-board'.
+Chains two async requests: BOARD-ID's active sprint, then the
+sprint's issues.  CALLBACK receives the item list, nil when the
+board has no active sprint."
+  (let ((config shipit-atlassian-dashboard--config))
+    (shipit-issue-jira--api-request-async
+     config (shipit-atlassian-dashboard--active-sprint-path board-id)
+     (lambda (sprint-raw)
+       (let ((active-sprint (car (append (cdr (assq 'values sprint-raw)) nil))))
+         (if (null active-sprint)
+             (funcall callback nil)
+           (shipit-issue-jira--api-request-async
+            config (shipit-atlassian-dashboard--sprint-issues-path
+                    (cdr (assq 'id active-sprint)))
+            (lambda (issues-raw)
+              (funcall callback
+                       (shipit-atlassian-dashboard--normalize-agile-issues
+                        issues-raw))))))))))
 
-(defun shipit-atlassian-dashboard--fetch-board-async (callback)
-  "Fetch the Kanban board data asynchronously; call CALLBACK with columns.
-Delegates to `shipit-atlassian-board--fetch-async' — a nil callback is
-invoked when no board is configured."
-  (if (null shipit-atlassian-board-id)
-      (funcall callback nil)
-    (shipit-atlassian-board--fetch-async
-     shipit-atlassian-dashboard--config
-     shipit-atlassian-board-id
-     callback)))
+(defun shipit-atlassian-dashboard--fetch-whats-next-async (callback)
+  "Fetch what's-next items for every configured board asynchronously.
+Runs the per-board sprint lookups concurrently and calls CALLBACK
+once with the deduplicated list in configured board order, or nil
+when no board is configured."
+  (let ((board-ids shipit-atlassian-board-ids))
+    (if (null board-ids)
+        (funcall callback nil)
+      (let ((results (make-vector (length board-ids) nil))
+            (pending (length board-ids)))
+        (cl-loop for board-id in board-ids
+                 for i from 0
+                 do (let ((idx i))
+                      (shipit-atlassian-dashboard--fetch-whats-next-for-board-async
+                       board-id
+                       (lambda (items)
+                         (aset results idx items)
+                         (when (zerop (cl-decf pending))
+                           (funcall callback
+                                    (shipit-atlassian-dashboard--dedup-issues-by-key
+                                     (apply #'append (append results nil)))))))))))))
+
+(defun shipit-atlassian-dashboard--fetch-boards-async (callback)
+  "Fetch every configured board asynchronously; CALLBACK gets the list.
+Delegates to `shipit-atlassian-board--fetch-all-async' — a nil
+callback value arrives when no board is configured."
+  (shipit-atlassian-board--fetch-all-async
+   shipit-atlassian-dashboard--config
+   shipit-atlassian-board-ids
+   callback))
 
 (defun shipit-atlassian-dashboard--fetch-issues-page-async (token page-size callback)
   "Async version of ``--fetch-issues-page'.
@@ -1909,7 +2044,7 @@ the load time."
            (with-current-buffer buf
              (setq shipit-atlassian-dashboard--whats-next data)))
          (finish)))
-      (shipit-atlassian-dashboard--fetch-board-async
+      (shipit-atlassian-dashboard--fetch-boards-async
        (lambda (data)
          (when (buffer-live-p buf)
            (with-current-buffer buf
@@ -1929,7 +2064,7 @@ to it via `run-at-time' so the initial placeholder render paints first."
         (setq shipit-atlassian-dashboard--whats-next
               (shipit-atlassian-dashboard--fetch-whats-next))
         (setq shipit-atlassian-dashboard--board-data
-              (shipit-atlassian-dashboard--fetch-board))
+              (shipit-atlassian-dashboard--fetch-boards))
         (shipit-atlassian-dashboard--fetch-issues-reset))
     (error
      (shipit--debug-log "Dashboard fetch error: %s" err)))
@@ -1979,30 +2114,67 @@ Returns the numeric board ID or nil."
    ((string-match "/boards?/\\([0-9]+\\)" input)
     (string-to-number (match-string 1 input)))))
 
-(defun shipit-atlassian-dashboard--configure-board-id ()
-  "Prompt for a Jira board ID or URL and set it for the current session."
+(defun shipit-atlassian-dashboard--parse-board-ids-input (input)
+  "Parse INPUT as comma/space-separated board IDs or board URLs.
+Returns the list of numeric board IDs in input order; tokens that
+parse to nothing are dropped."
+  (delq nil (mapcar #'shipit-atlassian-dashboard--parse-board-input
+                    (split-string input "[,[:space:]]+" t))))
+
+(defun shipit-atlassian-dashboard--configure-board-ids ()
+  "Prompt for Jira board IDs or URLs and set them for the current session."
   (interactive)
-  (let* ((prompt (if shipit-atlassian-board-id
-                     (format "Board ID or URL (current: %d): " shipit-atlassian-board-id)
-                   "Board ID or URL: "))
+  (let* ((current (mapconcat #'number-to-string shipit-atlassian-board-ids ","))
+         (prompt (if shipit-atlassian-board-ids
+                     (format "Board IDs or URLs (current: %s): " current)
+                   "Board IDs or URLs (comma-separated): "))
          (input (read-string prompt))
-         (id (shipit-atlassian-dashboard--parse-board-input input)))
-    (unless id
-      (user-error "Could not parse board ID from: %s" input))
-    (setq shipit-atlassian-board-id id)
-    (message "Board ID set to %d (use M-x customize-variable RET shipit-atlassian-board-id to persist)"
-             id)
+         (ids (shipit-atlassian-dashboard--parse-board-ids-input input)))
+    (unless ids
+      (user-error "Could not parse any board ID from: %s" input))
+    (setq shipit-atlassian-board-ids ids)
+    (message "Board IDs set to %s (use M-x customize-variable RET shipit-atlassian-board-ids to persist)"
+             (mapconcat #'number-to-string ids ","))
     (shipit-atlassian-dashboard--refresh-data)))
 
+(defun shipit-atlassian-dashboard--board-id-at-point ()
+  "Return the board ID of the `atlassian-board\=' section at point, or nil."
+  (let ((section (magit-current-section)))
+    (while (and section (not (eq (oref section type) 'atlassian-board)))
+      (setq section (oref section parent)))
+    (when section (oref section value))))
+
+(defun shipit-atlassian-dashboard--read-configured-board-id ()
+  "Pick one configured board ID, preferring point context over prompting.
+With a single configured board it is returned directly; otherwise
+the user picks among the configured boards, labelled with their
+fetched names when board data is available."
+  (or (shipit-atlassian-dashboard--board-id-at-point)
+      (when (null (cdr shipit-atlassian-board-ids))
+        (car shipit-atlassian-board-ids))
+      (let* ((candidates
+              (mapcar (lambda (board-id)
+                        (let ((board (shipit-atlassian-dashboard--board-by-id board-id)))
+                          (cons (if board
+                                    (format "%s (%d)" (cdr (assq 'name board)) board-id)
+                                  (number-to-string board-id))
+                                board-id)))
+                      shipit-atlassian-board-ids))
+             (choice (completing-read "Open board: " candidates nil t)))
+        (cdr (assoc choice candidates)))))
+
 (defun shipit-atlassian-dashboard--open-board-in-browser ()
-  "Open the configured board in the browser."
+  "Open a configured board in the browser.
+Prefers the board section at point; prompts when several boards
+are configured and point gives no answer."
   (interactive)
-  (if shipit-atlassian-board-id
-      (let ((base-url (string-trim-right
-                       (plist-get shipit-atlassian-dashboard--config :base-url) "/")))
-        (browse-url (format "%s/jira/software/projects/board/%d"
-                            base-url shipit-atlassian-board-id)))
-    (user-error "No board ID configured")))
+  (unless shipit-atlassian-board-ids
+    (user-error "No board IDs configured"))
+  (let ((base-url (string-trim-right
+                   (plist-get shipit-atlassian-dashboard--config :base-url) "/"))
+        (board-id (shipit-atlassian-dashboard--read-configured-board-id)))
+    (browse-url (format "%s/jira/software/projects/board/%d"
+                        base-url board-id))))
 
 (defun shipit-atlassian-dashboard--section-type-at-point ()
   "Return the dashboard section type at point.
@@ -2031,8 +2203,8 @@ remote detection."
 
 (transient-define-prefix shipit-atlassian-dashboard-actions ()
   "Actions for Atlassian dashboard."
-  ["Board"
-   ("b" "Set board ID" shipit-atlassian-dashboard--configure-board-id)
+  ["Boards"
+   ("b" "Set board IDs" shipit-atlassian-dashboard--configure-board-ids)
    ("o" "Open board in browser" shipit-atlassian-dashboard--open-board-in-browser)]
   ["Issue"
    ("n" "Create new issue" shipit-atlassian-dashboard--create-issue)]
@@ -2050,8 +2222,8 @@ remote detection."
       (shipit-issues-open-buffer
        issue-key
        shipit-atlassian-dashboard--repo))
-     ((eq configure 'board-id)
-      (shipit-atlassian-dashboard--configure-board-id))
+     ((eq configure 'board-ids)
+      (shipit-atlassian-dashboard--configure-board-ids))
      (t
       (let ((section (magit-current-section)))
         (when (and section (not (eq section magit-root-section)))

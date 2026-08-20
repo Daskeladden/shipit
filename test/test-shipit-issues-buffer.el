@@ -8,7 +8,9 @@
 (require 'ert)
 (require 'shipit)
 (require 'shipit-issues-buffer)
+(require 'shipit-issues)
 (require 'shipit-sections)
+(require 'shipit-pr-github)
 
 ;;; Work Item Column Renderer Tests
 
@@ -97,9 +99,398 @@ WHEN inserting linked items section
 THEN nothing is inserted."
   (with-temp-buffer
     (let ((magit-insert-section--parent nil))
-      (magit-insert-section (root)
-        (shipit-issue--insert-linked-items-section nil '(work status)))
+      (cl-letf (((symbol-function 'shipit-issue--get-backend)
+                 (lambda () (list :name "Test"))))
+        (magit-insert-section (root)
+          (shipit-issue--insert-linked-items-section nil '(work status))))
       (should (= (point-min) (point-max))))))
+
+;;; Link Work Item Tests
+
+(defun test-shipit-issue--linking-backend (recorder)
+  "Return a backend plist whose link operations report to RECORDER.
+RECORDER is called with the arguments `:link-issues' receives.  Its
+search lists three issues, the current one among them, and a fetch by
+key answers for any key so a typed key can be tried."
+  (list :name "Test"
+        :search
+        (lambda (_config _args)
+          '(((number . "PRJ-1") (title . "The current issue"))
+            ((number . "PRJ-4") (title . "Fix sensor"))
+            ((number . "PRJ-5") (title . "Sensor docs"))))
+        :fetch-issue
+        (lambda (_config key) `((number . ,key) (title . "Fetched by key")))
+        :fetch-link-relations
+        (lambda (_config) '(("blocks" . (blocks . out))
+                            ("is blocked by" . (blocks . in))))
+        :link-issues
+        (lambda (&rest args) (funcall recorder args))))
+
+(defmacro test-shipit-issue--with-linking-buffer (recorder &rest body)
+  "Run BODY in an issue buffer for PRJ-1 whose backend reports to RECORDER."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (setq-local shipit-issue-buffer-number "PRJ-1")
+     (setq-local shipit-issue-buffer-repo "test/repo")
+     (setq-local shipit-issue-backend-config '(:base-url "https://x"))
+     (cl-letf (((symbol-function 'shipit-issue--get-backend)
+                (lambda () (test-shipit-issue--linking-backend ,recorder)))
+               ((symbol-function 'shipit-issue-buffer-refresh) #'ignore))
+       ,@body)))
+
+(ert-deftest test-shipit-issue-link-work-item-sends-relation-and-target ()
+  "GIVEN a backend that can link issues
+WHEN the user picks a relation and then an issue from the search list
+THEN the backend links the current issue to the chosen key with the
+relation's opaque value, and the buffer refreshes."
+  (let ((linked nil) (refreshed nil))
+    (test-shipit-issue--with-linking-buffer (lambda (args) (setq linked args))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt choices &rest _)
+                   (if (listp choices)
+                       "is blocked by"
+                     (seq-find (lambda (c) (string-prefix-p "PRJ-4" c))
+                               (all-completions "" choices)))))
+                ((symbol-function 'shipit-issue-buffer-refresh)
+                 (lambda (&rest _) (setq refreshed t))))
+        (shipit-issue--link-work-item)
+        (should (equal linked '((:base-url "https://x") "PRJ-1" (blocks . in) "PRJ-4")))
+        (should refreshed)))))
+
+(ert-deftest test-shipit-issue-link-work-item-lists-search-results-without-typing ()
+  "GIVEN the backend's search answers with issues
+WHEN the target prompt opens
+THEN those issues are the candidates before anything is typed, except
+the issue being linked from, which cannot link to itself."
+  (let ((shown nil))
+    (test-shipit-issue--with-linking-buffer #'ignore
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt choices &rest _)
+                   (if (listp choices)
+                       "blocks"
+                     (setq shown (all-completions "" choices))
+                     (car shown)))))
+        (shipit-issue--link-work-item)
+        (should (= 2 (length shown)))
+        (should (seq-find (lambda (c) (string-prefix-p "PRJ-4" c)) shown))
+        (should (seq-find (lambda (c) (string-prefix-p "PRJ-5" c)) shown))
+        (should-not (seq-find (lambda (c) (string-prefix-p "PRJ-1" c)) shown))))))
+
+(ert-deftest test-shipit-issue-link-work-item-fetches-a-typed-key ()
+  "GIVEN the user types a key the search list does not hold
+WHEN completing
+THEN the tracker is asked for it and it becomes the target, the way
+the issue search re-queries as one types."
+  (let ((linked nil))
+    (test-shipit-issue--with-linking-buffer (lambda (args) (setq linked args))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt choices &rest _)
+                   (if (listp choices)
+                       "blocks"
+                     (car (all-completions "OTHER-77" choices))))))
+        (shipit-issue--link-work-item)
+        (should (equal (nth 3 linked) "OTHER-77"))
+        (should (equal (nth 2 linked) '(blocks . out)))))))
+
+(ert-deftest test-shipit-issue-link-work-item-refuses-without-backend-support ()
+  "GIVEN a backend with no `:link-issues'
+WHEN asked to link a work item
+THEN it signals a user error before prompting for anything."
+  (with-temp-buffer
+    (cl-letf (((symbol-function 'shipit-issue--get-backend)
+               (lambda () (list :name "Test")))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _) (error "Should not prompt"))))
+      (should-error (shipit-issue--link-work-item) :type 'user-error))))
+
+(ert-deftest test-shipit-issue-linked-items-heading-shown-when-linking-possible ()
+  "GIVEN an issue with no links but a backend that can create them
+WHEN inserting the linked items section
+THEN a heading with a zero count is still there, so there is a place
+to invoke Link work item from."
+  (with-temp-buffer
+    (let ((magit-insert-section--parent nil))
+      (cl-letf (((symbol-function 'shipit-issue--get-backend)
+                 (lambda () (test-shipit-issue--linking-backend #'ignore))))
+        (magit-insert-section (root)
+          (shipit-issue--insert-linked-items-section nil '(work status))))
+      (goto-char (point-min))
+      (should (search-forward "Linked Work Items (0)" nil t)))))
+
+(ert-deftest test-shipit-issue-linked-items-heading-dwim-offers-link ()
+  "GIVEN point on the Linked Work Items heading
+WHEN the DWIM handler for it runs
+THEN it links a work item."
+  (require 'shipit-pr-actions)
+  (shipit-issue--register-dwim-handlers)
+  (let ((handler (assq 'issue-linked-items shipit--dwim-handlers))
+        (called nil))
+    (should handler)
+    (cl-letf (((symbol-function 'shipit-issue--link-work-item)
+               (lambda () (setq called t))))
+      (funcall (cdr (assq 'action (cdr handler))))
+      (should called))))
+
+;;; Similar Work Items Tests
+
+(defmacro test-shipit-issue--with-similar-finder (finder &rest body)
+  "Run BODY with FINDER as `shipit-issue-similar-finder'.
+FINDER is called with (SOURCE-BUFFER ISSUE CALLBACK); nil means no
+finder."
+  (declare (indent 1))
+  `(let ((shipit-issue-similar-finder ,finder))
+     ,@body))
+
+(defun test-shipit-issue--render-similar-in-temp-buffer ()
+  "Insert the Similar Work Items section under a root in the current buffer."
+  (let ((magit-insert-section--parent nil))
+    (magit-insert-section (root)
+      (shipit-issue--insert-similar-items-section))))
+
+(ert-deftest test-shipit-issue-similar-section-idle-until-asked ()
+  "GIVEN a finder of similar issues
+WHEN the issue buffer renders
+THEN a Similar Work Items section is there with a hint to ask, and
+nothing has been asked yet."
+  (let ((asked nil))
+    (test-shipit-issue--with-similar-finder (lambda (&rest _) (setq asked t))
+      (with-temp-buffer
+        (test-shipit-issue--render-similar-in-temp-buffer)
+        (goto-char (point-min))
+        (should (search-forward "Similar Work Items (0)" nil t))
+        (should (search-forward "M-;" nil t))
+        (should-not asked)))))
+
+(ert-deftest test-shipit-issue-similar-section-absent-without-finder ()
+  "GIVEN no finder of similar issues
+WHEN the issue buffer renders
+THEN there is no Similar Work Items section to ask from."
+  (test-shipit-issue--with-similar-finder nil
+    (with-temp-buffer
+      (test-shipit-issue--render-similar-in-temp-buffer)
+      (should (= (point-min) (point-max))))))
+
+(ert-deftest test-shipit-issue-find-similar-shows-results-when-they-land ()
+  "GIVEN the user asks for similar work items
+WHEN the finder answers
+THEN the section first says it is asking, then lists each item with
+its key, summary and reason, and the heading counts them."
+  (let ((callback nil) (passed-issue nil))
+    (test-shipit-issue--with-similar-finder
+        (lambda (_buf issue cb) (setq passed-issue issue callback cb))
+      (with-temp-buffer
+        (setq-local shipit-issue-buffer-data '((number . "PRJ-1") (title . "T")))
+        (test-shipit-issue--render-similar-in-temp-buffer)
+        (shipit-issue--find-similar-work-items)
+        (should (equal passed-issue '((number . "PRJ-1") (title . "T"))))
+        (goto-char (point-min))
+        (should (search-forward "Asking" nil t))
+        (funcall callback
+                 '(((key . "PRJ-4") (summary . "Fix sensor") (status . "Open")
+                    (why . "Same subsystem"))
+                   ((key . "PRJ-9") (summary . "Docs") (status . "Done")
+                    (why . "Follow-up")))
+                 nil)
+        (goto-char (point-min))
+        (should (search-forward "Similar Work Items (2)" nil t))
+        (should (search-forward "PRJ-4" nil t))
+        (should (search-forward "Fix sensor" nil t))
+        (should (search-forward "Same subsystem" nil t))
+        (should (search-forward "PRJ-9" nil t))
+        (should-not (save-excursion (goto-char (point-min))
+                                    (search-forward "Asking" nil t)))))))
+
+(ert-deftest test-shipit-issue-find-similar-shows-the-note-on-failure ()
+  "GIVEN the finder comes back empty with a note
+WHEN it answers
+THEN the section shows the note rather than an empty list."
+  (let ((callback nil))
+    (test-shipit-issue--with-similar-finder (lambda (_buf _issue cb) (setq callback cb))
+      (with-temp-buffer
+        (setq-local shipit-issue-buffer-data '((number . "PRJ-1")))
+        (test-shipit-issue--render-similar-in-temp-buffer)
+        (shipit-issue--find-similar-work-items)
+        (funcall callback nil "timed out")
+        (goto-char (point-min))
+        (should (search-forward "timed out" nil t))))))
+
+(ert-deftest test-shipit-issue-find-similar-says-when-nothing-is-found ()
+  "GIVEN the finder comes back empty with no note
+WHEN it answers
+THEN the section says nothing related was found."
+  (let ((callback nil))
+    (test-shipit-issue--with-similar-finder (lambda (_buf _issue cb) (setq callback cb))
+      (with-temp-buffer
+        (setq-local shipit-issue-buffer-data '((number . "PRJ-1")))
+        (test-shipit-issue--render-similar-in-temp-buffer)
+        (shipit-issue--find-similar-work-items)
+        (funcall callback nil nil)
+        (goto-char (point-min))
+        (should (search-forward "Similar Work Items (0)" nil t))
+        (should (search-forward "No related work items found" nil t))))))
+
+(ert-deftest test-shipit-issue-similar-heading-dwim-asks ()
+  "GIVEN point on the Similar Work Items heading
+WHEN the DWIM handler for it runs
+THEN it asks for similar work items."
+  (require 'shipit-pr-actions)
+  (shipit-issue--register-dwim-handlers)
+  (let ((handler (assq 'issue-similar-items shipit--dwim-handlers))
+        (called nil))
+    (should handler)
+    (cl-letf (((symbol-function 'shipit-issue--find-similar-work-items)
+               (lambda () (setq called t))))
+      (funcall (cdr (assq 'action (cdr handler))))
+      (should called))))
+
+(ert-deftest test-shipit-issue-similar-row-is-a-work-item ()
+  "GIVEN point on a similar work item row
+WHEN asking for the work item key at point
+THEN its key comes back, so RET opens it like any other work item."
+  (with-temp-buffer
+    (let ((magit-insert-section--parent nil))
+      (magit-insert-section (root)
+        (magit-insert-section (issue-similar-item '((key . "PRJ-4") (summary . "S")))
+          (insert "   PRJ-4  S\n"))))
+    (goto-char (point-min))
+    (should (equal "PRJ-4" (shipit-issue--work-item-key-at-point)))))
+
+(ert-deftest test-shipit-issue-work-item-row-dwim-opens-actions ()
+  "GIVEN point on a work item row -- a similar, linked or child item
+WHEN the DWIM handlers dispatch
+THEN the row's handler matches and opens the action menu for its key."
+  (require 'shipit-pr-actions)
+  (shipit-issue--register-dwim-handlers)
+  (let ((handler (assq 'issue-work-item shipit--dwim-handlers))
+        (acted nil))
+    (should handler)
+    (with-temp-buffer
+      (shipit-issue-mode)
+      (let ((inhibit-read-only t)
+            (magit-insert-section--parent nil))
+        (magit-insert-section (root)
+          (magit-insert-section (issue-similar-items nil nil)
+            (magit-insert-heading "Similar Work Items (1)")
+            (magit-insert-section (issue-similar-item '((key . "PRJ-4")))
+              (insert "   PRJ-4  S\n")))))
+      (cl-letf (((symbol-function 'shipit-issue--work-item-actions)
+                 (lambda (key) (setq acted key))))
+        ;; On the heading the row handler stays out of the way.
+        (goto-char (point-min))
+        (should-not (funcall (cdr (assq 'matcher (cdr handler)))))
+        ;; On the row it matches and acts on the row's key.
+        (forward-line 1)
+        (should (funcall (cdr (assq 'matcher (cdr handler)))))
+        (funcall (cdr (assq 'action (cdr handler))))
+        (should (equal "PRJ-4" acted))))))
+
+(ert-deftest test-shipit-issue-work-item-actions-offer-linking ()
+  "GIVEN a backend that can link issues
+WHEN the action menu for a work item row opens and Link is chosen
+THEN the current issue is linked to that row's key, with the relation
+asked but no target prompt."
+  (let ((offered nil) (linked nil))
+    (test-shipit-issue--with-linking-buffer (lambda (args) (setq linked args))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt choices &rest _)
+                   (cond ((string-match-p "action" prompt)
+                          (setq offered choices)
+                          "Link to this issue")
+                         ((member "blocks" choices) "blocks")
+                         (t (error "Unexpected prompt %s" prompt)))))
+                ((symbol-function 'shipit-issue--resolve-for-repo)
+                 (lambda (_repo) (cons (shipit-issue--get-backend) nil))))
+        (shipit-issue--work-item-actions "PRJ-4")
+        (should (member "Link to this issue" offered))
+        (should (equal (nth 3 linked) "PRJ-4"))
+        (should (equal (nth 2 linked) '(blocks . out)))))))
+
+(ert-deftest test-shipit-issue-work-item-actions-hide-linking-when-unsupported ()
+  "GIVEN a backend that cannot link issues
+WHEN the action menu for a work item row opens
+THEN Link is not offered."
+  (let ((offered nil)
+        (shipit-issue-buffer-repo "test/repo"))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt choices &rest _)
+                 (setq offered choices) "Open in buffer"))
+              ((symbol-function 'shipit-issues-open-buffer) #'ignore)
+              ((symbol-function 'shipit-issue--resolve-for-repo)
+               (lambda (_repo) (cons (list :browse-url #'ignore :name "Test") nil))))
+      (shipit-issue--work-item-actions "PRJ-4")
+      (should-not (member "Link to this issue" offered)))))
+
+;;; Link Pull Request Tests
+
+(ert-deftest test-shipit-issue-linked-prs-from-remote-keeps-pr-urls ()
+  "GIVEN the tracker holds remote links, some of them pull requests
+WHEN collecting linked PRs from them
+THEN each PR URL becomes a linked-PR plist and the rest are left out."
+  (with-temp-buffer
+    (setq-local shipit-issue-backend-config '(:base-url "https://j"))
+    (cl-letf (((symbol-function 'shipit-issue--get-backend)
+               (lambda ()
+                 (list :fetch-remote-urls
+                       (lambda (_config key)
+                         (should (equal "PRJ-9" key))
+                         '(("https://github.com/foo/bar/pull/42" . "#42: Fix")
+                           ("https://wiki.example.com/page" . "Design")
+                           ("https://github.com/foo/bar/issues/7" . "#7")))))))
+      (let ((plists (shipit-issue--linked-prs-from-remote "PRJ-9")))
+        (should (= 1 (length plists)))
+        (should (equal "foo/bar" (plist-get (car plists) :repo)))
+        (should (equal 42 (plist-get (car plists) :number)))))))
+
+(ert-deftest test-shipit-issue-linked-prs-from-remote-without-support ()
+  "GIVEN an issue backend with no remote links
+WHEN collecting linked PRs from them
+THEN there are none, and no error."
+  (with-temp-buffer
+    (cl-letf (((symbol-function 'shipit-issue--get-backend)
+               (lambda () (list :name "Plain"))))
+      (should-not (shipit-issue--linked-prs-from-remote "PRJ-9")))))
+
+(ert-deftest test-shipit-issue-link-pull-request-picks-and-links ()
+  "GIVEN the user picks a PR from the repo's pull requests
+WHEN linking it to the current issue
+THEN the shared link helper gets the issue, the PR, its URL and title,
+and the Linked PRs section is repopulated."
+  (let ((linked nil) (repopulated nil))
+    (with-temp-buffer
+      (setq-local shipit-issue-buffer-number "PRJ-9")
+      (setq-local shipit-issue-buffer-repo "PRJ")
+      (cl-letf (((symbol-function 'shipit--get-repo-from-remote)
+                 (lambda () "foo/bar"))
+                ((symbol-function 'shipit--read-pr)
+                 (lambda (prompt repo)
+                   (should (equal "foo/bar" repo))
+                   (should (string-match-p "PRJ-9" prompt))
+                   (list :number 42 :repo "foo/bar"
+                         :data '((number . 42) (title . "Fix sensor")
+                                 (html_url . "https://github.com/foo/bar/pull/42")))))
+                ((symbol-function 'shipit-pr-linked-issue-link)
+                 (lambda (&rest args) (setq linked args)))
+                ((symbol-function 'shipit-issue--populate-linked-prs-async)
+                 (lambda (&rest _) (setq repopulated t)))
+                ((symbol-function 'message) #'ignore))
+        (shipit-issue--link-pull-request)
+        (should (equal linked '("PRJ" "PRJ-9" "foo/bar" 42
+                                "https://github.com/foo/bar/pull/42" "Fix sensor")))
+        (should repopulated)))))
+
+(ert-deftest test-shipit-issue-linked-prs-heading-dwim-links-a-pr ()
+  "GIVEN point on the Linked PRs heading
+WHEN the DWIM handler for it runs
+THEN it links a pull request."
+  (require 'shipit-pr-actions)
+  (shipit-issue--register-dwim-handlers)
+  (let ((handler (assq 'issue-linked-prs shipit--dwim-handlers))
+        (called nil))
+    (should handler)
+    (cl-letf (((symbol-function 'shipit-issue--link-pull-request)
+               (lambda () (setq called t))))
+      (funcall (cdr (assq 'action (cdr handler))))
+      (should called))))
 
 ;;; Child Work Items Section Tests
 

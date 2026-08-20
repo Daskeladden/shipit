@@ -197,6 +197,46 @@ THEN no API search is triggered."
       (setq api-called t))
     (should api-called)))
 
+;;; Tests for shipit--read-pr
+
+(ert-deftest test-pr-search-dynamic--read-pr-returns-the-pick ()
+  "GIVEN the repo's pull requests
+WHEN the user picks one with completion
+THEN its info plist comes back, and nothing is displayed."
+  (let ((displayed nil))
+    (cl-letf (((symbol-function 'shipit--search-prs-multi-page)
+               (lambda (_repo _query _limit)
+                 '(((number . 42) (title . "Fix sensor"))
+                   ((number . 7) (title . "Docs")))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (seq-find (lambda (c) (string-prefix-p "#7 " c))
+                           (all-completions "" table))))
+              ((symbol-function 'shipit--display-selected-pr)
+               (lambda (&rest _) (setq displayed t)))
+              ((symbol-function 'message) #'ignore))
+      (let ((info (shipit--read-pr "Pick: " "foo/bar")))
+        (should (equal 7 (plist-get info :number)))
+        (should (equal "foo/bar" (plist-get info :repo)))
+        (should (equal "Docs" (cdr (assq 'title (plist-get info :data)))))
+        (should-not displayed)))))
+
+(ert-deftest test-pr-search-dynamic--select-pr-displays-the-pick ()
+  "GIVEN the repo's pull requests
+WHEN selecting one
+THEN it is displayed."
+  (let ((displayed nil))
+    (cl-letf (((symbol-function 'shipit--ensure-repository) (lambda () "foo/bar"))
+              ((symbol-function 'shipit--search-prs-multi-page)
+               (lambda (_repo _query _limit) '(((number . 42) (title . "Fix")))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _) (car (all-completions "" table))))
+              ((symbol-function 'shipit--display-selected-pr)
+               (lambda (pr repo) (setq displayed (cons (cdr (assq 'number pr)) repo))))
+              ((symbol-function 'message) #'ignore))
+      (shipit--select-pr)
+      (should (equal displayed '(42 . "foo/bar"))))))
+
 (provide 'test-pr-search-dynamic)
 
 ;;; test-pr-search-dynamic.el ends here

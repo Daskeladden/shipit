@@ -223,6 +223,39 @@ THEN a 'No issues found' message is shown."
       (shipit-issues--select-from-results nil "owner/repo")
       (should (string-match-p "No issues found" msg)))))
 
+;;; Read Issue Tests
+
+(ert-deftest test-shipit-issues--read-issue-returns-the-pick ()
+  "GIVEN search results
+WHEN the user picks one with completion
+THEN its info plist comes back rather than a buffer opening."
+  (let ((results '(((number . "PRJ-4") (title . "Fix sensor"))
+                   ((number . "PRJ-2") (title . "Docs"))))
+        (opened nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (seq-find (lambda (c) (string-prefix-p "PRJ-2" c))
+                           (all-completions "" table))))
+              ((symbol-function 'shipit-issues-open-buffer)
+               (lambda (&rest _) (setq opened t))))
+      (let ((info (shipit-issues--read-issue "Pick: " results "owner/repo")))
+        (should (equal "PRJ-2" (plist-get info :number)))
+        (should (equal "owner/repo" (plist-get info :repo)))
+        (should-not opened)))))
+
+(ert-deftest test-shipit-issues--select-from-results-opens-the-pick ()
+  "GIVEN search results
+WHEN selecting from them
+THEN the chosen issue opens in REPO."
+  (let ((results '(((number . 42) (title . "Login bug"))))
+        (opened nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _) (car (all-completions "" table))))
+              ((symbol-function 'shipit-issues-open-buffer)
+               (lambda (number repo) (setq opened (cons number repo)))))
+      (shipit-issues--select-from-results results "owner/repo")
+      (should (equal opened '(42 . "owner/repo"))))))
+
 ;;; Annotation Tests
 
 (ert-deftest test-shipit-issues--annotate-open-state ()

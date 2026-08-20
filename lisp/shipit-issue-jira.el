@@ -569,97 +569,77 @@ Returns parsed JSON as alist."
                  nil))))
         (kill-buffer buffer)))))
 
-(defun shipit-issue-jira--api-request-post (config path data)
-  "Make a POST request to Jira REST API using CONFIG at PATH with DATA.
-DATA is an alist that will be JSON-encoded as the request body.
-Returns parsed JSON response as alist."
+(defun shipit-issue-jira--read-response (buffer method path)
+  "Parse the JSON body of the response in BUFFER to a METHOD on PATH.
+Returns the parsed alist, or nil for an empty body.  Signals an error
+carrying Jira\\='s messages when the status is 400 or above."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (shipit--debug-log "Jira API: %s response status: %s" method
+                       (buffer-substring (point) (line-end-position)))
+    (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+        (goto-char (1+ url-http-end-of-headers))
+      (re-search-forward "\r?\n\r?\n" nil t))
+    (let ((body-start (point)))
+      ;; Reinterpret raw bytes as UTF-8
+      (set-buffer-multibyte nil)
+      (set-buffer-multibyte t)
+      (goto-char body-start))
+    (let ((parsed (condition-case err
+                      (json-read)
+                    (error
+                     (shipit--debug-log "Jira API: JSON parse error on %s: %s"
+                                        method err)
+                     nil))))
+      (when (and (boundp 'url-http-response-status)
+                 url-http-response-status
+                 (>= url-http-response-status 400))
+        (error "Jira API %s %s failed (%d): %s"
+               method path url-http-response-status
+               (or (cdr (assq 'errorMessages parsed))
+                   (cdr (assq 'errors parsed)))))
+      parsed)))
+
+(defun shipit-issue-jira--api-request-send (method config path &optional data)
+  "Send a METHOD request to the Jira REST API at PATH using CONFIG.
+DATA, when given, is an alist sent JSON-encoded as the body.  Returns
+the parsed JSON response as an alist, nil for an empty body or no
+response, and signals an error on a 4xx/5xx status."
   (let* ((url (shipit-issue-jira--build-url config path))
          (auth (shipit-issue-jira--auth-header config))
-         (url-request-method "POST")
+         (url-request-method method)
          (url-request-extra-headers
           `(("Content-Type" . "application/json")
             ,@(when auth
                 `(("Authorization" . ,auth)))))
-         (url-request-data (encode-coding-string (json-encode data) 'utf-8))
+         (url-request-data
+          (when data (encode-coding-string (json-encode data) 'utf-8)))
          (buffer (url-retrieve-synchronously url t)))
-    (shipit--debug-log "Jira API: POST %s" url)
+    (shipit--debug-log "Jira API: %s %s" method url)
     (if (not buffer)
         (progn
-          (shipit--debug-log "Jira API: no response buffer for POST %s" url)
+          (shipit--debug-log "Jira API: no response buffer for %s %s" method url)
           nil)
       (unwind-protect
-          (with-current-buffer buffer
-            (goto-char (point-min))
-            (let ((status-line (buffer-substring (point) (line-end-position))))
-              (shipit--debug-log "Jira API: POST response status: %s" status-line))
-            (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
-                (goto-char (1+ url-http-end-of-headers))
-              (re-search-forward "\r?\n\r?\n" nil t))
-            (let ((body-start (point)))
-              ;; Reinterpret raw bytes as UTF-8
-              (set-buffer-multibyte nil)
-              (set-buffer-multibyte t)
-              (goto-char body-start))
-            (let ((parsed (condition-case err
-                              (json-read)
-                            (error
-                             (shipit--debug-log "Jira API: JSON parse error on POST: %s" err)
-                             nil))))
-              (when (and (boundp 'url-http-response-status)
-                         url-http-response-status
-                         (>= url-http-response-status 400))
-                (let ((errors (or (cdr (assq 'errorMessages parsed))
-                                  (cdr (assq 'errors parsed)))))
-                  (error "Jira API POST %s failed (%d): %s"
-                         path url-http-response-status errors)))
-              parsed))
+          (shipit-issue-jira--read-response buffer method path)
         (kill-buffer buffer)))))
+
+(defun shipit-issue-jira--api-request-post (config path data)
+  "Make a POST request to Jira REST API using CONFIG at PATH with DATA.
+DATA is an alist that will be JSON-encoded as the request body.
+Returns parsed JSON response as alist."
+  (shipit-issue-jira--api-request-send "POST" config path data))
 
 (defun shipit-issue-jira--api-request-put (config path data)
   "Make a PUT request to Jira REST API using CONFIG at PATH with DATA.
 DATA is an alist that will be JSON-encoded as the request body.
 Returns parsed JSON response as alist."
-  (let* ((url (shipit-issue-jira--build-url config path))
-         (auth (shipit-issue-jira--auth-header config))
-         (url-request-method "PUT")
-         (url-request-extra-headers
-          `(("Content-Type" . "application/json")
-            ,@(when auth
-                `(("Authorization" . ,auth)))))
-         (url-request-data (encode-coding-string (json-encode data) 'utf-8))
-         (buffer (url-retrieve-synchronously url t)))
-    (shipit--debug-log "Jira API: PUT %s" url)
-    (if (not buffer)
-        (progn
-          (shipit--debug-log "Jira API: no response buffer for PUT %s" url)
-          nil)
-      (unwind-protect
-          (with-current-buffer buffer
-            (goto-char (point-min))
-            (let ((status-line (buffer-substring (point) (line-end-position))))
-              (shipit--debug-log "Jira API: PUT response status: %s" status-line))
-            (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
-                (goto-char (1+ url-http-end-of-headers))
-              (re-search-forward "\r?\n\r?\n" nil t))
-            (let ((body-start (point)))
-              ;; Reinterpret raw bytes as UTF-8
-              (set-buffer-multibyte nil)
-              (set-buffer-multibyte t)
-              (goto-char body-start))
-            (let ((parsed (condition-case err
-                              (json-read)
-                            (error
-                             (shipit--debug-log "Jira API: JSON parse error on PUT: %s" err)
-                             nil))))
-              (when (and (boundp 'url-http-response-status)
-                         url-http-response-status
-                         (>= url-http-response-status 400))
-                (let ((errors (or (cdr (assq 'errorMessages parsed))
-                                  (cdr (assq 'errors parsed)))))
-                  (error "Jira API PUT %s failed (%d): %s"
-                         path url-http-response-status errors)))
-              parsed))
-        (kill-buffer buffer)))))
+  (shipit-issue-jira--api-request-send "PUT" config path data))
+
+(defun shipit-issue-jira--api-request-delete (config path)
+  "Make a DELETE request to Jira REST API using CONFIG at PATH.
+Returns the parsed JSON response, or nil for the usual empty 204."
+  (shipit-issue-jira--api-request-send "DELETE" config path))
 
 (defun shipit-issue-jira--add-comment (config issue-id body)
   "Add a comment to Jira issue ISSUE-ID using CONFIG.
@@ -1703,6 +1683,90 @@ ASSIGNEE-NAME is a display name or nil to unassign."
     (shipit--debug-log "Jira: updated assignee of %s to %s" issue-key
                        (or assignee-name "unassigned"))))
 
+;;; Issue Links -- creating
+
+(defun shipit-issue-jira--link-type-relations (link-type)
+  "Return the relations one LINK-TYPE offers, as (PHRASE . RELATION).
+A RELATION is (TYPE-NAME . DIRECTION), DIRECTION being `outward' or
+`inward' -- which of the type\\='s two phrases the user picked.  A
+symmetric type such as Relates words both directions alike, and is
+offered once."
+  (let ((name (cdr (assq 'name link-type)))
+        (outward (cdr (assq 'outward link-type)))
+        (inward (cdr (assq 'inward link-type))))
+    (if (equal outward inward)
+        (list (cons outward (cons name 'outward)))
+      (list (cons outward (cons name 'outward))
+            (cons inward (cons name 'inward))))))
+
+(defun shipit-issue-jira--fetch-link-relations (config)
+  "Return the relations an issue may have to another, from CONFIG's Jira.
+An alist of (PHRASE . RELATION), PHRASE being what Jira shows the user
+-- \"blocks\", \"is blocked by\" -- and RELATION what
+`shipit-issue-jira--link-issues' needs to create it."
+  (let* ((raw (shipit-issue-jira--api-request config "/rest/api/3/issueLinkType"))
+         (types (append (cdr (assq 'issueLinkTypes raw)) nil)))
+    (shipit--debug-log "Jira backend: fetched %d issue link types" (length types))
+    (mapcan #'shipit-issue-jira--link-type-relations types)))
+
+(defun shipit-issue-jira--link-body (issue-key relation target-key)
+  "Build the POST body linking ISSUE-KEY to TARGET-KEY by RELATION.
+Jira names the ends inward and outward such that the inward issue
+\"<outward phrase>\" the outward one: for Blocks, the inward issue
+blocks the outward.  So picking the outward phrase on ISSUE-KEY makes
+it the inward end, and picking the inward phrase swaps the two."
+  (pcase-let* ((`(,type-name . ,direction) relation)
+               (`(,inward . ,outward)
+                (if (eq direction 'outward)
+                    (cons issue-key target-key)
+                  (cons target-key issue-key))))
+    `((type . ((name . ,type-name)))
+      (inwardIssue . ((key . ,inward)))
+      (outwardIssue . ((key . ,outward))))))
+
+(defun shipit-issue-jira--link-issues (config issue-key relation target-key)
+  "Link ISSUE-KEY to TARGET-KEY by RELATION via CONFIG.
+RELATION is a value from `shipit-issue-jira--fetch-link-relations'."
+  (shipit-issue-jira--api-request-post
+   config "/rest/api/3/issueLink"
+   (shipit-issue-jira--link-body issue-key relation target-key))
+  (shipit--debug-log "Jira: linked %s %s %s" issue-key (car relation) target-key))
+
+;;; Remote links -- web links on an issue, such as pull requests
+
+(defun shipit-issue-jira--remote-link-path (issue-key)
+  "Return the remote link endpoint for ISSUE-KEY."
+  (format "/rest/api/3/issue/%s/remotelink" issue-key))
+
+(defun shipit-issue-jira--link-remote-url (config issue-key url title)
+  "Attach URL to ISSUE-KEY as a remote link titled TITLE, via CONFIG.
+The URL doubles as the link\\='s globalId, so attaching the same URL
+again updates the existing link instead of adding a second."
+  (shipit-issue-jira--api-request-post
+   config (shipit-issue-jira--remote-link-path issue-key)
+   `((globalId . ,url)
+     (object . ((url . ,url) (title . ,title)))))
+  (shipit--debug-log "Jira: attached %s to %s" url issue-key))
+
+(defun shipit-issue-jira--unlink-remote-url (config issue-key url)
+  "Detach URL from ISSUE-KEY via CONFIG.
+URL is the link\='s globalId, as `shipit-issue-jira--link-remote-url'
+set it."
+  (shipit-issue-jira--api-request-delete
+   config (format "%s?globalId=%s"
+                  (shipit-issue-jira--remote-link-path issue-key)
+                  (url-hexify-string url)))
+  (shipit--debug-log "Jira: detached %s from %s" url issue-key))
+
+(defun shipit-issue-jira--fetch-remote-urls (config issue-key)
+  "Return ISSUE-KEY\\='s remote links via CONFIG, as (URL . TITLE) pairs."
+  (let ((raw (shipit-issue-jira--api-request
+              config (shipit-issue-jira--remote-link-path issue-key))))
+    (mapcar (lambda (link)
+              (let ((object (cdr (assq 'object link))))
+                (cons (cdr (assq 'url object)) (cdr (assq 'title object)))))
+            (append raw nil))))
+
 (defun shipit-issue-jira--update-labels (config issue-key labels)
   "Set ISSUE-KEY's labels to LABELS (a list of strings) via CONFIG.
 LABELS is encoded as a JSON array; an empty list clears the labels by
@@ -1948,6 +2012,11 @@ Call `shipit-issue-jira--clear-icon-memo' after a theme switch.")
        :update-assignee #'shipit-issue-jira--update-assignee
        :fetch-labels #'shipit-issue-jira--fetch-labels
        :update-labels #'shipit-issue-jira--update-labels
+       :fetch-link-relations #'shipit-issue-jira--fetch-link-relations
+       :link-issues #'shipit-issue-jira--link-issues
+       :link-remote-url #'shipit-issue-jira--link-remote-url
+       :unlink-remote-url #'shipit-issue-jira--unlink-remote-url
+       :fetch-remote-urls #'shipit-issue-jira--fetch-remote-urls
        :update-title #'shipit-issue-jira--update-title
        :icon-spec '("jira" "simple" . "#0052CC")
        :icon-fallback-text "JR"))

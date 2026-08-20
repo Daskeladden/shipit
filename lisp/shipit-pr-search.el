@@ -156,23 +156,31 @@ as the user types 3+ characters."
   (let ((repo (shipit--ensure-repository)))
     (if (not repo)
         (message "Could not determine repository")
-      (message "Searching PRs...")
-      (let* ((initial-results (shipit--search-prs-multi-page repo "" 100))
-             (pr-lookup-table (make-hash-table :test 'equal))
-             (all-candidates (shipit--select-pr-build-candidates
-                              initial-results repo pr-lookup-table))
-             (search-cache (make-hash-table :test 'equal))
-             (completion-fn
-              (shipit--select-pr-completion-fn
-               repo all-candidates pr-lookup-table search-cache)))
-        (message "Found %d PRs" (length all-candidates))
-        (setq shipit--pr-completion-table pr-lookup-table)
-        (setq shipit--embark-pr-repo repo)
-        (unwind-protect
-            (let ((selected (completing-read "Select PR: " completion-fn nil t)))
-              (shipit--select-pr-handle-selection
-               selected pr-lookup-table repo))
-          (setq shipit--pr-completion-table nil))))))
+      (let ((info (shipit--read-pr "Select PR: " repo)))
+        (when info
+          (shipit--select-pr-display info repo))))))
+
+(defun shipit--read-pr (prompt repo)
+  "Pick one of REPO\='s pull requests with completion, prompting with PROMPT.
+Recent PRs are listed up front and typing three or more characters
+searches for more.  Returns the pick\='s info plist -- :number, :repo,
+:data -- or nil."
+  (message "Searching PRs...")
+  (let* ((initial-results (shipit--search-prs-multi-page repo "" 100))
+         (pr-lookup-table (make-hash-table :test 'equal))
+         (all-candidates (shipit--select-pr-build-candidates
+                          initial-results repo pr-lookup-table))
+         (search-cache (make-hash-table :test 'equal))
+         (completion-fn
+          (shipit--select-pr-completion-fn
+           repo all-candidates pr-lookup-table search-cache)))
+    (message "Found %d PRs" (length all-candidates))
+    (setq shipit--pr-completion-table pr-lookup-table)
+    (setq shipit--embark-pr-repo repo)
+    (unwind-protect
+        (shipit--select-pr-info (completing-read prompt completion-fn nil t)
+                                pr-lookup-table repo)
+      (setq shipit--pr-completion-table nil))))
 
 (defun shipit--select-pr-build-candidates (results repo lookup-table)
   "Build candidate strings from RESULTS for REPO, populating LOOKUP-TABLE.
@@ -215,9 +223,11 @@ PR-LOOKUP-TABLE maps candidates to PR data. SEARCH-CACHE prevents duplicate API 
                   (push candidate all-candidates)))))))
       (complete-with-action action all-candidates string predicate))))
 
-(defun shipit--select-pr-handle-selection (selected pr-lookup-table repo)
-  "Handle SELECTED candidate from completing-read.
-Looks up PR data in PR-LOOKUP-TABLE, falls back to API fetch for REPO."
+(defun shipit--select-pr-info (selected pr-lookup-table repo)
+  "Return the info plist behind the SELECTED candidate in REPO, or nil.
+Looks the PR number up in PR-LOOKUP-TABLE; a selection the table does
+not hold carries just the number, for the caller to fetch; one that
+names no PR yields nil after a message."
   (when (and selected (not (string-empty-p selected)))
     (let* ((pr-number (shipit--extract-pr-number-from-candidate selected))
            (pr-info (when pr-number
@@ -226,22 +236,25 @@ Looks up PR data in PR-LOOKUP-TABLE, falls back to API fetch for REPO."
                                    (when (= (plist-get val :number) pr-number)
                                      (throw 'found val)))
                                  pr-lookup-table)
-                        nil)))
-           (pr-data (plist-get pr-info :data))
-           ;; Fall back to API if not in lookup table
-           (pr (or pr-data
-                   (when pr-number
-                     (let* ((resolved (shipit-pr--resolve-for-repo repo))
-                            (backend (car resolved))
-                            (config (cdr resolved)))
-                       (funcall (plist-get backend :fetch-pr) config pr-number))))))
+                        nil))))
       (cond
        ((not pr-number)
-        (message "Could not extract PR number from selection"))
-       ((not pr)
-        (message "Could not fetch PR #%d" pr-number))
-       (t
-        (shipit--display-selected-pr pr repo))))))
+        (message "Could not extract PR number from selection")
+        nil)
+       (pr-info pr-info)
+       (t (list :number pr-number :repo repo))))))
+
+(defun shipit--select-pr-display (info repo)
+  "Display the PR behind INFO in REPO, fetching it when INFO has no data."
+  (let* ((pr-number (plist-get info :number))
+         (pr (or (plist-get info :data)
+                 (let* ((resolved (shipit-pr--resolve-for-repo repo))
+                        (backend (car resolved))
+                        (config (cdr resolved)))
+                   (funcall (plist-get backend :fetch-pr) config pr-number)))))
+    (if pr
+        (shipit--display-selected-pr pr repo)
+      (message "Could not fetch PR #%d" pr-number))))
 
 (provide 'shipit-pr-search)
 ;;; shipit-pr-search.el ends here

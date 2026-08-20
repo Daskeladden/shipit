@@ -315,10 +315,11 @@ buffer-local overrides so the issue fetches use the correct backend
             ;; Child work items -- placeholder, loaded async
             (shipit-issue--insert-child-items-section repo issue-data)
             ;; Linked work items -- collapsible section
-            (let ((issuelinks (cdr (assq 'issuelinks issue-data))))
-              (when issuelinks
-                (let ((columns (shipit-issue--get-work-item-columns)))
-                  (shipit-issue--insert-linked-items-section issuelinks columns))))
+            (shipit-issue--insert-linked-items-section
+             (cdr (assq 'issuelinks issue-data))
+             (shipit-issue--get-work-item-columns))
+            ;; Similar work items -- idle until asked, answered by `shipit-issue-similar-finder'
+            (shipit-issue--insert-similar-items-section)
             ;; Linked PRs -- reverse of PR-buffer Linked Issue
             (shipit-issue--insert-linked-prs-section issue-number repo)
             (let* ((backend (shipit-issue--get-backend))
@@ -1394,11 +1395,17 @@ COLUMNS is a list of column symbols for the renderer."
                               (shipit-issue--format-work-item-line
                                entry columns widths))))))))))
 
+(defun shipit-issue--linking-available-p ()
+  "Non-nil when the active backend can link one work item to another."
+  (and (plist-get (shipit-issue--get-backend) :link-issues) t))
+
 (defun shipit-issue--insert-linked-items-section (links columns)
   "Insert collapsible Linked Work Items section for LINKS.
 COLUMNS is a list of column symbols for the renderer.
-Groups links by type and renders each item with the column renderer."
-  (when (and links (> (length links) 0))
+Groups links by type and renders each item with the column renderer.
+With no LINKS the section still appears, empty, when the backend can
+create links -- its heading is where Link work item is invoked from."
+  (when (or links (shipit-issue--linking-available-p))
     (setq shipit-issue--linked-items-cache links)
     (let ((widths (shipit-issue--combined-widths)))
       (magit-insert-section (issue-linked-items nil nil)
@@ -1409,6 +1416,134 @@ Groups links by type and renders each item with the column renderer."
                               'font-lock-face 'magit-section-heading)))
         (shipit-issue--insert-linked-items-body links columns widths)
         (insert "\n")))))
+
+;;; Similar Work Items section
+
+(defvar shipit-issue-similar-finder nil
+  "A function that finds work items related to an issue, or nil for none.
+It is called with the issue buffer, the issue and CALLBACK.  It calls
+CALLBACK with the items found, each an alist of key, summary, status
+and why, and with a note that says why there are none, or nil.
+Without a finder, the issue buffer has no Similar Work Items section.
+Another package can set it.")
+
+(defvar-local shipit-issue--similar-items nil
+  "Work items `shipit-issue-similar-finder' found related to this issue.
+Nil until asked.  Each is an alist of key, summary, status and why.")
+
+(defun shipit-issue--insert-similar-row (item widths)
+  "Insert one similar work ITEM using column WIDTHS, with its reason below."
+  (magit-insert-section (issue-similar-item item)
+    (insert (format "   %s\n"
+                    (shipit-issue--format-work-item-line item '(work status) widths)))
+    (let ((why (cdr (assq 'why item))))
+      (when (and why (not (string-empty-p why)))
+        (insert (propertize (format "      %s\n" why) 'font-lock-face 'magit-dimmed))))))
+
+(defun shipit-issue--insert-similar-body (items note)
+  "Insert the Similar Work Items body: ITEMS, or a line explaining NOTE."
+  (cond
+   (items
+    (let ((widths (shipit-issue--compute-work-item-widths items 3)))
+      (dolist (item items)
+        (shipit-issue--insert-similar-row item widths))))
+   (note
+    (insert (propertize (format "   %s\n" note) 'font-lock-face 'magit-dimmed)))))
+
+(defun shipit-issue--insert-similar-items-section ()
+  "Insert the Similar Work Items section, idle until the user asks.
+Only when `shipit-issue-similar-finder' is set; the heading is where
+the request is made from."
+  (when shipit-issue-similar-finder
+    (magit-insert-section (issue-similar-items nil nil)
+      (magit-insert-heading
+        (format "%s %s"
+                (shipit--get-pr-field-icon "similar" "✨")
+                (propertize (format "Similar Work Items (%d)"
+                                    (length shipit-issue--similar-items))
+                            'font-lock-face 'magit-section-heading)))
+      (shipit-issue--insert-similar-body
+       shipit-issue--similar-items
+       (unless shipit-issue--similar-items
+         "M-; here to ask for work items related to this one"))
+      (insert "\n"))))
+
+(defun shipit-issue--refresh-similar-section (items note)
+  "Re-render the Similar Work Items body with ITEMS, or NOTE when none."
+  (shipit--refresh-section-targeted
+   'issue-similar-items
+   "Similar Work Items (\\([^)]*\\))"
+   (length items)
+   (lambda (_section)
+     (shipit-issue--insert-similar-body items note)
+     (insert "\n"))))
+
+(defun shipit-issue--show-similar-items (items note)
+  "Record ITEMS as this issue\\='s similar work items and show them.
+NOTE says why there are none; with neither, nothing related was found."
+  (setq shipit-issue--similar-items items)
+  (shipit-issue--refresh-similar-section
+   items (or note (unless items "No related work items found"))))
+
+(defun shipit-issue--find-similar-work-items ()
+  "Ask `shipit-issue-similar-finder' for work items related to this issue.
+The answer arrives asynchronously and replaces the section body."
+  (let ((buffer (current-buffer)))
+    (unless shipit-issue-similar-finder
+      (user-error "Nothing finds similar work items here"))
+    (shipit-issue--refresh-similar-section nil "Asking...")
+    (funcall shipit-issue-similar-finder buffer shipit-issue-buffer-data
+             (lambda (items note)
+               (when (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (shipit-issue--show-similar-items items note)))))))
+
+;;; Linking a work item
+
+(defun shipit-issue--read-link-relation (backend config)
+  "Ask which relation the new link expresses, using BACKEND and CONFIG.
+Returns the backend\\='s opaque relation value for the chosen phrase."
+  (let* ((relations (funcall (plist-get backend :fetch-link-relations) config))
+         (phrase (completing-read "This work item: " (mapcar #'car relations) nil t)))
+    (cdr (assoc phrase relations))))
+
+(declare-function shipit-issues--read-issue "shipit-issues")
+
+(defun shipit-issue--link-candidates (backend config current-key)
+  "Return the issues BACKEND offers as link targets, via CONFIG.
+The tracker\='s recent issues, as the issue search lists them, without
+CURRENT-KEY -- an issue cannot link to itself."
+  (seq-remove (lambda (issue) (equal (cdr (assq 'number issue)) current-key))
+              (funcall (plist-get backend :search) config
+                       '("--limit=100" "--sort=created"))))
+
+(defun shipit-issue--read-link-target (backend config current-key)
+  "Ask which work item to link CURRENT-KEY to, using BACKEND and CONFIG.
+Works like the issue search: recent issues are listed before anything
+is typed, typing filters them, and a key or words the list does not
+hold are looked up in the tracker."
+  (let ((info (shipit-issues--read-issue
+               "Link to: "
+               (shipit-issue--link-candidates backend config current-key)
+               shipit-issue-buffer-repo
+               (cons backend config))))
+    (plist-get info :number)))
+
+(defun shipit-issue--link-work-item (&optional target)
+  "Link the current issue to another work item.
+TARGET is its key; when nil the user picks one from the tracker."
+  (let* ((backend (shipit-issue--get-backend))
+         (link-fn (plist-get backend :link-issues))
+         (config (bound-and-true-p shipit-issue-backend-config))
+         (current-key shipit-issue-buffer-number))
+    (unless link-fn
+      (user-error "This backend does not support linking work items"))
+    (let* ((relation (shipit-issue--read-link-relation backend config))
+           (target (or target
+                       (shipit-issue--read-link-target backend config current-key))))
+      (funcall link-fn config current-key relation target)
+      (message "Linked %s to %s" current-key target)
+      (shipit-issue-buffer-refresh))))
 
 (defun shipit-issue--refresh-linked-items-section (columns widths)
   "Re-render linked items section body with shared WIDTHS.
@@ -1713,10 +1848,50 @@ variant (typically from the search) survives."
      (shipit-issue--insert-linked-prs-body plists)
      (insert "\n"))))
 
+(declare-function shipit-pr--classify-url "shipit-pr-backends")
+(declare-function shipit-pr-linked-issue-link "shipit-pr-linked-issue")
+(declare-function shipit--read-pr "shipit-pr-search")
+
+(defun shipit-issue--linked-prs-from-remote (issue-number)
+  "Return linked-PR plists from the tracker\\='s remote links on ISSUE-NUMBER.
+Only links whose URL a PR backend recognises as a pull request count;
+a wiki page attached to the issue is not a linked PR.  Empty when the
+issue backend has no remote links."
+  (let ((fetch-fn (plist-get (shipit-issue--get-backend) :fetch-remote-urls))
+        (config (bound-and-true-p shipit-issue-backend-config)))
+    (when fetch-fn
+      (delq nil
+            (mapcar (lambda (link)
+                      (let ((hit (shipit-pr--classify-url (car link))))
+                        (when (eq (plist-get hit :type) 'pr)
+                          (shipit-issue--linked-pr-plist-from-override
+                           (plist-get hit :repo) (plist-get hit :number)))))
+                    (funcall fetch-fn config issue-number))))))
+
+(defun shipit-issue--link-pull-request ()
+  "Link a pull request to the current issue.
+The PR is picked from the working directory\\='s repository the way
+`shipit--select-pr' picks one.  The link is recorded locally and, when
+the issue backend can, attached to the issue in the tracker as a remote
+link, so it shows up for everyone."
+  (let* ((issue-key shipit-issue-buffer-number)
+         (pr-repo (or (shipit--get-repo-from-remote)
+                      (user-error "Could not determine the repository to pick a PR from")))
+         (info (shipit--read-pr (format "Link pull request to %s: " issue-key)
+                                pr-repo)))
+    (when info
+      (let ((data (plist-get info :data)))
+        (shipit-pr-linked-issue-link
+         shipit-issue-buffer-repo issue-key pr-repo (plist-get info :number)
+         (cdr (assq 'html_url data)) (cdr (assq 'title data))))
+      (message "Linked #%s to %s" (plist-get info :number) issue-key)
+      (shipit-issue--populate-linked-prs-async issue-key shipit-issue-buffer-repo))))
+
 (defun shipit-issue--populate-linked-prs-async (issue-number issue-repo)
   "Defer the linked-PRs lookup, then fill the section via targeted refresh.
 Runs in the next event-loop tick so the initial buffer render completes
-first.  Combines overrides with PR backend search results when
+first.  Combines overrides, the tracker\='s remote links that are
+pull requests, and PR backend search results when
 `shipit-issue-linked-prs-auto-detect' is non-nil."
   (let ((buffer (current-buffer)))
     (run-at-time
@@ -1726,12 +1901,14 @@ first.  Combines overrides with PR backend search results when
          (with-current-buffer buffer
            (let* ((overrides (shipit-issue--linked-prs-from-overrides
                               issue-number))
+                  (remote (shipit-issue--linked-prs-from-remote issue-number))
                   (searched (when (and shipit-issue-linked-prs-auto-detect
                                        issue-repo)
                               (shipit-issue--search-linked-prs
                                (format "%s" issue-number) issue-repo)))
-                  (plists (shipit-issue--merge-linked-prs overrides
-                                                          searched)))
+                  (plists (shipit-issue--merge-linked-prs
+                           (shipit-issue--merge-linked-prs overrides remote)
+                           searched)))
              (shipit-issue--replace-linked-prs-section plists))))))))
 
 (defun shipit-issue--insert-linked-prs-section (issue-number &optional issue-repo)
@@ -1846,7 +2023,8 @@ If a region is active, copy the region text instead (standard M-w behavior)."
 Extracts the key from the magit section value."
   (let ((section (magit-current-section)))
     (when (and section
-               (memq (oref section type) '(issue-child-item issue-linked-item)))
+               (memq (oref section type)
+                     '(issue-child-item issue-linked-item issue-similar-item)))
       (cdr (assq 'key (oref section value))))))
 
 (defun shipit-issue--work-item-actions (key)
@@ -1860,6 +2038,9 @@ Actions: open in buffer, open in browser, and optionally change status."
          (actions (if (plist-get backend :get-transitions)
                       (append actions '("Change status"))
                     actions))
+         (actions (if (plist-get backend :link-issues)
+                      (append actions '("Link to this issue"))
+                    actions))
          (choice (completing-read (format "%s action: " key) actions nil t)))
     (cond
      ((string= choice "Open in buffer")
@@ -1869,7 +2050,9 @@ Actions: open in buffer, open in browser, and optionally change status."
         (when browse-fn
           (browse-url (funcall browse-fn config key)))))
      ((string= choice "Change status")
-      (shipit-issue--work-item-change-status key backend config)))))
+      (shipit-issue--work-item-change-status key backend config))
+     ((string= choice "Link to this issue")
+      (shipit-issue--link-work-item key)))))
 
 (defun shipit-issue--work-item-change-status (key backend config)
   "Change the status of work item KEY using BACKEND and CONFIG.
@@ -2353,6 +2536,39 @@ Called both at load time (if shipit-magit loaded) and via `with-eval-after-load'
        (if (fboundp 'shipit-activity-menu)
            (call-interactively #'shipit-activity-menu)
          (shipit-activity-toggle-sort-order))))
+
+    ;; Linked Work Items heading — link another work item
+    (shipit-register-dwim-handler
+     'issue-linked-items
+     (lambda () (and (derived-mode-p 'shipit-issue-mode)
+                     (fboundp 'magit-current-section)
+                     (magit-section-match '(issue-linked-items) (magit-current-section))))
+     #'shipit-issue--link-work-item)
+
+    ;; Linked PRs heading — link a pull request
+    (shipit-register-dwim-handler
+     'issue-linked-prs
+     (lambda () (and (derived-mode-p 'shipit-issue-mode)
+                     (fboundp 'magit-current-section)
+                     (magit-section-match '(issue-linked-prs) (magit-current-section))))
+     #'shipit-issue--link-pull-request)
+
+    ;; Similar Work Items heading — ask for similar work items
+    (shipit-register-dwim-handler
+     'issue-similar-items
+     (lambda () (and (derived-mode-p 'shipit-issue-mode)
+                     (fboundp 'magit-current-section)
+                     (magit-section-match '(issue-similar-items) (magit-current-section))))
+     #'shipit-issue--find-similar-work-items)
+
+    ;; Work item rows -- child, linked, similar -- open the row's actions
+    ;; (registered after the headings so it is checked before them)
+    (shipit-register-dwim-handler
+     'issue-work-item
+     (lambda () (and (derived-mode-p 'shipit-issue-mode)
+                     (shipit-issue--work-item-key-at-point)))
+     (lambda ()
+       (shipit-issue--work-item-actions (shipit-issue--work-item-key-at-point))))
 
     ;; Issue description — add new comment
     (shipit-register-dwim-handler

@@ -520,58 +520,70 @@ For text inputs, searches via the backend's :search function."
 (defvar shipit-issues--dynamic-search-cache nil
   "Cache of (QUERY . CANDIDATES) for dynamic search.")
 
+(defun shipit-issues--make-completion-table (results repo lookup-table resolved)
+  "Return a completion table over issue RESULTS from REPO.
+Candidates go into LOOKUP-TABLE keyed by their display string.  When
+RESOLVED is non-nil (a backend+config cons from
+`shipit-issue--resolve-for-repo'), typing re-queries the API and the
+new hits join the candidates."
+  (let ((all-candidates (shipit-issues--build-candidates results repo lookup-table))
+        (search-cache (make-hash-table :test 'equal)))
+    (lambda (string predicate action)
+      (cond
+       ((eq action 'metadata)
+        `(metadata (display-sort-function . shipit-issues--sort-candidates)
+                   (cycle-sort-function . identity)
+                   (annotation-function . shipit-issues--annotate)
+                   (category . shipit-issue)))
+       (t
+        ;; When user typed enough chars and we have a backend, query the API.
+        ;; Digit-only input uses direct fetch (cheap), so threshold is 1.
+        ;; Text search uses the search API, so threshold is 3.
+        (when (and resolved
+                   (>= (length string)
+                       (if (string-match-p "\\`[#0-9]" string) 1 3))
+                   (not (gethash string search-cache)))
+          (puthash string t search-cache)
+          (let* ((backend (car resolved))
+                 (config (cdr resolved))
+                 (new-results (shipit-issues--dynamic-fetch
+                               backend config string)))
+            (when new-results
+              (let ((new-candidates (shipit-issues--build-candidates
+                                     new-results repo lookup-table)))
+                (dolist (c new-candidates)
+                  (unless (member c all-candidates)
+                    (push c all-candidates)))))))
+        (let ((match-str (if (and resolved (eq action t))
+                             (shipit-issues--match-string
+                              string (cdr resolved))
+                           string)))
+          (complete-with-action action all-candidates match-str predicate)))))))
+
+(defun shipit-issues--read-issue (prompt results repo &optional resolved)
+  "Pick one of the issue RESULTS from REPO, prompting with PROMPT.
+Returns the chosen issue\\='s info plist -- :number, :repo, :data -- or
+nil.  With RESOLVED, typing re-queries the API as in the issue search."
+  (let* ((lookup-table (make-hash-table :test 'equal))
+         (table (shipit-issues--make-completion-table
+                 results repo lookup-table resolved)))
+    (setq shipit-issues--completion-table lookup-table)
+    (unwind-protect
+        (gethash (completing-read prompt table nil t) lookup-table)
+      (setq shipit-issues--completion-table nil))))
+
 (defun shipit-issues--select-from-results (results repo &optional resolved)
-  "Present issue RESULTS from REPO in completing-read for selection.
-When RESOLVED is non-nil (a backend+config cons from `shipit-issue--resolve-for-repo'),
-re-queries the API dynamically as the user types."
+  "Present issue RESULTS from REPO in completing-read and open the pick.
+When RESOLVED is non-nil (a backend+config cons from
+`shipit-issue--resolve-for-repo'), re-queries the API dynamically as
+the user types."
   (if (or (null results) (= (length results) 0))
       (message "No issues found matching the specified criteria")
-    (let* ((lookup-table (make-hash-table :test 'equal))
-           (initial-candidates (shipit-issues--build-candidates results repo lookup-table))
-           (all-candidates initial-candidates)
-           (search-cache (make-hash-table :test 'equal))
-           (completion-fn
-            (lambda (string predicate action)
-              (cond
-               ((eq action 'metadata)
-                `(metadata (display-sort-function . shipit-issues--sort-candidates)
-                           (cycle-sort-function . identity)
-                           (annotation-function . shipit-issues--annotate)
-                           (category . shipit-issue)))
-               (t
-                ;; When user typed enough chars and we have a backend, query the API.
-                ;; Digit-only input uses direct fetch (cheap), so threshold is 1.
-                ;; Text search uses the search API, so threshold is 3.
-                (when (and resolved
-                          (>= (length string)
-                               (if (string-match-p "\\`[#0-9]" string) 1 3))
-                          (not (gethash string search-cache)))
-                  (puthash string t search-cache)
-                  (let* ((backend (car resolved))
-                         (config (cdr resolved))
-                         (new-results (shipit-issues--dynamic-fetch
-                                       backend config string)))
-                    (when new-results
-                      (let ((new-candidates (shipit-issues--build-candidates
-                                             new-results repo lookup-table)))
-                        (dolist (c new-candidates)
-                          (unless (member c all-candidates)
-                            (push c all-candidates)))))))
-                (let ((match-str (if (and resolved (eq action t))
-                                     (shipit-issues--match-string
-                                      string (cdr resolved))
-                                   string)))
-                  (complete-with-action action all-candidates match-str predicate)))))))
-      (setq shipit-issues--completion-table lookup-table)
-      (unwind-protect
-          (let ((selected (completing-read "Select issue (type to filter): "
-                                           completion-fn nil t)))
-            (when selected
-              (let ((info (gethash selected lookup-table)))
-                (if info
-                    (shipit-issues-open-buffer (plist-get info :number) repo)
-                  (message "Could not extract issue from selection")))))
-        (setq shipit-issues--completion-table nil)))))
+    (let ((info (shipit-issues--read-issue "Select issue (type to filter): "
+                                           results repo resolved)))
+      (if info
+          (shipit-issues-open-buffer (plist-get info :number) repo)
+        (message "Could not extract issue from selection")))))
 
 ;;; Search Execution
 

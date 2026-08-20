@@ -5725,6 +5725,7 @@ Returns (octicon . color) or nil."
     ("parent" '("north-star" . "#6f42c1"))                   ; Purple - Parent/epic
     ("links" '("link" . "#0366d6"))                          ; Blue - Issue links
     ("children" '("tasklist" . "#6f42c1"))                    ; Purple - Child work items
+    ("similar" '("light-bulb" . "#d29922"))                   ; Amber - Similar work items
     ("activity" '("history" . "#fd7e14"))                    ; Orange - Activity/changelog
     ("components" '("package" . "#0366d6"))                  ; Blue - Components
     ("discussion" '("comment-discussion" . "#0366d6"))       ; Blue - Discussion (open)

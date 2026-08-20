@@ -34,6 +34,7 @@
 (declare-function shipit-issues--transition-status "shipit-issues")
 (declare-function shipit-issue-create-buffer "shipit-issue-create")
 (declare-function shipit-editor-open "shipit-editor")
+(defvar shipit-buffer-pr-data)
 
 (defvar-local shipit-pr-linked-issue--pending-link nil
   "Plist holding PR link context inside an issue-creation buffer.
@@ -122,6 +123,45 @@ A nil or empty ISSUE-KEY removes any existing override."
         (push (cons repo (list (cons pr-key issue-key)))
               shipit-pr-linked-issue--overrides))))
   (shipit-pr-linked-issue--save))
+
+;;; Linking a PR to an issue, locally and in the tracker
+
+(declare-function shipit-pr--resolve-for-repo "shipit-pr-backends")
+
+(defun shipit-pr-linked-issue--pr-url (repo pr-number)
+  "Return the browser URL of PR-NUMBER in REPO via its PR backend."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (browse-fn (plist-get (car resolved) :browse-url)))
+    (funcall browse-fn (cdr resolved) pr-number)))
+
+(defun shipit-pr-linked-issue--remote-title (pr-number pr-title)
+  "Return the title the tracker shows for PR-NUMBER, given PR-TITLE or nil."
+  (if pr-title
+      (format "#%s: %s" pr-number pr-title)
+    (format "#%s" pr-number)))
+
+(defun shipit-pr-linked-issue-link (issue-repo issue-key pr-repo pr-number
+                                               pr-url &optional pr-title)
+  "Link PR-NUMBER in PR-REPO to ISSUE-KEY, tracked under ISSUE-REPO.
+Records the link locally, so this machine shows it at once, and attaches
+PR-URL to the issue in the tracker when its backend can, so everyone
+else sees it too.  PR-TITLE names the link in the tracker."
+  (shipit-pr-linked-issue--set-override pr-repo pr-number issue-key)
+  (let* ((resolved (shipit-issue--resolve-for-repo issue-repo))
+         (link-fn (plist-get (car resolved) :link-remote-url)))
+    (when link-fn
+      (funcall link-fn (cdr resolved) issue-key pr-url
+               (shipit-pr-linked-issue--remote-title pr-number pr-title)))))
+
+(defun shipit-pr-linked-issue-unlink (issue-repo issue-key pr-repo pr-number pr-url)
+  "Undo `shipit-pr-linked-issue-link' for PR-NUMBER in PR-REPO and ISSUE-KEY.
+Drops the local override and, when ISSUE-REPO\='s backend can, detaches
+PR-URL from the issue in the tracker."
+  (shipit-pr-linked-issue--set-override pr-repo pr-number nil)
+  (let* ((resolved (shipit-issue--resolve-for-repo issue-repo))
+         (unlink-fn (plist-get (car resolved) :unlink-remote-url)))
+    (when unlink-fn
+      (funcall unlink-fn (cdr resolved) issue-key pr-url))))
 
 ;;; Detection
 
@@ -452,21 +492,28 @@ Skips the section when no issue backend is available for REPO."
            (pr-number (plist-get ctx :pr-number))
            (selected (shipit-pr-linked-issue--read-issue-key repo)))
       (when selected
-        (shipit-pr-linked-issue--set-override repo pr-number selected)
+        (shipit-pr-linked-issue-link
+         repo selected repo pr-number
+         (shipit-pr-linked-issue--pr-url repo pr-number)
+         (cdr (assq 'title (bound-and-true-p shipit-buffer-pr-data))))
         (shipit-pr-linked-issue--invalidate-cache repo selected)
         (message "Linked PR #%s to %s" pr-number selected)
         (shipit-pr-linked-issue--refresh-buffer)))))
 
 (defun shipit-pr-linked-issue-clear ()
-  "Clear the manual override; auto-detection takes over on next render."
+  "Clear the manual link, here and in the tracker.
+Auto-detection takes over on the next render."
   (interactive)
   (let ((ctx (shipit-pr-linked-issue--context)))
     (unless ctx (user-error "Not on a PR linked-issue section"))
-    (let ((repo (plist-get ctx :repo))
-          (pr-number (plist-get ctx :pr-number)))
-      (if (shipit-pr-linked-issue--get-override repo pr-number)
+    (let* ((repo (plist-get ctx :repo))
+           (pr-number (plist-get ctx :pr-number))
+           (key (shipit-pr-linked-issue--get-override repo pr-number)))
+      (if key
           (progn
-            (shipit-pr-linked-issue--set-override repo pr-number nil)
+            (shipit-pr-linked-issue-unlink
+             repo key repo pr-number
+             (shipit-pr-linked-issue--pr-url repo pr-number))
             (message "Cleared manual issue link")
             (shipit-pr-linked-issue--refresh-buffer))
         (message "No manual override set")))))

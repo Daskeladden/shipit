@@ -1177,6 +1177,209 @@ THEN the assignee field is sent as JSON null, clearing it."
       (should (eq :null (cdr (assq 'assignee
                                    (cdr (assq 'fields captured-data)))))))))
 
+;;; Issue Link Creation Tests
+
+(defconst test-shipit-issue-jira--link-types
+  '((issueLinkTypes . [((id . "10000") (name . "Blocks")
+                        (inward . "is blocked by") (outward . "blocks"))
+                       ((id . "10003") (name . "Relates")
+                        (inward . "relates to") (outward . "relates to"))]))
+  "A GET /issueLinkType answer with one asymmetric and one symmetric type.")
+
+(ert-deftest test-shipit-issue-jira-link-relations-offer-both-phrases ()
+  "GIVEN Jira's link types
+WHEN listing the relations a user may pick
+THEN each direction of an asymmetric type is its own phrase, while a
+symmetric type like Relates appears once."
+  (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+             (lambda (_config _path) test-shipit-issue-jira--link-types)))
+    (let ((relations (shipit-issue-jira--fetch-link-relations
+                      '(:base-url "https://jira.example.com"))))
+      (should (equal (mapcar #'car relations)
+                     '("blocks" "is blocked by" "relates to"))))))
+
+(ert-deftest test-shipit-issue-jira-link-issues-outward-phrase ()
+  "GIVEN the phrase \"blocks\" chosen on PRJ-1 towards PRJ-2
+WHEN creating the link
+THEN PRJ-1 is the inward issue and PRJ-2 the outward one, which is how
+Jira spells \"PRJ-1 blocks PRJ-2\"."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config _path) test-shipit-issue-jira--link-types))
+              ((symbol-function 'shipit-issue-jira--api-request-post)
+               (lambda (_config path data)
+                 (setq captured (cons path data)) nil)))
+      (let* ((config '(:base-url "https://jira.example.com"))
+             (relation (cdr (assoc "blocks"
+                                   (shipit-issue-jira--fetch-link-relations config)))))
+        (shipit-issue-jira--link-issues config "PRJ-1" relation "PRJ-2")
+        (should (equal "/rest/api/3/issueLink" (car captured)))
+        (let ((body (cdr captured)))
+          (should (equal "Blocks" (cdr (assq 'name (cdr (assq 'type body))))))
+          (should (equal "PRJ-1" (cdr (assq 'key (cdr (assq 'inwardIssue body))))))
+          (should (equal "PRJ-2" (cdr (assq 'key (cdr (assq 'outwardIssue body)))))))))))
+
+(ert-deftest test-shipit-issue-jira-link-issues-inward-phrase ()
+  "GIVEN the phrase \"is blocked by\" chosen on PRJ-1 towards PRJ-2
+WHEN creating the link
+THEN the issues swap: PRJ-2 blocks PRJ-1, so PRJ-2 is inward."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config _path) test-shipit-issue-jira--link-types))
+              ((symbol-function 'shipit-issue-jira--api-request-post)
+               (lambda (_config _path data) (setq captured data) nil)))
+      (let* ((config '(:base-url "https://jira.example.com"))
+             (relation (cdr (assoc "is blocked by"
+                                   (shipit-issue-jira--fetch-link-relations config)))))
+        (shipit-issue-jira--link-issues config "PRJ-1" relation "PRJ-2")
+        (should (equal "PRJ-2" (cdr (assq 'key (cdr (assq 'inwardIssue captured))))))
+        (should (equal "PRJ-1" (cdr (assq 'key (cdr (assq 'outwardIssue captured))))))))))
+
+(ert-deftest test-shipit-issue-jira-registers-link-ops ()
+  "GIVEN the jira backend
+WHEN inspecting the registry
+THEN it exposes the two operations behind Link work item."
+  (let ((backend (cdr (assq 'jira shipit-issue-backends))))
+    (should (functionp (plist-get backend :fetch-link-relations)))
+    (should (functionp (plist-get backend :link-issues)))))
+
+;;; Remote Link Tests
+
+(ert-deftest test-shipit-issue-jira-link-remote-url-posts-idempotently ()
+  "GIVEN a pull request's URL and title
+WHEN attaching it to an issue as a remote link
+THEN the POST goes to the issue's remotelink endpoint with the URL as
+globalId, so attaching the same URL twice updates rather than
+duplicates."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-post)
+               (lambda (_config path data) (setq captured (cons path data)) nil)))
+      (shipit-issue-jira--link-remote-url
+       '(:base-url "https://jira.example.com") "PRJ-7"
+       "https://github.com/o/r/pull/12" "#12: Fix sensor")
+      (should (equal "/rest/api/3/issue/PRJ-7/remotelink" (car captured)))
+      (let ((body (cdr captured)))
+        (should (equal "https://github.com/o/r/pull/12" (cdr (assq 'globalId body))))
+        (should (equal "https://github.com/o/r/pull/12"
+                       (cdr (assq 'url (cdr (assq 'object body))))))
+        (should (equal "#12: Fix sensor"
+                       (cdr (assq 'title (cdr (assq 'object body))))))))))
+
+(ert-deftest test-shipit-issue-jira-fetch-remote-urls-returns-url-and-title ()
+  "GIVEN an issue with remote links
+WHEN fetching them
+THEN each comes back as (URL . TITLE)."
+  (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+             (lambda (_config path)
+               (should (equal "/rest/api/3/issue/PRJ-7/remotelink" path))
+               [((id . 1) (globalId . "g1")
+                 (object . ((url . "https://github.com/o/r/pull/12")
+                            (title . "#12: Fix sensor"))))
+                ((id . 2)
+                 (object . ((url . "https://wiki.example.com/page")
+                            (title . "Design page"))))])))
+    (should (equal (shipit-issue-jira--fetch-remote-urls
+                    '(:base-url "https://jira.example.com") "PRJ-7")
+                   '(("https://github.com/o/r/pull/12" . "#12: Fix sensor")
+                     ("https://wiki.example.com/page" . "Design page"))))))
+
+(ert-deftest test-shipit-issue-jira-registers-remote-link-ops ()
+  "GIVEN the jira backend
+WHEN inspecting the registry
+THEN it exposes the remote link operations."
+  (let ((backend (cdr (assq 'jira shipit-issue-backends))))
+    (should (functionp (plist-get backend :link-remote-url)))
+    (should (functionp (plist-get backend :fetch-remote-urls)))))
+
+;;; Request Method Tests
+
+(defun test-shipit-issue-jira--respond (status body)
+  "Return a `url-retrieve-synchronously' stand-in answering STATUS with BODY.
+Records the request method and body it saw in the buffer-local
+`test-method' and `test-body' of the response buffer."
+  (lambda (_url &rest _args)
+    (let ((buf (generate-new-buffer " *test-response*"))
+          (method url-request-method)
+          (data url-request-data))
+      (with-current-buffer buf
+        (insert (format "HTTP/1.1 %d X\r\n\r\n" status))
+        (insert body)
+        (setq-local url-http-end-of-headers
+                    (save-excursion
+                      (goto-char (point-min))
+                      (re-search-forward "\r?\n\r?\n" nil t)
+                      (match-beginning 0)))
+        (setq-local url-http-response-status status)
+        (setq-local test-method method)
+        (setq-local test-body data))
+      (setq test-shipit-issue-jira--last-request (cons method data))
+      buf)))
+
+(defvar test-shipit-issue-jira--last-request nil
+  "The (METHOD . BODY) of the last request a test stand-in answered.")
+
+(ert-deftest test-shipit-issue-jira-put-sends-put-with-body ()
+  "GIVEN data to update
+WHEN sending it with the PUT helper
+THEN the request goes out as PUT with the data as its JSON body."
+  (cl-letf (((symbol-function 'shipit-issue-jira--auth-header) (lambda (_c) nil))
+            ((symbol-function 'url-retrieve-synchronously)
+             (test-shipit-issue-jira--respond 204 "")))
+    (shipit-issue-jira--api-request-put
+     '(:base-url "https://jira.example.com") "/rest/api/3/issue/PRJ-1"
+     '((fields . ((summary . "New")))))
+    (should (equal "PUT" (car test-shipit-issue-jira--last-request)))
+    (should (string-match-p "\"summary\":\"New\""
+                            (cdr test-shipit-issue-jira--last-request)))))
+
+(ert-deftest test-shipit-issue-jira-delete-sends-delete-without-body ()
+  "GIVEN a resource to remove
+WHEN sending the DELETE helper
+THEN the request goes out as DELETE with no body, and an empty 204
+answer returns nil without error."
+  (cl-letf (((symbol-function 'shipit-issue-jira--auth-header) (lambda (_c) nil))
+            ((symbol-function 'url-retrieve-synchronously)
+             (test-shipit-issue-jira--respond 204 "")))
+    (should-not (shipit-issue-jira--api-request-delete
+                 '(:base-url "https://jira.example.com")
+                 "/rest/api/3/issue/PRJ-1/remotelink?globalId=x"))
+    (should (equal "DELETE" (car test-shipit-issue-jira--last-request)))
+    (should-not (cdr test-shipit-issue-jira--last-request))))
+
+(ert-deftest test-shipit-issue-jira-delete-signals-error-on-404 ()
+  "GIVEN a DELETE answered with 404
+WHEN the response is processed
+THEN an error is signaled, as for the other methods."
+  (cl-letf (((symbol-function 'shipit-issue-jira--auth-header) (lambda (_c) nil))
+            ((symbol-function 'url-retrieve-synchronously)
+             (test-shipit-issue-jira--respond
+              404 "{\"errorMessages\":[\"No link\"],\"errors\":{}}")))
+    (should-error (shipit-issue-jira--api-request-delete
+                   '(:base-url "https://jira.example.com")
+                   "/rest/api/3/issue/PRJ-1/remotelink?globalId=x"))))
+
+(ert-deftest test-shipit-issue-jira-unlink-remote-url-deletes-by-global-id ()
+  "GIVEN a URL attached to an issue
+WHEN detaching it
+THEN the DELETE names the issue's remotelink endpoint and the URL as
+globalId, escaped for the query string."
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-delete)
+               (lambda (_config path) (setq captured path) nil)))
+      (shipit-issue-jira--unlink-remote-url
+       '(:base-url "https://jira.example.com") "PRJ-7"
+       "https://github.com/o/r/pull/12")
+      (should (equal (concat "/rest/api/3/issue/PRJ-7/remotelink?globalId="
+                             (url-hexify-string "https://github.com/o/r/pull/12"))
+                     captured)))))
+
+(ert-deftest test-shipit-issue-jira-registers-unlink-remote-url ()
+  "GIVEN the jira backend
+WHEN inspecting the registry
+THEN it exposes `:unlink-remote-url'."
+  (should (functionp (plist-get (cdr (assq 'jira shipit-issue-backends))
+                                :unlink-remote-url))))
+
 (ert-deftest test-shipit-issue-jira-update-title-puts-summary ()
   "GIVEN a new title
 WHEN updating an issue's title

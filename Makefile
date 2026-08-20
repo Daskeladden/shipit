@@ -31,7 +31,7 @@ autoloads: $(PACKAGE_FILE)
 clean:
 	rm -f lisp/*.elc $(AUTOLOADS_FILE)
 	rm -rf .packages
-	rm -rf ~/.emacs.d/eln-cache/*shipit*
+	rm -f ~/.emacs.d/eln-cache/*/shipit*.eln
 
 # Run unit tests
 test-unit: compile
@@ -44,6 +44,7 @@ test-unit: compile
 		-L test \
 		-l test/test-shipit.el \
 		-l test/test-shipit-editor.el \
+		-l test/test-shipit-magit-requires.el \
 		-l test/test-shipit-issues.el \
 		-l test/test-shipit-issue-backends.el \
 		-l test/test-shipit-issue-github.el \
@@ -57,6 +58,7 @@ test-unit: compile
 		-l test/test-jira-fields-transitions.el \
 		-l test/test-shipit-discussions-graphql.el \
 		-l test/test-shipit-discussions-buffer.el \
+		-l test/test-shipit-magit-worktrees.el \
 		-l test/test-shipit-discussions.el \
 		-l test/test-shipit-pr-backends.el \
 		-l test/test-shipit-pr-github.el \

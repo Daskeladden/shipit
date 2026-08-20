@@ -26,6 +26,7 @@
 ;;; Code:
 
 (require 'shipit-core)
+(require 'magit-section)
 
 ;; Try to load gfm-mode from markdown-mode package
 (require 'markdown-mode nil t)

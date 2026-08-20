@@ -19,6 +19,7 @@
 (require 'cl-lib)
 (require 'shipit-sections)
 (require 'shipit-render)    ; `shipit--wrap-body'
+(require 'magit-section)
 
 (declare-function shipit-post-review "shipit-http"
                   (pr-number event &optional body comments repo))

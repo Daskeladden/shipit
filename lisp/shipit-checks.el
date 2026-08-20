@@ -51,14 +51,10 @@
 (defvar shipit-actions--repo)
 (defvar shipit-actions--step-time-format)
 
-;; Conditional magit requirements for checks integration
-(eval-when-compile
-  (when (locate-library "magit")
-    (require 'magit)
-    (require 'magit-section)))
-
-;; At runtime, magit must be available for checks to work
-;; Only require if actually using magit functionality
+;; Hard dependency: the section macros must be expanded, not compiled
+;; as function calls, or native compilation silently produces broken code.
+(require 'magit)
+(require 'magit-section)
 
 (defvar-local shipit--checks-fetched nil
   "Whether PR checks have been fetched.")

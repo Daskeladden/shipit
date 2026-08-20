@@ -45,10 +45,8 @@
 (declare-function shipit-actions-list--render-steps-in-section "shipit-actions-list")
 (declare-function shipit--render-check-item-steps "shipit-checks")
 
-(eval-when-compile
-  (when (locate-library "magit")
-    (require 'magit)
-    (require 'magit-section)))
+(require 'magit)
+(require 'magit-section)
 
 ;; Magit section types
 (defun actions-root (&rest _args)

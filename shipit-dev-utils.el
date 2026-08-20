@@ -116,6 +116,7 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
                           "shipit-atlassian-board.el" "shipit-atlassian-dashboard.el"
                           "shipit-notifications-rss.el"
                           "shipit-code-refs.el"
+                          "shipit-magit-worktrees.el"
                           "shipit-debug.el" "shipit.el")))
         ;; First pass: Delete all .elc bytecode files to force fresh load
         (dolist (file load-files)

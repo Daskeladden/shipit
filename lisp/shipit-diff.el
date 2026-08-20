@@ -25,9 +25,7 @@
 (require 'subr-x)
 (require 'shipit-lib)   ; For shipit--defer-refresh
 (require 'shipit-pr-backends)
-;; Magit section is optional for compilation
-(when (locate-library "magit-section")
-  (require 'magit-section))
+(require 'magit-section)
 
 ;; Forward declarations
 (declare-function magit-get-current-branch "magit-git")

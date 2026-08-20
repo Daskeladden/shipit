@@ -43,10 +43,8 @@
 (declare-function shipit-actions-nav-menu "shipit-actions")
 (declare-function shipit-actions-timestamps-menu "shipit-actions")
 
-(eval-when-compile
-  (when (locate-library "magit")
-    (require 'magit)
-    (require 'magit-section)))
+(require 'magit)
+(require 'magit-section)
 
 ;; Magit section types
 (defun actions-list-root (&rest _args)

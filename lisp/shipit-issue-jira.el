@@ -1607,23 +1607,63 @@ CONFIG must contain :project-keys and :base-url."
 (defvar shipit-issue-jira--assignable-users-cache nil
   "Cache mapping display names to account IDs for Jira assignees.")
 
-(defun shipit-issue-jira--fetch-assignable-users (config)
-  "Fetch users assignable to issues in the project from CONFIG.
-Caches the name-to-accountId mapping for use during issue creation."
-  (let* ((project-key (car (plist-get config :project-keys)))
-         (path (format "/rest/api/3/user/assignable/search?project=%s&maxResults=100"
-                       (url-hexify-string project-key)))
-         (raw (shipit-issue-jira--api-request config path))
-         (users (append raw nil)))
+(defconst shipit-issue-jira--assignable-page-size 200
+  "Users asked for per page of the assignable-user search.")
+
+(defconst shipit-issue-jira--assignable-user-limit 2000
+  "Ceiling on users collected per project.
+Paging stops here even if Jira keeps answering with full pages, so a
+server that ignores startAt cannot spin the loop forever.")
+
+(defun shipit-issue-jira--assignable-page-path (project-key start-at)
+  "Return the assignable-user search path for PROJECT-KEY from START-AT."
+  (format "/rest/api/3/user/assignable/search?project=%s&startAt=%d&maxResults=%d"
+          (url-hexify-string project-key)
+          start-at
+          shipit-issue-jira--assignable-page-size))
+
+(defun shipit-issue-jira--fetch-assignable-in-project (config project-key)
+  "Return every user assignable in PROJECT-KEY, following pagination.
+The endpoint answers a page at a time and reports no total, so a short
+page is what marks the end."
+  (let ((users nil) (start-at 0) (more t))
+    (while more
+      (let* ((path (shipit-issue-jira--assignable-page-path project-key start-at))
+             (page (append (shipit-issue-jira--api-request config path) nil)))
+        (setq users (nconc users page))
+        (setq start-at (+ start-at (length page)))
+        (setq more (and (= (length page) shipit-issue-jira--assignable-page-size)
+                        (< start-at shipit-issue-jira--assignable-user-limit)))))
     (shipit--debug-log "Jira backend: fetched %d assignable users for %s"
                        (length users) project-key)
-    ;; Cache name → accountId mapping
+    users))
+
+(defun shipit-issue-jira--merge-assignable-users (config)
+  "Return users assignable in any project CONFIG names, once each.
+Someone assignable only in the second project belongs in the prompt
+just as much as one from the first, so the projects union rather than
+the first winning."
+  (let ((seen (make-hash-table :test #'equal)) (users nil))
+    (dolist (project-key (plist-get config :project-keys))
+      (dolist (user (shipit-issue-jira--fetch-assignable-in-project
+                     config project-key))
+        (let ((account-id (cdr (assq 'accountId user))))
+          (unless (gethash account-id seen)
+            (puthash account-id t seen)
+            (push user users)))))
+    (nreverse users)))
+
+(defun shipit-issue-jira--fetch-assignable-users (config)
+  "Fetch users assignable to issues in CONFIG's projects.
+Caches the name-to-accountId mapping for use during issue creation and
+returns the display names, sorted so the prompt reads the same twice."
+  (let ((users (shipit-issue-jira--merge-assignable-users config)))
     (setq shipit-issue-jira--assignable-users-cache
           (mapcar (lambda (u)
                     (cons (cdr (assq 'displayName u))
                           (cdr (assq 'accountId u))))
                   users))
-    (mapcar (lambda (u) (cdr (assq 'displayName u))) users)))
+    (sort (mapcar (lambda (u) (cdr (assq 'displayName u))) users) #'string<)))
 
 (defun shipit-issue-jira--fetch-project-statuses (config)
   "Return unique status names across all issue types in the project.
@@ -1643,12 +1683,18 @@ type; this helper flattens and de-duplicates the names."
                        (length names) project-key)
     (nreverse names)))
 
+(defun shipit-issue-jira--account-id-for (assignee-name)
+  "Return the account ID cached for ASSIGNEE-NAME.
+Errors when the name is unknown: Jira addresses assignees by account
+ID, and sending none would quietly unassign the issue instead."
+  (or (cdr (assoc assignee-name shipit-issue-jira--assignable-users-cache))
+      (error "No Jira account ID known for assignee %S" assignee-name)))
+
 (defun shipit-issue-jira--update-assignee (config issue-key assignee-name)
   "Update the assignee of ISSUE-KEY to ASSIGNEE-NAME via CONFIG.
 ASSIGNEE-NAME is a display name or nil to unassign."
   (let* ((account-id (when assignee-name
-                       (cdr (assoc assignee-name
-                                   shipit-issue-jira--assignable-users-cache))))
+                       (shipit-issue-jira--account-id-for assignee-name)))
          (data `((fields . ((assignee . ,(if account-id
                                              `((accountId . ,account-id))
                                            :null)))))))

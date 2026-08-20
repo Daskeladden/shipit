@@ -1083,6 +1083,100 @@ THEN it exposes :fetch-labels and :update-labels operations."
     (should (functionp (plist-get backend :fetch-labels)))
     (should (functionp (plist-get backend :update-labels)))))
 
+;;; Fetch Assignable Users Tests
+
+(ert-deftest test-shipit-issue-jira-fetch-assignable-users-follows-pagination ()
+  "GIVEN a project with more assignable users than fit on one page
+WHEN fetching assignable users
+THEN paging continues past the first page and every user is returned.
+A single page silently truncates large sites, dropping whoever sorts
+last -- the reason a name can be missing from the assignee prompt."
+  (let* ((size shipit-issue-jira--assignable-page-size)
+         (full-page
+          (vconcat (mapcar (lambda (i)
+                             `((displayName . ,(format "User %03d" i))
+                               (accountId . ,(format "id-%d" i))))
+                           (number-sequence 1 size))))
+         (paths nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (push path paths)
+                 (if (string-match-p "startAt=0" path)
+                     full-page
+                   [((displayName . "Zoe Zulu") (accountId . "id-zoe"))]))))
+      (let ((result (shipit-issue-jira--fetch-assignable-users
+                     '(:base-url "https://jira.example.com"
+                       :project-keys ("PRJ")))))
+        (should (= (length paths) 2))
+        (should (string-match-p (format "startAt=%d" size) (car paths)))
+        (should (member "Zoe Zulu" result))
+        (should (= (length result) (1+ size)))))))
+
+(ert-deftest test-shipit-issue-jira-fetch-assignable-users-covers-every-project ()
+  "GIVEN a config naming two projects
+WHEN fetching assignable users
+THEN both are queried and their users merge into one sorted list.
+Only asking the first project hides anyone assignable solely in the
+others."
+  (let ((paths nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (push path paths)
+                 (cond
+                  ((string-match-p "project=ONE" path)
+                   [((displayName . "Ann") (accountId . "id-ann"))
+                    ((displayName . "Bob") (accountId . "id-bob"))])
+                  ((string-match-p "project=TWO" path)
+                   [((displayName . "Bob") (accountId . "id-bob"))
+                    ((displayName . "Cid") (accountId . "id-cid"))])
+                  (t [])))))
+      (let ((result (shipit-issue-jira--fetch-assignable-users
+                     '(:base-url "https://jira.example.com"
+                       :project-keys ("ONE" "TWO")))))
+        (should (= (length paths) 2))
+        (should (equal result '("Ann" "Bob" "Cid")))))))
+
+(ert-deftest test-shipit-issue-jira-fetch-assignable-users-caches-account-ids ()
+  "GIVEN users gathered from more than one project
+WHEN fetching assignable users
+THEN each returned name maps to its account ID in the cache."
+  (let ((shipit-issue-jira--assignable-users-cache nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (if (string-match-p "project=ONE" path)
+                     [((displayName . "Ann") (accountId . "id-ann"))]
+                   [((displayName . "Cid") (accountId . "id-cid"))]))))
+      (shipit-issue-jira--fetch-assignable-users
+       '(:base-url "https://jira.example.com" :project-keys ("ONE" "TWO")))
+      (should (equal "id-ann"
+                     (cdr (assoc "Ann" shipit-issue-jira--assignable-users-cache))))
+      (should (equal "id-cid"
+                     (cdr (assoc "Cid" shipit-issue-jira--assignable-users-cache)))))))
+
+(ert-deftest test-shipit-issue-jira-update-assignee-rejects-unknown-name ()
+  "GIVEN a display name the assignable-user cache does not know
+WHEN updating an issue's assignee
+THEN it errors rather than sending the PUT that would clear the field."
+  (let ((shipit-issue-jira--assignable-users-cache '(("Ann" . "id-ann")))
+        (called nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-put)
+               (lambda (&rest _) (setq called t) nil)))
+      (should-error (shipit-issue-jira--update-assignee
+                     '(:base-url "https://jira.example.com") "PRJ-7" "Nobody"))
+      (should-not called))))
+
+(ert-deftest test-shipit-issue-jira-update-assignee-unassigns-with-nil ()
+  "GIVEN no assignee name
+WHEN updating an issue's assignee
+THEN the assignee field is sent as JSON null, clearing it."
+  (let ((captured-data nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-put)
+               (lambda (_config _path data) (setq captured-data data) nil)))
+      (shipit-issue-jira--update-assignee
+       '(:base-url "https://jira.example.com") "PRJ-7" nil)
+      (should (eq :null (cdr (assq 'assignee
+                                   (cdr (assq 'fields captured-data)))))))))
+
 (ert-deftest test-shipit-issue-jira-update-title-puts-summary ()
   "GIVEN a new title
 WHEN updating an issue's title

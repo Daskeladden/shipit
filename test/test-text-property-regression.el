@@ -46,7 +46,7 @@ This test would have FAILED before the fix was applied."
                 ((symbol-function 'shipit--get-pr-head-sha)
                  (lambda (pr-number) "abc123"))
                 ((symbol-function 'shipit--insert-comment-body-only)
-                 (lambda (comment indent keymap &optional file-path repo pr-number)
+                 (lambda (&rest _)
                    (insert "Comment body text\n"))))
         
         ;; Insert comment using the DIFF function that had the bug
@@ -97,7 +97,7 @@ This test should PASS both before and after the fix."
                 ((symbol-function 'shipit--format-comment-reactions)
                  (lambda (comment &optional compact) nil))
                 ((symbol-function 'shipit--insert-comment-body-only)
-                 (lambda (comment indent keymap file-path repo pr-number)
+                 (lambda (&rest _)
                    (insert "Status comment body\n"))))
         
         ;; Insert comment using the STATUS function (this worked before)
@@ -146,7 +146,7 @@ This test should PASS both before and after the fix."
                 ((symbol-function 'shipit--get-pr-head-sha)
                  (lambda (pr-number) "def456"))
                 ((symbol-function 'shipit--insert-comment-body-only)
-                 (lambda (comment indent keymap &optional file-path repo pr-number)
+                 (lambda (&rest _)
                    (insert "Review comment content\n")))
                 
                 ;; Mock reply functions to track which API is called

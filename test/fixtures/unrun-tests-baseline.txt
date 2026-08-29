@@ -9,7 +9,6 @@ test-labels-edit-alignment.el
 test-labels-refresh.el
 test-labels-tab-collapse.el
 test-minimal-indent.el
-test-per-commit-comments.el
 test-pr-approval-endpoint.el
 test-pr-context-validation.el
 test-pr-search-cache-ttl.el

@@ -6,6 +6,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'shipit-render)
 
 ;;; Test Data
 

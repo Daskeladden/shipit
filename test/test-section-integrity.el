@@ -1,6 +1,7 @@
 ;;; test-section-integrity.el --- Test section integrity verification -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'shipit-diff)
 
 (ert-deftest test-section-integrity-detection ()
   "Test that section integrity verification detects boundary mismatches."

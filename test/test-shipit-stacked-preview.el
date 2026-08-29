@@ -238,10 +238,15 @@ THEN the stack it came from is redrawn, so the layer just submitted
 shows what it became."
   (let ((redrawn nil))
     (with-temp-buffer
+      (setq shipit-stacked-preview--repo "owner/repo")
       (cl-letf (((symbol-function 'shipit-stacked-preview--render)
                  (lambda () (setq redrawn t)))
+                ((symbol-function 'shipit-cache-forget-branch-pr)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'shipit-stacked-preview--group-submitted)
+                 (lambda () nil))
                 ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
-        (funcall (shipit-stacked-preview--return-to (current-buffer)) 42)
+        (funcall (shipit-stacked-preview--return-to (current-buffer) "two") 42)
         (should redrawn)))))
 
 (ert-deftest test-shipit-stacked-preview-will-not-send-a-broken-stack ()
@@ -430,6 +435,85 @@ that survived until the next redraw."
         (should-error (shipit-stacked-preview--push-through (nth 1 layers) nil)
                       :type 'user-error)
         (should-not shipit-stacked-preview--sending)))))
+
+(ert-deftest test-shipit-stacked-preview-counts-an-unbroken-run-only ()
+  "GIVEN layers where the middle one has no pull request
+WHEN the submitted run is worked out
+THEN it stops there.  A stack is a chain, so the layers above a gap are
+not part of it and grouping them would claim a chain that is not."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((layers (test-stacked--layers "one" "two" "three")))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--pr-number)
+                 (lambda (branch) (pcase branch ("one" 1) ("three" 3)))))
+        (should (equal '(1) (shipit-stacked-preview--submitted-numbers)))))))
+
+(ert-deftest test-shipit-stacked-preview-groups-what-has-been-submitted ()
+  "GIVEN two submitted layers that are in no stack
+WHEN they are grouped
+THEN one stack is asked for, holding both in order.  The remote checks
+the chain but will not group them unasked."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((grouped nil))
+      (cl-letf (((symbol-function 'shipit-pr--fetch-stack) (lambda (&rest _) nil))
+                ((symbol-function 'shipit-stacked-preview--backend-call)
+                 (lambda (operation &rest args)
+                   (setq grouped (cons operation args)))))
+        (shipit-stacked-preview--group '(1 2))
+        (should (equal '(:create-stack (1 2)) grouped))))))
+
+(ert-deftest test-shipit-stacked-preview-extends-a-stack-it-already-has ()
+  "GIVEN a stack already holding the lower layers
+WHEN a further layer is submitted
+THEN only that one is added, and to the stack that exists.  Grouping
+them afresh would leave a second stack beside the first."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((calls nil))
+      (cl-letf (((symbol-function 'shipit-pr--fetch-stack)
+                 (lambda (&rest _)
+                   '((number . 7) (entries . (((number . 1)) ((number . 2)))))))
+                ((symbol-function 'shipit-stacked-preview--backend-call)
+                 (lambda (operation &rest args)
+                   (setq calls (append calls (list (cons operation args)))))))
+        (shipit-stacked-preview--group '(1 2 3))
+        (should (equal '((:add-to-stack 7 3)) calls))))))
+
+(ert-deftest test-shipit-stacked-preview-will-not-group-one-pull-request ()
+  "GIVEN a single submitted layer
+WHEN grouping is asked for
+THEN it says so rather than asking the remote for a stack of one."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((layers (test-stacked--layers "one" "two")))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--pr-number)
+                 (lambda (branch) (when (equal branch "one") 1)))
+                ((symbol-function 'shipit-stacked-preview--group)
+                 (lambda (_numbers) (error "should not be reached"))))
+        (should-error (shipit-stacked-preview-register) :type 'user-error)))))
+
+(ert-deftest test-shipit-stacked-preview-forgets-what-it-knew-of-the-branch ()
+  "GIVEN a layer that has just been submitted
+WHEN the stack buffer takes over again
+THEN what was remembered about that branch is dropped.  That it had no
+pull request was cached, misses included, and it has just stopped being
+true."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((forgotten nil))
+      (cl-letf (((symbol-function 'shipit-cache-forget-branch-pr)
+                 (lambda (repo branch) (setq forgotten (list repo branch))))
+                ((symbol-function 'shipit-stacked-preview--group-submitted)
+                 (lambda () nil))
+                ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
+                ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
+        (funcall (shipit-stacked-preview--return-to (current-buffer) "two") 42)
+        (should (equal '("owner/repo" "two") forgotten))))))
 
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

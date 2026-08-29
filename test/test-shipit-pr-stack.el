@@ -117,6 +117,40 @@ rather than erroring, so the section can elide."
      (should-not (shipit-pr--stack-supported-p "o/r"))
      (should-not (shipit-pr--fetch-stack "o/r" 1)))))
 
+(ert-deftest test-shipit-stack-add-sends-what-the-endpoint-requires ()
+  "GIVEN the github backend
+WHEN a pull request is added to a stack
+THEN the payload carries `pull_requests' as a list of integers, which
+is what the endpoint requires.  The singular key it sent before was
+refused with a 422 that the caller then counted as success."
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'shipit--api-request-post)
+               (lambda (endpoint data &optional _method)
+                 (setq sent (cons endpoint data))
+                 '((number . 17)))))
+      (funcall (plist-get (cdr (assq 'github shipit-pr-backends))
+                          :add-to-stack)
+               '(:repo "o/r") 17 18)
+      (should (equal "/repos/o/r/stacks/17/add" (car sent)))
+      (should (equal [18]
+                     (cdr (assq 'pull_requests (cdr sent))))))))
+
+(ert-deftest test-shipit-stack-github-answers-for-a-branchs-pull-request ()
+  "GIVEN the github backend
+WHEN asked which pull request a branch heads
+THEN it answers the number through the shared branch lookup, whose
+cache it thereby shares.  The op was missing, so everything that
+plans or detects stacks quietly got nil on real GitHub."
+  (cl-letf (((symbol-function 'shipit-get-pr-for-branch)
+             (lambda (branch &optional repo)
+               (when (and (equal branch "part-one") (equal repo "o/r"))
+                 '((number . 7) (title . "part one"))))))
+    (let ((op (plist-get (cdr (assq 'github shipit-pr-backends))
+                         :fetch-pr-for-branch)))
+      (should (functionp op))
+      (should (equal 7 (funcall op '(:repo "o/r") "part-one")))
+      (should-not (funcall op '(:repo "o/r") "no-pr-branch")))))
+
 (ert-deftest test-shipit-stack-present-op-is-dispatched ()
   "GIVEN a backend that registers :fetch-stack
 WHEN a stack is requested

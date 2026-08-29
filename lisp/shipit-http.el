@@ -2830,7 +2830,7 @@ Finds PRs where BRANCH is the head (source) branch."
   (when (and branch (shipit--github-token))
     (shipit--ensure-cache-initialized)  ; Ensure cache is properly initialized
     (let* ((repo (or repo (shipit--get-repo-from-remote)))
-           (cache-key (format "%s:%s" repo branch))
+           (cache-key (shipit-cache-branch-pr-key repo branch))
            ;; A branch with no pull request caches nil, and nil is also
            ;; what a miss returns, so the stored answer could never be
            ;; read back and every lookup went to the network.  Ask for a
@@ -2916,7 +2916,7 @@ CALLBACK is called with (pr-data) when successful, or (nil) if not found."
   (when (and branch (shipit--github-token) callback)
     (shipit--ensure-cache-initialized)
     (let* ((repo (or repo (shipit--get-repo-from-remote)))
-           (cache-key (format "%s:%s" repo branch))
+           (cache-key (shipit-cache-branch-pr-key repo branch))
            (original-callback callback))  ; Store callback to avoid shadowing
       (when repo
         ;; Check cache first - return immediately if found

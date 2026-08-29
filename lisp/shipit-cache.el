@@ -81,6 +81,17 @@ Calls the backend's :clear-discussions-cache if available."
   "Hash table caching PR data for different branches.
 Global cache with repo-specific keys.")
 
+(defun shipit-cache-branch-pr-key (repo branch)
+  "Return the key under which BRANCH in REPO remembers its pull request."
+  (format "%s:%s" repo branch))
+
+(defun shipit-cache-forget-branch-pr (repo branch)
+  "Forget which pull request BRANCH in REPO has.
+Called when that has just changed.  A pull request made for a branch
+that had none is otherwise hidden behind the remembered answer, misses
+being remembered too."
+  (remhash (shipit-cache-branch-pr-key repo branch) shipit--cached-branch-prs))
+
 (defvar shipit--workflow-name-cache (make-hash-table :test 'equal)
   "Cache mapping workflow IDs to workflow names. Global cache.")
 

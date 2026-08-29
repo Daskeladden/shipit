@@ -1552,6 +1552,40 @@ first, which is the order they must merge in."
                           (shipit-pr-github--stack-entry entry number))
                         (append (cdr (assq 'pull_requests stack)) nil)))))
 
+(defun shipit-pr-github--create-stack (config numbers)
+  "Group pull request NUMBERS in CONFIG\='s repository into a stack.
+NUMBERS run from the bottom of the stack upwards, the order they merge
+in.  A stack is declared, never inferred: the remote checks that each
+pull request is based on the one below it, but will not group them
+without being asked, and nothing in a pull request itself says it is
+part of one."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/stacks" repo))
+         (data `((pull_requests . ,(vconcat numbers)))))
+    (shipit--debug-log "GitHub PR backend: grouping %s into a stack in %s"
+                       numbers repo)
+    (shipit--api-request-post endpoint data)))
+
+(defun shipit-pr-github--add-to-stack (config stack number)
+  "Add pull request NUMBER to STACK in CONFIG\='s repository."
+  (let* ((repo (plist-get config :repo))
+         (endpoint (format "/repos/%s/stacks/%s/add" repo stack))
+         ;; The endpoint takes a list under the plural key; the
+         ;; singular came back 422 and the sandbox accepted anything.
+         (data `((pull_requests . ,(vector number)))))
+    (shipit--debug-log "GitHub PR backend: adding #%s to stack %s in %s"
+                       number stack repo)
+    (shipit--api-request-post endpoint data)))
+
+(declare-function shipit-get-pr-for-branch "shipit-http" (branch &optional repo))
+
+(defun shipit-pr-github--fetch-pr-for-branch (config branch)
+  "Return the number of the open pull request whose head is BRANCH.
+Backed by the branch lookup the rest of shipit uses, so the answer
+and its cache are shared."
+  (cdr (assq 'number
+             (shipit-get-pr-for-branch branch (plist-get config :repo)))))
+
 (defun shipit-pr-github--fetch-stack (config number &optional pr-data)
   "Return the stack pull request NUMBER belongs to, or nil.
 Membership rides on the pull request resource, so PR-DATA is used
@@ -1588,7 +1622,10 @@ data should pass it: this runs on every render of the section."
        :merge-pr #'shipit-pr-github--merge-pr
        :update-pr #'shipit-pr-github--update-pr
        :set-pr-draft #'shipit-pr-github--set-pr-draft
+       :fetch-pr-for-branch #'shipit-pr-github--fetch-pr-for-branch
        :fetch-stack #'shipit-pr-github--fetch-stack
+       :create-stack #'shipit-pr-github--create-stack
+       :add-to-stack #'shipit-pr-github--add-to-stack
        :fetch-reviews #'shipit-pr-github--fetch-reviews
        :submit-review #'shipit-pr-github--submit-review
        :fetch-review-decision #'shipit-pr-github--fetch-review-decision

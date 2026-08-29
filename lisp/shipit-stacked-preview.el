@@ -293,7 +293,7 @@ marks the newest end of the line of commits."
 
 (defconst shipit-stacked-preview--key-columns
   '((("RET" . "describe & submit") ("s" . "divide here") ("u" . "undo"))
-    (("c" . "create branches") ("P" . "push"))
+    (("c" . "create branches") ("P" . "push") ("R" . "register stack"))
     (("g" . "refresh") ("q" . "quit")))
   "The keys this buffer offers, a list per column.
 Down each column rather than across: dividing the stack, making it
@@ -430,15 +430,20 @@ layer does not have to be checked out for this."
                            :tip branch
                            :stacked t
                            :on-done (shipit-stacked-preview--return-to
-                                     (current-buffer)))))
+                                     (current-buffer) branch))))
 
-(defun shipit-stacked-preview--return-to (buffer)
+(defun shipit-stacked-preview--return-to (buffer branch)
   "Return a function that brings BUFFER up to date and shows it again.
-Called once a layer's preview is finished with, so submitting one layer
-leaves the list ready for the next."
-  (lambda (_number)
+Called once BRANCH\='s preview is finished with, so submitting one layer
+leaves the list ready for the next.  What is remembered about BRANCH is
+dropped first: the answer that it has no pull request was cached, and
+it has just stopped being true."
+  (lambda (number)
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
+        (when number
+          (shipit-cache-forget-branch-pr shipit-stacked-preview--repo branch)
+          (shipit-stacked-preview--group-submitted))
         (shipit-stacked-preview--render))
       (pop-to-buffer buffer))))
 
@@ -506,6 +511,92 @@ same reason: what stands on it could not be submitted anyway."
    ("p" "this layer and the ones below" shipit-stacked-preview-push-layer)
    ("P" "every layer" shipit-stacked-preview-push-all)])
 
+(defun shipit-stacked-preview--backend-call (operation &rest args)
+  "Call OPERATION on this repository\='s backend with ARGS.
+Dispatched rather than branched on.  A backend that has no stacks says
+so by not carrying the operation, and is told about here rather than
+part way through a sequence of writes."
+  (let* ((resolved (shipit-pr--resolve-for-repo shipit-stacked-preview--repo))
+         (fn (plist-get (car resolved) operation)))
+    (unless fn
+      (user-error "Stacks are not supported for %s" shipit-stacked-preview--repo))
+    (apply fn (cdr resolved) args)))
+
+(defun shipit-stacked-preview--submitted-numbers ()
+  "Return the pull requests made from this stack, bottom first.
+Stops at the first layer without one.  A stack is a chain, so only an
+unbroken run from the bottom can be registered as one; the layers above
+a gap are not part of it yet."
+  (let ((numbers nil))
+    (catch 'gap
+      (dolist (branch (shipit-stacked-preview--branch-names
+                       (shipit-stacked-preview--current-layers)))
+        (let ((number (shipit-stacked-preview--pr-number branch)))
+          (unless number (throw 'gap nil))
+          (push number numbers))))
+    (nreverse numbers)))
+
+(defun shipit-stacked-preview--stack-of (number)
+  "Return the stack NUMBER is in as (STACK . MEMBERS), or nil."
+  (let ((stack (shipit-pr--fetch-stack shipit-stacked-preview--repo number)))
+    (when (cdr (assq 'number stack))
+      (cons (cdr (assq 'number stack))
+            (mapcar (lambda (entry) (cdr (assq 'number entry)))
+                    (cdr (assq 'entries stack)))))))
+
+(defun shipit-stacked-preview--add-missing (existing numbers)
+  "Add each of NUMBERS that EXISTING does not already hold, bottom first.
+Counts what the remote accepted, not what was attempted: a refused
+add reported as added hid a wrong payload for as long as this
+existed."
+  (let ((stack (car existing))
+        (added 0)
+        (failed nil))
+    (dolist (number numbers)
+      (unless (member number (cdr existing))
+        (if (shipit-stacked-preview--backend-call :add-to-stack stack number)
+            (setq added (1+ added))
+          (push number failed))))
+    (if failed
+        (message "Stack %s: %d added, refused %s -- the error is above"
+                 stack added
+                 (mapconcat #'number-to-string (nreverse failed) ", "))
+      (message "Added %d pull request%s to stack %s"
+               added (if (= added 1) "" "s") stack))))
+
+(defun shipit-stacked-preview--group (numbers)
+  "Put NUMBERS, bottom first, into one stack on the remote.
+When the bottom pull request is in a stack already the ones it does not
+hold are added to it, so submitting a further layer extends that stack
+rather than making a second one beside it."
+  (let ((existing (shipit-stacked-preview--stack-of (car numbers))))
+    (if existing
+        (shipit-stacked-preview--add-missing existing numbers)
+      (shipit-stacked-preview--backend-call :create-stack numbers)
+      (message "Grouped %d pull requests into a stack" (length numbers)))))
+
+(defun shipit-stacked-preview--group-submitted ()
+  "Group the pull requests submitted so far, once there are two.
+Pull requests based on one another are not a stack: the remote checks
+the chain but will not group them, so without this they stay unrelated
+to anyone reading them."
+  (let ((numbers (shipit-stacked-preview--submitted-numbers)))
+    (when (cdr numbers)
+      (shipit-stacked-preview--group numbers))))
+
+(defun shipit-stacked-preview-register ()
+  "Group the pull requests made from this stack into a stack on the remote.
+This happens as each layer is submitted; the key is for saying it again
+after a failure, or for a stack whose pull requests were made
+elsewhere."
+  (interactive)
+  (let ((numbers (shipit-stacked-preview--submitted-numbers)))
+    (unless (cdr numbers)
+      (user-error "A stack needs two pull requests, and %d %s been made"
+                  (length numbers) (if (cdr numbers) "have" "has")))
+    (shipit-stacked-preview--group numbers)
+    (shipit-stacked-preview--render)))
+
 (defun shipit-stacked-preview-refresh ()
   "Read the commits again and redraw."
   (interactive)
@@ -522,6 +613,7 @@ same reason: what stands on it could not be submitted anyway."
     (define-key map (kbd "c") #'shipit-stacked-preview-create-branches)
     (define-key map (kbd "RET") #'shipit-stacked-preview-visit-layer)
     (define-key map (kbd "P") #'shipit-stacked-preview-push)
+    (define-key map (kbd "R") #'shipit-stacked-preview-register)
     (define-key map (kbd "g") #'shipit-stacked-preview-refresh)
     (define-key map (kbd "q") #'quit-window)
     map)

@@ -8,6 +8,9 @@
 ;; in the wrong place in the GitHub UI (inline replies showing as general comments).
 
 (require 'ert)
+;; Loading this registers the github PR backend; the registry is
+;; empty without it and every dispatch errors.
+(require 'shipit-pr-github)
 (require 'shipit)
 (require 'shipit-comments)
 (require 'shipit-gh-etag)
@@ -134,7 +137,7 @@
                (lambda (pr-number comment-id body)
                  (setq general-called (list pr-number comment-id body))))
               ((symbol-function 'shipit--format-quoted-reply)
-               (lambda (body) ""))
+               (lambda (body &rest _) ""))
               ((symbol-function 'shipit--get-repo-from-remote)
                (lambda () "test/repo")))
 
@@ -151,7 +154,7 @@
         (goto-char (point-min))
 
         ;; Mock read-string to return a reply
-        (cl-letf (((symbol-function 'read-string) (lambda (prompt) "My reply")))
+        (cl-letf (((symbol-function 'read-string) (lambda (prompt &rest _) "My reply")))
           ;; Call the function
           (shipit--reply-to-comment 456)))
 
@@ -175,7 +178,7 @@
                (lambda (pr-number comment-id body)
                  (setq general-called (list pr-number comment-id body))))
               ((symbol-function 'shipit--format-quoted-reply)
-               (lambda (body) ""))
+               (lambda (body &rest _) ""))
               ((symbol-function 'shipit--get-repo-from-remote)
                (lambda () "test/repo")))
 
@@ -191,7 +194,7 @@
         (goto-char (point-min))
 
         ;; Mock read-string to return a reply
-        (cl-letf (((symbol-function 'read-string) (lambda (prompt) "My reply")))
+        (cl-letf (((symbol-function 'read-string) (lambda (prompt &rest _) "My reply")))
           ;; Call the function
           (shipit--reply-to-comment 456)))
 
@@ -291,7 +294,7 @@ This is critical for the reply function to correctly dispatch to inline vs gener
                  (setq captured-endpoint endpoint)
                  '((id . 99999))))
               ((symbol-function 'shipit--format-quoted-reply)
-               (lambda (body) ""))
+               (lambda (body &rest _) ""))
               ((symbol-function 'shipit--refresh-file-inline-comment-section)
                (lambda (&rest args) nil))
               ((symbol-function 'shipit--defer-refresh)
@@ -319,7 +322,7 @@ This is critical for the reply function to correctly dispatch to inline vs gener
           (goto-char (point-min))
 
           ;; Mock read-string to return a reply
-          (cl-letf (((symbol-function 'read-string) (lambda (prompt) "My reply")))
+          (cl-letf (((symbol-function 'read-string) (lambda (prompt &rest _) "My reply")))
             ;; Call the main reply function
             (shipit--reply-to-comment 456)))
 
@@ -340,7 +343,7 @@ This is critical for the reply function to correctly dispatch to inline vs gener
                  (setq captured-endpoint endpoint)
                  '((id . 99999))))
               ((symbol-function 'shipit--format-quoted-reply)
-               (lambda (body) ""))
+               (lambda (body &rest _) ""))
               ((symbol-function 'shipit--defer-refresh)
                (lambda (&rest args) nil))
               ((symbol-function 'shipit-clear-etag-cache-for-endpoint)
@@ -365,7 +368,7 @@ This is critical for the reply function to correctly dispatch to inline vs gener
           (goto-char (point-min))
 
           ;; Mock read-string to return a reply
-          (cl-letf (((symbol-function 'read-string) (lambda (prompt) "My reply")))
+          (cl-letf (((symbol-function 'read-string) (lambda (prompt &rest _) "My reply")))
             ;; Call the main reply function
             (shipit--reply-to-comment 456)))
 

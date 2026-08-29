@@ -8,6 +8,9 @@
 ;; actually approve the PR on GitHub.
 
 (require 'ert)
+;; Loading this registers the github PR backend; the registry is
+;; empty without it and every dispatch errors.
+(require 'shipit-pr-github)
 (require 'shipit)
 (require 'shipit-cache)
 (require 'shipit-core)
@@ -61,15 +64,17 @@
                ((symbol-function 'shipit--get-auth-header)
                 (lambda () '("Authorization" . "token test-token")))
 
-               ;; Mock the async URL retrieve to capture the request
-               ((symbol-function 'shipit--url-retrieve-async)
-                (lambda (url method headers payload success-callback error-callback)
-                  (setq test-approval-captured-url url)
-                  (setq test-approval-captured-method method)
+               ;; Capture the request where it is made now.  Submitting
+               ;; a review goes through the PR backend, which posts to
+               ;; an endpoint rather than retrieving a URL itself, so
+               ;; mocking the async retrieve caught nothing and every
+               ;; assertion below ran against a captured URL of nil.
+               ((symbol-function 'shipit--api-request-post)
+                (lambda (endpoint payload &optional method)
+                  (setq test-approval-captured-url endpoint)
+                  (setq test-approval-captured-method (or method "POST"))
                   (setq test-approval-captured-payload payload)
-                  ;; Call success callback with success response
-                  (when success-callback
-                    (funcall success-callback '((id . 12345))))))
+                  '((id . 12345))))
 
                ;; Mock cache clearing functions
                ((symbol-function 'shipit-clear-etag-cache-for-endpoint)
@@ -98,7 +103,7 @@
 
    ;; Verify the payload contains the APPROVE event
    (should test-approval-captured-payload)
-   (let ((decoded-payload (json-read-from-string test-approval-captured-payload)))
+   (let ((decoded-payload test-approval-captured-payload))
      (should (string= (cdr (assq 'event decoded-payload)) "APPROVE")))))
 
 (ert-deftest test-approving-pr-with-body-includes-body ()
@@ -108,7 +113,7 @@
 
    ;; Verify the payload contains both event and body
    (should test-approval-captured-payload)
-   (let ((decoded-payload (json-read-from-string test-approval-captured-payload)))
+   (let ((decoded-payload test-approval-captured-payload))
      (should (string= (cdr (assq 'event decoded-payload)) "APPROVE"))
      (should (string= (cdr (assq 'body decoded-payload)) "LGTM!")))))
 
@@ -124,7 +129,7 @@
 
    ;; Verify the payload contains the REQUEST_CHANGES event
    (should test-approval-captured-payload)
-   (let ((decoded-payload (json-read-from-string test-approval-captured-payload)))
+   (let ((decoded-payload test-approval-captured-payload))
      (should (string= (cdr (assq 'event decoded-payload)) "REQUEST_CHANGES"))
      (should (string= (cdr (assq 'body decoded-payload)) "Please fix the tests")))))
 
@@ -140,7 +145,7 @@
 
    ;; Verify the payload contains the COMMENT event
    (should test-approval-captured-payload)
-   (let ((decoded-payload (json-read-from-string test-approval-captured-payload)))
+   (let ((decoded-payload test-approval-captured-payload))
      (should (string= (cdr (assq 'event decoded-payload)) "COMMENT")))))
 
 ;;;; Negative Tests
@@ -219,11 +224,10 @@
                (lambda () "test-user"))
               ((symbol-function 'shipit--get-auth-header)
                (lambda () '("Authorization" . "token test-token")))
-              ((symbol-function 'shipit--url-retrieve-async)
-               (lambda (url method headers payload success-callback error-callback)
-                 (setq test-approval-captured-url url)
-                 (when success-callback
-                   (funcall success-callback '((id . 12345))))))
+              ((symbol-function 'shipit--api-request-post)
+               (lambda (endpoint _payload &optional _method)
+                 (setq test-approval-captured-url endpoint)
+                 '((id . 12345))))
               ((symbol-function 'shipit-clear-etag-cache-for-endpoint)
                (lambda (endpoint) nil)))
 
@@ -254,11 +258,10 @@
                (lambda () "test-user"))
               ((symbol-function 'shipit--get-auth-header)
                (lambda () '("Authorization" . "token test-token")))
-              ((symbol-function 'shipit--url-retrieve-async)
-               (lambda (url method headers payload success-callback error-callback)
-                 (setq test-approval-captured-url url)
-                 (when success-callback
-                   (funcall success-callback '((id . 12345))))))
+              ((symbol-function 'shipit--api-request-post)
+               (lambda (endpoint _payload &optional _method)
+                 (setq test-approval-captured-url endpoint)
+                 '((id . 12345))))
               ((symbol-function 'shipit-clear-etag-cache-for-endpoint)
                (lambda (endpoint) nil)))
 

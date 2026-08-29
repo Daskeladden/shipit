@@ -3,6 +3,9 @@
 ;; These tests would have caught the missing text properties bug
 
 (require 'ert)
+;; Loading this registers the github PR backend; the registry is
+;; empty without it and every dispatch errors.
+(require 'shipit-pr-github)
 (require 'shipit)
 (require 'shipit-core)
 (require 'shipit-http)

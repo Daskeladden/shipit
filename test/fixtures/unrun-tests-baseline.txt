@@ -1,7 +1,2 @@
 test-inline-reply-endpoint.el
-test-insert-comment-signature.el
-test-pr-approval-endpoint.el
-test-regression-simple.el
-test-section-integrity.el
-test-text-property-coverage.el
 test-text-property-regression.el

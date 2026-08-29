@@ -55,6 +55,7 @@ test-unit: compile
 		-l test/test-per-commit-comments.el \
 		-l test/test-shipit-discussion-backends.el \
 		-l test/test-shipit-review-mode.el \
+		-l test/test-pr-approval-endpoint.el \
 		-l test/test-shipit-pr-stack.el \
 		-l test/test-shipit-stack.el \
 		-l test/test-shipit-stack-render.el \

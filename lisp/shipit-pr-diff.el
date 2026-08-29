@@ -1567,14 +1567,14 @@ DIFF-HUNK provides context. Return t if found and point is positioned correctly.
               ;; Apply rounded background to comment section
               (when (display-graphic-p)
                 (shipit-rounded--apply-to-section
-                 magit-insert-section--current orange-color)))))
+                 magit-insert-section--current orange-color))))
       (error err
              (when (fboundp 'shipit--debug-log)
                (shipit--debug-log "❌ ERROR in diff-comment section for comment %s: %s" comment-id (error-message-string err))
                (shipit--debug-log "❌ FULL BACKTRACE:")
                (shipit--debug-log "%s" (with-output-to-string (backtrace))))
              ;; Re-signal the error with context instead of suppressing it
-             (error "Failed to insert comment %s: %s" comment-id (error-message-string err))))))
+             (error "Failed to insert comment %s: %s" comment-id (error-message-string err)))))))
 
 (defun shipit--cached-comments-match-pr (pr-number repo _pr-data)
   "Check if cached comments in shipit buffer match the given PR data including commit SHAs."

@@ -47,6 +47,8 @@
 (defvar-local shipit-preview--base-ref nil "Base ref for comparison.")
 (defvar-local shipit-preview--title nil "Draft PR title.")
 (defvar-local shipit-preview--description nil "Draft PR description.")
+(defvar-local shipit-preview--stack nil
+  "The stack this branch sits in, as of the last render, or nil.")
 (defvar-local shipit-preview--cached-files nil "Cached files for filtering.")
 (defvar-local shipit-preview--labels nil "List of selected label names.")
 (defvar-local shipit-preview--cached-available-labels nil "Cached available labels from repo.")
@@ -151,11 +153,13 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 
 ;;; Git data extraction
 
-(defun shipit-preview--get-commits ()
-  "Get commits between base ref and HEAD as processed plists.
+(defun shipit-preview--get-commits (&optional range)
+  "Get commits in RANGE as processed plists, base ref to HEAD by default.
 Returns list in chronological order (oldest first), compatible with
-`shipit--render-commits-section'."
-  (let* ((range (format "%s..HEAD" shipit-preview--base-ref))
+`shipit--render-commits-section'.  A layer of a stack passes its own
+range so the editor offers that layer's commits rather than the whole
+branch's."
+  (let* ((range (or range (format "%s..HEAD" shipit-preview--base-ref)))
          ;; Use %B for full body, %x1e as record separator (since body can have newlines)
          (format-str "%H%x00%B%x00%an%x00%ae%x00%aI%x1e")
          ;; Use --reverse to get oldest-first order directly
@@ -583,15 +587,19 @@ is where the reader is looking when they decide which name is real."
                        (string-join (cdr (assq 'aliases layer)) ", "))))))
 
 (defun shipit-preview--insert-layer-commits (row)
-  "Insert the commits the layer named by ROW adds over the one below."
-  (dolist (line (shipit-stack-layer-commits (cdr (assq 'layer row))))
-    (insert (format "       %s\n" line))))
+  "Insert the commits the layer named by ROW adds over the one below.
+Nothing is drawn for the layer being previewed: this buffer is that
+layer\='s pull request, and its commits are in the Commits section
+below, where every other pull request keeps them."
+  (unless (cdr (assq 'current row))
+    (dolist (line (shipit-stack-layer-commits (cdr (assq 'layer row))))
+      (insert (format "       %s\n" line)))))
 
 (defun shipit-preview--insert-stack-lines ()
   "Insert the Stack section when this branch sits on other branches.
 Each layer is its own section, so it can be expanded to show the
 commits it adds rather than everything beneath it."
-  (let ((stack (shipit-stack-detect)))
+  (let ((stack shipit-preview--stack))
     (when stack
       (magit-insert-section (preview-stack)
         (magit-insert-heading
@@ -768,6 +776,11 @@ commits it adds rather than everything beneath it."
         (saved-point (point))
         (inhibit-read-only t))
     (erase-buffer)
+    ;; Work out the stack before drawing anything.  Whether this branch
+    ;; is stacked decides which sections are drawn at all, and the
+    ;; detection used to happen inside the refs section, three sections
+    ;; after the first that asks.
+    (setq shipit-preview--stack (shipit-stack-detect))
     (magit-insert-section (shipit-preview-root)
       ;; Header banner
       (shipit-preview--insert-header)
@@ -797,6 +810,8 @@ commits it adds rather than everything beneath it."
       (shipit-preview--insert-general-comments-section)
 
       ;; Commits section - using shared renderer
+      ;; Commits.  The base is the layer below on a stacked branch, so
+      ;; this is that layer's commits without needing to know it.
       (let ((commits (shipit-preview--get-commits)))
         (shipit--render-commits-section commits shipit-preview--repo nil))
 

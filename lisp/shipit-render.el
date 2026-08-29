@@ -5705,6 +5705,7 @@ Returns (octicon . color) or nil."
     ("description" '("comment-discussion" . "#fd7e14")) ; Orange - Discussion content
     ("draft" '("git-branch" . "#fd7e14"))               ; Orange - Draft status (metadata)
     ("refs" '("git-branch" . "#0366d6"))                ; Blue - Informational (branches)
+    ("stack" '("stack" . "#0366d6"))                    ; Blue - Informational (the chain of layers)
     ("created" '("calendar" . "#999999"))               ; Gray - Metadata (timestamp)
     ("author" '("person" . "#0366d6"))                  ; Blue - Informational
     ("committer" '("tools" . "#999999"))                ; Gray - Committer (metadata)

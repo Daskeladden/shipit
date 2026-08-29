@@ -612,7 +612,8 @@ Returns plist with :overlay :start :end :original-content or nil."
   "Set up preview overlay for preview buffer description editing.
 Returns plist with :overlay :start :end :original-content or nil."
   (goto-char (point-min))
-  ;; Find the description region using shipit-preview-description property
+  ;; Find the description region.  A stacked preview has one per layer,
+  ;; so the first match is only right when no layer was named.
   (let ((desc-start (text-property-any (point-min) (point-max)
                                        'shipit-preview-description t)))
     (shipit--debug-log "EDITOR: Preview description - desc-start=%s" desc-start)

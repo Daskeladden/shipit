@@ -8,6 +8,7 @@
 
 (require 'ert)
 (require 'shipit-preview)
+(require 'shipit-editor)
 
 ;;;; Draft default
 
@@ -109,6 +110,7 @@ THEN it is left alone, template or not."
   (should (equal "mine"
                  (shipit-preview--maybe-auto-fill-description
                   "mine" '((:message "one commit")) "## Why\n"))))
+
 
 (provide 'test-shipit-preview-defaults)
 ;;; test-shipit-preview-defaults.el ends here

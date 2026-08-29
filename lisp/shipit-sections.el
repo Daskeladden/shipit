@@ -370,6 +370,14 @@ errors out."
 
 (put 'shipit-stack-layer 'magit-section t)
 
+;; The stack reads as a list to take in at a glance, so the section
+;; holding it opens and each layer within stays shut until asked for.
+;; Declared rather than left to the HIDE argument alone, which sets
+;; only the starting value that a remembered one then overrides.
+(with-eval-after-load 'magit-section
+  (unless (assq 'shipit-stack-layer magit-section-initial-visibility-alist)
+    (push '(shipit-stack-layer . hide) magit-section-initial-visibility-alist)))
+
 (defun shipit-sections--pad (text width)
   "Return TEXT padded with spaces to at least WIDTH.
 `format\=' has no width-from-argument directive, so the column that

@@ -278,6 +278,54 @@ marks the newest end of the line of commits."
                                'font-lock-face 'magit-branch-remote)
                    width))))
 
+(defconst shipit-stacked-preview--key-columns
+  '((("RET" . "describe & submit") ("s" . "divide here") ("u" . "undo"))
+    (("c" . "create branches") ("P" . "push"))
+    (("g" . "refresh") ("q" . "quit")))
+  "The keys this buffer offers, a list per column.
+Down each column rather than across: dividing the stack, making it
+exist on the remote, then leaving.")
+
+(defun shipit-stacked-preview--key-cell (entry key-width label-width)
+  "Return ENTRY as a cell of a fixed width, or blank when there is none.
+Every cell is the same width whether or not it holds anything, so the
+columns line up on rows where one has run out."
+  (if entry
+      (concat (shipit-sections--pad
+               (propertize (car entry) 'font-lock-face 'transient-key)
+               key-width)
+              "  "
+              (shipit-sections--pad
+               (propertize (cdr entry) 'font-lock-face 'font-lock-comment-face)
+               label-width))
+    (make-string (+ key-width 2 label-width) ?\s)))
+
+(defun shipit-stacked-preview--key-row (row key-width label-widths)
+  "Return line ROW of the key columns, padded to LABEL-WIDTHS."
+  (string-trim-right
+   (mapconcat #'identity
+              (seq-mapn (lambda (column label-width)
+                          (shipit-stacked-preview--key-cell
+                           (nth row column) key-width label-width))
+                        shipit-stacked-preview--key-columns label-widths)
+              "   ")))
+
+(defun shipit-stacked-preview--insert-keys ()
+  "Insert the keys this buffer offers, in aligned columns."
+  (let* ((entries (apply #'append shipit-stacked-preview--key-columns))
+         (key-width (apply #'max (mapcar (lambda (e) (length (car e))) entries)))
+         (label-widths (mapcar (lambda (column)
+                                 (apply #'max (mapcar (lambda (e) (length (cdr e)))
+                                                      column)))
+                               shipit-stacked-preview--key-columns))
+         (rows (apply #'max (mapcar #'length
+                                    shipit-stacked-preview--key-columns))))
+    (dotimes (row rows)
+      (insert "   "
+              (shipit-stacked-preview--key-row row key-width label-widths)
+              "\n"))
+    (insert "\n")))
+
 (defun shipit-stacked-preview--insert-header ()
   "Insert the banner saying what this buffer is."
   (insert (propertize
@@ -287,9 +335,7 @@ marks the newest end of the line of commits."
                    (shipit-stacked-preview--base-name
                     shipit-stacked-preview--base))
            'font-lock-face '(:foreground "orange" :weight bold)))
-  (insert (propertize
-           "   RET describe & submit   s divide here   u undo   c create branches\n   P push   g refresh   q quit\n\n"
-           'font-lock-face 'font-lock-comment-face)))
+  (shipit-stacked-preview--insert-keys))
 
 (defun shipit-stacked-preview--render ()
   "Draw the buffer from the state it holds."

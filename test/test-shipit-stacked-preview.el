@@ -279,5 +279,26 @@ next: a layer standing on a broken one cannot be submitted either."
         (shipit-stacked-preview--push-layers (list (nth 1 layers)) nil)
         (should (equal '("one" "two") asked))))))
 
+(ert-deftest test-shipit-stacked-preview-key-cells-are-one-width ()
+  "GIVEN a column that runs out of keys before its neighbours do
+WHEN a row is laid out
+THEN its empty cell is as wide as a full one, so the columns to the
+right of it stay in line."
+  (let ((full (shipit-stacked-preview--key-cell '("RET" . "describe") 3 8))
+        (empty (shipit-stacked-preview--key-cell nil 3 8)))
+    (should (equal 13 (length full)))
+    (should (equal (length full) (length empty)))))
+
+(ert-deftest test-shipit-stacked-preview-every-key-shown-is-bound ()
+  "GIVEN the keys this buffer advertises
+WHEN each is looked up in the keymap
+THEN it runs something.  A key written down that does nothing is worse
+than one not written down at all."
+  (dolist (entry (apply #'append shipit-stacked-preview--key-columns))
+    (should (equal (list (car entry) t)
+                   (list (car entry)
+                         (commandp (lookup-key shipit-stacked-preview-mode-map
+                                               (kbd (car entry)))))))))
+
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

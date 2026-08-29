@@ -173,12 +173,14 @@ be the base of a pull request."
         (tried nil))
     (cl-letf (((symbol-function 'shipit-stacked-preview--refuse-when-broken)
                (lambda (_layer) nil))
+              ((symbol-function 'shipit-stacked-preview--current-layers)
+               (lambda () layers))
               ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
               ((symbol-function 'shipit--push-branch)
                (lambda (branch _args)
                  (setq tried (append tried (list branch)))
                  (not (equal branch "two")))))
-      (should-error (shipit-stacked-preview--push-layers layers nil)
+      (should-error (shipit-stacked-preview--push-through (nth 2 layers) nil)
                     :type 'user-error)
       (should (equal '("one" "two") tried)))))
 
@@ -192,11 +194,13 @@ the stack having changed."
         (redrawn nil))
     (cl-letf (((symbol-function 'shipit-stacked-preview--refuse-when-broken)
                (lambda (_layer) nil))
+              ((symbol-function 'shipit-stacked-preview--current-layers)
+               (lambda () layers))
               ((symbol-function 'shipit-stacked-preview--render)
                (lambda () (setq redrawn t)))
               ((symbol-function 'shipit--push-branch)
                (lambda (_branch args) (setq seen args) t)))
-      (shipit-stacked-preview--push-layers layers '("--dry-run"))
+      (shipit-stacked-preview--push-through (nth 1 layers) '("--dry-run"))
       (should (equal '("--dry-run") seen))
       (should-not redrawn))))
 
@@ -256,7 +260,7 @@ which is easier to prevent than to unpick."
                  (lambda (_branches _base) '("two is not built on one")))
                 ((symbol-function 'shipit--push-branch)
                  (lambda (&rest _) (setq sent t) t)))
-        (should-error (shipit-stacked-preview--push-layers layers nil)
+        (should-error (shipit-stacked-preview--push-through (nth 1 layers) nil)
                       :type 'user-error)
         (should-not sent)))))
 
@@ -276,7 +280,7 @@ next: a layer standing on a broken one cannot be submitted either."
                  (lambda (branches _base) (setq asked branches) nil))
                 ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
                 ((symbol-function 'shipit--push-branch) (lambda (&rest _) t)))
-        (shipit-stacked-preview--push-layers (list (nth 1 layers)) nil)
+        (shipit-stacked-preview--push-through (nth 1 layers) nil)
         (should (equal '("one" "two") asked))))))
 
 (ert-deftest test-shipit-stacked-preview-key-cells-are-one-width ()
@@ -299,6 +303,73 @@ than one not written down at all."
                    (list (car entry)
                          (commandp (lookup-key shipit-stacked-preview-mode-map
                                                (kbd (car entry)))))))))
+
+(ert-deftest test-shipit-stacked-preview-a-layer-takes-the-ones-below-it ()
+  "GIVEN the middle layer of a stack
+WHEN it is sent on its own
+THEN the layer below it is sent first and the one above is left.  A
+pull request is raised against a branch the remote must already have,
+so a layer sent by itself would arrive unsubmittable."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--base "origin/master")
+    (let ((layers (test-stacked--layers "one" "two" "three"))
+          (sent nil))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+                 (lambda (_layer) nil))
+                ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
+                ((symbol-function 'shipit--push-branch)
+                 (lambda (branch _args) (setq sent (append sent (list branch))) t)))
+        (shipit-stacked-preview--push-through (nth 1 layers) nil)
+        (should (equal '("one" "two") sent))))))
+
+(ert-deftest test-shipit-stacked-preview-will-not-submit-onto-an-absent-base ()
+  "GIVEN a layer whose lower layer has not reached the remote
+WHEN it is handed to the preview
+THEN it is refused here, naming what to send.  Left to the remote it
+would be refused at creation, after the description had been written."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--base "origin/master"
+          shipit-stacked-preview--repo "owner/repo")
+    (let ((layers (test-stacked--layers "one" "two"))
+          (handed-over nil))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--layer-at-point)
+                 (lambda () (nth 1 layers)))
+                ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+                 (lambda (_layer) nil))
+                ;; the branches exist here, but nothing is on the remote
+                ((symbol-function 'shipit-stack--rev)
+                 (lambda (ref) (unless (string-prefix-p "origin/" ref) "abc1234")))
+                ((symbol-function 'shipit-preview-branch)
+                 (lambda (&rest _) (setq handed-over t))))
+        (should-error (shipit-stacked-preview-visit-layer) :type 'user-error)
+        (should-not handed-over)))))
+
+(ert-deftest test-shipit-stacked-preview-bottom-layer-needs-nothing-below ()
+  "GIVEN the bottom layer, with nothing under it but the base
+WHEN it is handed to the preview
+THEN nothing stops it: the branch it is raised against is the one the
+whole stack sits on, which is already there."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--base "origin/master"
+          shipit-stacked-preview--repo "owner/repo")
+    (let ((layers (test-stacked--layers "one" "two"))
+          (handed-over nil))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--layer-at-point)
+                 (lambda () (nth 0 layers)))
+                ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+                 (lambda (_layer) nil))
+                ((symbol-function 'shipit-stack--rev)
+                 (lambda (ref) (unless (string-prefix-p "origin/" ref) "abc1234")))
+                ((symbol-function 'shipit-preview-branch)
+                 (lambda (&rest _) (setq handed-over t))))
+        (shipit-stacked-preview-visit-layer)
+        (should handed-over)))))
 
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

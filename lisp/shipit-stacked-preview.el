@@ -411,6 +411,7 @@ layer does not have to be checked out for this."
   (let* ((layer (shipit-stacked-preview--layer-at-point))
          (branch (shipit-stacked-preview--require-branch layer)))
     (shipit-stacked-preview--refuse-when-broken layer)
+    (shipit-stacked-preview--refuse-when-base-is-absent layer)
     (shipit-preview-branch shipit-stacked-preview--repo branch
                            (shipit-stacked-preview--base-of layer)
                            :tip branch
@@ -428,38 +429,42 @@ leaves the list ready for the next."
         (shipit-stacked-preview--render))
       (pop-to-buffer buffer))))
 
-(defun shipit-stacked-preview--push-layers (layers args)
-  "Push the branch of each of LAYERS to origin with ARGS, oldest first.
-Stops at the first that fails and leaves the rest alone: a branch whose
-parent never reached the remote cannot be the base of a pull request,
-so carrying on above it would only spread the damage."
-  (shipit-stacked-preview--refuse-when-broken (car (last layers)))
-  (dolist (layer layers)
-    (let ((branch (cdr (assq 'branch layer))))
+(defun shipit-stacked-preview--push-through (layer args)
+  "Push the branches from the bottom layer up to LAYER, oldest first.
+The layers below go too, asked for or not.  A pull request cannot be
+raised against a base the remote does not have, so a layer sent on its
+own would arrive unsubmittable: its commits are all there, but the
+branch its pull request is based on is not.
+
+Stops at the first branch that fails and leaves the rest alone, for the
+same reason: what stands on it could not be submitted anyway."
+  (shipit-stacked-preview--refuse-when-broken layer)
+  (let ((branches (shipit-stacked-preview--branches-through layer)))
+    (dolist (branch branches)
       (unless (shipit--push-branch branch args)
         (user-error "Pushing %s failed -- the layers above it are left alone"
-                    branch))))
-  (unless (member "--dry-run" args)
-    (shipit-stacked-preview--render))
-  (message "Pushed %d branch%s%s" (length layers)
-           (if (cdr layers) "es" "")
-           (if (member "--dry-run" args) " (dry run)" "")))
+                    branch)))
+    (unless (member "--dry-run" args)
+      (shipit-stacked-preview--render))
+    (message "Pushed %d branch%s%s" (length branches)
+             (if (cdr branches) "es" "")
+             (if (member "--dry-run" args) " (dry run)" ""))))
 
 (defun shipit-stacked-preview--push-arguments ()
   "Return the git arguments chosen in the push transient."
   (transient-args 'shipit-stacked-preview-push))
 
 (transient-define-suffix shipit-stacked-preview-push-layer (args)
-  "Push the branch of the layer at point."
+  "Push the layer at point, and the layers below it."
   (interactive (list (shipit-stacked-preview--push-arguments)))
-  (shipit-stacked-preview--push-layers
-   (list (shipit-stacked-preview--layer-at-point)) args))
+  (shipit-stacked-preview--push-through
+   (shipit-stacked-preview--layer-at-point) args))
 
 (transient-define-suffix shipit-stacked-preview-push-all (args)
   "Push every layer of the stack, from the base upwards."
   (interactive (list (shipit-stacked-preview--push-arguments)))
-  (shipit-stacked-preview--push-layers
-   (shipit-stacked-preview--current-layers) args))
+  (shipit-stacked-preview--push-through
+   (car (last (shipit-stacked-preview--current-layers))) args))
 
 (transient-define-prefix shipit-stacked-preview-push ()
   "Push the branches of this stack to origin."
@@ -471,7 +476,7 @@ so carrying on above it would only spread the damage."
    ("-n" "Dry run" "--dry-run")
    ("-h" "Skip hooks" "--no-verify")]
   ["Push"
-   ("p" "this layer" shipit-stacked-preview-push-layer)
+   ("p" "this layer and the ones below" shipit-stacked-preview-push-layer)
    ("P" "every layer" shipit-stacked-preview-push-all)])
 
 (defun shipit-stacked-preview-refresh ()
@@ -569,6 +574,21 @@ layer itself: each is the base of the next."
                    shipit-stacked-preview--base)))
     (when problems
       (user-error "Not a stack yet: %s" (string-join problems "; ")))))
+
+(defun shipit-stacked-preview--refuse-when-base-is-absent (layer)
+  "Signal when a layer below LAYER has not reached the remote.
+A pull request is raised against a branch the remote already has, and
+LAYER is raised against the layer below it.  Caught here rather than
+left to the remote, which would refuse the created pull request with a
+message about a base ref, well after the description had been written."
+  (let* ((below (butlast (shipit-stacked-preview--branches-through layer)))
+         (absent (seq-remove (lambda (branch)
+                               (shipit-stack--rev (concat "origin/" branch)))
+                             below)))
+    (when absent
+      (user-error "%s not on the remote yet -- press P to send %s"
+                  (string-join absent ", ")
+                  (if (cdr absent) "them" "it")))))
 
 (defun shipit-stacked-preview--insert-problems ()
   "Say what stops this stack being submitted, when anything does.

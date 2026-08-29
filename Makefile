@@ -62,6 +62,7 @@ test-unit: compile
 		-l test/test-shipit-pr-stack.el \
 		-l test/test-shipit-stack.el \
 		-l test/test-shipit-stack-plan.el \
+		-l test/test-shipit-stacked-preview.el \
 		-l test/test-shipit-commit-files-local.el \
 		-l test/test-shipit-stack-render.el \
 		-l test/test-shipit-preview-defaults.el \

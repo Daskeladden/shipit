@@ -374,6 +374,51 @@ set-head'); falls back to \"main\" when unset."
         "main"
       result)))
 
+(defun shipit--commits-in-range (&optional range)
+  "Return the commits in RANGE as plists, oldest first.
+RANGE defaults to `shipit-preview--base-ref\='..HEAD when that is set.
+Compatible with `shipit--render-commits-section\='.  Lives here rather
+than in a buffer because more than one buffer reads commits: the
+preview shows a pull request\='s, and preparing a stack shows the ones
+being divided into layers."
+  (let* ((range (or range (format "%s..HEAD" shipit-preview--base-ref)))
+         ;; Use %B for full body, %x1e as record separator (since body can have newlines)
+         (format-str "%H%x00%B%x00%an%x00%ae%x00%aI%x1e")
+         ;; Use --reverse to get oldest-first order directly
+         (output (shell-command-to-string
+                  (format "git log --reverse --format='%s' %s 2>/dev/null" format-str range)))
+         ;; Split by record separator to get individual commits
+         (records (split-string output "\x1e" t))
+         (commits nil))
+    (dolist (record records)
+      (let* ((trimmed-record (string-trim record))
+             (parts (split-string trimmed-record "\x00"))
+             (sha (nth 0 parts))
+             (full-message (string-trim (or (nth 1 parts) "")))
+             (author (nth 2 parts))
+             (author-email (nth 3 parts))
+             (author-date (nth 4 parts))
+             ;; Extract first line for display purposes
+             (first-line (car (split-string full-message "\n" t))))
+        ;; Skip empty records (e.g., trailing newline after last separator)
+        (when (and sha (not (string-empty-p sha)))
+          (push (list :sha sha
+                      :short-sha (substring sha 0 (min 7 (length sha)))
+                      :message full-message
+                      :first-line (or first-line "")
+                      :author author
+                      :author-email author-email
+                      :author-date author-date
+                      :author-github-username nil
+                      :author-avatar-url nil
+                      :additions 0
+                      :deletions 0
+                      :files-changed 0)
+                commits))))
+    ;; With --reverse, git outputs oldest-first, and push reverses it,
+    ;; so nreverse gives us oldest-first again
+    (nreverse commits)))
+
 (defun shipit--detect-backend-from-remote ()
   "Detect PR backend symbol from the git remote URL.
 Iterates registered PR backends looking for a `:detect-url-pattern'

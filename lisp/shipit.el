@@ -54,6 +54,10 @@
   (require 'shipit-debug)
   (require 'shipit-notifications)
   (require 'shipit-preview)
+  ;; Loaded here, not left to its autoload: it is what binds `S' in
+  ;; the preview, and a binding that appears only after the command has
+  ;; been used some other way is no binding at all.
+  (require 'shipit-stacked-preview)
   (require 'shipit-diff)
   (require 'shipit-render)
   (require 'shipit-editor)
@@ -159,6 +163,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
 
 ;; Preview PR (shipit-preview) - Preview buffer before PR creation
 ;;;###autoload (autoload 'shipit-preview-pr "shipit-preview" nil t)
+;;;###autoload (autoload 'shipit-stacked-preview "shipit-stacked-preview" nil t)
 
 ;; Issues (shipit-issues) - GitHub Issues search and viewing
 ;;;###autoload (autoload 'shipit-issues--quick-search "shipit-issues" nil t)
@@ -199,7 +204,8 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   ["Pull Request"
    [("s" "Select PR" shipit--select-pr)
     ("r" "Refresh PR data" shipit-refresh)
-    ("p" "Preview PR (before creation)" shipit-preview-pr)]
+    ("p" "Preview PR (before creation)" shipit-preview-pr)
+    ("P" "Preview stacked PRs (before creation)" shipit-stacked-preview)]
    [("b" "Open PR for current branch" shipit-open-pr-for-current-branch)
     ("o" "Open PR in browser" shipit--open-pr-in-browser)
     ("a" "Advanced PR search" shipit-advanced-pr-search)]]

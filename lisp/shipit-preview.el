@@ -22,6 +22,7 @@
 
 (require 'shipit-core)
 (require 'shipit-stack)
+(declare-function shipit-stacked-preview "shipit-stacked-preview")
 (require 'shipit-sections)
 (require 'shipit-render)
 (require 'shipit-pr-sections)
@@ -135,6 +136,11 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 (define-key shipit-preview-mode-map (kbd "g") #'shipit-preview--refresh)
 (define-key shipit-preview-mode-map (kbd "RET") #'shipit-preview--dwim)
 (define-key shipit-preview-mode-map (kbd "C-c C-c") #'shipit-preview--create-pr)
+;; Bound here rather than from the stacked preview's own file, which
+;; only ran once that file had loaded and so left `S' undefined until
+;; the command had been reached some other way.  A keymap entry does
+;; not need the function yet; its autoload sees to that.
+(define-key shipit-preview-mode-map (kbd "S") #'shipit-stacked-preview)
 (define-key shipit-preview-mode-map (kbd "M-;") #'shipit-dwim)
 (define-key shipit-preview-mode-map (kbd "q") #'shipit-preview--quit)
 
@@ -154,48 +160,8 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 ;;; Git data extraction
 
 (defun shipit-preview--get-commits (&optional range)
-  "Get commits in RANGE as processed plists, base ref to HEAD by default.
-Returns list in chronological order (oldest first), compatible with
-`shipit--render-commits-section'.  A layer of a stack passes its own
-range so the editor offers that layer's commits rather than the whole
-branch's."
-  (let* ((range (or range (format "%s..HEAD" shipit-preview--base-ref)))
-         ;; Use %B for full body, %x1e as record separator (since body can have newlines)
-         (format-str "%H%x00%B%x00%an%x00%ae%x00%aI%x1e")
-         ;; Use --reverse to get oldest-first order directly
-         (output (shell-command-to-string
-                  (format "git log --reverse --format='%s' %s 2>/dev/null" format-str range)))
-         ;; Split by record separator to get individual commits
-         (records (split-string output "\x1e" t))
-         (commits nil))
-    (dolist (record records)
-      (let* ((trimmed-record (string-trim record))
-             (parts (split-string trimmed-record "\x00"))
-             (sha (nth 0 parts))
-             (full-message (string-trim (or (nth 1 parts) "")))
-             (author (nth 2 parts))
-             (author-email (nth 3 parts))
-             (author-date (nth 4 parts))
-             ;; Extract first line for display purposes
-             (first-line (car (split-string full-message "\n" t))))
-        ;; Skip empty records (e.g., trailing newline after last separator)
-        (when (and sha (not (string-empty-p sha)))
-          (push (list :sha sha
-                      :short-sha (substring sha 0 (min 7 (length sha)))
-                      :message full-message
-                      :first-line (or first-line "")
-                      :author author
-                      :author-email author-email
-                      :author-date author-date
-                      :author-github-username nil
-                      :author-avatar-url nil
-                      :additions 0
-                      :deletions 0
-                      :files-changed 0)
-                commits))))
-    ;; With --reverse, git outputs oldest-first, and push reverses it,
-    ;; so nreverse gives us oldest-first again
-    (nreverse commits)))
+  "Return this preview's commits, or those in RANGE."
+  (shipit--commits-in-range range))
 
 (defun shipit-preview--get-file-patch (filename)
   "Get the diff patch for FILENAME between base ref and HEAD."
@@ -247,8 +213,8 @@ Returns list compatible with `shipit--render-files-section'."
                                   (shipit--get-notification-source-icon (shipit-pr--backend-id))
                                   icon backend-name pr-label)
                           'font-lock-face '(:foreground "orange" :weight bold)))
-      (insert (propertize (format "   %s  |  C-c C-c to create %s\n"
-                                  shipit-preview--repo pr-label)
+      (insert (propertize (format "   %s  |  C-c C-c to create %s  |  S for stacked %ss\n"
+                                  shipit-preview--repo pr-label pr-label)
                           'font-lock-face 'font-lock-comment-face))
       (insert "\n"))))
 
@@ -569,55 +535,7 @@ Open diff for files."
       (insert (format "%s %-7s %s\n"
                       (shipit--get-pr-field-icon "refs" "🔗")
                       "Refs:"
-                      refs-line))
-      (shipit-preview--insert-stack-lines))))
-
-(defun shipit-preview--stack-row (layer index)
-  "Return the render row for LAYER, the INDEX-th from the bottom.
-A layer with more than one branch name says so on its own line, which
-is where the reader is looking when they decide which name is real."
-  `((label . ,(number-to-string index))
-    (name . ,(cdr (assq 'branch layer)))
-    (extra . ,(format "+%d" (cdr (assq 'commits layer))))
-    (current . ,(cdr (assq 'current layer)))
-    (marker . "this branch")
-    (layer . ,layer)
-    (note . ,(when (cdr (assq 'ambiguous layer))
-               (format "also %s -- RET on Refs to pick the base"
-                       (string-join (cdr (assq 'aliases layer)) ", "))))))
-
-(defun shipit-preview--insert-layer-commits (row)
-  "Insert the commits the layer named by ROW adds over the one below.
-Nothing is drawn for the layer being previewed: this buffer is that
-layer\='s pull request, and its commits are in the Commits section
-below, where every other pull request keeps them."
-  (unless (cdr (assq 'current row))
-    (dolist (line (shipit-stack-layer-commits (cdr (assq 'layer row))))
-      (insert (format "       %s\n" line)))))
-
-(defun shipit-preview--insert-stack-lines ()
-  "Insert the Stack section when this branch sits on other branches.
-Each layer is its own section, so it can be expanded to show the
-commits it adds rather than everything beneath it."
-  (let ((stack shipit-preview--stack))
-    (when stack
-      (magit-insert-section (preview-stack)
-        (magit-insert-heading
-          (format "%s %-7s %s of %s, over %s"
-                  (shipit--get-pr-field-icon "stack" "⛁")
-                  "Stack:"
-                  (cdr (assq 'position stack))
-                  (cdr (assq 'size stack))
-                  (cdr (assq 'base stack))))
-        (magit-insert-section-body
-          (let ((index 0))
-            (shipit-sections-insert-stack-rows
-             (mapcar (lambda (layer)
-                       (setq index (1+ index))
-                       (shipit-preview--stack-row layer index))
-                     (cdr (assq 'layers stack)))
-             (cdr (assq 'base stack))
-             #'shipit-preview--insert-layer-commits)))))))
+                      refs-line)))))
 
 (defun shipit-preview--toggle-draft ()
   "Toggle whether this PR will be created as a draft."

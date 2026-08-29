@@ -121,5 +121,28 @@ lines of git output, so it is built as the row is drawn."
           (should (eq layer (oref child parent)))
           (should-not (eq magit-root-section (oref child parent))))))))
 
+(ert-deftest test-shipit-stack-render-a-layer-starts-shut-every-time ()
+  "GIVEN a layer that was expanded
+WHEN the buffer is drawn again
+THEN it is shut.
+
+magit decides visibility from what it remembered and from the previous
+render's tree, both of which outrank the value asked for at insertion.
+One layer opened while reading it therefore stayed open for the rest
+of the session, and on a stack of six that is the whole buffer."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (magit-insert-section (shipit-pr-buffer)
+      (shipit-sections-insert-stack-rows test-stack-render--rows "main"))
+    (let ((layer (car (oref magit-root-section children))))
+      (should (oref layer hidden))
+      (magit-section-show layer)
+      (should-not (oref layer hidden)))
+    (let ((inhibit-read-only t)) (erase-buffer))
+    (magit-insert-section (shipit-pr-buffer)
+      (shipit-sections-insert-stack-rows test-stack-render--rows "main"))
+    (should (oref (car (oref magit-root-section children)) hidden))))
+
 (provide 'test-shipit-stack-render)
 ;;; test-shipit-stack-render.el ends here

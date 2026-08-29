@@ -2521,8 +2521,12 @@ The :raw-date contains the ISO timestamp for property storage."
           :date date-str
           :raw-date author-date)))
 
-(defun shipit--insert-processed-commit-section (commit-data repo pr-number)
-  "Insert a processed commit as a magit section (UI part)."
+(defun shipit--insert-processed-commit-section (commit-data repo pr-number &optional indent)
+  "Insert a processed commit as a magit section (UI part).
+INDENT is extra columns to the left of the whole row, for a caller
+that nests these under something of its own.  The metadata stays
+right-aligned: the room it needs comes off the title, not off the
+window."
   (condition-case err
       (let* ((sha (plist-get commit-data :sha))
              (message (plist-get commit-data :message))
@@ -2581,7 +2585,9 @@ The :raw-date contains the ISO timestamp for property storage."
                  ;; Reserve: indent (1) + unread (2) + SHA (8) + space (1) + metadata + space (1) + magit indicator (3)
                  (metadata-width (string-width metadata-str))
                  (magit-indicator-width 3)  ; Space for "..." or similar magit section indicator
-                 (reserved-width (+ 1 2 8 1 metadata-width 1 magit-indicator-width))
+                 (indent-str (make-string (or indent 0) ?\s))
+                 (reserved-width (+ (or indent 0)
+                                    1 2 8 1 metadata-width 1 magit-indicator-width))
                  (available-title-width (max 50 (- window-width reserved-width)))
                  (title-str (truncate-string-to-width first-line available-title-width))
                  ;; Build left part with SHA and title
@@ -2596,10 +2602,12 @@ The :raw-date contains the ISO timestamp for property storage."
                  ;; Calculate dynamic padding to right-align metadata to screen width
                  ;; Leave space for magit section indicator at the end
                  (left-width (string-width left-part))
-                 (total-left (+ 1 2 left-width))  ; 1 space indent + 2 unread indicator + left part
+                 (total-left (+ (or indent 0) 1 2 left-width))  ; caller indent + 1 space + 2 unread + left part
                  (padding-needed (max 1 (- window-width total-left metadata-width magit-indicator-width)))
                  (padding (make-string padding-needed ?\s))
-                 (heading-line (format " %s%s%s%s" unread-indicator left-part padding metadata-str)))
+                 (heading-line (format "%s %s%s%s%s"
+                                       indent-str unread-indicator left-part
+                                       padding metadata-str)))
             (magit-insert-heading heading-line)
             ;; Apply interactive properties to the entire heading including leading whitespace
             ;; Use put-text-property to ensure our keymap takes precedence over magit's properties

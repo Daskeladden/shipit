@@ -430,7 +430,16 @@ alist of `label\=', `name\=', `extra\=', `current\=' and an optional
 `note\=', plus optional `props\=' applied to its line.  Each row
 becomes its own section, so it can be expanded and stepped between.
 BODY-FN, when given, fills those bodies as the rows are drawn."
-  (let ((width (shipit-sections--stack-name-width rows)))
+  (let ((width (shipit-sections--stack-name-width rows))
+        ;; A layer starts shut every time.  magit decides visibility
+        ;; from two things before it reaches the value asked for here:
+        ;; a hook that reads what was remembered, and the previous
+        ;; render's tree, which a section inherits from.  Both are set
+        ;; aside for these rows, so one expanded layer does not stay
+        ;; expanded for the rest of the session.  Opening one lasts
+        ;; until the buffer is drawn again.
+        (magit-section-set-visibility-hook nil)
+        (magit-insert-section--oldroot nil))
     (dolist (row (reverse rows))
       (shipit-sections--insert-stack-row row width body-fn))
     (insert (format "   %-3s %s\n" "" base))))

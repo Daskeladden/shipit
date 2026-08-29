@@ -2298,7 +2298,9 @@ language modes (especially diff-mode) work correctly."
   "Check if MODE is available (defined or autoloaded)."
   (or (fboundp mode)
       (and (symbolp mode)
-           (autoloadp (indirect-function mode t)))))
+           ;; The second argument was NOERROR and is obsolete; not
+           ;; signalling is what it does anyway.
+           (autoloadp (indirect-function mode)))))
 
 (defun shipit--detect-language-from-shebang (content-start content-end)
   "Detect programming language from shebang line between CONTENT-START and CONTENT-END.

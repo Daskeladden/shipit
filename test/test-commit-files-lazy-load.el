@@ -43,7 +43,10 @@
                 (setq fetch-called t)
                 fetched-files))
              ((symbol-function 'shipit--render-commit-files-section-body)
-              (lambda (section files)
+              ;; Three arguments, as the real one has always taken.  The
+              ;; caller passed two, so this stand-in matched the bug
+              ;; rather than the function.
+              (lambda (section files pr-number)
                 ;; Just verify it's called
                 nil)))
 

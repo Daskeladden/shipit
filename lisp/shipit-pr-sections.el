@@ -466,7 +466,7 @@ Returns t on success, nil if section not found."
 
 ;; Resolved comment functions now in shipit-comments.el
 
-(defun shipit--insert-comment (comment &key base-indent repo pr-number
+(cl-defun shipit--insert-comment (comment &key base-indent repo pr-number
                                        include-header include-prefix
                                        prefix-str apply-faces apply-blockquote-styling
                                        section-insert inline-expanded resolved depth)
@@ -4835,12 +4835,20 @@ VISIBLE is t when expanded, nil when collapsed."
            ;; Get parent (commit) section to access repo and pr-number
            (parent-section (magit-section-parent section))
            (repo (and parent-section
-                      (get-text-property (magit-section-start parent-section) 'shipit-repo))))
+                      (get-text-property (magit-section-start parent-section) 'shipit-repo)))
+           ;; Read alongside the repository, from the same heading.  The
+           ;; comment above has always said both were needed; only the
+           ;; repository was ever taken, so the call below was one
+           ;; argument short and signalled whenever a commit's file list
+           ;; was expanded.
+           (pr-number (and parent-section
+                           (get-text-property (magit-section-start parent-section)
+                                              'shipit-pr-number))))
       (when repo
         (let ((files (shipit--fetch-commit-files repo commit-sha)))
           (when files
             ;; Re-render the section body with the fetched files
-            (shipit--render-commit-files-section-body section files)))))))
+            (shipit--render-commit-files-section-body section files pr-number)))))))
 
 (defun shipit--insert-commit-file-diff (file-patch filename &optional commit-sha)
   "Insert diff for a commit file with proper indentation for the commit context.

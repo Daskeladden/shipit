@@ -22,6 +22,7 @@
 
 (require 'shipit-core)
 (require 'shipit-stack)
+(require 'shipit-sections)
 (require 'shipit-render)
 (require 'shipit-pr-sections)
 (require 'shipit-buffer)
@@ -567,40 +568,48 @@ Open diff for files."
                       refs-line))
       (shipit-preview--insert-stack-lines))))
 
-(defun shipit-preview--stack-ambiguity (stack)
-  "Return text naming a layer of STACK whose branch name is undecided.
-Nil when every layer has one name.  Several names on one commit
-usually means a backup was kept while the branches were rearranged,
-and nothing local says which of them is the layer, so the choice is
-the reader\='s to make."
-  (let ((n 0) line)
-    (dolist (layer (cdr (assq 'layers stack)))
-      (setq n (1+ n))
-      (when (and (null line) (cdr (assq 'ambiguous layer)))
-        (setq line (format "layer %d has more than one name (%s)" n
-                           (string-join
-                            (cons (cdr (assq 'branch layer))
-                                  (cdr (assq 'aliases layer)))
-                            ", ")))))
-    line))
+(defun shipit-preview--stack-row (layer index)
+  "Return the render row for LAYER, the INDEX-th from the bottom.
+A layer with more than one branch name says so on its own line, which
+is where the reader is looking when they decide which name is real."
+  `((label . ,(number-to-string index))
+    (name . ,(cdr (assq 'branch layer)))
+    (extra . ,(format "+%d" (cdr (assq 'commits layer))))
+    (current . ,(cdr (assq 'current layer)))
+    (marker . "this branch")
+    (layer . ,layer)
+    (note . ,(when (cdr (assq 'ambiguous layer))
+               (format "also %s -- RET on Refs to pick the base"
+                       (string-join (cdr (assq 'aliases layer)) ", "))))))
+
+(defun shipit-preview--insert-layer-commits (row)
+  "Insert the commits the layer named by ROW adds over the one below."
+  (dolist (line (shipit-stack-layer-commits (cdr (assq 'layer row))))
+    (insert (format "       %s\n" line))))
 
 (defun shipit-preview--insert-stack-lines ()
-  "Note the stack this branch sits in, when it sits in one.
-States which layer this is, so it is clear that the diff below covers
-one layer rather than everything since the default branch."
+  "Insert the Stack section when this branch sits on other branches.
+Each layer is its own section, so it can be expanded to show the
+commits it adds rather than everything beneath it."
   (let ((stack (shipit-stack-detect)))
     (when stack
-      (insert (format "%s %-7s %s of %s, over %s\n"
-                      (shipit--get-pr-field-icon "stack" "⛁")
-                      "Stack:"
-                      (cdr (assq 'position stack))
-                      (cdr (assq 'size stack))
-                      (cdr (assq 'base stack))))
-      (let ((ambiguity (shipit-preview--stack-ambiguity stack)))
-        (when ambiguity
-          (insert (propertize
-                   (format "         %s -- RET on Refs to pick the base\n" ambiguity)
-                   'font-lock-face 'warning)))))))
+      (magit-insert-section (preview-stack)
+        (magit-insert-heading
+          (format "%s %-7s %s of %s, over %s"
+                  (shipit--get-pr-field-icon "stack" "⛁")
+                  "Stack:"
+                  (cdr (assq 'position stack))
+                  (cdr (assq 'size stack))
+                  (cdr (assq 'base stack))))
+        (magit-insert-section-body
+          (let ((index 0))
+            (shipit-sections-insert-stack-rows
+             (mapcar (lambda (layer)
+                       (setq index (1+ index))
+                       (shipit-preview--stack-row layer index))
+                     (cdr (assq 'layers stack)))
+             (cdr (assq 'base stack))
+             #'shipit-preview--insert-layer-commits)))))))
 
 (defun shipit-preview--toggle-draft ()
   "Toggle whether this PR will be created as a draft."

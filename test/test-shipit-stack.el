@@ -199,5 +199,25 @@ was copied from, and guessing targets the wrong branch."
                                  (copy-sequence (cdr (assq 'aliases bottom))))
                            #'string<))))))
 
+;;;; Per-layer size
+
+(ert-deftest test-shipit-stack-reports-what-each-layer-adds ()
+  "GIVEN layers of one, two and one commits
+WHEN the stack is detected
+THEN each layer reports the commits it adds over the one below, not
+its distance from the default branch, because what a reviewer is
+handed is the layer, not everything under it."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "layer-one")
+    (test-stack--commit "one")
+    (test-stack--git "checkout" "-q" "-b" "layer-two")
+    (test-stack--commit "two-a")
+    (test-stack--commit "two-b")
+    (test-stack--git "checkout" "-q" "-b" "layer-three")
+    (test-stack--commit "three")
+    (let ((layers (cdr (assq 'layers (shipit-stack-detect)))))
+      (should (equal '(1 2 1)
+                     (mapcar (lambda (l) (cdr (assq 'commits l))) layers))))))
+
 (provide 'test-shipit-stack)
 ;;; test-shipit-stack.el ends here

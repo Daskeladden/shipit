@@ -48,6 +48,7 @@ test-unit: compile
 		-l test/test-shipit-duplicate-defuns.el \
 		-l test/test-shipit-pr-stack.el \
 		-l test/test-shipit-stack.el \
+		-l test/test-shipit-stack-render.el \
 		-l test/test-shipit-issues.el \
 		-l test/test-shipit-issue-backends.el \
 		-l test/test-shipit-issue-github.el \

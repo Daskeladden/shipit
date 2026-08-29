@@ -407,5 +407,63 @@ errors out."
                  (fboundp 'magit-section-hide))
         (ignore-errors (magit-section-hide section))))))
 
+;;; Stack rendering
+
+(defun shipit-stack-layer (&rest _args)
+  "Magit section identifier for one layer of a stack.")
+(put 'shipit-stack-layer 'magit-section t)
+
+(defun shipit-sections--pad (text width)
+  "Return TEXT padded with spaces to at least WIDTH.
+`format\=' has no width-from-argument directive, so the column that
+keeps a deep stack readable is built here."
+  (concat text (make-string (max 0 (- width (length text))) ?\s)))
+
+(defun shipit-sections--stack-row-suffix (row)
+  "Return the trailing marker and note for stack ROW."
+  (concat (if (cdr (assq 'current row))
+              (format "  <- %s" (or (cdr (assq 'marker row)) "this one"))
+            "")
+          (if (cdr (assq 'note row))
+              (concat "  " (cdr (assq 'note row)))
+            "")))
+
+(defun shipit-sections--stack-name-width (rows)
+  "Return the column width the names of ROWS need."
+  (apply #'max 8 (mapcar (lambda (row) (length (cdr (assq 'name row)))) rows)))
+
+(defun shipit-sections--insert-stack-row (row width body-fn)
+  "Insert ROW as its own section, names padded to WIDTH.
+BODY-FN, when given, is called with ROW to fill the section body,
+which is where the commits that layer adds belong."
+  (magit-insert-section (shipit-stack-layer (cdr (assq 'name row)) t)
+    (let ((start (point)))
+      (magit-insert-heading
+        (format "   %-3s %s %-6s%s"
+                (or (cdr (assq 'label row)) "")
+                (shipit-sections--pad (or (cdr (assq 'name row)) "") width)
+                (or (cdr (assq 'extra row)) "")
+                (shipit-sections--stack-row-suffix row)))
+      ;; A row may need to be actionable, which for the stack of pull
+      ;; requests means carrying enough to open the one named on it.
+      (let ((props (cdr (assq 'props row))))
+        (when props (add-text-properties start (point) props))))
+    (when body-fn
+      (magit-insert-section-body (funcall body-fn row)))))
+
+(defun shipit-sections-insert-stack-rows (rows base &optional body-fn)
+  "Insert ROWS as a stack over BASE, top of the stack first.
+ROWS arrive bottom first, the order they have to merge in, and are
+shown reversed so the picture matches the word stack.  Each row is an
+alist of `label\=', `name\=', `extra\=', `current\=' and an optional
+`note\=', plus optional `props\=' applied to its line.  Each row
+becomes its own section, so it can be expanded and stepped between.
+BODY-FN, when given, fills those bodies; magit holds it until the
+layer is opened, so a deep stack costs nothing to draw."
+  (let ((width (shipit-sections--stack-name-width rows)))
+    (dolist (row (reverse rows))
+      (shipit-sections--insert-stack-row row width body-fn))
+    (insert (format "   %-3s %s\n" "" base))))
+
 (provide 'shipit-sections)
 ;;; shipit-sections.el ends here

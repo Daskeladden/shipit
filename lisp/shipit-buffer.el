@@ -26,6 +26,7 @@
 (require 'shipit-render)
 (require 'shipit-worktree)
 (require 'shipit-pr-backends)
+(require 'shipit-sections)
 (require 'shipit-comment-backends)
 (require 'url)
 (require 'url-cache)
@@ -1682,29 +1683,24 @@ with the entry, so they win over the raw state the API reports."
         (shipit-maybe-use-dedicated-buffer number repo)))
     map))
 
-(defun shipit--insert-stack-entry (entry repo)
-  "Insert the row for stack ENTRY of REPO."
-  (let ((number (cdr (assq 'number entry)))
-        (start (point)))
-    (insert (format "   %-6s %-26s %-7s%s\n"
-                    (format "#%s" number)
-                    (or (cdr (assq 'head entry)) "")
-                    (shipit--stack-entry-state entry)
-                    (if (cdr (assq 'current entry)) "  <- this PR" "")))
-    (add-text-properties start (point)
-                         `(shipit-stack-pr-number ,number
-                           shipit-stack-repo ,repo
-                           keymap ,(shipit--stack-entry-keymap repo number)))
-    (when (cdr (assq 'current entry))
-      (put-text-property start (point) 'font-lock-face 'bold))))
+(defun shipit--stack-entry-row (entry repo)
+  "Return the render row for stack ENTRY of REPO."
+  (let ((number (cdr (assq 'number entry))))
+    `((label . ,(format "#%s" number))
+      (name . ,(or (cdr (assq 'head entry)) ""))
+      (extra . ,(shipit--stack-entry-state entry))
+      (current . ,(cdr (assq 'current entry)))
+      (marker . "this PR")
+      (props . (shipit-stack-pr-number ,number
+                shipit-stack-repo ,repo
+                keymap ,(shipit--stack-entry-keymap repo number))))))
 
 (defun shipit--insert-stack-body (stack repo)
-  "Insert the rows of STACK for REPO, top of the stack first.
-The entries arrive bottom-first, the order they merge in, and are
-shown reversed so the picture on screen matches the word `stack\='."
-  (dolist (entry (reverse (cdr (assq 'entries stack))))
-    (shipit--insert-stack-entry entry repo))
-  (insert (format "   %-6s %s\n" "base" (or (cdr (assq 'base stack)) ""))))
+  "Insert the rows of STACK for REPO through the shared stack renderer."
+  (shipit-sections-insert-stack-rows
+   (mapcar (lambda (entry) (shipit--stack-entry-row entry repo))
+           (cdr (assq 'entries stack)))
+   (or (cdr (assq 'base stack)) "")))
 
 (defun shipit--insert-stack-section (repo pr-data)
   "Insert the Stack section for PR-DATA in REPO.

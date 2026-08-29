@@ -114,14 +114,33 @@ CURRENT-BRANCH wins the naming when it is among them."
           (push (cons tip (list branch)) groups))))
     groups))
 
+(defun shipit-stack--with-lineage (base layers)
+  "Return LAYERS with what each adds over the one below it.
+Depth is measured from BASE and so counts everything underneath; a
+reviewer is handed one layer, so each also records the commits it adds
+and the commit it adds them to."
+  (let ((previous-depth 0)
+        (previous-tip base))
+    (mapcar (lambda (layer)
+              (let* ((depth (cdr (assq 'depth layer)))
+                     (enriched (append `((commits . ,(- depth previous-depth))
+                                         (parent-tip . ,previous-tip))
+                                       layer)))
+                (setq previous-depth depth
+                      previous-tip (cdr (assq 'tip layer)))
+                enriched))
+            layers)))
+
 (defun shipit-stack--layers (base branches current-branch)
   "Return the layers BRANCHES form over BASE, bottom first.
 CURRENT-BRANCH marks the layer being worked on."
-  (sort (mapcar (lambda (group)
-                  (shipit-stack--layer (car group) (cdr group)
-                                       base current-branch))
-                (shipit-stack--group-by-tip branches))
-        (lambda (a b) (< (cdr (assq 'depth a)) (cdr (assq 'depth b))))))
+  (shipit-stack--with-lineage
+   base
+   (sort (mapcar (lambda (group)
+                   (shipit-stack--layer (car group) (cdr group)
+                                        base current-branch))
+                 (shipit-stack--group-by-tip branches))
+         (lambda (a b) (< (cdr (assq 'depth a)) (cdr (assq 'depth b)))))))
 
 (defun shipit-stack--linear-p (layers)
   "Return non-nil when each layer of LAYERS is an ancestor of the next.
@@ -176,6 +195,13 @@ pull request cannot be based on its own head."
                             layers)))
     (when below
       (cdr (assq 'branch (car (last below)))))))
+
+(defun shipit-stack-layer-commits (layer)
+  "Return the commits LAYER adds over the layer below it.
+Each is a string of abbreviated hash and subject."
+  (shipit-stack--git-lines
+   "log" "--format=%h %s" "--no-merges"
+   (format "%s..%s" (cdr (assq 'parent-tip layer)) (cdr (assq 'tip layer)))))
 
 (provide 'shipit-stack)
 ;;; shipit-stack.el ends here

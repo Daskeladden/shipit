@@ -63,7 +63,6 @@
 (declare-function shipit--insert-assignees-section "shipit-pr-sections")
 (declare-function shipit--insert-files-content "shipit-pr-sections")
 (declare-function shipit-preview--refresh-files-section-only "shipit-preview")
-(declare-function shipit--find-labels-section "shipit-diff")
 (declare-function shipit--refresh-labels-section-targeted "shipit-diff")
 (declare-function shipit--browse-pr-url "shipit-notifications")
 (declare-function shipit-actions-timestamps-menu "shipit-actions")

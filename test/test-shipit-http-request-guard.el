@@ -26,9 +26,13 @@
   "GIVEN system-time-locale reset to a non-English locale
 WHEN a request is built through the guard
 THEN date formatting inside uses the C locale (ASCII English)."
+  ;; Only a machine with a non-English time locale installed can show
+  ;; the difference.  Where nb_NO is missing, dates come out English
+  ;; with or without the guard and the test would pass while proving
+  ;; nothing, so it is skipped rather than left to look green.
+  (skip-unless (let ((system-time-locale "nb_NO.utf8"))
+                 (equal (format-time-string "%a" 0 t) "to.")))
   (let ((system-time-locale "nb_NO.utf8"))
-    ;; Sanity: outside the guard the locale is Norwegian (this machine
-    ;; has nb_NO installed; the guard must not rely on that being false)
     (should (equal (format-time-string "%a" 0 t) "to."))
     (should (equal (shipit--url-http-request-guard
                     (lambda () (format-time-string "%a, %d %b %Y" 0 t)))
@@ -101,6 +105,10 @@ mirroring the connection buffer url.el prepares."
      (setq-local url-http-proxy nil)
      (setq-local url-http-version "1.1")
      (setq-local url-http-attempt-keepalives nil)
+     ;; url.el declares this with no value and only ever let-binds it
+     ;; inside `url-http', so calling `url-http-create-request' directly
+     ;; finds it unbound.  Supply the environment url.el would.
+     (setq-local url-http-extensions-header nil)
      ,@body))
 
 (ert-deftest test-guard-normalizes-multibyte-auth-with-utf8-body ()

@@ -263,7 +263,11 @@
                (lambda (id) t)))
       (let ((header (shipit--render-comment-header comment 0 'inline)))
         (should (stringp header))
-        (should (string-match-p "\\[RESOLVED\\]" header))))))
+        ;; The marker used to read [RESOLVED]; it is now a tick and the
+        ;; word, styled.  What matters is that a resolved comment says
+        ;; so in its header, which the paired test below checks an
+        ;; unresolved one does not.
+        (should (string-match-p "resolved" header))))))
 
 (ert-deftest test-shipit--render-comment-header-not-resolved ()
   "Test comment header rendering without resolved status."

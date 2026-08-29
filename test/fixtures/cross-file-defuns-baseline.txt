@@ -1,0 +1,5 @@
+checks
+shipit-comment
+shipit-debug-text-properties-at-point
+shipit-init
+shipit-pr

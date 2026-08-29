@@ -112,5 +112,50 @@ the only test covering it was one nobody ran."
                          (test-shipit-dup--handlerless
                           (test-shipit-dup--forms file)))))))
 
+;;;; The same name defined in two files
+
+(defun test-shipit-dup--defined-where ()
+  "Return an alist of function name to the files defining it."
+  (let (table)
+    (dolist (file (test-shipit-dup--source-files) table)
+      (dolist (name (test-shipit-dup--defun-names file))
+        (let ((cell (assoc name table))
+              (base (file-name-nondirectory file)))
+          (if cell
+              (unless (member base (cdr cell)) (setcdr cell (cons base (cdr cell))))
+            (push (cons name (list base)) table)))))))
+
+(defun test-shipit-dup--cross-file-baseline ()
+  "Return the names already defined in two files when this check began."
+  ;; Resolved from the directory constant captured at load time;
+  ;; `load-file-name' is nil by the time a test runs.
+  (let ((path (expand-file-name "../test/fixtures/cross-file-defuns-baseline.txt"
+                                test-shipit-dup--lisp-dir)))
+    (when (file-readable-p path)
+      (with-temp-buffer
+        (insert-file-contents path)
+        (split-string (buffer-string) "\n" t)))))
+
+(ert-deftest test-shipit-no-new-cross-file-defuns ()
+  "GIVEN every shipit source file
+WHEN a function name is defined in more than one of them
+THEN it is one already recorded, and not a new one.
+
+Whichever file loads last wins, silently.  That is how
+`shipit--get-current-pr-data\=' came to have two meanings, a two
+argument fetch by branch and a no argument read of the buffer, with
+the second winning and every caller of the first raising
+`wrong-number-of-arguments\=' at runtime.
+
+Five names were already sharing a file pair when this check was
+written; `test/fixtures/cross-file-defuns-baseline.txt\=' lists them
+and is meant to shrink."
+  (let* ((known (test-shipit-dup--cross-file-baseline))
+         (shared (seq-remove
+                  (lambda (entry) (member (car entry) known))
+                  (seq-filter (lambda (entry) (cdr (cdr entry)))
+                              (test-shipit-dup--defined-where)))))
+    (should (equal '() (sort (mapcar #'car shared) #'string<)))))
+
 (provide 'test-shipit-duplicate-defuns)
 ;;; test-shipit-duplicate-defuns.el ends here

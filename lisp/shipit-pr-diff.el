@@ -44,7 +44,6 @@
 (declare-function shipit--debug-log "shipit-core")
 (declare-function shipit--get-comment-type-icon "shipit-render")
 (declare-function shipit--get-comment-icon "shipit-render")
-(declare-function shipit--render-markdown-content "shipit-render")
 (declare-function shipit--clean-text "shipit-lib")
 (declare-function shipit--get-repo-from-remote "shipit-core")
 (declare-function shipit--ensure-repository "shipit-core")
@@ -81,7 +80,6 @@
 (declare-function shipit--toggle-reaction-interactive "shipit-pr-actions")
 (declare-function shipit--edit-comment-interactive "shipit-commands")
 (declare-function shipit--highlight-region-with-pulse "shipit-core")
-(declare-function shipit--highlight-modified-region-with-pulse "shipit-core")
 (declare-function shipit--simple-comment-dialog "shipit-pr-actions")
 (declare-function shipit--mark-commit-as-read "shipit-pr-sections")
 (declare-function shipit--in-pr-section-p "shipit-pr-actions")
@@ -1122,13 +1120,14 @@ Only activates if we're in a shipit PR context (shipit-buffer-pr-number is set).
 ;; Automatically enable highlighting when global mode is activated
 (defun shipit--setup-highlighting ()
   "Set up pre-action and post-action highlighting hooks."
-  (add-hook 'shipit-dwim-hook #'shipit--highlight-region-with-pulse)
-  (add-hook 'shipit-post-action-hook #'shipit--highlight-modified-region-with-pulse))
+  ;; Only the pre-action pulse remains.  The post-action one was
+  ;; registered here for a function that no longer exists, so running
+  ;; the hook raised `void-function'.
+  (add-hook 'shipit-dwim-hook #'shipit--highlight-region-with-pulse))
 
 (defun shipit--teardown-highlighting ()
   "Remove pre-action and post-action highlighting hooks."
-  (remove-hook 'shipit-dwim-hook #'shipit--highlight-region-with-pulse)
-  (remove-hook 'shipit-post-action-hook #'shipit--highlight-modified-region-with-pulse))
+  (remove-hook 'shipit-dwim-hook #'shipit--highlight-region-with-pulse))
 
 ;; Set up highlighting when shipit is loaded
 (shipit--setup-highlighting)

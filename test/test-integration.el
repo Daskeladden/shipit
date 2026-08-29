@@ -50,33 +50,44 @@
   ;; Test that other core dependencies are available
   (should (featurep 'dash)))
 
+(defconst test-integration--lisp-dir
+  (expand-file-name "../lisp"
+                    (file-name-directory (or load-file-name buffer-file-name)))
+  "Directory of the shipit sources.
+Captured while this file loads; `load-file-name\=' is nil by the time
+a test body runs.")
+
 (ert-deftest test-all-declared-functions-exist ()
-  "Verify that all functions declared with declare-function actually exist."
-  (let ((missing-functions '())
-        (files '("lisp/shipit-core.el"
-                 "lisp/shipit-http.el"
-                 "lisp/shipit-buffer.el"
-                 "lisp/shipit-diff.el"
-                 "lisp/shipit-pr-sections.el"
-                 "lisp/shipit-commands.el"
-                 "lisp/shipit-cache.el"
-                 "lisp/shipit-checks.el"
-                 "lisp/shipit-render.el")))
-    
-    (dolist (file files)
-      (when (file-exists-p file)
+  "GIVEN every shipit source file
+WHEN its `declare-function' lines are read
+THEN each shipit function named by one exists.
+
+A declaration is a promise that something else defines the function.
+When it stops being true nothing complains: the compiler is satisfied
+by the declaration and the call fails only when a user reaches it.
+
+Every shipit module is loaded first, since a declaration naming a
+module this test never loaded would look dangling when it is not.
+Names outside shipit are left alone; they belong to packages such as
+consult and embark, which are optional by design."
+  (let ((lisp-dir test-integration--lisp-dir)
+        (missing '()))
+    (dolist (file (directory-files lisp-dir t "\\.el\\'"))
+      (unless (string-match-p "autoloads" file)
+        (ignore-errors (require (intern (file-name-base file))))))
+    (dolist (file (directory-files lisp-dir t "\\.el\\'"))
+      (unless (string-match-p "autoloads" file)
         (with-temp-buffer
           (insert-file-contents file)
           (goto-char (point-min))
-          ;; Find all declare-function statements
           (while (re-search-forward "(declare-function \\([^[:space:]]+\\)" nil t)
-            (let ((func-name (match-string 1)))
-              (unless (fboundp (intern func-name))
-                (push (format "%s declared in %s" func-name file) missing-functions)))))))
-    
-    (when missing-functions
-      (ert-fail (format "Missing declared functions:\n%s" 
-                        (string-join missing-functions "\n"))))))
+            (let ((name (match-string 1)))
+              (when (and (string-prefix-p "shipit" name)
+                         (not (fboundp (intern name))))
+                (push (format "%s declared in %s" name
+                              (file-name-nondirectory file))
+                      missing)))))))
+    (should (equal '() (sort missing #'string<)))))
 
 (ert-deftest test-comment-operations-integration ()
   "Integration test for comment add/edit/delete operations."

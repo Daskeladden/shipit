@@ -12,8 +12,15 @@
 ;;; Code:
 
 (require 'ert)
+
+;; No test here should reach auth-source.  Left unset, the token lookup
+;; falls through to decrypting the real ~/.authinfo.gpg: it fails in
+;; batch with "Bad session key" and reads the user's credentials on a
+;; machine where it would succeed.
 (require 'shipit-notifications)
 (require 'shipit-notifications-buffer)
+
+(setq shipit-github-token "test-token")
 
 (ert-deftest test-notifications-full-workflow ()
   "Test the complete notifications workflow."

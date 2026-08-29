@@ -1336,10 +1336,16 @@ worktree commands cascaded into
       (and (boundp 'shipit-buffer-pr-number)
            shipit-buffer-pr-number)))
 
-(defun shipit--get-current-pr-data ()
+(defun shipit--current-buffer-pr-data ()
   "Return PR data alist for the current shipit buffer.
 Same point-first / buffer-fallback pattern as
-`shipit--get-current-pr-number'."
+`shipit--get-current-pr-number\='.
+
+Named apart from `shipit--get-current-pr-data\=' in `shipit-http\=',
+which fetches by branch and repository.  The two shared a name, and
+because this file loads later this one won, leaving that one
+unreachable and every cross-file caller of it raising
+`wrong-number-of-arguments\='."
   (or (get-text-property (point) 'shipit-pr-data)
       (and (boundp 'shipit-buffer-pr-data)
            shipit-buffer-pr-data)))
@@ -1349,7 +1355,7 @@ Same point-first / buffer-fallback pattern as
   (or (get-text-property (point) 'shipit-pr-head-sha)
       (cdr (assq 'sha
                  (cdr (assq 'head
-                            (shipit--get-current-pr-data)))))))
+                            (shipit--current-buffer-pr-data)))))))
 
 (defun shipit--checkout-pr-worktree ()
   "Checkout current PR in a new git worktree (async).
@@ -1360,7 +1366,7 @@ PR buffer shows live phase updates (\"\u23f3 Fetching ...\",
 operation completes or fails."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
-         (pr-data (shipit--get-current-pr-data))
+         (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (branch-name (cdr (assq 'ref (cdr (assq 'head pr-data)))))
          (pr-head-sha (cdr (assq 'sha (cdr (assq 'head pr-data))))))
@@ -1375,7 +1381,7 @@ operation completes or fails."
   "Sync current PR worktree with latest changes."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
-         (pr-data (shipit--get-current-pr-data))
+         (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (branch-name (cdr (assq 'ref (cdr (assq 'head pr-data)))))
          (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
@@ -1405,7 +1411,7 @@ This pulls the full LFS set into the worktree so tests and
 tooling can find every fixture / asset they expect."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
-         (pr-data (shipit--get-current-pr-data))
+         (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name
                              (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo))
@@ -1437,7 +1443,7 @@ multiple).  Selection uses
 all work transparently with their usual filtering UI."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
-         (pr-data (shipit--get-current-pr-data))
+         (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name
                              (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo))
@@ -1472,7 +1478,7 @@ fetch completes or fails -- the natural companion to
 `shipit-worktree-skip-lfs\='."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
-         (pr-data (shipit--get-current-pr-data))
+         (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name
                              (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (base-sha (cdr (assq 'sha (cdr (assq 'base pr-data)))))
@@ -1520,7 +1526,7 @@ fetch completes or fails -- the natural companion to
   "Delete the worktree for current PR."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
-         (pr-data (shipit--get-current-pr-data))
+         (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
     (unless pr-number
@@ -1541,7 +1547,7 @@ fetch completes or fails -- the natural companion to
   "Open worktree directory in dired or new frame."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
-         (pr-data (shipit--get-current-pr-data))
+         (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
     (unless pr-number

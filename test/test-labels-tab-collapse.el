@@ -1,6 +1,8 @@
 ;;; test-labels-tab-collapse.el --- Test labels TAB collapse behavior -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'shipit-core)
+(require 'shipit-pr-sections)
 (require 'shipit-diff)
 
 (ert-deftest test-labels-section-tab-collapse-boundaries ()

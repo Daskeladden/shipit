@@ -4,6 +4,9 @@
 ;; accidentally send API requests using the wrong PR context
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-lib)
+(require 'shipit-pr-actions)
 (require 'cl-lib)
 (load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name))))
 

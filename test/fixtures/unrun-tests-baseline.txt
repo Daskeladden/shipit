@@ -15,8 +15,6 @@ test-pr-search-cache-ttl.el
 test-regression-simple.el
 test-reply-context-detection.el
 test-section-integrity.el
-test-shipit-discussion-backends.el
-test-shipit-review-mode.el
 test-simple-indentation.el
 test-simple-labels-alignment.el
 test-text-property-coverage.el

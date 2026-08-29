@@ -7,6 +7,10 @@
 ;;; Code:
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-core)
+(require 'shipit-diff)
+(require 'shipit-pr-sections)
 (require 'cl-lib)
 
 (defun test-labels--create-mock-magit-buffer ()

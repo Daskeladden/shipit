@@ -4,6 +4,9 @@
 ;; and as general comments when appropriate
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-pr-actions)
+(require 'shipit-sections)
 (require 'cl-lib)
 (load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name))))
 

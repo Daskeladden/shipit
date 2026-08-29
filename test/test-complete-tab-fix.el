@@ -1,6 +1,8 @@
 ;;; test-complete-tab-fix.el --- Test complete TAB collapse fix -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'shipit-core)
+(require 'shipit-pr-sections)
 
 (ert-deftest test-fallback-refresh-preserves-section-boundaries ()
   "Test that fallback refresh maintains correct section boundaries for TAB collapse."

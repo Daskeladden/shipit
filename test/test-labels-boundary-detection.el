@@ -1,6 +1,8 @@
 ;;; test-labels-boundary-detection.el --- Test boundary detection robustness -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'shipit-core)
+(require 'shipit-pr-sections)
 (require 'shipit-diff)
 
 (ert-deftest test-boundary-detection-with-misaligned-sections ()

@@ -131,16 +131,22 @@ THEN the returned config contains both :repo and :token."
       (should (string= "owner/repo" (plist-get config :repo)))
       (should (string= "abc123" (plist-get config :token))))))
 
-(ert-deftest test-discussion-backend-resolve-for-repo-gitlab-project-path ()
-  "GIVEN a GitLab discussion backend
-WHEN calling shipit-discussion--resolve-for-repo without :project-path
-THEN :project-path is auto-populated from repo slug."
+(ert-deftest test-discussion-backend-resolve-for-repo-injects-project-path ()
+  "GIVEN a discussion backend that asks for project-path injection
+WHEN resolving it for a repository without one
+THEN :project-path is filled in from the repository slug.
+
+Only GitHub registers a discussion backend today, so nothing exercises
+this branch in practice.  The test names a forge that asks for the
+injection rather than one that exists, because what is under test is
+the resolver, which any forge needing a project path would rely on."
   (let ((shipit-discussion-backends nil)
         (shipit-pr-backend 'gitlab)
         (shipit-pr-backend-config nil))
     (shipit-discussion-register-backend
      'gitlab
      (list :name "GitLab"
+           :inject-project-path t
            :browse-url (lambda (_config _number) "")
            :browse-repo-url (lambda (_config) "")))
     (let* ((resolved (shipit-discussion--resolve-for-repo "group/project"))
@@ -160,16 +166,22 @@ THEN an error is signaled."
 ;;; GitHub Backend Registration (via discussions-graphql) Tests
 
 (ert-deftest test-github-discussion-backend-is-registered ()
-  "GIVEN shipit-discussions-graphql is loaded
-WHEN checking shipit-discussion-backends
-THEN a 'github backend is registered with required keys."
-  (let ((shipit-discussion-backends nil))
-    (require 'shipit-discussions-graphql)
-    (should (assq 'github shipit-discussion-backends))
-    (let ((backend (cdr (assq 'github shipit-discussion-backends))))
-      (should (plist-get backend :name))
-      (should (plist-get backend :browse-url))
-      (should (plist-get backend :browse-repo-url)))))
+  "GIVEN the GitHub discussions module
+WHEN the registry is read
+THEN a `github\=' backend is registered, with the keys the registry
+requires of one.
+
+The registry is read as it stands rather than bound to nil first.
+Registration happens once, when the module loads, so emptying the
+registry and requiring the module again proves nothing: the require
+is a no-op whenever anything else has already loaded it, and the test
+then passes or fails on the order the suite happened to run in."
+  (require 'shipit-discussions-graphql)
+  (should (assq 'github shipit-discussion-backends))
+  (let ((backend (cdr (assq 'github shipit-discussion-backends))))
+    (should (plist-get backend :name))
+    (should (plist-get backend :browse-url))
+    (should (plist-get backend :browse-repo-url))))
 
 (provide 'test-shipit-discussion-backends)
 ;;; test-shipit-discussion-backends.el ends here

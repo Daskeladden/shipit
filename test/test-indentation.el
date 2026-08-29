@@ -7,6 +7,8 @@
 ;;; Code:
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-diff)
 (require 'cl-lib)
 
 (defun test-indentation--check-file-indentation (file-path)

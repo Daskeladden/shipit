@@ -1,6 +1,8 @@
 ;;; test-boundary-detection-fix.el --- Test boundary detection and fixing -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'shipit-core)
+(require 'shipit-diff)
 
 (ert-deftest test-boundary-uncertainty-detection-and-fix ()
   "Test that boundary uncertainty flags are detected and fixed."

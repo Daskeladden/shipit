@@ -1,6 +1,8 @@
 ;;; test-user-edit-workflow.el --- Test user edit workflow -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'shipit-core)
+(require 'shipit-pr-sections)
 
 (ert-deftest test-user-label-edit-workflow ()
   "Test the exact workflow when user edits labels."

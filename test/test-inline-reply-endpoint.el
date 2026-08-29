@@ -8,6 +8,13 @@
 ;; in the wrong place in the GitHub UI (inline replies showing as general comments).
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-comments)
+(require 'shipit-gh-etag)
+(require 'shipit-lib)
+(require 'shipit-pr-actions)
+(require 'shipit-render)
+(require 'shipit-sections)
 (require 'cl-lib)
 (load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name))))
 

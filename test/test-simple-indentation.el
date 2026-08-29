@@ -6,6 +6,8 @@
 ;;; Code:
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-diff)
 
 (defun test-simple-indentation--get-indentation-of-line (line)
   "Get the indentation level of LINE (number of leading spaces)."

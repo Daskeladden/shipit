@@ -1,6 +1,8 @@
 ;;; test-simple-labels-alignment.el --- Simple labels alignment test -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'shipit-core)
+(require 'shipit-pr-sections)
 (require 'shipit-diff)
 
 (defun test-check-labels-alignment (buffer-content)

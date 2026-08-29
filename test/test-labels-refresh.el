@@ -6,6 +6,8 @@
 ;;; Code:
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-core)
 (require 'cl-lib)
 
 ;; Load shipit modules

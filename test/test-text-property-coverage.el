@@ -3,6 +3,12 @@
 ;; Tests that would have caught the missing text properties in diff section
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-diff)
+(require 'shipit-pr-actions)
+(require 'shipit-pr-diff)
+(require 'shipit-render)
+(require 'shipit-sections)
 (require 'cl-lib)
 (load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name))))
 

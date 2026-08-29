@@ -1,6 +1,11 @@
 ;;; test-regression-simple.el --- Simple test that would catch the text property bug -*- lexical-binding: t; -*-
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-core)
+(require 'shipit-http)
+(require 'shipit-pr-actions)
+(require 'shipit-sections)
 (load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name))))
 
 ;; Load shipit modules

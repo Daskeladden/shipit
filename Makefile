@@ -53,6 +53,8 @@ test-unit: compile
 		-l test/test-shipit-review-revision.el \
 		-l test/test-tab-collapse-fix.el \
 		-l test/test-per-commit-comments.el \
+		-l test/test-shipit-discussion-backends.el \
+		-l test/test-shipit-review-mode.el \
 		-l test/test-shipit-pr-stack.el \
 		-l test/test-shipit-stack.el \
 		-l test/test-shipit-stack-render.el \

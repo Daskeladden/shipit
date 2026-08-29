@@ -3,6 +3,12 @@
 ;; These tests would have caught the missing text properties bug
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-core)
+(require 'shipit-http)
+(require 'shipit-pr-actions)
+(require 'shipit-pr-diff)
+(require 'shipit-render)
 (require 'cl-lib)
 (load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name))))
 

@@ -6,6 +6,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'shipit-http)
 (require 'cl-lib)
 (require 'magit)
 (require 'shipit-core)

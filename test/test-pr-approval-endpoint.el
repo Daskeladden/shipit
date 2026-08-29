@@ -8,6 +8,12 @@
 ;; actually approve the PR on GitHub.
 
 (require 'ert)
+(require 'shipit)
+(require 'shipit-cache)
+(require 'shipit-core)
+(require 'shipit-file-filter)
+(require 'shipit-gh-etag)
+(require 'shipit-pr-actions)
 (require 'cl-lib)
 (load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name))))
 

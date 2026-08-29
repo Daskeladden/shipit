@@ -1581,20 +1581,74 @@ Returns the existing PR data if found, nil otherwise."
 
 ;;; Auto-fill helpers
 
-(defun shipit-preview--maybe-auto-fill-description (current-description commits)
-  "Return description to use, possibly auto-filled from commit message.
-CURRENT-DESCRIPTION is the existing description (nil or string).
-COMMITS is the list of commits for this PR.
+(defun shipit-preview--default-draft-p (stacked)
+  "Return non-nil when a new pull request should start as a draft.
+STACKED says whether this branch sits in a stack.  See
+`shipit-preview-default-draft\='."
+  (pcase shipit-preview-default-draft
+    ('stacked stacked)
+    (setting (and setting t))))
 
-When there is exactly 1 commit and description is empty, returns
-the full commit message. Otherwise returns CURRENT-DESCRIPTION unchanged."
-  (if (and (= (length commits) 1)
-           (or (null current-description)
-               (string-empty-p current-description)))
-      ;; Single commit with empty description - use commit message
-      (plist-get (car commits) :message)
-    ;; Keep existing description
-    current-description))
+(defconst shipit-preview--pr-template-dirs '("" ".github/" "docs/")
+  "Directories GitHub reads a pull request template from.")
+
+(defun shipit-preview--pr-template-candidates (root)
+  "Return the paths under ROOT where a single template may live."
+  (let (paths)
+    (dolist (dir shipit-preview--pr-template-dirs (nreverse paths))
+      (dolist (name '("PULL_REQUEST_TEMPLATE" "pull_request_template"))
+        (dolist (ext '(".md" ".txt" ""))
+          (push (expand-file-name (concat dir name ext) root) paths))))))
+
+(defun shipit-preview--pr-template-directory (root)
+  "Return the directory of templates under ROOT, when there is one.
+A repository with several kinds of change keeps one template per
+kind in a directory rather than a single file."
+  (seq-find #'file-directory-p
+            (mapcar (lambda (dir)
+                      (expand-file-name (concat dir "PULL_REQUEST_TEMPLATE") root))
+                    shipit-preview--pr-template-dirs)))
+
+(defun shipit-preview--pr-template-files (root)
+  "Return every pull request template under ROOT.
+One file in the usual place, or all of them when the repository keeps
+a directory of templates."
+  (let ((dir (shipit-preview--pr-template-directory root)))
+    (if dir
+        (directory-files dir t "\\.\\(md\\|txt\\)\\'")
+      (let ((file (seq-find #'file-readable-p
+                            (seq-remove #'file-directory-p
+                                        (shipit-preview--pr-template-candidates root)))))
+        (when file (list file))))))
+
+(defun shipit-preview--pr-template (root)
+  "Return the text of ROOT\='s pull request template, or nil.
+When a repository keeps several, the author is asked which one; only
+they know what kind of change this is."
+  (let ((files (shipit-preview--pr-template-files root)))
+    (when files
+      (let ((file (if (cdr files)
+                      (completing-read "Pull request template: " files nil t)
+                    (car files))))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (buffer-string))))))
+
+(defun shipit-preview--maybe-auto-fill-description
+    (current-description commits &optional template)
+  "Return the description to start from, filling one in when empty.
+CURRENT-DESCRIPTION is what is there already and always wins, since
+this runs again on every reopen.  TEMPLATE, the repository\='s pull
+request template, comes next: it is the structure the repository asks
+of every pull request.  Failing that, a branch of exactly one commit
+uses that commit\='s message, which the commits section would otherwise
+be the only place to read it."
+  (cond
+   ((not (or (null current-description) (string-empty-p current-description)))
+    current-description)
+   ((and template (not (string-empty-p template))) template)
+   ((= (length commits) 1) (plist-get (car commits) :message))
+   (t current-description)))
 
 ;;; Entry point
 
@@ -1626,7 +1680,8 @@ If a PR already exists for this branch, offers to open it instead."
                 (shipit-open-pr-buffer pr-number repo)
               (message "PR #%d exists for this branch" pr-number)))
         ;; No existing PR - open preview
-        (let* ((parent (shipit-stack-parent-branch))
+        (let* ((stack (shipit-stack-detect))
+               (parent (shipit-stack-parent-of stack))
                ;; A stack parent is a local branch that has usually not
                ;; been pushed, so it is used unqualified.  Only the
                ;; default branch is read from the remote.
@@ -1641,14 +1696,15 @@ If a PR already exists for this branch, offers to open it instead."
             ;; Try to restore saved state, otherwise use defaults
             (unless (shipit-preview--restore-state)
               (setq shipit-preview--title branch
-                    shipit-preview--draft shipit-preview-default-draft
+                    shipit-preview--draft (shipit-preview--default-draft-p (and stack t))
                     shipit-preview--assignees (shipit-preview--get-default-assignees)))
             ;; Auto-fill description from commit message if single commit
             ;; (runs even after restore, in case description was empty)
             (let ((commits (shipit-preview--get-commits)))
               (setq shipit-preview--description
                     (shipit-preview--maybe-auto-fill-description
-                     shipit-preview--description commits)))
+                     shipit-preview--description commits
+                     (shipit-preview--pr-template (shipit--get-repo-root)))))
             (shipit-preview--refresh nil t))
           (switch-to-buffer buf-name))))))
 

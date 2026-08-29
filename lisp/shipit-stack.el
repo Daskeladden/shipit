@@ -182,19 +182,23 @@ branches below it do not form a single chain."
                 (position . ,(shipit-stack--position layers))
                 (layers . ,layers)))))))))
 
-(defun shipit-stack-parent-branch ()
-  "Return the branch a pull request for the current one must target.
-That is the layer directly below, or nil when there is none.  A branch
-sharing the current commit is skipped: it names the same layer, and a
-pull request cannot be based on its own head."
-  (let* ((stack (shipit-stack-detect))
-         (layers (cdr (assq 'layers stack)))
+(defun shipit-stack-parent-of (stack)
+  "Return the branch a pull request for the current branch must target.
+That is the layer of STACK directly below, or nil when there is none.
+A branch sharing the current commit is skipped: it names the same
+layer, and a pull request cannot be based on its own head."
+  (let* ((layers (cdr (assq 'layers stack)))
          (head (shipit-stack--rev "HEAD"))
          (below (seq-remove (lambda (layer)
                               (equal (cdr (assq 'tip layer)) head))
                             layers)))
     (when below
       (cdr (assq 'branch (car (last below)))))))
+
+(defun shipit-stack-parent-branch ()
+  "Return the branch a pull request for the current one must target.
+Detects the stack first; see `shipit-stack-parent-of\='."
+  (shipit-stack-parent-of (shipit-stack-detect)))
 
 (defun shipit-stack-layer-commits (layer)
   "Return the commits LAYER adds over the layer below it.

@@ -1291,12 +1291,15 @@ This provides better visual consistency and alignment compared to emoji renderin
   :type 'boolean
   :group 'shipit)
 
-(defcustom shipit-preview-default-draft nil
-  "Whether new PRs created from preview mode should default to draft status.
-When non-nil, the preview buffer will start with draft mode enabled,
-and the confirmation will show \"Create draft PR\" instead of \"Create PR\".
-This can be toggled per-PR in the preview buffer before creation."
-  :type 'boolean
+(defcustom shipit-preview-default-draft 'stacked
+  "Whether a pull request created from the preview starts as a draft.
+`stacked\=' drafts one only when the branch sits in a stack.  A stack
+opens several pull requests at once and the ones above cannot merge
+until the bottom lands, so putting them all up for review at once is
+noise.  t drafts every pull request, nil drafts none."
+  :type '(choice (const :tag "Only when the branch is in a stack" stacked)
+                 (const :tag "Always" t)
+                 (const :tag "Never" nil))
   :group 'shipit)
 
 (defcustom shipit-preview-default-assignee 'self

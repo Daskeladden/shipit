@@ -22,10 +22,13 @@ compile: $(LISP_FILES)
 		-f batch-byte-compile $(LISP_FILES)
 
 # Generate autoloads
+# `package-generate-autoloads' was called with the package name wrapped
+# in a stray trailing quote, so it produced a file under the wrong name
+# and lisp/shipit-autoloads.el was never refreshed.
 autoloads: $(PACKAGE_FILE)
 	$(EMACS) -batch -Q \
-		-eval "(require 'package)" \
-		-eval "(package-generate-autoloads '$(PACKAGE_NAME)' \"lisp\")"
+		-eval "(require 'loaddefs-gen)" \
+		-eval "(loaddefs-generate \"lisp\" \"lisp/$(AUTOLOADS_FILE)\")"
 
 # Clean compiled files
 clean:

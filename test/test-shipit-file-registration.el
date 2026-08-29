@@ -28,10 +28,9 @@
   "Test files that hold no tests and so are never run on their own.
 `test-stubs.el' mocks `request' and magit for the files that load it.")
 
-(defconst test-registration--reload-exceptions '("shipit-init.el")
+(defconst test-registration--reload-exceptions '()
   "Files deliberately absent from the reload list.
-`shipit-init.el' is not loaded as a file there; it is called as a
-function once the rest is loaded.")
+Empty: `shipit-init.el' held the only exception and is gone.")
 
 (defun test-registration--file-text (relative)
   "Return the contents of RELATIVE to the repository root."

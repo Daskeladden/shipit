@@ -58,8 +58,6 @@ shipit-http.el:shipit--get-current-user
 shipit-http.el:shipit--is-comment-in-resolved-thread
 shipit-http.el:shipit--refresh-ediff-comments
 shipit-http.el:shipit--update-section-unread-indicators
-shipit-init.el:shipit
-shipit-init.el:shipit-debug
 shipit-issue-github.el:shipit--get-available-assignees
 shipit-issue-github.el:shipit--get-available-labels
 shipit-issue-gitlab.el:shipit-comment-gitlab--normalize-reaction

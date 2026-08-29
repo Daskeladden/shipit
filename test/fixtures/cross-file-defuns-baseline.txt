@@ -1,4 +1,0 @@
-checks
-shipit-comment
-shipit-debug-text-properties-at-point
-shipit-pr

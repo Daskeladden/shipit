@@ -1245,23 +1245,6 @@ Uses svg-lib for rendering but fixes width and centering."
                     'shipit-label-face label-face)))))
 
 
-(defun shipit-debug-text-properties-at-point ()
-  "Debug function to show all text properties at point."
-  (interactive)
-  (let ((props (text-properties-at (point))))
-    (message "Text properties at point %d: %S" (point) props)
-    (with-current-buffer (get-buffer-create "*shipit-debug-props*")
-      (erase-buffer)
-      (insert (format "Position: %d\n" (point)))
-      (insert (format "Properties: %S\n" props))
-      (insert (format "shipit-comment: %S\n" (get-text-property (point) 'shipit-comment)))
-      (insert (format "shipit-labels: %S\n" (get-text-property (point) 'shipit-labels)))
-      (insert (format "shipit-pr-labels: %S\n" (get-text-property (point) 'shipit-pr-labels)))
-      (insert (format "shipit-pr-number: %S\n" (get-text-property (point) 'shipit-pr-number)))
-      (display-buffer (current-buffer)))))
-
-;; Debug keybinding is now handled by shipit-mode keymap
-
 (defun shipit--insert-reviews-section (repo pr-number)
   "Insert reviews section showing detailed reviewer status."
   (let ((review-details (condition-case err

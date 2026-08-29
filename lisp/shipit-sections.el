@@ -225,17 +225,21 @@ Used for preserving expansion state across refreshes."
 ;;; Magit Section Type Definitions
 ;; These stub defuns + (put ... 'magit-section t) prevent "void function"
 ;; errors when used with magit-insert-section.
-
-(defun shipit-comment (&rest _args)
-  "Magit section type for individual comments. Always visible."
-  t)
+;;
+;; Three section types carry no stub: `shipit-pr', `shipit-comment' and
+;; `checks' are the names of real functions elsewhere -- opening a pull
+;; request, the comment command bound to `c', and the checks section
+;; builder.  Those load later and take the name, so a stub here never
+;; survived to catch anything.  Worse, if the fallback these guard
+;; against ever did fire for one of them it would call the real command
+;; rather than signal, which is why they are not re-added under these
+;; names.  `test-shipit-magit-requires' is what actually keeps the
+;; fallback from firing.
 
 (defun shipit-comments (&rest _args)
   "Magit section type for comment groups. Always visible."
   t)
 
-(defun shipit-pr (&rest _args)
-  "Magit section identifier for PR headers.")
 (put 'shipit-pr 'magit-section t)
 (defun shipit-description (&rest _args)
   "Magit section identifier for PR descriptions.")
@@ -246,8 +250,6 @@ Used for preserving expansion state across refreshes."
 (defun shipit-assignees (&rest _args)
   "Magit section identifier for PR assignees.")
 (put 'shipit-assignees 'magit-section t)
-(defun checks (&rest _args)
-  "Magit section identifier for PR checks.")
 (put 'checks 'magit-section t)
 (defun comment-details (&rest _args)
   "Magit section identifier for collapsible details blocks in comments.")

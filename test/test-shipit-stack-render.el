@@ -91,12 +91,16 @@ THEN there is one layer section per row, so each can be expanded and
     (should (eq (get 'shipit-stack-layer 'magit-section) t))
     (should (equal 3 (length (oref magit-root-section children))))))
 
-(ert-deftest test-shipit-stack-render-defers-a-layer-body-until-opened ()
-  "GIVEN a body function that yields the commits a layer adds
+(ert-deftest test-shipit-stack-render-nests-a-layer-body-under-its-layer ()
+  "GIVEN a body function that fills each layer
 WHEN the rows are drawn
-THEN nothing is inserted yet and each layer holds its body for when it
-is opened, so showing a deep stack does not cost a log per layer.
-Running one layer\='s body yields that layer\='s commits and no other\='s."
+THEN the content is there and any section it made belongs to its
+layer, not to the root.
+
+The body used to be deferred into a magit washer.  A section created
+inside one did not nest under the layer, and collapsing then reached
+for the root section, which cannot be hidden.  A layer's body is a few
+lines of git output, so it is built as the row is drawn."
   (with-temp-buffer
     (magit-section-mode)
     (setq inhibit-read-only t)
@@ -104,16 +108,18 @@ Running one layer\='s body yields that layer\='s commits and no other\='s."
       (shipit-sections-insert-stack-rows
        test-stack-render--rows "main"
        (lambda (row)
-         (insert (format "      commit for %s\n" (cdr (assq 'name row)))))))
-    (should-not (string-match-p "commit for" (buffer-string)))
+         (magit-insert-section (shipit-stack-layer-detail)
+           (magit-insert-heading
+            (format "      commit for %s" (cdr (assq 'name row))))))))
+    (should (string-match-p "commit for layer-three" (buffer-string)))
+    (should (string-match-p "commit for layer-one" (buffer-string)))
     (let ((layers (oref magit-root-section children)))
       (should (equal 3 (length layers)))
-      (should (seq-every-p (lambda (l) (oref l washer)) layers))
-      ;; Opening the top layer is what magit does on expand.
-      (goto-char (point-max))
-      (funcall (oref (car layers) washer))
-      (should (string-match-p "commit for layer-three" (buffer-string)))
-      (should-not (string-match-p "commit for layer-one" (buffer-string))))))
+      (dolist (layer layers)
+        (should (oref layer children))
+        (dolist (child (oref layer children))
+          (should (eq layer (oref child parent)))
+          (should-not (eq magit-root-section (oref child parent))))))))
 
 (provide 'test-shipit-stack-render)
 ;;; test-shipit-stack-render.el ends here

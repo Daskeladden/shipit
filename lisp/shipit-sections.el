@@ -413,8 +413,14 @@ which is where the commits that layer adds belong."
       ;; requests means carrying enough to open the one named on it.
       (let ((props (cdr (assq 'props row))))
         (when props (add-text-properties start (point) props))))
+    ;; Inserted now, not deferred.  A deferred body runs as a magit
+    ;; washer, and a section created inside one does not nest under the
+    ;; layer the way it does here; the tree ended up wrong and
+    ;; collapsing reached for the root.  A layer's body is a few lines
+    ;; of git output, so building it up front costs nothing worth
+    ;; having.  The layer still starts collapsed.
     (when body-fn
-      (magit-insert-section-body (funcall body-fn row)))))
+      (funcall body-fn row))))
 
 (defun shipit-sections-insert-stack-rows (rows base &optional body-fn)
   "Insert ROWS as a stack over BASE, top of the stack first.
@@ -423,8 +429,7 @@ shown reversed so the picture matches the word stack.  Each row is an
 alist of `label\=', `name\=', `extra\=', `current\=' and an optional
 `note\=', plus optional `props\=' applied to its line.  Each row
 becomes its own section, so it can be expanded and stepped between.
-BODY-FN, when given, fills those bodies; magit holds it until the
-layer is opened, so a deep stack costs nothing to draw."
+BODY-FN, when given, fills those bodies as the rows are drawn."
   (let ((width (shipit-sections--stack-name-width rows)))
     (dolist (row (reverse rows))
       (shipit-sections--insert-stack-row row width body-fn))

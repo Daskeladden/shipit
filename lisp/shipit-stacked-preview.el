@@ -46,6 +46,8 @@
 ;; require, so the two buffers stay independent of one another.
 (declare-function shipit-preview-branch "shipit-preview"
                   (repo branch base-ref &rest keys))
+(declare-function shipit-open-pr-buffer "shipit-buffer"
+                  (pr-number &optional repo backend-id backend-config))
 
 (declare-function shipit--insert-processed-commit-section "shipit-pr-sections")
 
@@ -290,7 +292,7 @@ marks the newest end of the line of commits."
                    width))))
 
 (defconst shipit-stacked-preview--key-columns
-  '((("RET" . "describe & submit") ("s" . "divide here") ("u" . "undo"))
+  '((("RET" . "open layer") ("s" . "divide here") ("u" . "undo"))
     (("c" . "create branches") ("P" . "push") ("R" . "register stack"))
     (("g" . "refresh") ("q" . "quit")))
   "The keys this buffer offers, a list per column.
@@ -412,23 +414,30 @@ this can be run again after dividing differently."
     (message "shipit: %d branch%s created" made (if (= made 1) "" "es"))))
 
 (defun shipit-stacked-preview-visit-layer ()
-  "Describe and submit the layer at point as a pull request.
-Hands it to the ordinary preview -- a layer is a pull request like any
-other, one whose base is the layer below -- and comes back here once it
-has been submitted or abandoned, so the list shows what it became.  The
-layer does not have to be checked out for this."
+  "Open the layer at point.
+A layer that has a pull request opens it.  The preview describes one
+that does not have it yet, and offering it for a layer already
+submitted would be offering to make a second.
+
+Describing hands the layer to the ordinary preview -- a layer is a pull
+request like any other, one whose base is the layer below -- and comes
+back here once it has been submitted or abandoned, so the list shows
+what it became.  The layer does not have to be checked out for this."
   (interactive)
-  (require 'shipit-preview)
   (let* ((layer (shipit-stacked-preview--layer-at-point))
-         (branch (shipit-stacked-preview--require-branch layer)))
-    (shipit-stacked-preview--refuse-when-broken layer)
-    (shipit-stacked-preview--refuse-when-base-is-absent layer)
-    (shipit-preview-branch shipit-stacked-preview--repo branch
-                           (shipit-stacked-preview--base-of layer)
-                           :tip branch
-                           :stacked t
-                           :on-done (shipit-stacked-preview--return-to
-                                     (current-buffer) branch))))
+         (branch (shipit-stacked-preview--require-branch layer))
+         (number (shipit-stacked-preview--pr-number branch)))
+    (if number
+        (shipit-open-pr-buffer number shipit-stacked-preview--repo)
+      (require 'shipit-preview)
+      (shipit-stacked-preview--refuse-when-broken layer)
+      (shipit-stacked-preview--refuse-when-base-is-absent layer)
+      (shipit-preview-branch shipit-stacked-preview--repo branch
+                             (shipit-stacked-preview--base-of layer)
+                             :tip branch
+                             :stacked t
+                             :on-done (shipit-stacked-preview--return-to
+                                       (current-buffer) branch)))))
 
 (defun shipit-stacked-preview--return-to (buffer branch)
   "Return a function that brings BUFFER up to date and shows it again.

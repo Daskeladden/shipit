@@ -220,6 +220,8 @@ ending at that branch rather than at HEAD, and with a way back."
                 ((symbol-function 'shipit-stacked-preview--layer-at-point)
                  (lambda () (nth 1 layers)))
                 ((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+                ((symbol-function 'shipit-stacked-preview--pr-number)
+                 (lambda (_branch) nil))
                 ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
                  (lambda (_layer) nil))
                 ((symbol-function 'shipit-preview-branch)
@@ -514,6 +516,32 @@ true."
                 ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
         (funcall (shipit-stacked-preview--return-to (current-buffer) "two") 42)
         (should (equal '("owner/repo" "two") forgotten))))))
+
+(ert-deftest test-shipit-stacked-preview-a-submitted-layer-opens-its-pr ()
+  "GIVEN a layer that has already been submitted
+WHEN it is opened
+THEN its pull request is shown rather than a preview of one.  Offering
+to describe a layer that has a pull request is offering to make a
+second."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/demo")
+    (let ((layers (test-stacked--layers "one"))
+          (opened nil)
+          (previewed nil))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--layer-at-point)
+                 (lambda () (car layers)))
+                ((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+                ((symbol-function 'shipit-stacked-preview--pr-number)
+                 (lambda (_branch) 100))
+                ((symbol-function 'shipit-open-pr-buffer)
+                 (lambda (number repo) (setq opened (list number repo))))
+                ((symbol-function 'shipit-preview-branch)
+                 (lambda (&rest _) (setq previewed t))))
+        (shipit-stacked-preview-visit-layer)
+        (should (equal '(100 "owner/demo") opened))
+        (should-not previewed)))))
 
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

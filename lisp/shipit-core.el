@@ -374,6 +374,37 @@ set-head'); falls back to \"main\" when unset."
         "main"
       result)))
 
+(defun shipit--branch-rev (ref)
+  "Return the commit REF resolves to here, or nil when it does not exist."
+  (with-temp-buffer
+    (when (zerop (call-process "git" nil t nil "rev-parse" "--verify" "-q" ref))
+      (string-trim (buffer-string)))))
+
+(defun shipit--remote-branch-rev (branch)
+  "Return the commit origin holds for BRANCH, asking the remote itself.
+The tracking ref is not asked: it says what was true when it was last
+fetched, and the question here is what the remote has now."
+  (with-temp-buffer
+    (when (zerop (call-process "git" nil t nil "ls-remote" "origin"
+                               (format "refs/heads/%s" branch)))
+      (car (split-string (string-trim (buffer-string)) "[ \t]" t)))))
+
+(defun shipit--branch-arrived-p (branch args)
+  "Return non-nil when origin holds BRANCH at the commit it is on here.
+Asked after git has reported a failure.  A push can move the branch and
+still fail on something after it -- setting the upstream, a hook\='s exit
+status -- and reporting that as a failure sends the user looking for a
+push that in fact happened.  In a stack it is worse than misleading: it
+stops every layer above.
+
+A dry run is never rescued this way.  It changes nothing, so a branch
+already sitting at the right commit would make any failure look like a
+success."
+  (and (not (member "--dry-run" args))
+       (let ((here (shipit--branch-rev branch))
+             (there (shipit--remote-branch-rev branch)))
+         (and here there (equal here there)))))
+
 (defun shipit--push-branch (branch &optional args)
   "Push BRANCH to origin with ARGS, setting upstream tracking.
 Return t when git exits successfully, nil otherwise.  Success is
@@ -387,13 +418,18 @@ request for, and preparing a stack pushes the layers."
   (with-temp-buffer
     (let ((exit (apply #'call-process "git" nil t nil
                        (append (list "push" "-u") args (list "origin" branch)))))
-      (if (zerop exit)
-          (progn
-            (message "Branch %s pushed to origin" branch)
-            t)
+      (cond
+       ((zerop exit)
+        (message "Branch %s pushed to origin" branch)
+        t)
+       ((shipit--branch-arrived-p branch args)
+        (message "git failed pushing %s but origin has it: %s"
+                 branch (string-trim (buffer-string)))
+        t)
+       (t
         (message "Pushing %s failed: %s" branch
                  (string-trim (buffer-string)))
-        nil))))
+        nil)))))
 
 (defun shipit--commits-in-range (&optional range)
   "Return the commits in RANGE as plists, oldest first.

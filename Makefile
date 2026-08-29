@@ -61,6 +61,7 @@ test-unit: compile
 		-l test/test-pr-approval-endpoint.el \
 		-l test/test-shipit-pr-stack.el \
 		-l test/test-shipit-stack.el \
+		-l test/test-shipit-push.el \
 		-l test/test-shipit-stack-plan.el \
 		-l test/test-shipit-stacked-preview.el \
 		-l test/test-shipit-commit-files-local.el \

@@ -41,7 +41,8 @@
 
 ;; Ensure magit-section macros are available at compile time
 (eval-when-compile
-  (require 'magit-section))
+  (require 'magit-section)
+(declare-function magit-git-lines "magit-git"))
 
 ;; Also require at runtime to ensure macros and functions are available
 (require 'magit-section)
@@ -4811,19 +4812,50 @@ SECTION is the magit section object that will contain the files."
 
 (add-hook 'post-command-hook #'shipit--check-section-expansion)
 
+(defun shipit--commit-files-from-git (commit-sha)
+  "Return the files COMMIT-SHA changed, read from the repository.
+Nil when the commit is not here.  Counts come from `--numstat\=' and
+the status letter from `--name-status\=', which are two reads of the
+same commit rather than one because git will not print both at once."
+  (let ((numstat (magit-git-lines "show" "--format=" "--numstat" commit-sha))
+        (statuses (magit-git-lines "show" "--format=" "--name-status" commit-sha)))
+    (when numstat
+      (let ((status-of (make-hash-table :test 'equal)))
+        (dolist (line statuses)
+          (let ((parts (split-string line "\t" t)))
+            (when (cdr parts)
+              (puthash (car (last parts))
+                       (pcase (substring (car parts) 0 1)
+                         ("A" "added") ("D" "removed") ("R" "renamed") (_ "modified"))
+                       status-of))))
+        (delq nil
+              (mapcar (lambda (line)
+                        (let ((parts (split-string line "\t" t)))
+                          (when (cddr parts)
+                            (let ((name (nth 2 parts)))
+                              `((filename . ,name)
+                                (status . ,(or (gethash name status-of) "modified"))
+                                ;; A binary file reports `-' for both.
+                                (additions . ,(or (string-to-number (nth 0 parts)) 0))
+                                (deletions . ,(or (string-to-number (nth 1 parts)) 0)))))))
+                      numstat))))))
+
 (defun shipit--fetch-commit-files (repo commit-sha)
   "Fetch files changed in a specific commit.
 REPO is the repo string (owner/name).
 COMMIT-SHA is the commit SHA.
 Returns a list of file objects with filename, status, additions, deletions.
-Dispatches to the active PR backend's :fetch-commit."
+Dispatches to the active PR backend\='s :fetch-commit, and falls back to
+the repository when that has nothing to say.  A commit that has not
+been pushed is unknown to the forge, and those are exactly the commits
+one reads when preparing a stack."
   (let* ((resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
          (fetch-fn (plist-get backend :fetch-commit))
-         (response (funcall fetch-fn config commit-sha)))
-    (when response
-      (cdr (assq 'files response)))))
+         (response (and fetch-fn (funcall fetch-fn config commit-sha))))
+    (or (cdr (assq 'files response))
+        (shipit--commit-files-from-git commit-sha))))
 
 (defun shipit--handle-commit-files-section-visibility-changed (section visible)
   "Handle visibility change for commit-files section.

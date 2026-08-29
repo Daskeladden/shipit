@@ -1,7 +1,12 @@
 ;;; test-shipit-requires.el --- Every file requires what it calls -*- lexical-binding: t; -*-
 
 ;;; Commentary:
-;; A file that calls a shipit function from another module without
+;; What compiling each source file on its own reveals.  Two faults show
+;; up there and nowhere else, and both are checked here from a single
+;; compile pass.
+;;
+;; The first is a missing require.  A file that calls a shipit function
+;; from another module without
 ;; requiring it works for as long as something else happens to load
 ;; that module first.  It fails the moment load order changes: a fresh
 ;; session, a reload, a test that pulls in one module on its own.
@@ -16,6 +21,10 @@
 ;; `declare-function', which is the deliberate way to reach across a
 ;; layer without a require.  Either is a considered choice; neither is
 ;; an accident.
+;;
+;; The second is a call whose argument count cannot match the function
+;; it names.  That one raises the moment it runs, and the compiler says
+;; so every build; four were sitting unread in this output.
 
 ;;; Code:
 
@@ -66,9 +75,21 @@ the one the accident of load order hides."
       (setq start (match-end 0)))
     (delete-dups found)))
 
+(defvar test-requires--output-cache nil
+  "Compiler output per source file.  Compiling each one alone is the
+expensive part, and every check here asks a different question of the
+same output, so it is done once.")
+
+(defun test-requires--outputs ()
+  "Return an alist of source file to its isolated compiler output."
+  (or test-requires--output-cache
+      (setq test-requires--output-cache
+            (mapcar (lambda (file)
+                      (cons file (test-requires--compile-isolated file)))
+                    (test-requires--source-files)))))
+
 (defvar test-requires--cache nil
-  "Memoised scan.  Compiling every source alone is the expensive part,
-and both tests ask the same question of it.")
+  "Memoised list of unmet calls.")
 
 (defun test-requires--current ()
   "Return every unmet shipit call across the sources, sorted."
@@ -80,9 +101,23 @@ and both tests ask the same question of it.")
   (sort (seq-mapcat
          (lambda (file)
            (test-requires--unknown-in
-            (test-requires--compile-isolated file) file))
+            (cdr (assoc file (test-requires--outputs))) file))
          (test-requires--source-files))
         #'string<))
+
+(defun test-requires--arity-in (output file)
+  "Return \"FILE:WARNING\" for each arity mismatch OUTPUT reports.
+Matched line by line rather than with one regexp over the whole
+output: the wording varies (\"accepts only\" against \"requires\") and
+\"argument\" is singular for one, which is easy to get wrong and gives
+a check that quietly matches nothing."
+  (ignore file)                         ; the warning names it already
+  (delete-dups
+   (delq nil
+         (mapcar (lambda (line)
+                   (when (string-match-p "called with [0-9]+ arguments?, but" line)
+                     (string-trim line)))
+                 (split-string output "\n" t)))))
 
 (defun test-requires--baseline ()
   "Return the recorded unmet calls that predate this check."
@@ -119,6 +154,28 @@ repaired instead of outliving the problem."
          (fixed (seq-remove (lambda (entry) (member entry current))
                             (test-requires--baseline))))
     (should (equal '() fixed))))
+
+(ert-deftest test-shipit-no-arity-mismatches ()
+  "GIVEN every shipit source compiled alone
+WHEN the compiler reports a call whose argument count cannot match the
+function it names
+THEN there are none.
+
+Such a call cannot work.  It raises `wrong-number-of-arguments\=' the
+moment it runs, and the compiler has always said so; four were sitting
+in this output unread, one of them on the path that draws a comment on
+a file.  Two came from a paren in the wrong place, which is what an
+argument going missing usually turns out to be.
+
+There is no baseline.  Every one of these is a bug, so the list is
+empty and must stay empty."
+  (let ((mismatches
+         (sort (seq-mapcat
+                (lambda (entry)
+                  (test-requires--arity-in (cdr entry) (car entry)))
+                (test-requires--outputs))
+               #'string<)))
+    (should (equal '() mismatches))))
 
 (provide 'test-shipit-requires)
 ;;; test-shipit-requires.el ends here

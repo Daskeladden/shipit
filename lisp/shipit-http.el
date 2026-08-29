@@ -1627,8 +1627,8 @@ PERFORMANCE: Caches team memberships upfront to avoid repeated API calls."
            (if file-satisfied
                (setq files-satisfied (1+ files-satisfied))
              (setq all-satisfied nil)
-             (shipit--debug-log "  ❌ File '%s' ownership NOT satisfied: %S" file-path required-owners))))
-               file-ownership-map)
+             (shipit--debug-log "  ❌ File '%s' ownership NOT satisfied: %S" file-path required-owners)))
+               file-ownership-map))
 
       (shipit--debug-log "File ownership summary: %d/%d files satisfied, overall: %s"
                          files-satisfied files-checked all-satisfied)

@@ -19,103 +19,40 @@
 (require 'cl-lib)
 (require 'shipit-stacked-preview)
 (require 'shipit-preview)
-
-(defvar test-flow--prs nil "Branch to pull request number, as the stand-in sees it.")
-(defvar test-flow--created nil "Pull requests created, newest first, as (HEAD BASE TITLE).")
-(defvar test-flow--stack nil "The stack the stand-in holds, or nil.")
-
-(defun test-flow--git (&rest args)
-  "Run git with ARGS in `default-directory', erroring on failure."
-  (with-temp-buffer
-    (let ((exit (apply #'call-process "git" nil t nil args)))
-      (unless (zerop exit)
-        (error "git %s failed: %s" (string-join args " ") (buffer-string)))
-      (string-trim (buffer-string)))))
-
-(defun test-flow--commit (message)
-  "Add one file and commit it with MESSAGE."
-  (let ((file (format "%s.txt" (replace-regexp-in-string "[^a-z0-9]" "-" message))))
-    (with-temp-file (expand-file-name file default-directory) (insert message))
-    (test-flow--git "add" file)
-    (test-flow--git "commit" "-q" "-m" message)))
-
-(defun test-flow--entries (numbers)
-  "Return NUMBERS as the entries of a stack."
-  (mapcar (lambda (number) (list (cons 'number number))) numbers))
-
-(defun test-flow--backend ()
-  "Return a stand-in for the remote, recording what it is asked to do."
-  (list
-   :fetch-pr-for-branch (lambda (_config branch) (cdr (assoc branch test-flow--prs)))
-   :create-pr
-   (lambda (_config title _body base head _draft)
-     (let ((number (+ 100 (length test-flow--created))))
-       (push (list head base title) test-flow--created)
-       (push (cons head number) test-flow--prs)
-       (list (cons 'number number) (cons 'html_url "https://example.invalid/pr"))))
-   :fetch-stack
-   (lambda (_config number &optional _pr-data)
-     (when (and test-flow--stack
-                (member number (mapcar (lambda (e) (cdr (assq 'number e)))
-                                       (cdr (assq 'entries test-flow--stack)))))
-       test-flow--stack))
-   :create-stack
-   (lambda (_config numbers)
-     (setq test-flow--stack
-           (list (cons 'number 7) (cons 'entries (test-flow--entries numbers)))))
-   :add-to-stack
-   (lambda (_config _stack number)
-     (setq test-flow--stack
-           (list (cons 'number 7)
-                 (cons 'entries (append (cdr (assq 'entries test-flow--stack))
-                                        (test-flow--entries (list number)))))))))
+(require 'shipit-sandbox)
 
 (defmacro test-flow--with-repo (&rest body)
-  "Run BODY in a repository with commits to divide and a bare origin."
+  "Run BODY in a sandbox repository, with the sandbox standing in for the
+remote.  The same repository the sandbox is tried by hand in, so what
+runs here and what a user does are the same thing."
   (declare (indent 0))
   `(let* ((root (make-temp-file "shipit-flow-test-" t))
-          (remote (expand-file-name "origin.git" root))
-          (work (expand-file-name "work" root))
-          (test-flow--prs nil)
-          (test-flow--created nil)
-          (test-flow--stack nil))
+          (shipit-sandbox-prs nil)
+          (shipit-sandbox-created nil)
+          (shipit-sandbox-stack nil))
      (unwind-protect
-         (progn
-           (make-directory work)
-           (let ((default-directory (file-name-as-directory root)))
-             (test-flow--git "-c" "init.defaultBranch=main" "init" "-q" "--bare" remote))
-           (let ((default-directory (file-name-as-directory work)))
-             (test-flow--git "-c" "init.defaultBranch=main" "init" "-q")
-             (test-flow--git "config" "user.email" "test@example.invalid")
-             (test-flow--git "config" "user.name" "Test")
-             (test-flow--git "remote" "add" "origin" remote)
-             (test-flow--commit "base")
-             (test-flow--git "push" "-q" "-u" "origin" "main")
-             (test-flow--git "checkout" "-q" "-b" "work")
-             (test-flow--commit "parser: read the header")
-             (test-flow--commit "parser: read the body")
-             (test-flow--commit "writer: emit the header")
-             (test-flow--commit "writer: emit the body")
-             (cl-letf (((symbol-function 'shipit--get-repo-from-remote)
-                        (lambda (&rest _) "owner/demo"))
-                       ((symbol-function 'shipit-pr--resolve-for-repo)
-                        (lambda (repo) (cons (test-flow--backend) (list :repo repo))))
-                       ((symbol-function 'shipit-pr--get-backend)
-                        (lambda (&rest _) (test-flow--backend)))
-                       ((symbol-function 'shipit--upstream-default-branch)
-                        (lambda (&rest _) "main"))
-                       ((symbol-function 'redisplay) (lambda (&rest _) t))
-                       ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
-                       ((symbol-function 'switch-to-buffer) (lambda (&rest _) nil))
-                       ((symbol-function 'y-or-n-p) (lambda (&rest _) nil))
-                       ((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
-                       ((symbol-function 'shipit-preview--get-default-assignees)
-                        (lambda (&rest _) nil))
-                       ((symbol-function 'shipit-preview--find-pr-for-branch)
-                        (lambda (&rest _) nil))
-                       ((symbol-function 'shipit-preview--check-existing-pr)
-                        (lambda (&rest _) nil)))
-               ,@body)))
+         (let ((default-directory (file-name-as-directory
+                                   (shipit-sandbox-build root))))
+           (cl-letf (((symbol-function 'shipit--get-repo-from-remote)
+                      (lambda (&rest _) shipit-sandbox-repo))
+                     ((symbol-function 'shipit-pr--resolve-for-repo)
+                      (lambda (repo) (cons (shipit-sandbox-backend) (list :repo repo))))
+                     ((symbol-function 'shipit-pr--get-backend)
+                      (lambda (&rest _) (shipit-sandbox-backend)))
+                     ((symbol-function 'shipit--upstream-default-branch)
+                      (lambda (&rest _) "main"))
+                     ((symbol-function 'redisplay) (lambda (&rest _) t))
+                     ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+                     ((symbol-function 'switch-to-buffer) (lambda (&rest _) nil))
+                     ((symbol-function 'y-or-n-p) (lambda (&rest _) nil))
+                     ((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                     ((symbol-function 'shipit-preview--get-default-assignees)
+                      (lambda (&rest _) nil))
+                     ((symbol-function 'shipit-preview--find-pr-for-branch)
+                      (lambda (&rest _) nil))
+                     ((symbol-function 'shipit-preview--check-existing-pr)
+                      (lambda (&rest _) nil)))
+             ,@body))
        (delete-directory root t))))
 
 (defun test-flow--goto-layer (branch)
@@ -129,7 +66,7 @@
   "Submit the layer of BRANCH the way pressing RET on it does."
   (test-flow--goto-layer branch)
   (shipit-stacked-preview-visit-layer)
-  (with-current-buffer (shipit-preview--buffer-name "owner/demo" branch)
+  (with-current-buffer (shipit-preview--buffer-name shipit-sandbox-repo branch)
     (setq shipit-preview--title (format "%s title" branch)
           shipit-preview--description "why this layer exists")
     (shipit-preview--create-pr)))
@@ -161,16 +98,16 @@ git half real and only the remote's API standing in."
         ;; ref of ours that happens to name one
         (should (equal (list (nth 0 branches) "main"
                              (format "%s title" (nth 0 branches)))
-                       (car test-flow--created)))
-        (should-not test-flow--stack)
+                       (car shipit-sandbox-created)))
+        (should-not shipit-sandbox-stack)
 
         (test-flow--submit (nth 1 branches))
         (should (equal (list (nth 1 branches) (nth 0 branches)
                              (format "%s title" (nth 1 branches)))
-                       (car test-flow--created)))
+                       (car shipit-sandbox-created)))
         (should (equal '(100 101)
                        (mapcar (lambda (e) (cdr (assq 'number e)))
-                               (cdr (assq 'entries test-flow--stack)))))
+                               (cdr (assq 'entries shipit-sandbox-stack)))))
 
         ;; and the rows say so, the remembered answer that these
         ;; branches had no pull request having been dropped

@@ -19,6 +19,24 @@ The codebase follows a layered architecture:
 - **UI**: `lisp/shipit-buffer.el`, `shipit-pr-sections.el`, `shipit-notifications-buffer.el`, etc.
 - **Rendering**: `lisp/shipit-render.el` — markdown, SVG icons, avatars
 
+### Adding a New Source File — Two Registrations
+
+A new file under `lisp/` is not picked up by being required.  It must
+also be registered, or it works from a cold start and breaks on
+reload:
+
+1. **`shipit-dev-utils.el`** — add it to the `load-files` list, in
+   dependency order.  `shipit-reload` reloads only the files it
+   names.  A file that is merely required by another loads once and
+   then never reloads from source, so edits to it silently do
+   nothing and a genuinely new file raises `void-function`.
+   `shipit-init.el` is the one deliberate exception; it is invoked as
+   a function later in the reload.
+2. **`Makefile`** — a new `test/` file must be added to the
+   `test-unit` target, or it never runs.
+
+`test-shipit-file-registration.el` guards both.
+
 ### Dependency Layering — UI Files Must Not Require Each Other
 
 ```

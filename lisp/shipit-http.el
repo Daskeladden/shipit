@@ -2830,17 +2830,25 @@ Finds PRs where BRANCH is the head (source) branch."
   (when (and branch (shipit--github-token))
     (shipit--ensure-cache-initialized)  ; Ensure cache is properly initialized
     (let* ((repo (or repo (shipit--get-repo-from-remote)))
-           (cache-key (format "%s:%s" repo branch)))
+           (cache-key (format "%s:%s" repo branch))
+           ;; A branch with no pull request caches nil, and nil is also
+           ;; what a miss returns, so the stored answer could never be
+           ;; read back and every lookup went to the network.  Ask for a
+           ;; marker instead, which nothing else can be.
+           (cached (gethash cache-key shipit--cached-branch-prs
+                            'shipit--branch-not-looked-up)))
       (when repo
         ;; Check cache first - try both branch-based and PR-specific keys
         (shipit--debug-log "Checking cache for branch-key: %s" cache-key)
-        (or (let ((cached-pr (gethash cache-key shipit--cached-branch-prs)))
-              (when cached-pr
-                (shipit--debug-log "Found cached PR #%s for branch %s (commits type: %s)"
-                                   (cdr (assq 'number cached-pr))
-                                   branch
-                                   (type-of (cdr (assq 'commits cached-pr)))))
-              cached-pr)
+        (if (not (eq cached 'shipit--branch-not-looked-up))
+            (progn
+              (if cached
+                  (shipit--debug-log "Found cached PR #%s for branch %s (commits type: %s)"
+                                     (cdr (assq 'number cached))
+                                     branch
+                                     (type-of (cdr (assq 'commits cached))))
+                (shipit--debug-log "Cached: branch %s has no pull request" branch))
+              cached)
             ;; DON'T return displayed PR if it doesn't belong to the requested branch
             ;; This was causing cache corruption by returning wrong PRs for branch lookups
             ;; If not in cache, fetch from API

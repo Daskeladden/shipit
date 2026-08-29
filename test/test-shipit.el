@@ -99,6 +99,33 @@
                  ""))))
     (should (string= (shipit--get-repo-from-remote) "owner/repo"))))
 
+(ert-deftest test-shipit-get-pr-for-branch-remembers-that-there-is-none ()
+  "GIVEN a branch with no pull request
+WHEN it is looked up twice
+THEN the API is asked once.
+
+A nil result is cached, but nil is also what a cache miss looks like,
+so the stored answer could never be read back and every lookup went to
+the network.  A branch without a pull request is the common case, and
+this is called from an idle timer whenever a magit diff appears."
+  (let ((searches 0)
+        (shipit-github-token "test-token")
+        (shipit--cached-branch-prs (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'shipit--get-repo-from-remote)
+               (lambda () "owner/repo"))
+              ((symbol-function 'shipit--ensure-cache-initialized) #'ignore)
+              ((symbol-function 'shipit-gh-etag-get-json-with-refresh-cache)
+               (lambda (&rest _) (cl-incf searches) (list :json nil)))
+              ((symbol-function 'shipit--api-request)
+               (lambda (&rest _) (cl-incf searches) nil)))
+      (should-not (shipit-get-pr-for-branch "no-pr-here" "owner/repo"))
+      ;; One lookup tries more than one head format, so what matters is
+      ;; that a second lookup adds nothing at all.
+      (let ((after-first searches))
+        (should (> after-first 0))
+        (should-not (shipit-get-pr-for-branch "no-pr-here" "owner/repo"))
+        (should (equal after-first searches))))))
+
 ;;; Caching Tests
 
 (ert-deftest test-shipit--current-pr-data-caching ()

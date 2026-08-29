@@ -65,48 +65,26 @@
 
 ;;; Section type definitions
 
-(defun repo-root (&rest _args)
-  "Magit section identifier for repo root.")
 (put 'repo-root 'magit-section t)
 
-(defun repo-header (&rest _args)
-  "Magit section identifier for repo header.")
 (put 'repo-header 'magit-section t)
 
-(defun repo-readme (&rest _args)
-  "Magit section identifier for repo README.")
 (put 'repo-readme 'magit-section t)
 
-(defun repo-languages (&rest _args)
-  "Magit section identifier for repo languages.")
 (put 'repo-languages 'magit-section t)
 
-(defun repo-prs (&rest _args)
-  "Magit section identifier for repo PRs.")
 (put 'repo-prs 'magit-section t)
 
-(defun repo-prs-open (&rest _args)
-  "Magit section identifier for open PRs.")
 (put 'repo-prs-open 'magit-section t)
 
-(defun repo-prs-closed (&rest _args)
-  "Magit section identifier for closed PRs.")
 (put 'repo-prs-closed 'magit-section t)
 
-(defun repo-issues (&rest _args)
-  "Magit section identifier for repo issues.")
 (put 'repo-issues 'magit-section t)
 
-(defun repo-issues-open (&rest _args)
-  "Magit section identifier for open issues.")
 (put 'repo-issues-open 'magit-section t)
 
-(defun repo-issues-closed (&rest _args)
-  "Magit section identifier for closed issues.")
 (put 'repo-issues-closed 'magit-section t)
 
-(defun repo-discussions (&rest _args)
-  "Magit section identifier for repo discussions.")
 (put 'repo-discussions 'magit-section t)
 
 ;;; Buffer-local variables

@@ -47,40 +47,22 @@
 (require 'magit-section)
 
 ;; Magit section types
-(defun actions-list-root (&rest _args)
-  "Magit section identifier for actions list root.")
 (put 'actions-list-root 'magit-section t)
 
-(defun actions-list-workflows (&rest _args)
-  "Magit section identifier for actions list workflows.")
 (put 'actions-list-workflows 'magit-section t)
 
-(defun actions-list-workflow (&rest _args)
-  "Magit section identifier for actions list workflow.")
 (put 'actions-list-workflow 'magit-section t)
 
-(defun actions-list-run (&rest _args)
-  "Magit section identifier for actions list run.")
 (put 'actions-list-run 'magit-section t)
 
-(defun actions-list-run-job (&rest _args)
-  "Magit section identifier for actions list run job.")
 (put 'actions-list-run-job 'magit-section t)
 
-(defun actions-list-runners (&rest _args)
-  "Magit section identifier for actions list runners.")
 (put 'actions-list-runners 'magit-section t)
 
-(defun actions-list-runner-group (&rest _args)
-  "Magit section identifier for actions list runner group.")
 (put 'actions-list-runner-group 'magit-section t)
 
-(defun actions-list-runner (&rest _args)
-  "Magit section identifier for actions list runner.")
 (put 'actions-list-runner 'magit-section t)
 
-(defun actions-list-run-summary (&rest _args)
-  "Magit section identifier for run summary in actions list.")
 (put 'actions-list-run-summary 'magit-section t)
 
 ;;; Customization

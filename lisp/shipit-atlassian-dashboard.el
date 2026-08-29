@@ -49,48 +49,26 @@
 
 ;;; Section type declarations
 
-(defun atlassian-dashboard (&rest _args)
-  "Magit section identifier for Atlassian dashboard root.")
 (put 'atlassian-dashboard 'magit-section t)
 
-(defun atlassian-my-issues (&rest _args)
-  "Magit section identifier for My Open Issues.")
 (put 'atlassian-my-issues 'magit-section t)
 
-(defun atlassian-my-issues-project (&rest _args)
-  "Magit section identifier for My Open Issues project group.")
 (put 'atlassian-my-issues-project 'magit-section t)
 
-(defun atlassian-whats-next (&rest _args)
-  "Magit section identifier for What's Next.")
 (put 'atlassian-whats-next 'magit-section t)
 
-(defun atlassian-boards (&rest _args)
-  "Magit section identifier for the Boards wrapper section.")
 (put 'atlassian-boards 'magit-section t)
 
-(defun atlassian-board (&rest _args)
-  "Magit section identifier for one Kanban board.")
 (put 'atlassian-board 'magit-section t)
 
-(defun atlassian-board-column (&rest _args)
-  "Magit section identifier for a Kanban Board column.")
 (put 'atlassian-board-column 'magit-section t)
 
-(defun atlassian-frequently-visited (&rest _args)
-  "Magit section identifier for Frequently Visited.")
 (put 'atlassian-frequently-visited 'magit-section t)
 
-(defun atlassian-issues (&rest _args)
-  "Magit section identifier for Issues (all project issues).")
 (put 'atlassian-issues 'magit-section t)
 
-(defun atlassian-issues-project-group (&rest _args)
-  "Magit section identifier for an Issues project group.")
 (put 'atlassian-issues-project-group 'magit-section t)
 
-(defun atlassian-issue (&rest _args)
-  "Magit section identifier for a single issue line.")
 (put 'atlassian-issue 'magit-section t)
 
 ;;; Customization

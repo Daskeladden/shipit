@@ -135,6 +135,15 @@ their backend file, not in common/shared files.
 
 ## Common Patterns
 
+### Magit Section Types — Register, Don't Stub
+
+A section type needs `(put 'name 'magit-section t)` and nothing else.
+Do not add a stub `defun` alongside it.  A stub stops a missing
+`(require 'magit-section)` from signalling, but the section is still
+never created, so the failure resurfaces later as an `oset` on nil far
+from the cause.  `test-shipit-magit-requires` catches the missing
+require where it happens.
+
 ### Section Location — Use Text Properties, Not Pattern Matching
 
 Never use regex to find magit sections.  Section headings can have

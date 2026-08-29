@@ -2049,8 +2049,6 @@ marked but it stayed unread."
 
 ;;; Magit Section Definitions
 
-(defun pr-notification (&rest _args)
-  "Magit section identifier for individual PR notifications.")
 (put 'pr-notification 'magit-section t)
 
 ;;; Notification Section for Magit Status

@@ -237,29 +237,16 @@ GraphQL round-trip only happens once per session.  Cleared by
 `shipit-notifications-buffer-refresh-watched-repos-cache'.")
 
 ;; Section types
-(defun notification-entry (&rest _args)
-  "Magit section identifier for notification entries.")
 (put 'notification-entry 'magit-section t)
 
-(defun notification-snoozed-group (&rest _args)
-  "Magit section identifier for the collapsible snoozed-group footer.")
 (put 'notification-snoozed-group 'magit-section t)
 
-(defun notification-repo (&rest _args)
-  "Magit section identifier for the per-repo wrapper used when
-`shipit-notifications-buffer--group-by-repo' is non-nil.")
 (put 'notification-repo 'magit-section t)
 
-(defun notification-activity (&rest _args)
-  "Magit section identifier for notification activity timeline.")
 (put 'notification-activity 'magit-section t)
 
-(defun notification-jira-last-activity (&rest _args)
-  "Magit section identifier for the lazily-fetched Jira last-activity row.")
 (put 'notification-jira-last-activity 'magit-section t)
 
-(defun notification-description (&rest _args)
-  "Magit section identifier for notification description.")
 (put 'notification-description 'magit-section t)
 
 ;;; Keymap

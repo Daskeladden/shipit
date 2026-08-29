@@ -223,101 +223,58 @@ Used for preserving expansion state across refreshes."
     (shipit--restore-section-state-recursive child)))
 
 ;;; Magit Section Type Definitions
-;; These stub defuns + (put ... 'magit-section t) prevent "void function"
-;; errors when used with magit-insert-section.
+;; A section type is registered with (put ... 'magit-section t).  That
+;; is all magit reads; nothing calls the type as a function.
 ;;
-;; Three section types carry no stub: `shipit-pr', `shipit-comment' and
-;; `checks' are the names of real functions elsewhere -- opening a pull
-;; request, the comment command bound to `c', and the checks section
-;; builder.  Those load later and take the name, so a stub here never
-;; survived to catch anything.  Worse, if the fallback these guard
-;; against ever did fire for one of them it would call the real command
-;; rather than signal, which is why they are not re-added under these
-;; names.  `test-shipit-magit-requires' is what actually keeps the
-;; fallback from firing.
+;; Each of these used to carry a stub defun as well, to keep a file
+;; that expands `magit-insert-section' without requiring `magit-section'
+;; from signalling `void-function'.  That hid the fault rather than
+;; fixing it: without the macro the section object is never created, so
+;; the stub only moved the failure to a later `oset' on nil, reported as
+;; a wrong type argument somewhere unrelated.  The precise error was the
+;; useful one.  `test-shipit-magit-requires' fails on the missing
+;; require directly, which is where the problem is.
 
 (defun shipit-comments (&rest _args)
   "Magit section type for comment groups. Always visible."
   t)
 
 (put 'shipit-pr 'magit-section t)
-(defun shipit-description (&rest _args)
-  "Magit section identifier for PR descriptions.")
 (put 'shipit-description 'magit-section t)
-(defun shipit-reviews (&rest _args)
-  "Magit section identifier for PR reviews.")
 (put 'shipit-reviews 'magit-section t)
-(defun shipit-assignees (&rest _args)
-  "Magit section identifier for PR assignees.")
 (put 'shipit-assignees 'magit-section t)
 (put 'checks 'magit-section t)
-(defun comment-details (&rest _args)
-  "Magit section identifier for collapsible details blocks in comments.")
 (put 'comment-details 'magit-section t)
 
-(defun general-comments (&rest _args)
-  "Magit section identifier for general comments.")
 (put 'general-comments 'magit-section t)
-(defun general-comment (&rest _args)
-  "Magit section identifier for individual general comments.")
 (put 'general-comment 'magit-section t)
-(defun comment-thread (&rest _args)
-  "Magit section identifier for comment threads.")
 (put 'comment-thread 'magit-section t)
 
-(defun inline-comments (&rest _args)
-  "Magit section identifier for inline comments.")
 (put 'inline-comments 'magit-section t)
 
-(defun file-comments (&rest _args)
-  "Magit section identifier for file comments.")
 (put 'file-comments 'magit-section t)
-(defun notifications (&rest _args)
-  "Magit section identifier for notifications.")
 (put 'notifications 'magit-section t)
 
-(defun file-comments-outdated (&rest _args)
-  "Magit section identifier for outdated file comments.")
 (put 'file-comments-outdated 'magit-section t)
 
-(defun labels (&rest _args)
-  "Magit section identifier for PR labels.")
 (put 'labels 'magit-section t)
 
-(defun reviewers (&rest _args)
-  "Magit section identifier for PR reviewers.")
 (put 'reviewers 'magit-section t)
 
-(defun pr-commits (&rest _args)
-  "Magit section identifier for PR commits.")
 (put 'pr-commits 'magit-section t)
 
-(defun pr-files (&rest _args)
-  "Magit section identifier for PR files.")
 (put 'pr-files 'magit-section t)
 
-(defun pr-file (&rest _args)
-  "Magit section identifier for individual PR file.")
 (put 'pr-file 'magit-section t)
 
-(defun commit-files (&rest _args)
-  "Magit section identifier for commit files.")
 (put 'commit-files 'magit-section t)
 
-(defun commit-file (&rest _args)
-  "Magit section identifier for individual commit file.")
 (put 'commit-file 'magit-section t)
 
-(defun commit-full-message (&rest _args)
-  "Magit section identifier for commit full message.")
 (put 'commit-full-message 'magit-section t)
 
-(defun diff-hunk (&rest _args)
-  "Magit section identifier for diff hunks.")
 (put 'diff-hunk 'magit-section t)
 
-(defun inline-comment (&rest _args)
-  "Magit section identifier for inline comments.")
 (put 'inline-comment 'magit-section t)
 
 (defun shipit--find-files-section ()
@@ -411,8 +368,6 @@ errors out."
 
 ;;; Stack rendering
 
-(defun shipit-stack-layer (&rest _args)
-  "Magit section identifier for one layer of a stack.")
 (put 'shipit-stack-layer 'magit-section t)
 
 (defun shipit-sections--pad (text width)

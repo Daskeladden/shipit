@@ -212,40 +212,22 @@ fine the summary reads \"12, all passed\" (or \"all skipped\")."
        (t (shipit--get-check-status-icon nil nil "❓"))))))               ; Unknown = question mark
 
 ;; Define magit section types for checks
-(defun checks (&rest _args)
-  "Magit section identifier for PR checks.")
 (put 'checks 'magit-section t)
 
-(defun in-progress-checks (&rest _args)
-  "Magit section identifier for in-progress checks.")
 (put 'in-progress-checks 'magit-section t)
 
-(defun pending-checks (&rest _args)
-  "Magit section identifier for pending checks.")
 (put 'pending-checks 'magit-section t)
 
-(defun cancelled-checks (&rest _args)
-  "Magit section identifier for cancelled checks.")
 (put 'cancelled-checks 'magit-section t)
 
-(defun failing-checks (&rest _args)
-  "Magit section identifier for failing checks.")
 (put 'failing-checks 'magit-section t)
 
-(defun skipped-checks (&rest _args)
-  "Magit section identifier for skipped checks.")
 (put 'skipped-checks 'magit-section t)
 
-(defun successful-checks (&rest _args)
-  "Magit section identifier for successful checks.")
 (put 'successful-checks 'magit-section t)
 
-(defun workflow (&rest _args)
-  "Magit section identifier for workflow sections.")
 (put 'workflow 'magit-section t)
 
-(defun check-item (&rest _args)
-  "Magit section identifier for individual check items (jobs).")
 (put 'check-item 'magit-section t)
 
 ;;; Check item step/log expansion

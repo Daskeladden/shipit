@@ -158,20 +158,12 @@ Each function is called with SECTION. Return non-nil if handled.")
 
 ;;; Magit section type definitions
 
-(defun root (&rest _args)
-  "Magit section identifier for root section.")
 (put 'root 'magit-section t)
 
-(defun shipit-pr-buffer (&rest _args)
-  "Magit section identifier for PR buffer root.")
 (put 'shipit-pr-buffer 'magit-section t)
 
-(defun shipit-worktree-section (&rest _args)
-  "Magit section identifier for worktree section.")
 (put 'shipit-worktree-section 'magit-section t)
 
-(defun shipit-stack-section (&rest _args)
-  "Magit section identifier for the stacked pull request section.")
 (put 'shipit-stack-section 'magit-section t)
 
 ;;; Configuration

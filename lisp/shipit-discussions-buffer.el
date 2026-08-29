@@ -66,32 +66,18 @@
 
 ;;; Section type definitions
 
-(defun shipit-discussion (&rest _args)
-  "Magit section identifier for discussion root.")
 (put 'shipit-discussion 'magit-section t)
 
-(defun shipit-discussion-header (&rest _args)
-  "Magit section identifier for discussion header.")
 (put 'shipit-discussion-header 'magit-section t)
 
-(defun shipit-discussion-metadata (&rest _args)
-  "Magit section identifier for discussion metadata.")
 (put 'shipit-discussion-metadata 'magit-section t)
 
-(defun shipit-discussion-description (&rest _args)
-  "Magit section identifier for discussion description.")
 (put 'shipit-discussion-description 'magit-section t)
 
-(defun discussion-comments (&rest _args)
-  "Magit section identifier for discussion comments container.")
 (put 'discussion-comments 'magit-section t)
 
-(defun discussion-comment (&rest _args)
-  "Magit section identifier for individual discussion comment.")
 (put 'discussion-comment 'magit-section t)
 
-(defun discussion-reply (&rest _args)
-  "Magit section identifier for discussion reply.")
 (put 'discussion-reply 'magit-section t)
 
 ;;; Reaction and vote formatting

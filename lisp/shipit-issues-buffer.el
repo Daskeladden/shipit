@@ -101,32 +101,18 @@
 
 ;;; Section type definitions
 
-(defun shipit-issue (&rest _args)
-  "Magit section identifier for issue header.")
 (put 'shipit-issue 'magit-section t)
 
-(defun shipit-issue-description (&rest _args)
-  "Magit section identifier for issue description.")
 (put 'shipit-issue-description 'magit-section t)
 
-(defun shipit-issue-metadata (&rest _args)
-  "Magit section identifier for issue metadata.")
 (put 'shipit-issue-metadata 'magit-section t)
 
-(defun issue-activity (&rest _args)
-  "Magit section identifier for issue activity/changelog container.")
 (put 'issue-activity 'magit-section t)
 
-(defun issue-activity-event (&rest _args)
-  "Magit section identifier for individual activity event.")
 (put 'issue-activity-event 'magit-section t)
 
-(defun issue-comments (&rest _args)
-  "Magit section identifier for issue comments container.")
 (put 'issue-comments 'magit-section t)
 
-(defun issue-comment (&rest _args)
-  "Magit section identifier for individual issue comment.")
 (put 'issue-comment 'magit-section t)
 
 ;;; Buffer-local variables

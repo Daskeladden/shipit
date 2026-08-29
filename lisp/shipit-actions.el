@@ -49,32 +49,18 @@
 (require 'magit-section)
 
 ;; Magit section types
-(defun actions-root (&rest _args)
-  "Magit section identifier for actions root.")
 (put 'actions-root 'magit-section t)
 
-(defun actions-header (&rest _args)
-  "Magit section identifier for actions header.")
 (put 'actions-header 'magit-section t)
 
-(defun actions-job (&rest _args)
-  "Magit section identifier for actions job.")
 (put 'actions-job 'magit-section t)
 
-(defun actions-step (&rest _args)
-  "Magit section identifier for actions step.")
 (put 'actions-step 'magit-section t)
 
-(defun actions-step-log (&rest _args)
-  "Magit section identifier for actions step log.")
 (put 'actions-step-log 'magit-section t)
 
-(defun actions-log-group (&rest _args)
-  "Magit section identifier for collapsible log sub-group.")
 (put 'actions-log-group 'magit-section t)
 
-(defun actions-run-summary (&rest _args)
-  "Magit section identifier for run summary.")
 (put 'actions-run-summary 'magit-section t)
 
 ;;; Buffer-local state

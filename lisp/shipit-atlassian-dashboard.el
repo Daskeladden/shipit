@@ -371,14 +371,6 @@ column must not claim the arrival."
               (when issue (push issue acc))))))
       (nreverse acc))))
 
-(defun shipit-atlassian-dashboard--update-mode-line ()
-  "Reflect `shipit-atlassian-dashboard-edit-mode' in the mode line."
-  (setq mode-name
-        (if shipit-atlassian-dashboard-edit-mode
-            "Shipit-Atlassian:Edit"
-          "Shipit-Atlassian"))
-  (force-mode-line-update))
-
 (defun shipit-atlassian-dashboard-toggle-edit-mode ()
   "Toggle issue-transition edit mode in the dashboard buffer.
 While on, `M-n' / `M-p' on a board card stage a move to the

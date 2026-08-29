@@ -482,40 +482,72 @@ Add to ~/.authinfo.gpg: machine %s login <email> password <api-token>" host host
       (error "Jira backend requires :base-url in config"))
     (concat (string-trim-right base-url "/") path)))
 
+(defun shipit-issue-jira--goto-response-body ()
+  "Move point to the first byte of the HTTP body in the current buffer.
+Prefers `url-http-end-of-headers', which url.el sets on the newline
+closing the header block, and falls back to the blank line itself."
+  (goto-char (point-min))
+  (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
+      (goto-char (1+ url-http-end-of-headers))
+    (re-search-forward "\r?\n\r?\n" nil t)))
+
+(defun shipit-issue-jira--decode-response-body ()
+  "Reinterpret the body starting at point as UTF-8, leaving point on it.
+The round trip through unibyte re-reads the raw bytes url.el delivered
+under Emacs\=' internal encoding, so non-ASCII text survives."
+  (let ((body-start (point)))
+    (set-buffer-multibyte nil)
+    (set-buffer-multibyte t)
+    (goto-char body-start)))
+
+(defun shipit-issue-jira--read-json (context)
+  "Read the JSON value at point, returning nil when it does not parse.
+CONTEXT labels the failure in the debug log."
+  (condition-case err
+      (json-read)
+    (error
+     (shipit--debug-log "%s: JSON parse error: %s" context err)
+     nil)))
+
+(defun shipit-issue-jira--parse-async-response (status url)
+  "Return the JSON body of the Jira response in the current buffer.
+STATUS is the plist `url-retrieve' handed the callback and URL labels
+the debug log.  Returns nil when the request errored or the body was
+not JSON."
+  (if (plist-get status :error)
+      (progn
+        (shipit-issue-jira--goto-response-body)
+        (shipit--debug-log
+         "Jira API async error (%s): %s body=%s" url (plist-get status :error)
+         (buffer-substring (point) (min (point-max) (+ (point) 400))))
+        nil)
+    (shipit-issue-jira--goto-response-body)
+    (shipit-issue-jira--decode-response-body)
+    (shipit-issue-jira--read-json "Jira API async")))
+
 (defun shipit-issue-jira--api-request-async (config path callback)
-  "Async GET to Jira REST API using CONFIG at PATH.
-CALLBACK is called with parsed JSON (or nil on error) once the
-response arrives.  Uses `url-retrieve' so the request does not
-block the UI even when Jira is slow."
+  "Async GET to the Jira REST API using CONFIG at PATH.
+CALLBACK receives the parsed JSON, or nil when the request failed.
+It runs once the response buffer has already been killed, so callers
+must tunnel writes to buffer-local state through `with-current-buffer'.
+Uses `url-retrieve' so the request does not block the UI even when
+Jira is slow."
   (let* ((url (shipit-issue-jira--build-url config path))
          (auth (shipit-issue-jira--auth-header config))
          (url-request-method "GET")
          (url-request-extra-headers
           `(("Content-Type" . "application/json")
             ,@(when auth `(("Authorization" . ,auth))))))
-    (shipit--debug-log "Jira API (async): GET %s" url)
+    (shipit--debug-log "Jira API async: GET %s" url)
     (url-retrieve
      url
      (lambda (status)
-       (let ((buf (current-buffer)))
-         (unwind-protect
-             (if (plist-get status :error)
-                 (progn
-                   (shipit--debug-log "Jira API (async): error %S" (plist-get status :error))
-                   (when callback (funcall callback nil)))
-               (goto-char (point-min))
-               (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
-                   (goto-char (1+ url-http-end-of-headers))
-                 (re-search-forward "\\r?\\n\\r?\\n" nil t))
-               (set-buffer-multibyte nil)
-               (set-buffer-multibyte t)
-               (let ((data (condition-case err
-                               (json-read)
-                             (error
-                              (shipit--debug-log "Jira API (async): JSON parse error: %s" err)
-                              nil))))
-                 (when callback (funcall callback data))))
-           (kill-buffer buf))))
+       ;; Release the response buffer whatever happens -- a failed
+       ;; request used to leave its buffer behind on every poll.
+       (let ((result (unwind-protect
+                         (shipit-issue-jira--parse-async-response status url)
+                       (kill-buffer (current-buffer)))))
+         (when callback (funcall callback result))))
      nil t t)))
 
 (defun shipit-issue-jira--api-request (config path)
@@ -549,24 +581,12 @@ Returns parsed JSON as alist."
             (goto-char (point-min))
             (let ((status-line (buffer-substring (point) (line-end-position))))
               (shipit--debug-log "Jira API: response status: %s" status-line))
-            ;; Use url-http-end-of-headers (set by url.el) to find body start.
-            ;; Fall back to searching for blank line with optional \r.
-            (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
-                (goto-char (1+ url-http-end-of-headers))
-              (re-search-forward "\r?\n\r?\n" nil t))
-            (let ((body-start (point))
-                  (body-preview (buffer-substring (point) (min (+ (point) 200) (point-max)))))
-              (shipit--debug-log "Jira API: response body preview: %s" body-preview)
-              (goto-char body-start)
-              ;; Reinterpret raw bytes as UTF-8 (Emacs internal encoding)
-              (set-buffer-multibyte nil)
-              (set-buffer-multibyte t)
-              (goto-char body-start)
-              (condition-case err
-                  (json-read)
-                (error
-                 (shipit--debug-log "Jira API: JSON parse error: %s" err)
-                 nil))))
+            (shipit-issue-jira--goto-response-body)
+            (shipit--debug-log "Jira API: response body preview: %s"
+                               (buffer-substring
+                                (point) (min (+ (point) 200) (point-max))))
+            (shipit-issue-jira--decode-response-body)
+            (shipit-issue-jira--read-json "Jira API"))
         (kill-buffer buffer)))))
 
 (defun shipit-issue-jira--read-response (buffer method path)
@@ -577,20 +597,10 @@ carrying Jira\\='s messages when the status is 400 or above."
     (goto-char (point-min))
     (shipit--debug-log "Jira API: %s response status: %s" method
                        (buffer-substring (point) (line-end-position)))
-    (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
-        (goto-char (1+ url-http-end-of-headers))
-      (re-search-forward "\r?\n\r?\n" nil t))
-    (let ((body-start (point)))
-      ;; Reinterpret raw bytes as UTF-8
-      (set-buffer-multibyte nil)
-      (set-buffer-multibyte t)
-      (goto-char body-start))
-    (let ((parsed (condition-case err
-                      (json-read)
-                    (error
-                     (shipit--debug-log "Jira API: JSON parse error on %s: %s"
-                                        method err)
-                     nil))))
+    (shipit-issue-jira--goto-response-body)
+    (shipit-issue-jira--decode-response-body)
+    (let ((parsed (shipit-issue-jira--read-json
+                   (format "Jira API %s" method))))
       (when (and (boundp 'url-http-response-status)
                  url-http-response-status
                  (>= url-http-response-status 400))
@@ -846,51 +856,6 @@ Expands changelog to include activity history."
     (let ((shipit-issue-jira--mention-resolver
            (lambda (aid dn) (shipit-issue-jira--resolve-mention config aid dn))))
       (mapcar #'shipit-issue-jira--normalize-comment comments))))
-
-(defun shipit-issue-jira--api-request-async (config path callback)
-  "Make an async GET request to Jira REST API at PATH.
-Calls CALLBACK with parsed JSON when complete."
-  (let* ((url (shipit-issue-jira--build-url config path))
-         (auth (shipit-issue-jira--auth-header config))
-         (url-request-method "GET")
-         (url-request-extra-headers
-          `(("Content-Type" . "application/json")
-            ,@(when auth
-                `(("Authorization" . ,auth))))))
-    (shipit--debug-log "Jira API async: GET %s" url)
-    (url-retrieve
-     url
-     (lambda (status)
-       (if (plist-get status :error)
-           (let ((err-info (plist-get status :error))
-                 (body nil))
-             (goto-char (point-min))
-             (when (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
-               (goto-char (1+ url-http-end-of-headers))
-               (setq body (buffer-substring
-                           (point) (min (point-max) (+ (point) 400)))))
-             (shipit--debug-log "Jira API async error (%s): %s body=%s"
-                                url err-info body)
-             (funcall callback nil))
-         (let ((result
-                (condition-case err
-                    (progn
-                      (goto-char (point-min))
-                      (if (and (boundp 'url-http-end-of-headers) url-http-end-of-headers)
-                          (goto-char (1+ url-http-end-of-headers))
-                        (re-search-forward "\r?\n\r?\n" nil t))
-                      (let ((body-start (point)))
-                        ;; Reinterpret raw bytes as UTF-8
-                        (set-buffer-multibyte nil)
-                        (set-buffer-multibyte t)
-                        (goto-char body-start))
-                      (json-read))
-                  (error
-                   (shipit--debug-log "Jira API async: JSON parse error: %s" err)
-                   nil))))
-           (kill-buffer (current-buffer))
-           (funcall callback result))))
-     nil t)))
 
 (defun shipit-issue-jira--fetch-comments-async (config id callback)
   "Fetch comments for Jira issue ID using CONFIG asynchronously.

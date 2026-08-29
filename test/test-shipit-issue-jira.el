@@ -6,6 +6,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'shipit-core)
 (require 'shipit-issue-backends)
 (require 'shipit-issue-jira)
@@ -1718,6 +1719,103 @@ THEN they are comma-joined as field: from -> to."
       (should (string-match-p "status: Open -> Done" out))
       (should (string-match-p "assignee: <empty> -> Bob" out))
       (should (string-match-p ", " out)))))
+
+;;; Async API Request Tests
+
+(defvar test-shipit-jira--response-buffer nil
+  "Response buffer handed to the callback by the stubbed `url-retrieve'.")
+
+(defconst test-shipit-jira--config '(:base-url "https://example.atlassian.net")
+  "Minimal Jira backend config for the async request tests.")
+
+(defun test-shipit-jira--stub-url-retrieve (status body)
+  "Return a `url-retrieve' stub delivering BODY under STATUS.
+Mimics url.el's response buffer: headers, a blank line, then BODY,
+with `url-http-end-of-headers' on the blank line's newline."
+  (lambda (_url callback &rest _)
+    (let ((buffer (generate-new-buffer " *test-jira-response*")))
+      (setq test-shipit-jira--response-buffer buffer)
+      (with-current-buffer buffer
+        (insert "HTTP/1.1 200 OK\nContent-Type: application/json\n\n")
+        (setq-local url-http-end-of-headers (1- (point)))
+        (insert body)
+        (funcall callback status))
+      buffer)))
+
+(defmacro test-shipit-jira--with-response (status body &rest form)
+  "Evaluate FORM with Jira answering BODY under STATUS.
+Stubs the HTTP boundary and auth-source lookup only."
+  (declare (indent 2))
+  `(progn
+     (setq test-shipit-jira--response-buffer nil)
+     (cl-letf (((symbol-function 'url-retrieve)
+                (test-shipit-jira--stub-url-retrieve ,status ,body))
+               ((symbol-function 'shipit-issue-jira--auth-header)
+                (lambda (_config) "Basic dGVzdDp0ZXN0")))
+       ,@form)))
+
+(ert-deftest test-shipit-issue-jira-async-delivers-parsed-body ()
+  "GIVEN Jira answers a request with a JSON body
+WHEN the async request completes
+THEN the callback receives the parsed payload
+AND the response buffer is released."
+  (let ((received 'nothing))
+    (test-shipit-jira--with-response nil "{\"key\": \"PRJ-42\"}"
+      (shipit-issue-jira--api-request-async
+       test-shipit-jira--config "/rest/api/3/issue/PRJ-42"
+       (lambda (data) (setq received data))))
+    (should (equal "PRJ-42" (cdr (assq 'key received))))
+    (should-not (buffer-live-p test-shipit-jira--response-buffer))))
+
+(ert-deftest test-shipit-issue-jira-async-releases-buffer-when-request-fails ()
+  "GIVEN Jira fails the request
+WHEN the async request completes
+THEN the callback is told nothing came back
+AND the response buffer is released rather than leaked."
+  (let ((received 'nothing))
+    (test-shipit-jira--with-response '(:error (error http 500))
+        "{\"errorMessages\": [\"boom\"]}"
+      (shipit-issue-jira--api-request-async
+       test-shipit-jira--config "/rest/api/3/issue/PRJ-42"
+       (lambda (data) (setq received data))))
+    (should (null received))
+    (should-not (buffer-live-p test-shipit-jira--response-buffer))))
+
+(ert-deftest test-shipit-issue-jira-async-tolerates-absent-callback ()
+  "GIVEN a caller that fires a request without wanting the result
+WHEN the request fails
+THEN nothing is signalled
+AND the response buffer is still released."
+  (test-shipit-jira--with-response '(:error (error http 500)) "{}"
+    (shipit-issue-jira--api-request-async
+     test-shipit-jira--config "/rest/api/3/myself" nil))
+  (should-not (buffer-live-p test-shipit-jira--response-buffer)))
+
+(ert-deftest test-shipit-issue-jira-async-parses-utf8-body ()
+  "GIVEN a Jira response whose body carries raw UTF-8 bytes
+WHEN the async request completes
+THEN the callback receives correctly decoded text."
+  (let ((received 'nothing))
+    (test-shipit-jira--with-response nil
+        (encode-coding-string "{\"displayName\": \"Øystein\"}" 'utf-8)
+      (shipit-issue-jira--api-request-async
+       test-shipit-jira--config "/rest/api/3/myself"
+       (lambda (data) (setq received data))))
+    (should (equal "Øystein" (cdr (assq 'displayName received))))))
+
+(ert-deftest test-shipit-issue-jira-async-inhibits-cookies ()
+  "GIVEN Jira sets cookies on its API responses
+WHEN an async request is made
+THEN url.el is asked to inhibit them, keeping the global cookie jar clean."
+  (let ((call-args nil))
+    (cl-letf (((symbol-function 'url-retrieve)
+               (lambda (&rest args) (setq call-args args) nil))
+              ((symbol-function 'shipit-issue-jira--auth-header)
+               (lambda (_config) nil)))
+      (shipit-issue-jira--api-request-async
+       test-shipit-jira--config "/rest/api/3/myself" #'ignore))
+    ;; url-retrieve is (URL CALLBACK &optional CBARGS SILENT INHIBIT-COOKIES)
+    (should (nth 4 call-args))))
 
 (provide 'test-shipit-issue-jira)
 ;;; test-shipit-issue-jira.el ends here

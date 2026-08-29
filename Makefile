@@ -45,6 +45,7 @@ test-unit: compile
 		-l test/test-shipit.el \
 		-l test/test-shipit-editor.el \
 		-l test/test-shipit-magit-requires.el \
+		-l test/test-shipit-duplicate-defuns.el \
 		-l test/test-shipit-issues.el \
 		-l test/test-shipit-issue-backends.el \
 		-l test/test-shipit-issue-github.el \

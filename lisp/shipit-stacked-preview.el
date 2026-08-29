@@ -54,6 +54,11 @@
 (defvar-local shipit-stacked-preview--repo nil
   "Repository these commits belong to.")
 
+(defvar-local shipit-stacked-preview--sending nil
+  "Branch on its way to the remote, or nil.
+Read by the layer rows, so the one being sent says so while it is
+happening rather than afterwards.")
+
 (defvar-local shipit-stacked-preview--base nil
   "Ref the lowest layer is measured from.")
 
@@ -154,14 +159,23 @@ it ends the top layer, and the top of a pile is not a division."
 ;;;; Rendering
 
 (defun shipit-stacked-preview--layer-status (layer)
-  "Return a short word for where LAYER has got to."
+  "Return where LAYER has got to, coloured by how far that is.
+Dim while the layer is still only local, orange while it is on its way,
+green once it is on the remote, and the branch colour once it has a
+pull request of its own."
   (let ((branch (cdr (assq 'branch layer))))
     (cond
+     ((equal branch shipit-stacked-preview--sending)
+      (propertize "sending…" 'font-lock-face 'warning))
      ((not (or (cdr (assq 'existing layer)) (shipit-stack--rev branch)))
-      "no branch yet")
-     ((not (shipit-stack--rev (concat "origin/" branch))) "not pushed")
+      (propertize "no branch yet" 'font-lock-face 'font-lock-comment-face))
+     ((not (shipit-stack--rev (concat "origin/" branch)))
+      (propertize "not pushed" 'font-lock-face 'font-lock-comment-face))
      (t (let ((number (shipit-stacked-preview--pr-number branch)))
-          (if number (format "PR #%s" number) "pushed"))))))
+          (if number
+              (propertize (format "PR #%s" number)
+                          'font-lock-face 'magit-branch-remote)
+            (propertize "pushed" 'font-lock-face 'success)))))))
 
 (defun shipit-stacked-preview--pr-number (branch)
   "Return the number of the open pull request whose head is BRANCH.
@@ -254,8 +268,7 @@ marks the newest end of the line of commits."
                 (let ((n (number-to-string (length commits))))
                   (concat (make-string (- count-width (length n)) ?\s) n))
                 (if (cdr commits) "s" " ")
-                (propertize (shipit-stacked-preview--layer-status layer)
-                            'font-lock-face 'font-lock-comment-face)))
+                (shipit-stacked-preview--layer-status layer)))
       (magit-insert-section-body
         ;; Each commit through the renderer the pull request buffer
         ;; uses, so a commit here opens onto its message and the files
@@ -429,6 +442,15 @@ leaves the list ready for the next."
         (shipit-stacked-preview--render))
       (pop-to-buffer buffer))))
 
+(defun shipit-stacked-preview--show-sending (branch)
+  "Mark BRANCH as the one on its way, and put that on screen now.
+Each push blocks until it finishes, so without asking for the screen to
+be brought up to date the buffer would sit unchanged until every layer
+had gone and then change all at once."
+  (setq shipit-stacked-preview--sending branch)
+  (shipit-stacked-preview--render)
+  (redisplay))
+
 (defun shipit-stacked-preview--push-through (layer args)
   "Push the branches from the bottom layer up to LAYER, oldest first.
 The layers below go too, asked for or not.  A pull request cannot be
@@ -440,11 +462,16 @@ Stops at the first branch that fails and leaves the rest alone, for the
 same reason: what stands on it could not be submitted anyway."
   (shipit-stacked-preview--refuse-when-broken layer)
   (let ((branches (shipit-stacked-preview--branches-through layer)))
-    (dolist (branch branches)
-      (unless (shipit--push-branch branch args)
-        (user-error "Pushing %s failed -- the layers above it are left alone"
-                    branch)))
-    (unless (member "--dry-run" args)
+    (unwind-protect
+        (dolist (branch branches)
+          (shipit-stacked-preview--show-sending branch)
+          (unless (shipit--push-branch branch args)
+            (user-error "Pushing %s failed -- the layers above it are left alone"
+                        branch)))
+      ;; However this ends, no layer may be left saying it is on its
+      ;; way: after a failure that would be a lie standing until the
+      ;; next redraw.
+      (setq shipit-stacked-preview--sending nil)
       (shipit-stacked-preview--render))
     (message "Pushed %d branch%s%s" (length branches)
              (if (cdr branches) "es" "")

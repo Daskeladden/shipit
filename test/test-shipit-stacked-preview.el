@@ -184,11 +184,11 @@ be the base of a pull request."
                     :type 'user-error)
       (should (equal '("one" "two") tried)))))
 
-(ert-deftest test-shipit-stacked-preview-dry-run-redraws-nothing ()
+(ert-deftest test-shipit-stacked-preview-dry-run-asks-git-for-one ()
   "GIVEN the dry run argument
 WHEN every layer is sent
-THEN git is asked with it and the list is not redrawn, nothing about
-the stack having changed."
+THEN git is asked with it, and no layer is left saying it is on its
+way."
   (let ((layers (test-stacked--layers "one" "two"))
         (seen nil)
         (redrawn nil))
@@ -202,7 +202,8 @@ the stack having changed."
                (lambda (_branch args) (setq seen args) t)))
       (shipit-stacked-preview--push-through (nth 1 layers) '("--dry-run"))
       (should (equal '("--dry-run") seen))
-      (should-not redrawn))))
+      (should redrawn)
+      (should-not shipit-stacked-preview--sending))))
 
 (ert-deftest test-shipit-stacked-preview-hands-a-layer-to-the-preview ()
   "GIVEN a stack whose middle layer is visited
@@ -370,6 +371,65 @@ whole stack sits on, which is already there."
                  (lambda (&rest _) (setq handed-over t))))
         (shipit-stacked-preview-visit-layer)
         (should handed-over)))))
+
+(defun test-stacked--status-face (layer)
+  "Return the face the status of LAYER is written in."
+  (get-text-property 0 'font-lock-face
+                     (shipit-stacked-preview--layer-status layer)))
+
+(ert-deftest test-shipit-stacked-preview-status-is-coloured-by-how-far-it-got ()
+  "GIVEN layers at each stage
+WHEN their status is asked for
+THEN each is written in a face saying how far along it is, so the state
+of the stack can be read off the colours."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((layer (car (test-stacked--layers "one"))))
+      (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) nil)))
+        (should (equal 'font-lock-comment-face (test-stacked--status-face layer))))
+      (cl-letf (((symbol-function 'shipit-stack--rev)
+                 (lambda (ref) (unless (string-prefix-p "origin/" ref) "abc"))))
+        (should (equal 'font-lock-comment-face (test-stacked--status-face layer))))
+      (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
+                ((symbol-function 'shipit-stack-plan--pr-for-branch)
+                 (lambda (&rest _) nil)))
+        (should (equal 'success (test-stacked--status-face layer))))
+      (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
+                ((symbol-function 'shipit-stack-plan--pr-for-branch)
+                 (lambda (&rest _) 4471)))
+        (should (equal 'magit-branch-remote (test-stacked--status-face layer)))))))
+
+(ert-deftest test-shipit-stacked-preview-the-branch-on-its-way-says-so ()
+  "GIVEN a branch being sent
+WHEN the rows are drawn
+THEN that one says so, and is not reported by where it stood when the
+push began.  Each push blocks, so this is the only sign anything is
+happening."
+  (with-temp-buffer
+    (let ((layer (car (test-stacked--layers "one"))))
+      (setq shipit-stacked-preview--sending "one")
+      (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) nil)))
+        (should (equal "sending…" (shipit-stacked-preview--layer-status layer)))
+        (should (equal 'warning (test-stacked--status-face layer)))))))
+
+(ert-deftest test-shipit-stacked-preview-a-failed-push-leaves-no-mark ()
+  "GIVEN a push that fails partway
+WHEN it gives up
+THEN no layer is left saying it is on its way, which would be a lie
+that survived until the next redraw."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--base "origin/master")
+    (let ((layers (test-stacked--layers "one" "two")))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+                 (lambda (_layer) nil))
+                ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
+                ((symbol-function 'redisplay) (lambda (&rest _) nil))
+                ((symbol-function 'shipit--push-branch) (lambda (&rest _) nil)))
+        (should-error (shipit-stacked-preview--push-through (nth 1 layers) nil)
+                      :type 'user-error)
+        (should-not shipit-stacked-preview--sending)))))
 
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

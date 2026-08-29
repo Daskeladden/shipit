@@ -24,6 +24,10 @@
    ".." (file-name-directory (or load-file-name buffer-file-name)))
   "Repository root.")
 
+(defconst test-registration--test-exceptions '("test-stubs.el")
+  "Test files that hold no tests and so are never run on their own.
+`test-stubs.el' mocks `request' and magit for the files that load it.")
+
 (defconst test-registration--reload-exceptions '("shipit-init.el")
   "Files deliberately absent from the reload list.
 `shipit-init.el' is not loaded as a file there; it is called as a
@@ -65,6 +69,25 @@ happened to load first."
                               (test-registration--sources))))
     (should (equal '() (sort missing #'string<)))))
 
+(defun test-registration--indirectly-loaded ()
+  "Return test files that another test file loads itself.
+Several are pulled in with `load-file\=' rather than named in the
+Makefile.  They run, so the Makefile not naming them is not a fault."
+  (let (names)
+    (dolist (file (directory-files
+                   (expand-file-name "test" test-registration--root)
+                   t "\\`test-.*\\.el\\'")
+                  (delete-dups names))
+      (let ((text (with-temp-buffer
+                    (insert-file-contents file)
+                    (buffer-string)))
+            (self (file-name-nondirectory file))
+            (start 0))
+        (while (string-match "\\(test-[a-z0-9-]+\\.el\\)" text start)
+          (let ((found (match-string 1 text)))
+            (unless (equal found self) (push found names)))
+          (setq start (match-end 0)))))))
+
 (defun test-registration--baseline (name)
   "Return the lines of the baseline file NAME under `test/fixtures'."
   (let ((path (expand-file-name (concat "test/fixtures/" name)
@@ -87,6 +110,7 @@ Forty-one files predate this check and are listed in
 because nobody knows yet whether they still pass; the list is meant
 to shrink.  Anything not on it must be run."
   (let* ((makefile (test-registration--file-text "Makefile"))
+         (indirect (test-registration--indirectly-loaded))
          (known (test-registration--baseline "unrun-tests-baseline.txt"))
          (on-disk (mapcar #'file-name-nondirectory
                           (directory-files
@@ -95,7 +119,9 @@ to shrink.  Anything not on it must be run."
          (missing (seq-remove
                    (lambda (name)
                      (or (string-match-p (regexp-quote name) makefile)
-                         (member name known)))
+                         (member name indirect)
+                         (member name known)
+                         (member name test-registration--test-exceptions)))
                    on-disk)))
     (should (equal '() (sort missing #'string<)))))
 
@@ -106,8 +132,11 @@ THEN no file on it is registered after all, so the list shrinks as
 files are adopted rather than quietly outliving the problem."
   (let* ((makefile (test-registration--file-text "Makefile"))
          (known (test-registration--baseline "unrun-tests-baseline.txt"))
+         (indirect (test-registration--indirectly-loaded))
          (adopted (seq-filter
-                   (lambda (name) (string-match-p (regexp-quote name) makefile))
+                   (lambda (name)
+                     (or (string-match-p (regexp-quote name) makefile)
+                         (member name indirect)))
                    known)))
     (should (equal '() (sort adopted #'string<)))))
 

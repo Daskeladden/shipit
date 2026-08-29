@@ -144,10 +144,11 @@ WHEN each layer is asked what its pull request should be raised against
 THEN it names the layer below it, and the bottom layer names the branch
 the whole stack sits on, read from the remote."
   (with-temp-buffer
-    (setq shipit-stacked-preview--base "master")
+    (setq shipit-stacked-preview--base "origin/master")
     (let ((layers (test-stacked--layers "one" "two" "three")))
       (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
-                 (lambda () layers)))
+                 (lambda () layers))
+                ((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234")))
         (should (equal "origin/master"
                        (shipit-stacked-preview--base-of (nth 0 layers))))
         (should (equal "one" (shipit-stacked-preview--base-of (nth 1 layers))))
@@ -170,7 +171,8 @@ and the failure is raised.  A branch whose parent never arrived cannot
 be the base of a pull request."
   (let ((layers (test-stacked--layers "one" "two" "three"))
         (tried nil))
-    (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+    (cl-letf (((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+               (lambda (_layer) nil))
               ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
               ((symbol-function 'shipit--push-branch)
                (lambda (branch _args)
@@ -188,7 +190,8 @@ the stack having changed."
   (let ((layers (test-stacked--layers "one" "two"))
         (seen nil)
         (redrawn nil))
-    (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+    (cl-letf (((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+               (lambda (_layer) nil))
               ((symbol-function 'shipit-stacked-preview--render)
                (lambda () (setq redrawn t)))
               ((symbol-function 'shipit--push-branch)
@@ -212,6 +215,8 @@ ending at that branch rather than at HEAD, and with a way back."
                 ((symbol-function 'shipit-stacked-preview--layer-at-point)
                  (lambda () (nth 1 layers)))
                 ((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+                ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+                 (lambda (_layer) nil))
                 ((symbol-function 'shipit-preview-branch)
                  (lambda (&rest args) (setq asked args))))
         (shipit-stacked-preview-visit-layer)
@@ -233,6 +238,46 @@ shows what it became."
                 ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
         (funcall (shipit-stacked-preview--return-to (current-buffer)) 42)
         (should redrawn)))))
+
+(ert-deftest test-shipit-stacked-preview-will-not-send-a-broken-stack ()
+  "GIVEN layers whose branches are not built on one another
+WHEN they are sent
+THEN nothing is sent and the reason is given.  Branches that reach the
+remote out of line make pull requests carrying each other's commits,
+which is easier to prevent than to unpick."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--base "master")
+    (let ((layers (test-stacked--layers "one" "two"))
+          (sent nil))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+                ((symbol-function 'shipit-stack-problems)
+                 (lambda (_branches _base) '("two is not built on one")))
+                ((symbol-function 'shipit--push-branch)
+                 (lambda (&rest _) (setq sent t) t)))
+        (should-error (shipit-stacked-preview--push-layers layers nil)
+                      :type 'user-error)
+        (should-not sent)))))
+
+(ert-deftest test-shipit-stacked-preview-checks-the-layers-below-as-well ()
+  "GIVEN the middle layer of a stack
+WHEN it is sent on its own
+THEN the layers below it are checked too, each being the base of the
+next: a layer standing on a broken one cannot be submitted either."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--base "master")
+    (let ((layers (test-stacked--layers "one" "two" "three"))
+          (asked nil))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+                ((symbol-function 'shipit-stack-problems)
+                 (lambda (branches _base) (setq asked branches) nil))
+                ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
+                ((symbol-function 'shipit--push-branch) (lambda (&rest _) t)))
+        (shipit-stacked-preview--push-layers (list (nth 1 layers)) nil)
+        (should (equal '("one" "two") asked))))))
 
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

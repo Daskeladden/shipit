@@ -329,5 +329,98 @@ rather than unwound."
         (shipit-stack-split-apply proposal)
         (should (equal first (test-stack--git "rev-parse" "work-fpga")))))))
 
+;;;; Whether branches form a stack at all
+
+(ert-deftest test-shipit-stack-a-line-of-branches-has-nothing-wrong ()
+  "GIVEN each branch cut from the one below it
+WHEN they are checked as a stack
+THEN nothing is reported, so submitting may go ahead."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "one")
+    (test-stack--commit "first")
+    (test-stack--git "checkout" "-q" "-b" "two")
+    (test-stack--commit "second")
+    (should (equal '() (shipit-stack-problems '("one" "two") "main")))))
+
+(ert-deftest test-shipit-stack-a-branch-off-the-line-is-reported ()
+  "GIVEN a second branch cut from the default branch rather than from
+the layer below it
+WHEN they are checked as a stack
+THEN the break is named.  Its pull request would carry the commits of
+the layer below as well as its own."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "one")
+    (test-stack--commit "first")
+    (test-stack--git "checkout" "-q" "main")
+    (test-stack--git "checkout" "-q" "-b" "two")
+    (test-stack--commit "second")
+    (should (equal '("two is not built on one")
+                   (shipit-stack-problems '("one" "two") "main")))))
+
+(ert-deftest test-shipit-stack-a-layer-adding-nothing-is-reported ()
+  "GIVEN two branches on the same commit
+WHEN they are checked as a stack
+THEN it is reported.  A pull request between them has no diff, and the
+remote refuses to open one."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "one")
+    (test-stack--commit "first")
+    (test-stack--git "branch" "two" "one")
+    (should (equal '("two adds nothing to one")
+                   (shipit-stack-problems '("one" "two") "main")))))
+
+(ert-deftest test-shipit-stack-a-branch-that-is-not-there-stops-the-check ()
+  "GIVEN a layer whose branch has not been made
+WHEN the stack is checked
+THEN that is all that is reported: git cannot say what a ref that does
+not exist is built on, so the later answers would be noise."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "one")
+    (test-stack--commit "first")
+    (should (equal '("ghost does not exist")
+                   (shipit-stack-problems '("one" "ghost") "main")))))
+
+(ert-deftest test-shipit-stack-one-name-on-two-layers-is-reported ()
+  "GIVEN the same branch named as two layers
+WHEN the stack is checked
+THEN it is reported rather than compared with itself."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "one")
+    (test-stack--commit "first")
+    (should (equal '("one names two layers")
+                   (shipit-stack-problems '("one" "one") "main")))))
+
+(ert-deftest test-shipit-stack-a-rebased-lower-layer-breaks-the-line ()
+  "GIVEN a stack whose bottom layer is rewritten, leaving the layer
+above it on the commits it replaced
+WHEN the stack is checked
+THEN the break is named.  This is the ordinary way a stack falls out of
+line: a lower layer is amended and the ones above are not moved onto
+it."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "one")
+    (test-stack--commit "first")
+    (test-stack--git "checkout" "-q" "-b" "two")
+    (test-stack--commit "second")
+    (test-stack--git "checkout" "-q" "one")
+    (test-stack--git "commit" "-q" "--amend" "-m" "first, again")
+    (should (equal '("two is not built on one")
+                   (shipit-stack-problems '("one" "two") "main")))))
+
+(ert-deftest test-shipit-stack-a-base-that-has-moved-on-is-not-a-fault ()
+  "GIVEN a stack cut from the base before the base gained more commits
+WHEN the stack is checked
+THEN nothing is reported.  A pull request is compared from where its
+two sides last met, so the branch under a stack may move on without the
+stack being rebuilt on it, and usually has."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "one")
+    (test-stack--commit "first")
+    (test-stack--git "checkout" "-q" "-b" "two")
+    (test-stack--commit "second")
+    (test-stack--git "checkout" "-q" "main")
+    (test-stack--commit "someone else's work")
+    (should (equal '() (shipit-stack-problems '("one" "two") "main")))))
+
 (provide 'test-shipit-stack)
 ;;; test-shipit-stack.el ends here

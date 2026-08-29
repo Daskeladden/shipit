@@ -202,7 +202,7 @@ works one out itself."
     (unless position (user-error "That layer is no longer in this stack"))
     (if (> position 0)
         (cdr (assq 'branch (nth (1- position) layers)))
-      (concat "origin/" shipit-stacked-preview--base))))
+      shipit-stacked-preview--base)))
 
 (defun shipit-stacked-preview--require-branch (layer)
   "Return LAYER's branch name, or signal when it does not exist yet."
@@ -273,7 +273,8 @@ marks the newest end of the line of commits."
                   (propertize "base" 'font-lock-face 'font-lock-comment-face)
                   ""
                   (shipit-sections--pad
-                   (propertize shipit-stacked-preview--base
+                   (propertize (shipit-stacked-preview--base-name
+                                shipit-stacked-preview--base)
                                'font-lock-face 'magit-branch-remote)
                    width))))
 
@@ -283,7 +284,8 @@ marks the newest end of the line of commits."
            (format "STACKED PULL REQUESTS — %d commit%s over %s\n"
                    (length shipit-stacked-preview--commits)
                    (if (cdr shipit-stacked-preview--commits) "s" "")
-                   shipit-stacked-preview--base)
+                   (shipit-stacked-preview--base-name
+                    shipit-stacked-preview--base))
            'font-lock-face '(:foreground "orange" :weight bold)))
   (insert (propertize
            "   RET describe & submit   s divide here   u undo   c create branches\n   P push   g refresh   q quit\n\n"
@@ -296,6 +298,7 @@ marks the newest end of the line of commits."
     (erase-buffer)
     (magit-insert-section (shipit-stack-root)
       (shipit-stacked-preview--insert-header)
+      (shipit-stacked-preview--insert-problems)
       ;; Newest at the top and the base at the bottom, which is the way
       ;; a stack is drawn and the way the commits actually sit.
       (let* ((layers (shipit-stacked-preview--current-layers))
@@ -361,6 +364,7 @@ layer does not have to be checked out for this."
   (require 'shipit-preview)
   (let* ((layer (shipit-stacked-preview--layer-at-point))
          (branch (shipit-stacked-preview--require-branch layer)))
+    (shipit-stacked-preview--refuse-when-broken layer)
     (shipit-preview-branch shipit-stacked-preview--repo branch
                            (shipit-stacked-preview--base-of layer)
                            :tip branch
@@ -383,8 +387,9 @@ leaves the list ready for the next."
 Stops at the first that fails and leaves the rest alone: a branch whose
 parent never reached the remote cannot be the base of a pull request,
 so carrying on above it would only spread the damage."
+  (shipit-stacked-preview--refuse-when-broken (car (last layers)))
   (dolist (layer layers)
-    (let ((branch (shipit-stacked-preview--require-branch layer)))
+    (let ((branch (cdr (assq 'branch layer))))
       (unless (shipit--push-branch branch args)
         (user-error "Pushing %s failed -- the layers above it are left alone"
                     branch))))
@@ -478,8 +483,7 @@ against a release branch."
       (with-current-buffer buffer
         (shipit-stacked-preview-mode)
         (setq shipit-stacked-preview--repo (shipit--get-repo-from-remote)
-              shipit-stacked-preview--base (replace-regexp-in-string
-                                         "\\`origin/" "" base)
+              shipit-stacked-preview--base base
               shipit-stacked-preview--branch branch
               shipit-stacked-preview--commits commits)
         (let ((existing (shipit-stacked-preview--from-existing-stack)))
@@ -489,6 +493,51 @@ against a release branch."
                 shipit-stacked-preview--names (cdr existing)))
         (shipit-stacked-preview--render))
       (switch-to-buffer buffer))))
+
+(defun shipit-stacked-preview--base-name (ref)
+  "Return REF as a branch name, without the remote it was read from.
+The remote copy is what the commits are measured from and what the
+bottom layer is raised against, but the name on its own is what reads
+in the buffer and what the remote is asked for."
+  (replace-regexp-in-string "\\`origin/" "" ref))
+
+(defun shipit-stacked-preview--branch-names (layers)
+  "Return the branch name of each of LAYERS."
+  (mapcar (lambda (layer) (cdr (assq 'branch layer))) layers))
+
+(defun shipit-stacked-preview--branches-through (layer)
+  "Return the branch names from the bottom layer up to LAYER."
+  (let* ((layers (shipit-stacked-preview--current-layers))
+         (position (seq-position layers layer)))
+    (unless position (user-error "That layer is no longer in this stack"))
+    (shipit-stacked-preview--branch-names (seq-take layers (1+ position)))))
+
+(defun shipit-stacked-preview--refuse-when-broken (layer)
+  "Signal unless the layers up to LAYER form a stack, saying what is wrong.
+Checked before anything leaves this machine.  A break in the line of
+branches makes pull requests that carry each other\'s commits, and the
+layers below the one being submitted are as much a part of that as the
+layer itself: each is the base of the next."
+  (let ((problems (shipit-stack-problems
+                   (shipit-stacked-preview--branches-through layer)
+                   shipit-stacked-preview--base)))
+    (when problems
+      (user-error "Not a stack yet: %s" (string-join problems "; ")))))
+
+(defun shipit-stacked-preview--insert-problems ()
+  "Say what stops this stack being submitted, when anything does.
+Only once every layer has a branch: before that the layer rows already
+say which ones are still to be made, and a branch not yet made is not a
+fault."
+  (let ((branches (shipit-stacked-preview--branch-names
+                   (shipit-stacked-preview--current-layers))))
+    (when (seq-every-p #'shipit-stack--rev branches)
+      (let ((problems (shipit-stack-problems
+                       branches shipit-stacked-preview--base)))
+        (dolist (problem problems)
+          (insert (propertize (format "   %s\n" problem)
+                              'font-lock-face 'font-lock-warning-face)))
+        (when problems (insert "\n"))))))
 
 (provide 'shipit-stacked-preview)
 ;;; shipit-stacked-preview.el ends here

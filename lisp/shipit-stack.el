@@ -297,5 +297,58 @@ same proposal twice does nothing the second time."
                layer)))
          (cdr (assq 'layers proposal)))))
 
+(defun shipit-stack--missing-branches (branches)
+  "Return a sentence for each of BRANCHES that does not exist."
+  (mapcar (lambda (branch) (format "%s does not exist" branch))
+          (seq-remove #'shipit-stack--rev branches)))
+
+(defun shipit-stack--repeated-branches (branches)
+  "Return a sentence for each name used by two of BRANCHES."
+  (let ((seen nil) (repeated nil))
+    (dolist (branch branches)
+      (when (and (member branch seen) (not (member branch repeated)))
+        (push branch repeated))
+      (push branch seen))
+    (mapcar (lambda (branch) (format "%s names two layers" branch))
+            (nreverse repeated))))
+
+(defun shipit-stack--chain-problems (branches base)
+  "Return a sentence for each break in the line from BASE through BRANCHES.
+A layer must contain the layer below it, or its pull request carries
+that layer's commits as well as its own.
+
+The branch under the stack is held to less.  A pull request is compared
+from where its two sides last met, so the branch under the stack may
+move on without the stack being rebuilt on it, and usually has.  All
+that is asked of the bottom layer is that it adds something."
+  (let ((problems nil) (previous base) (above-the-base nil))
+    (dolist (branch branches)
+      (cond
+       ((and above-the-base (not (shipit-stack--ancestor-p previous branch)))
+        (push (format "%s is not built on %s" branch previous) problems))
+       ((zerop (shipit-stack--depth previous branch))
+        (push (format "%s adds nothing to %s" branch previous) problems)))
+      (setq previous branch
+            above-the-base t))
+    (nreverse problems)))
+
+(defun shipit-stack-problems (branches base)
+  "Return why BRANCHES, bottom first, do not form a stack over BASE.
+Each reason is a sentence.  An empty list means every layer is built on
+the one below it and adds work of its own, so each pull request will
+show only that layer.
+
+The branches are asked rather than the division a buffer proposes.  The
+remote sees where the branch pointers actually are, and one moved since
+the division was made is the case worth catching.
+
+Each check makes the later ones unanswerable, so the first to find
+anything is the last to run: git cannot say what a missing ref is built
+on, and a name used twice puts the same commit on both sides of a
+comparison."
+  (or (shipit-stack--missing-branches branches)
+      (shipit-stack--repeated-branches branches)
+      (shipit-stack--chain-problems branches base)))
+
 (provide 'shipit-stack)
 ;;; shipit-stack.el ends here

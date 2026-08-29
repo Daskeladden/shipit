@@ -1114,7 +1114,14 @@ Captures the source buffer reference so the legend\\='s
 commands can route to it via `--with-source-buffer'."
   (when shipit-review--pr-data
     (setq shipit-review--transient-source-buffer (current-buffer)))
-  (shipit-review--show-actions-legend))
+  ;; The legend takes focus on purpose, ediff-style, and selecting its
+  ;; window changes the current buffer with it.  That is fine for
+  ;; someone entering review mode by hand, but this runs from a mode
+  ;; hook: anything that switches the mode on and keeps working would
+  ;; keep working in the legend.  Restoring the buffer leaves the
+  ;; window selected, so the focus behaviour is unchanged.
+  (save-current-buffer
+    (shipit-review--show-actions-legend)))
 
 (add-hook 'shipit-review-mode-hook
           #'shipit-review--actions-legend-on-mode-entry)

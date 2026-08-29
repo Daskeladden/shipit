@@ -42,5 +42,21 @@ THEN the mode is off in that buffer."
     (with-current-buffer buffer (shipit-review-mode -1))
     (should-not (buffer-local-value 'shipit-review-mode buffer))))
 
+(ert-deftest shipit-review-mode-activation-leaves-the-callers-buffer-current ()
+  "GIVEN a buffer
+WHEN review mode is switched on in it
+THEN that buffer is still the current one afterwards.
+
+Entering the mode pops the actions legend and selects its window,
+which is deliberate: the legend is a control panel and takes focus the
+way ediff\='s does.  Selecting a window also changes the current
+buffer, though, and that happens from a mode hook, so anything that
+switches the mode on and carries on working would carry on in the
+legend buffer."
+  (test-review-mode--with-buffer buffer
+    (with-current-buffer buffer
+      (shipit-review-mode 1)
+      (should (eq buffer (current-buffer))))))
+
 (provide 'test-shipit-review-mode)
 ;;; test-shipit-review-mode.el ends here

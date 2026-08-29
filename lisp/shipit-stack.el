@@ -207,5 +207,95 @@ Each is a string of abbreviated hash and subject."
    "log" "--format=%h %s" "--no-merges"
    (format "%s..%s" (cdr (assq 'parent-tip layer)) (cdr (assq 'tip layer)))))
 
+;;; Splitting a branch into layers
+
+;; A branch of many commits already is a stack: the commits are in a
+;; line.  Turning it into one is putting a branch pointer on the last
+;; commit of each layer.  Nothing is rebased and no commit moves, so
+;; the split is reversible by deleting the branches it made.
+
+(defun shipit-stack--commit-prefix (subject)
+  "Return the `area\=' of a SUBJECT written as \"area: summary\", or nil.
+The prefix is how the author already grouped the work, which is a
+better boundary than anything this could infer on its own."
+  (when (string-match "\\`\\([^:\n]+\\): " subject)
+    (match-string 1 subject)))
+
+(defun shipit-stack--slug (text)
+  "Return TEXT as a branch-name fragment: lower case, words hyphenated."
+  (let ((slug (downcase (replace-regexp-in-string "[^A-Za-z0-9]+" "-" text))))
+    (replace-regexp-in-string "\\`-\\|-\\'" "" slug)))
+
+(defun shipit-stack--range-commits (base)
+  "Return the commits from BASE to HEAD, oldest first.
+Each is an alist of `sha\=' and `subject\='.  Nil when the range
+contains a merge, which has no single line to put layers on."
+  (unless (shipit-stack--git-lines "rev-list" "--merges" (format "%s..HEAD" base))
+    (mapcar (lambda (line)
+              (let ((space (string-match " " line)))
+                `((sha . ,(substring line 0 space))
+                  (subject . ,(substring line (1+ space))))))
+            (shipit-stack--git-lines
+             "log" "--reverse" "--format=%H %s" (format "%s..HEAD" base)))))
+
+(defun shipit-stack--group-by-prefix (commits)
+  "Group COMMITS into runs sharing a subject prefix, in order.
+Returns nil unless every commit has one: a run of unprefixed commits
+has no boundary to find, and inventing one would be guessing."
+  (let (groups)
+    (catch 'ungrouped
+      (dolist (commit commits)
+        (let ((prefix (shipit-stack--commit-prefix (cdr (assq 'subject commit)))))
+          (unless prefix (throw 'ungrouped nil))
+          (if (and groups (equal prefix (car (car groups))))
+              (setcdr (car groups) (cons commit (cdr (car groups))))
+            (push (cons prefix (list commit)) groups))))
+      (mapcar (lambda (group) (cons (car group) (nreverse (cdr group))))
+              (nreverse groups)))))
+
+(defun shipit-stack--split-layer (group branch-base top-p)
+  "Return the layer GROUP describes, named under BRANCH-BASE.
+TOP-P marks the layer that keeps the branch already checked out: the
+work is there already, so it needs no new pointer."
+  (let ((commits (cdr group)))
+    `((prefix . ,(car group))
+      (branch . ,(if top-p
+                     branch-base
+                   (format "%s-%s" branch-base (shipit-stack--slug (car group)))))
+      (tip . ,(cdr (assq 'sha (car (last commits)))))
+      (existing . ,top-p)
+      (commits . ,commits))))
+
+(defun shipit-stack-split-proposal (&optional base)
+  "Return the layers the checked-out branch could be split into.
+Nil when it is not worth proposing: one group, no groups, or a range
+with a merge in it.  BASE defaults to the ref a stack is measured
+from."
+  (let* ((base (or base (shipit-stack--base-ref)))
+         (branch (shipit-stack--current-branch))
+         (commits (and branch (shipit-stack--range-commits base)))
+         (groups (and commits (shipit-stack--group-by-prefix commits))))
+    (when (cdr groups)
+      (let ((last-group (car (last groups))))
+        `((base . ,(replace-regexp-in-string "\\`origin/" "" base))
+          (layers . ,(mapcar (lambda (group)
+                               (shipit-stack--split-layer
+                                group branch (eq group last-group)))
+                             groups)))))))
+
+(defun shipit-stack-split-apply (proposal)
+  "Create the branches PROPOSAL describes, and return the layers made.
+A layer whose branch is already there is left alone, so applying the
+same proposal twice does nothing the second time."
+  (delq nil
+        (mapcar
+         (lambda (layer)
+           (let ((branch (cdr (assq 'branch layer))))
+             (unless (or (cdr (assq 'existing layer))
+                         (shipit-stack--rev branch))
+               (shipit-stack--git-lines "branch" branch (cdr (assq 'tip layer)))
+               layer)))
+         (cdr (assq 'layers proposal)))))
+
 (provide 'shipit-stack)
 ;;; shipit-stack.el ends here

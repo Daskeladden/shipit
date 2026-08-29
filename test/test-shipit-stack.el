@@ -219,5 +219,115 @@ handed is the layer, not everything under it."
       (should (equal '(1 2 1)
                      (mapcar (lambda (l) (cdr (assq 'commits l))) layers))))))
 
+;;;; Splitting a branch into layers
+
+(ert-deftest test-shipit-stack-split-groups-commits-by-subject-prefix ()
+  "GIVEN commits whose subjects carry `area: ' prefixes
+WHEN a split is proposed
+THEN each run of one prefix becomes a layer, in order, because that is
+how the work was already grouped by whoever wrote the messages."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "work")
+    (dolist (s '("fpga: conventions" "fpga: point tests"
+                 "uoe: abort path" "uoe: tx mux" "uoe: reset"))
+      (test-stack--commit s))
+    (let ((layers (cdr (assq 'layers (shipit-stack-split-proposal)))))
+      (should (equal '("fpga" "uoe")
+                     (mapcar (lambda (l) (cdr (assq 'prefix l))) layers)))
+      (should (equal '(2 3)
+                     (mapcar (lambda (l) (length (cdr (assq 'commits l)))) layers))))))
+
+(ert-deftest test-shipit-stack-split-names-layers-from-their-prefix ()
+  "GIVEN a proposed split
+WHEN the layers are named
+THEN each name is derived from its prefix and is usable as a branch
+name, since it becomes the head of a pull request."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "work")
+    (test-stack--commit "FPGA Core: conventions")
+    (test-stack--commit "uoe: abort path")
+    (test-stack--commit "zhit: formal")
+    (let ((names (mapcar (lambda (l) (cdr (assq 'branch l)))
+                         (cdr (assq 'layers (shipit-stack-split-proposal))))))
+      ;; The top layer keeps the branch already checked out; the work is
+      ;; there and it needs no new pointer.
+      (should (equal '("work-fpga-core" "work-uoe" "work") names)))))
+
+(ert-deftest test-shipit-stack-split-declines-when-nothing-groups ()
+  "GIVEN commits with no prefixes to group by
+WHEN a split is proposed
+THEN there is nothing to propose.  One layer is not a stack, and
+guessing boundaries from unprefixed subjects would be inventing them."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "work")
+    (test-stack--commit "first thing")
+    (test-stack--commit "second thing")
+    (should-not (shipit-stack-split-proposal))))
+
+(ert-deftest test-shipit-stack-split-refuses-a-range-with-a-merge ()
+  "GIVEN a merge commit in the range
+WHEN a split is proposed
+THEN there is none.  Layers are branch pointers on a line of commits,
+and a merge means there is no single line to put them on."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "side")
+    (test-stack--commit "side: work")
+    (test-stack--git "checkout" "-q" "main")
+    (test-stack--commit "main: work")
+    (test-stack--git "checkout" "-q" "-b" "work")
+    (test-stack--git "merge" "-q" "--no-ff" "-m" "merge side" "side")
+    (should-not (shipit-stack-split-proposal))))
+
+(ert-deftest test-shipit-stack-split-creates-a-branch-at-each-boundary ()
+  "GIVEN a proposed split
+WHEN it is applied
+THEN a branch points at the last commit of each layer below the top,
+the checked-out branch is untouched and still the top, and no commit
+has moved: splitting is naming, not rewriting."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "work")
+    (dolist (s '("fpga: one" "fpga: two" "uoe: three"))
+      (test-stack--commit s))
+    (let* ((head-before (test-stack--git "rev-parse" "HEAD"))
+           (proposal (shipit-stack-split-proposal)))
+      (shipit-stack-split-apply proposal)
+      (should (equal head-before (test-stack--git "rev-parse" "HEAD")))
+      (should (equal "work" (test-stack--git "rev-parse" "--abbrev-ref" "HEAD")))
+      ;; the lower layer now has a branch of its own, at its last commit
+      (should (equal (test-stack--git "rev-parse" "HEAD~1")
+                     (test-stack--git "rev-parse" "work-fpga"))))))
+
+(ert-deftest test-shipit-stack-split-is-detected-as-a-stack-afterwards ()
+  "GIVEN a branch that has been split
+WHEN the topology is read back
+THEN it is a stack, which is the whole point: the split feeds the same
+detection everything else already uses."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "work")
+    (dolist (s '("fpga: one" "uoe: two" "zhit: three"))
+      (test-stack--commit s))
+    (shipit-stack-split-apply (shipit-stack-split-proposal))
+    (let ((stack (shipit-stack-detect)))
+      (should stack)
+      (should (equal 3 (cdr (assq 'size stack))))
+      (should (equal '("work-fpga" "work-uoe" "work")
+                     (mapcar (lambda (l) (cdr (assq 'branch l)))
+                             (cdr (assq 'layers stack))))))))
+
+(ert-deftest test-shipit-stack-split-applied-twice-changes-nothing ()
+  "GIVEN a split that has already been applied
+WHEN it is applied again
+THEN the branches are where they were.  Every step of this feature is
+meant to be safe to repeat, so that a failure part way can be resumed
+rather than unwound."
+  (test-stack--with-repo
+    (test-stack--git "checkout" "-q" "-b" "work")
+    (dolist (s '("fpga: one" "uoe: two")) (test-stack--commit s))
+    (let ((proposal (shipit-stack-split-proposal)))
+      (shipit-stack-split-apply proposal)
+      (let ((first (test-stack--git "rev-parse" "work-fpga")))
+        (shipit-stack-split-apply proposal)
+        (should (equal first (test-stack--git "rev-parse" "work-fpga")))))))
+
 (provide 'test-shipit-stack)
 ;;; test-shipit-stack.el ends here

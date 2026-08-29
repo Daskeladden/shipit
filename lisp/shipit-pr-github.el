@@ -1521,6 +1521,57 @@ PAGE defaults to 1.  Returns the parsed JSON list."
     (shipit--api-request endpoint params)))
 
 ;; Register the GitHub PR backend
+;;; Stacked pull requests
+
+(defun shipit-pr-github--stack-entry (entry current-number)
+  "Normalise one ENTRY of a GitHub stack.
+CURRENT-NUMBER is the pull request the buffer is showing, which the
+renderer marks so the reader can see where they are in the stack."
+  (let ((number (cdr (assq 'number entry))))
+    `((number . ,number)
+      (state . ,(cdr (assq 'state entry)))
+      (draft . ,(eq (cdr (assq 'draft entry)) t))
+      (merged-at . ,(cdr (assq 'merged_at entry)))
+      (head . ,(cdr (assq 'ref (cdr (assq 'head entry)))))
+      (current . ,(and (equal number current-number) t)))))
+
+(defun shipit-pr-github--normalize-stack (stack membership number)
+  "Return the shipit form of STACK as seen from pull request NUMBER.
+STACK is the stacks endpoint\='s resource and carries the entries.
+MEMBERSHIP is the `stack\=' object the pull request itself carries,
+which is where depth and position live: a viewer who can only see
+part of a stack still learns how deep it really is.
+Entries stay in the order the API gives them, bottom of the stack
+first, which is the order they must merge in."
+  `((number . ,(cdr (assq 'number stack)))
+    (size . ,(cdr (assq 'size membership)))
+    (position . ,(cdr (assq 'position membership)))
+    (base . ,(cdr (assq 'ref (cdr (assq 'base stack)))))
+    (open . ,(eq (cdr (assq 'open stack)) t))
+    (entries . ,(mapcar (lambda (entry)
+                          (shipit-pr-github--stack-entry entry number))
+                        (append (cdr (assq 'pull_requests stack)) nil)))))
+
+(defun shipit-pr-github--fetch-stack (config number &optional pr-data)
+  "Return the stack pull request NUMBER belongs to, or nil.
+Membership rides on the pull request resource, so PR-DATA is used
+when the caller already has it and nothing is requested for an
+unstacked pull request at all.  Only a stacked one pays for the
+request that lists its siblings.
+
+Without PR-DATA the pull request is fetched.  That is a round trip
+even when it is served from the ETag cache, so callers holding the
+data should pass it: this runs on every render of the section."
+  (let* ((repo (plist-get config :repo))
+         (pr (or pr-data (shipit-pr-github--fetch-pr config number)))
+         (membership (cdr (assq 'stack pr)))
+         (stack-number (cdr (assq 'number membership))))
+    (when stack-number
+      (let ((stack (shipit--api-request
+                    (format "/repos/%s/stacks/%s" repo stack-number))))
+        (when stack
+          (shipit-pr-github--normalize-stack stack membership number))))))
+
 (shipit-pr-register-backend
  'github
  (list :name "GitHub"
@@ -1537,6 +1588,7 @@ PAGE defaults to 1.  Returns the parsed JSON list."
        :merge-pr #'shipit-pr-github--merge-pr
        :update-pr #'shipit-pr-github--update-pr
        :set-pr-draft #'shipit-pr-github--set-pr-draft
+       :fetch-stack #'shipit-pr-github--fetch-stack
        :fetch-reviews #'shipit-pr-github--fetch-reviews
        :submit-review #'shipit-pr-github--submit-review
        :fetch-review-decision #'shipit-pr-github--fetch-review-decision

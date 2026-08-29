@@ -169,6 +169,10 @@ Each function is called with SECTION. Return non-nil if handled.")
   "Magit section identifier for worktree section.")
 (put 'shipit-worktree-section 'magit-section t)
 
+(defun shipit-stack-section (&rest _args)
+  "Magit section identifier for the stacked pull request section.")
+(put 'shipit-stack-section 'magit-section t)
+
 ;;; Configuration
 
 (defcustom shipit-use-dedicated-buffer nil
@@ -1117,6 +1121,9 @@ REPO is the repository, PR-NUMBER is the PR number."
       (shipit--time-operation "insert URL section"
         (shipit--insert-pr-url-section pr-data))
 
+      (shipit--time-operation "insert stack section"
+        (shipit--insert-stack-section repo pr-data))
+
       ;; Insert approval placeholder (actual data requires API call)
       (shipit--time-operation "insert approval placeholder"
         (magit-insert-section (approval nil t)
@@ -1656,6 +1663,72 @@ RET opens the repo in a shipit repo buffer."
         (shipit--insert-repo-url-line url repo-name)))))
 
 ;;; Worktree section rendering
+
+(defun shipit--stack-entry-state (entry)
+  "Return the state to display for stack ENTRY.
+Merged and draft are the two states that change what a reader can do
+with the entry, so they win over the raw state the API reports."
+  (cond
+   ((cdr (assq 'merged-at entry)) "merged")
+   ((cdr (assq 'draft entry)) "draft")
+   (t (or (cdr (assq 'state entry)) "open"))))
+
+(defun shipit--stack-entry-keymap (repo number)
+  "Return a keymap where RET opens pull request NUMBER in REPO."
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET")
+      (lambda ()
+        (interactive)
+        (shipit-maybe-use-dedicated-buffer number repo)))
+    map))
+
+(defun shipit--insert-stack-entry (entry repo)
+  "Insert the row for stack ENTRY of REPO."
+  (let ((number (cdr (assq 'number entry)))
+        (start (point)))
+    (insert (format "   %-6s %-26s %-7s%s\n"
+                    (format "#%s" number)
+                    (or (cdr (assq 'head entry)) "")
+                    (shipit--stack-entry-state entry)
+                    (if (cdr (assq 'current entry)) "  <- this PR" "")))
+    (add-text-properties start (point)
+                         `(shipit-stack-pr-number ,number
+                           shipit-stack-repo ,repo
+                           keymap ,(shipit--stack-entry-keymap repo number)))
+    (when (cdr (assq 'current entry))
+      (put-text-property start (point) 'font-lock-face 'bold))))
+
+(defun shipit--insert-stack-body (stack repo)
+  "Insert the rows of STACK for REPO, top of the stack first.
+The entries arrive bottom-first, the order they merge in, and are
+shown reversed so the picture on screen matches the word `stack\='."
+  (dolist (entry (reverse (cdr (assq 'entries stack))))
+    (shipit--insert-stack-entry entry repo))
+  (insert (format "   %-6s %s\n" "base" (or (cdr (assq 'base stack)) ""))))
+
+(defun shipit--insert-stack-section (repo pr-data)
+  "Insert the Stack section for PR-DATA in REPO.
+Draws nothing when the backend cannot report stacks, and nothing when
+this pull request is in none, so an ordinary pull request looks
+exactly as it did before."
+  (when (shipit-pr--stack-supported-p repo)
+    (let* ((number (cdr (assq 'number pr-data)))
+           ;; PR-DATA is already here; refetching it to read one field
+           ;; would put a request on every render of this section.
+           (stack (shipit-pr--fetch-stack repo number pr-data)))
+      (when stack
+        (magit-insert-section (shipit-stack-section)
+          (let ((heading-start (point)))
+            (magit-insert-heading
+              (format "%s Stack #%s - %s of %s"
+                      (shipit--get-pr-field-icon "stack" "\u26c1")
+                      (cdr (assq 'number stack))
+                      (cdr (assq 'position stack))
+                      (cdr (assq 'size stack))))
+            (add-text-properties heading-start (point)
+                                 `(shipit-stack t shipit-repo ,repo)))
+          (magit-insert-section-body
+            (shipit--insert-stack-body stack repo)))))))
 
 (defun shipit--insert-worktree-section (pr-data)
   "Insert Worktree section for PR-DATA in current buffer.

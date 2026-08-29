@@ -106,6 +106,12 @@
 ;;   :get-thread-subscription — (config repo type number) → state string or nil
 ;;   :set-thread-subscription — (config repo type number subscribed) → t on success
 ;;   :set-pr-draft            — (config number draft-p) → non-nil on success
+;;
+;; Stacked pull requests.  Only GitHub reports these; a backend without
+;; the operation makes the Stack section elide rather than render empty:
+;;   :fetch-stack             — (config number &optional pr-data) → stack
+;;                              alist, or nil when
+;;                              the pull request is not in a stack
 
 ;;; Code:
 
@@ -281,6 +287,29 @@ Returns t on success, nil if unsupported."
          (config (cdr resolved))
          (fn (plist-get backend :set-thread-subscription)))
     (when fn (funcall fn config repo type number subscribed))))
+
+;;; Stacked pull requests
+
+(defun shipit-pr--stack-supported-p (repo)
+  "Return non-nil when REPO's backend can report stacked pull requests.
+Callers use this to skip the Stack section entirely rather than
+render a heading for a forge that has no such concept."
+  (let ((backend (car (shipit-pr--resolve-for-repo repo))))
+    (and (plist-get backend :fetch-stack) t)))
+
+(defun shipit-pr--fetch-stack (repo number &optional pr-data)
+  "Return the stack pull request NUMBER in REPO belongs to.
+PR-DATA, when the caller already holds the pull request, spares the
+backend a request for it.
+Resolved through the active backend's optional :fetch-stack
+operation.  Answers nil both when the backend has no such
+operation and when the pull request is not stacked; the caller
+draws nothing in either case."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (fn (plist-get backend :fetch-stack)))
+    (when fn (funcall fn config number pr-data))))
 
 ;;; Bot reviewers
 

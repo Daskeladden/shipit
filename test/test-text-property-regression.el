@@ -101,8 +101,14 @@ This test should PASS both before and after the fix."
                    (insert "Status comment body\n"))))
         
         ;; Insert comment using the STATUS function (this worked before)
-        (shipit--insert-status-hierarchical-comment 
-         test-comment threads file-path is-outdated depth show-context repo pr-number)
+        ;; `is-inline' was added to this function's arguments after the
+        ;; test was written, and the call was never widened, so every
+        ;; argument from here on landed one position early and the pull
+        ;; request number arrived as nil.  This comment is an inline
+        ;; one; that is what carries a path and a line.
+        (shipit--insert-status-hierarchical-comment
+         test-comment threads file-path is-outdated depth t
+         show-context repo pr-number)
         
         ;; Check that the required text properties exist
         (goto-char (point-min))

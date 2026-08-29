@@ -251,7 +251,7 @@ the caller falls back to other lookup strategies in that case."
   "Parse a CheckSuite notification TITLE.
 GitHub formats CheckSuite notification titles as
 \"NAME workflow run STATUS for BRANCH branch\" (e.g.
-\"FPGA Diamond workflow run failed for main branch\").
+\"Widget Build workflow run failed for main branch\").
 Returns a plist (:name NAME :status STATUS :branch BRANCH) on
 match, nil otherwise.  Used to recover when `subject.url' is
 null (a known GitHub quirk for some CheckSuite notifications)."

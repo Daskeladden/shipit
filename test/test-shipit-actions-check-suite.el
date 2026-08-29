@@ -41,7 +41,7 @@ THEN it opens the actions list buffer for that repo + run-id."
                (test-shipit-actions--mock-api
                 '(("/actions/runs"
                    . ((workflow_runs . [((id . 9876543210)
-                                         (name . "FPGA Diamond"))]))))))
+                                         (name . "Widget Build"))]))))))
               ((symbol-function 'shipit-open-actions-list)
                (lambda (repo run-id)
                  (setq opened (list repo run-id))))
@@ -161,7 +161,7 @@ THEN it fetches the resource at SUBJECT-URL
                            ((string-match-p "actions/runs" endpoint)
                             '((workflow_runs
                                . [((id . 25794789483)
-                                   (name . "FPGA Diamond"))])))))))
+                                   (name . "Widget Build"))])))))))
               ((symbol-function 'shipit-open-actions-list)
                (lambda (repo run-id)
                  (setq opened (list repo run-id))))
@@ -209,10 +209,10 @@ THEN it opens the fallback URL in the browser."
 WHEN parsing the title
 THEN the plist contains workflow name, status, and branch."
   (let ((parsed (shipit-actions--parse-workflow-failure-title
-                 "FPGA Diamond workflow run failed for MISC-2026-05-13-livestream-start-stop-hardening branch")))
-    (should (equal "FPGA Diamond" (plist-get parsed :name)))
+                 "Widget Build workflow run failed for prj-2026-05-13-example-hardening branch")))
+    (should (equal "Widget Build" (plist-get parsed :name)))
     (should (equal "failed" (plist-get parsed :status)))
-    (should (equal "MISC-2026-05-13-livestream-start-stop-hardening"
+    (should (equal "prj-2026-05-13-example-hardening"
                    (plist-get parsed :branch))))
   ;; Status variants
   (should (equal "succeeded"

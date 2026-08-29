@@ -3978,7 +3978,7 @@ HTTP response body."
   "Return top-level directory names for GitHub REPO (\"owner/name\").
 Hits `/repos/REPO/contents/' (default branch) and filters to
 entries with `type = dir', returning a list of directory names
-like \\='(\"src\" \"fpga\" \"common\")\\='.  Etag-cached so
+like \\='(\"src\" \"widget\" \"common\")\\='.  Etag-cached so
 completion calls within a session reuse the response body.
 Returns nil on error -- callers fall back to whatever local
 data they have (e.g. file paths from PR enrichment)."

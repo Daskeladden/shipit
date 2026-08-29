@@ -1405,14 +1405,14 @@ WHEN matched against an activity whose `files\\=' list has any
      path matching REGEX
 THEN the rule fires.  Activities with no `files\\=' (unenriched
      PRs / non-PR activities), or whose paths don\\='t match,
-     don\\='t fire -- so a rule like `(:not (:path \"^fpga/\"))\\='
-     targets PRs that DON\\='T touch fpga code without false-
+     don\\='t fire -- so a rule like `(:not (:path \"^widget/\"))\\='
+     targets PRs that DON\\='T touch widget code without false-
      positiving on activities lacking enrichment data."
-  (let ((rule '(:path "^fpga/")))
+  (let ((rule '(:path "^widget/")))
     (should (shipit--auto-mark-rule-matches-activity-p
-             rule '((files . ("fpga/foo.v" "doc/x.md")))))
+             rule '((files . ("widget/foo.c" "doc/x.md")))))
     (should (shipit--auto-mark-rule-matches-activity-p
-             rule '((files . ("doc/x.md" "fpga/bar.sv")))))
+             rule '((files . ("doc/x.md" "widget/bar.h")))))
     (should-not (shipit--auto-mark-rule-matches-activity-p
                  rule '((files . ("doc/x.md" "common/y.cpp")))))
     (should-not (shipit--auto-mark-rule-matches-activity-p rule '()))

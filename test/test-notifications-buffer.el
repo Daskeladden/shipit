@@ -742,11 +742,11 @@ the change persists across sessions."
 WHEN `--candidate-paths\=' runs
 THEN the result is sorted distinct, includes every literal file
      path AND a leading-directory anchor for each (so the user
-     can pick `^fpga/\=' or `^src/\=' from completion without
+     can pick `^widget/\=' or `^src/\=' from completion without
      typing the regex from scratch)."
   (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
     (puthash "k1"
-             '((files . ("fpga/foo.v" "fpga/bar.sv" "doc/x.md")))
+             '((files . ("widget/foo.c" "widget/bar.h" "doc/x.md")))
              shipit--notification-pr-activities)
     (puthash "k2"
              '((files . ("src/main.cpp" "src/util.cpp")))
@@ -756,10 +756,10 @@ THEN the result is sorted distinct, includes every literal file
       (should (equal result (sort (copy-sequence result) #'string<)))
       (should (equal (length result)
                      (length (delete-dups (copy-sequence result)))))
-      (should (member "fpga/foo.v" result))
+      (should (member "widget/foo.c" result))
       (should (member "src/main.cpp" result))
       (should (member "doc/x.md" result))
-      (should (member "^fpga/" result))
+      (should (member "^widget/" result))
       (should (member "^src/" result))
       (should (member "^doc/" result)))))
 
@@ -784,15 +784,15 @@ THEN an empty list is returned -- the regex prompt still accepts
 WHEN `--candidate-paths\=' runs
 THEN every returned directory shows up as an `^NAME/\=' anchor in
      candidates, even if no current PR enrichment touched it --
-     so users authoring a fresh `:path\=' rule can pick `fpga/\=' /
+     so users authoring a fresh `:path\=' rule can pick `widget/\=' /
      `firmware/\=' even when those areas aren\='t under any open PR."
   (cl-letf (((symbol-function 'shipit--fetch-github-repo-toplevel-dirs)
-             (lambda (_repo) '("fpga" "firmware" "common" "src"))))
+             (lambda (_repo) '("widget" "firmware" "common" "src"))))
     (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
       (puthash "k1" '((repo . "owner/r") (reason . "subscribed"))
                shipit--notification-pr-activities)
       (let ((result (shipit-notifications-buffer--candidate-paths)))
-        (should (member "^fpga/" result))
+        (should (member "^widget/" result))
         (should (member "^firmware/" result))
         (should (member "^common/" result))
         (should (member "^src/" result))
@@ -817,7 +817,7 @@ THEN no GitHub fetch is attempted for it -- Jira issues don\='t
   "GIVEN INPUT strings the user typed in the `:path\=' completing-read
 WHEN `--path-input->dir\=' parses them
 THEN only `^DIR/\=' / `^DIR/SUB/\=' inputs return the path the GitHub
-     drill-down should enumerate.  Free-form regex (`\\\\.fpga/\=', `src\=',
+     drill-down should enumerate.  Free-form regex (`\\\\.widget/\=', `src\=',
      anything missing the trailing slash) returns nil so we don\='t
      pelt the API with bogus paths."
   (should (equal "common"
@@ -827,7 +827,7 @@ THEN only `^DIR/\=' / `^DIR/SUB/\=' inputs return the path the GitHub
   (should (null (shipit-notifications-buffer--path-input->dir "common/")))
   (should (null (shipit-notifications-buffer--path-input->dir "^common")))
   (should (null (shipit-notifications-buffer--path-input->dir "")))
-  (should (null (shipit-notifications-buffer--path-input->dir "\\.fpga/"))))
+  (should (null (shipit-notifications-buffer--path-input->dir "\\.widget/"))))
 
 (ert-deftest test-shipit-notifications-buffer--path-drilldown-cands-fetches-and-caches ()
   "GIVEN an INPUT of `^common/\=' and a REPO-FILTER

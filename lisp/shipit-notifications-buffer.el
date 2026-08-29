@@ -3801,7 +3801,7 @@ hitting TAB repeatedly at the same level re-uses the response."
 Combines three sources, in roughly decreasing usefulness:
 
 1. Per-repo top-level directory anchors fetched from GitHub
-   (e.g. `^src/\=', `^fpga/\=', `^common/\=') -- so users can pick
+   (e.g. `^src/\=', `^widget/\=', `^common/\=') -- so users can pick
    a generic path-area filter for the whole repo, not just paths
    touched by currently-loaded PRs.  This is the dominant source
    when authoring a fresh `:path\=' rule, since the relevant area

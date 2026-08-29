@@ -374,6 +374,27 @@ set-head'); falls back to \"main\" when unset."
         "main"
       result)))
 
+(defun shipit--push-branch (branch &optional args)
+  "Push BRANCH to origin with ARGS, setting upstream tracking.
+Return t when git exits successfully, nil otherwise.  Success is
+determined by git\='s exit code -- never by grepping the output, which
+produces false failures when a pre-push hook or remote server message
+happens to print \"error:\"/\"fatal:\" on an otherwise-successful push.
+Lives here rather than in a buffer because more than one buffer
+pushes: the preview pushes the branch it is about to raise a pull
+request for, and preparing a stack pushes the layers."
+  (message "Pushing branch %s to origin..." branch)
+  (with-temp-buffer
+    (let ((exit (apply #'call-process "git" nil t nil
+                       (append (list "push" "-u") args (list "origin" branch)))))
+      (if (zerop exit)
+          (progn
+            (message "Branch %s pushed to origin" branch)
+            t)
+        (message "Pushing %s failed: %s" branch
+                 (string-trim (buffer-string)))
+        nil))))
+
 (defun shipit--commits-in-range (&optional range)
   "Return the commits in RANGE as plists, oldest first.
 RANGE defaults to `shipit-preview--base-ref\='..HEAD when that is set.

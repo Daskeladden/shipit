@@ -9,6 +9,9 @@
 
 (require 'ert)
 (require 'shipit-stacked-preview)
+;; Loaded here so the require inside `shipit-stacked-preview-visit-layer'
+;; is a no-op and cannot replace the stub this file puts in its place.
+(require 'shipit-preview)
 
 (defconst test-stacked-preview--commits
   '((:sha "a1" :first-line "fpga: conventions")
@@ -127,6 +130,109 @@ moment one does."
                           (list (cons 'commits (make-list 7 nil)))))))
   (should (equal 1 (shipit-stacked-preview--count-width
                     (list (list (cons 'commits (make-list 7 nil))))))))
+
+(defun test-stacked--layers (&rest branches)
+  "Return layers named BRANCHES, bottom first, each holding one commit."
+  (mapcar (lambda (branch)
+            (list (cons 'branch branch)
+                  (cons 'commits (list (list :sha "abc1234" :first-line "x")))))
+          branches))
+
+(ert-deftest test-shipit-stacked-preview-layer-targets-the-one-below ()
+  "GIVEN a stack of three layers sitting on master
+WHEN each layer is asked what its pull request should be raised against
+THEN it names the layer below it, and the bottom layer names the branch
+the whole stack sits on, read from the remote."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--base "master")
+    (let ((layers (test-stacked--layers "one" "two" "three")))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers)))
+        (should (equal "origin/master"
+                       (shipit-stacked-preview--base-of (nth 0 layers))))
+        (should (equal "one" (shipit-stacked-preview--base-of (nth 1 layers))))
+        (should (equal "two" (shipit-stacked-preview--base-of (nth 2 layers))))))))
+
+(ert-deftest test-shipit-stacked-preview-refuses-a-layer-without-a-branch ()
+  "GIVEN a layer no branch has been put on yet
+WHEN it is acted on
+THEN it says so rather than acting on a name that resolves to nothing."
+  (let ((layer (car (test-stacked--layers "not-made-yet"))))
+    (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) nil)))
+      (should-error (shipit-stacked-preview--require-branch layer)
+                    :type 'user-error))))
+
+(ert-deftest test-shipit-stacked-preview-stops-at-the-branch-that-failed ()
+  "GIVEN three layers where the middle one cannot be sent
+WHEN every layer is sent
+THEN the ones below it were tried, the ones above it were left alone,
+and the failure is raised.  A branch whose parent never arrived cannot
+be the base of a pull request."
+  (let ((layers (test-stacked--layers "one" "two" "three"))
+        (tried nil))
+    (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+              ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
+              ((symbol-function 'shipit--push-branch)
+               (lambda (branch _args)
+                 (setq tried (append tried (list branch)))
+                 (not (equal branch "two")))))
+      (should-error (shipit-stacked-preview--push-layers layers nil)
+                    :type 'user-error)
+      (should (equal '("one" "two") tried)))))
+
+(ert-deftest test-shipit-stacked-preview-dry-run-redraws-nothing ()
+  "GIVEN the dry run argument
+WHEN every layer is sent
+THEN git is asked with it and the list is not redrawn, nothing about
+the stack having changed."
+  (let ((layers (test-stacked--layers "one" "two"))
+        (seen nil)
+        (redrawn nil))
+    (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+              ((symbol-function 'shipit-stacked-preview--render)
+               (lambda () (setq redrawn t)))
+              ((symbol-function 'shipit--push-branch)
+               (lambda (_branch args) (setq seen args) t)))
+      (shipit-stacked-preview--push-layers layers '("--dry-run"))
+      (should (equal '("--dry-run") seen))
+      (should-not redrawn))))
+
+(ert-deftest test-shipit-stacked-preview-hands-a-layer-to-the-preview ()
+  "GIVEN a stack whose middle layer is visited
+WHEN it is handed over
+THEN the preview is asked for that branch, against the layer below,
+ending at that branch rather than at HEAD, and with a way back."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--base "master"
+          shipit-stacked-preview--repo "owner/repo")
+    (let ((layers (test-stacked--layers "one" "two" "three"))
+          (asked nil))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--layer-at-point)
+                 (lambda () (nth 1 layers)))
+                ((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
+                ((symbol-function 'shipit-preview-branch)
+                 (lambda (&rest args) (setq asked args))))
+        (shipit-stacked-preview-visit-layer)
+        (should (equal '("owner/repo" "two" "one") (seq-take asked 3)))
+        (let ((keys (nthcdr 3 asked)))
+          (should (equal "two" (plist-get keys :tip)))
+          (should (plist-get keys :stacked))
+          (should (functionp (plist-get keys :on-done))))))))
+
+(ert-deftest test-shipit-stacked-preview-comes-back-brought-up-to-date ()
+  "GIVEN a preview opened from a stack
+WHEN it is finished with
+THEN the stack it came from is redrawn, so the layer just submitted
+shows what it became."
+  (let ((redrawn nil))
+    (with-temp-buffer
+      (cl-letf (((symbol-function 'shipit-stacked-preview--render)
+                 (lambda () (setq redrawn t)))
+                ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
+        (funcall (shipit-stacked-preview--return-to (current-buffer)) 42)
+        (should redrawn)))))
 
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

@@ -37,7 +37,15 @@
 (require 'shipit-stack)
 (require 'shipit-sections)
 (require 'shipit-pr-sections)
+(require 'shipit-stack-plan)
 (require 'magit-section)
+(require 'transient)
+
+;; The preview is the other half of this flow: a layer is described and
+;; submitted there.  It is reached through its autoload rather than a
+;; require, so the two buffers stay independent of one another.
+(declare-function shipit-preview-branch "shipit-preview"
+                  (repo branch base-ref &rest keys))
 
 (declare-function shipit--insert-processed-commit-section "shipit-pr-sections")
 (declare-function magit-section-type "magit-section")
@@ -152,7 +160,56 @@ it ends the top layer, and the top of a pile is not a division."
      ((not (or (cdr (assq 'existing layer)) (shipit-stack--rev branch)))
       "no branch yet")
      ((not (shipit-stack--rev (concat "origin/" branch))) "not pushed")
-     (t "pushed"))))
+     (t (let ((number (shipit-stacked-preview--pr-number branch)))
+          (if number (format "PR #%s" number) "pushed"))))))
+
+(defun shipit-stacked-preview--pr-number (branch)
+  "Return the number of the open pull request whose head is BRANCH.
+Only asked for a branch that has reached the remote, since one that has
+not cannot have a pull request.  The answer is cached by the http layer,
+misses included, so redrawing the list does not ask again."
+  (and shipit-stacked-preview--repo
+       (shipit-stack-plan--pr-for-branch shipit-stacked-preview--repo branch)))
+
+(defun shipit-stacked-preview--read-base ()
+  "Ask which ref the stack sits on."
+  (completing-read "Stack sits on: " (magit-list-refnames) nil t nil nil
+                   (shipit-stack--base-ref)))
+
+(defun shipit-stacked-preview--layer-at-point ()
+  "Return the layer whose section holds point.
+Signals when point is on none: every action here works on one layer,
+and acting on the wrong one is worse than refusing to act."
+  (let ((section (magit-current-section)))
+    (while (and section (not (eq (oref section type) 'shipit-stack-layer)))
+      (setq section (oref section parent)))
+    (unless section (user-error "Point is not on a layer"))
+    (let* ((branch (oref section value))
+           (layer (seq-find (lambda (l) (equal branch (cdr (assq 'branch l))))
+                            (shipit-stacked-preview--current-layers))))
+      (unless layer (user-error "No layer named %s" branch))
+      layer)))
+
+(defun shipit-stacked-preview--base-of (layer)
+  "Return the ref the pull request for LAYER should be raised against.
+The layer below it, or -- for the bottom layer -- the branch the whole
+stack sits on.  A layer below is a local branch that has usually not
+reached the remote, so it is named unqualified; the branch under the
+stack is read from the remote, the way the preview names it when it
+works one out itself."
+  (let* ((layers (shipit-stacked-preview--current-layers))
+         (position (seq-position layers layer)))
+    (unless position (user-error "That layer is no longer in this stack"))
+    (if (> position 0)
+        (cdr (assq 'branch (nth (1- position) layers)))
+      (concat "origin/" shipit-stacked-preview--base))))
+
+(defun shipit-stacked-preview--require-branch (layer)
+  "Return LAYER's branch name, or signal when it does not exist yet."
+  (let ((branch (cdr (assq 'branch layer))))
+    (unless (shipit-stack--rev branch)
+      (user-error "Branch %s does not exist yet -- press c to create it" branch))
+    branch))
 
 (defconst shipit-stacked-preview--commit-indent 9
   "Columns to indent a commit by, so its hash starts where a branch
@@ -229,7 +286,7 @@ marks the newest end of the line of commits."
                    shipit-stacked-preview--base)
            'font-lock-face '(:foreground "orange" :weight bold)))
   (insert (propertize
-           "   s divide here   u undo   c create branches   g refresh   q quit\n\n"
+           "   RET describe & submit   s divide here   u undo   c create branches\n   P push   g refresh   q quit\n\n"
            'font-lock-face 'font-lock-comment-face)))
 
 (defun shipit-stacked-preview--render ()
@@ -294,6 +351,78 @@ this can be run again after dividing differently."
     (shipit-stacked-preview--render)
     (message "shipit: %d branch%s created" made (if (= made 1) "" "es"))))
 
+(defun shipit-stacked-preview-visit-layer ()
+  "Describe and submit the layer at point as a pull request.
+Hands it to the ordinary preview -- a layer is a pull request like any
+other, one whose base is the layer below -- and comes back here once it
+has been submitted or abandoned, so the list shows what it became.  The
+layer does not have to be checked out for this."
+  (interactive)
+  (require 'shipit-preview)
+  (let* ((layer (shipit-stacked-preview--layer-at-point))
+         (branch (shipit-stacked-preview--require-branch layer)))
+    (shipit-preview-branch shipit-stacked-preview--repo branch
+                           (shipit-stacked-preview--base-of layer)
+                           :tip branch
+                           :stacked t
+                           :on-done (shipit-stacked-preview--return-to
+                                     (current-buffer)))))
+
+(defun shipit-stacked-preview--return-to (buffer)
+  "Return a function that brings BUFFER up to date and shows it again.
+Called once a layer's preview is finished with, so submitting one layer
+leaves the list ready for the next."
+  (lambda (_number)
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (shipit-stacked-preview--render))
+      (pop-to-buffer buffer))))
+
+(defun shipit-stacked-preview--push-layers (layers args)
+  "Push the branch of each of LAYERS to origin with ARGS, oldest first.
+Stops at the first that fails and leaves the rest alone: a branch whose
+parent never reached the remote cannot be the base of a pull request,
+so carrying on above it would only spread the damage."
+  (dolist (layer layers)
+    (let ((branch (shipit-stacked-preview--require-branch layer)))
+      (unless (shipit--push-branch branch args)
+        (user-error "Pushing %s failed -- the layers above it are left alone"
+                    branch))))
+  (unless (member "--dry-run" args)
+    (shipit-stacked-preview--render))
+  (message "Pushed %d branch%s%s" (length layers)
+           (if (cdr layers) "es" "")
+           (if (member "--dry-run" args) " (dry run)" "")))
+
+(defun shipit-stacked-preview--push-arguments ()
+  "Return the git arguments chosen in the push transient."
+  (transient-args 'shipit-stacked-preview-push))
+
+(transient-define-suffix shipit-stacked-preview-push-layer (args)
+  "Push the branch of the layer at point."
+  (interactive (list (shipit-stacked-preview--push-arguments)))
+  (shipit-stacked-preview--push-layers
+   (list (shipit-stacked-preview--layer-at-point)) args))
+
+(transient-define-suffix shipit-stacked-preview-push-all (args)
+  "Push every layer of the stack, from the base upwards."
+  (interactive (list (shipit-stacked-preview--push-arguments)))
+  (shipit-stacked-preview--push-layers
+   (shipit-stacked-preview--current-layers) args))
+
+(transient-define-prefix shipit-stacked-preview-push ()
+  "Push the branches of this stack to origin."
+  ["Arguments"
+   ;; Rewriting a lower layer and rebasing the ones above it is the
+   ;; ordinary way a stack moves, and every layer above the rewrite
+   ;; then needs the forced form.
+   ("-f" "Force with lease" "--force-with-lease")
+   ("-n" "Dry run" "--dry-run")
+   ("-h" "Skip hooks" "--no-verify")]
+  ["Push"
+   ("p" "this layer" shipit-stacked-preview-push-layer)
+   ("P" "every layer" shipit-stacked-preview-push-all)])
+
 (defun shipit-stacked-preview-refresh ()
   "Read the commits again and redraw."
   (interactive)
@@ -308,6 +437,8 @@ this can be run again after dividing differently."
     (define-key map (kbd "s") #'shipit-stacked-preview-divide)
     (define-key map (kbd "u") #'shipit-stacked-preview-undivide)
     (define-key map (kbd "c") #'shipit-stacked-preview-create-branches)
+    (define-key map (kbd "RET") #'shipit-stacked-preview-visit-layer)
+    (define-key map (kbd "P") #'shipit-stacked-preview-push)
     (define-key map (kbd "g") #'shipit-stacked-preview-refresh)
     (define-key map (kbd "q") #'quit-window)
     map)
@@ -324,14 +455,20 @@ this can be run again after dividing differently."
               (lambda (&rest _) (shipit-stacked-preview-refresh))))
 
 ;;;###autoload
-(defun shipit-stacked-preview ()
+(defun shipit-stacked-preview (&optional choose-base)
   "Preview the stack the commits on this branch would become.
 What `shipit-preview\=' is to one pull request, this is to several: the
 commits with divisions proposed from what their subjects have in
 common.  Move the divisions, put a branch on each layer, then hand
-each layer to `shipit-preview\=' to describe and submit."
-  (interactive)
-  (let* ((base (shipit-stack--base-ref))
+each layer to `shipit-preview\=' to describe and submit.
+
+With a prefix argument CHOOSE-BASE, ask which branch the stack sits on
+instead of measuring from the default branch, for a stack raised
+against a release branch."
+  (interactive "P")
+  (let* ((base (if choose-base
+                   (shipit-stacked-preview--read-base)
+                 (shipit-stack--base-ref)))
          (branch (shipit-stack--current-branch))
          (commits (shipit--commits-in-range (format "%s..HEAD" base))))
     (unless branch (user-error "Not on a branch"))

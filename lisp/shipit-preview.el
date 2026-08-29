@@ -20,6 +20,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+(require 'cl-lib)
 (require 'shipit-core)
 (require 'shipit-stack)
 (declare-function shipit-stacked-preview "shipit-stacked-preview")
@@ -46,6 +48,16 @@
 (defvar-local shipit-preview--repo nil "Repository owner/name.")
 (defvar-local shipit-preview--branch nil "Current branch name.")
 (defvar-local shipit-preview--base-ref nil "Base ref for comparison.")
+(defvar-local shipit-preview--tip nil
+  "Ref at the newer end of this preview\='s range.
+Nil means HEAD, which is what previewing the checked out branch wants.
+A layer of a stack is previewed without being checked out, and names
+its own branch here.")
+(defvar-local shipit-preview--on-done nil
+  "Function called with the new pull request\='s number once this preview
+is finished with, or with nil when it is quit without one being made.
+Set by whatever opened the preview: preparing a stack uses it to bring
+its list of layers back up to date.")
 (defvar-local shipit-preview--title nil "Draft PR title.")
 (defvar-local shipit-preview--description nil "Draft PR description.")
 (defvar-local shipit-preview--stack nil
@@ -122,7 +134,9 @@ Key format: \"repo:branch\", value is a plist of saved state.")
   "Quit preview buffer, saving state for later restoration."
   (interactive)
   (shipit-preview--save-state)
-  (quit-window))
+  (let ((done shipit-preview--on-done))
+    (quit-window)
+    (when done (funcall done nil))))
 
 (defvar shipit-preview-mode-map nil
   "Keymap for `shipit-preview-mode'.")
@@ -159,20 +173,24 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 
 ;;; Git data extraction
 
+(defun shipit-preview--range ()
+  "Return the git range this preview describes."
+  (format "%s..%s" shipit-preview--base-ref (or shipit-preview--tip "HEAD")))
+
 (defun shipit-preview--get-commits (&optional range)
   "Return this preview's commits, or those in RANGE."
-  (shipit--commits-in-range range))
+  (shipit--commits-in-range (or range (shipit-preview--range))))
 
 (defun shipit-preview--get-file-patch (filename)
   "Get the diff patch for FILENAME between base ref and HEAD."
-  (let ((range (format "%s..HEAD" shipit-preview--base-ref)))
+  (let ((range (shipit-preview--range)))
     (shell-command-to-string
      (format "git diff %s -- %s 2>/dev/null" range (shell-quote-argument filename)))))
 
 (defun shipit-preview--get-files ()
   "Get files changed between base ref and HEAD as alists.
 Returns list compatible with `shipit--render-files-section'."
-  (let* ((range (format "%s..HEAD" shipit-preview--base-ref))
+  (let* ((range (shipit-preview--range))
          (output (shell-command-to-string
                   (format "git diff --numstat %s 2>/dev/null" range)))
          (lines (split-string output "\n" t))
@@ -443,7 +461,7 @@ CURRENT-DESC is the current description text."
   (interactive)
   (let ((file-path (get-text-property (point) 'shipit-file-path)))
     (if file-path
-        (let ((range (format "%s..HEAD" shipit-preview--base-ref)))
+        (let ((range (shipit-preview--range)))
           (message "Opening diff for %s..." file-path)
           (magit-diff-range range nil (list file-path)))
       (message "No file at point"))))
@@ -1246,23 +1264,6 @@ First checks locally-known tracking refs, then falls back to ls-remote."
                                     (shell-quote-argument branch))))))
         (not (string-empty-p remote-check))))))
 
-(defun shipit-preview--push-branch (branch)
-  "Push BRANCH to origin, setting upstream tracking.
-Return t when git exits successfully, nil otherwise.  Success is
-determined by git's exit code -- never by grepping the output, which
-produces false failures when a pre-push hook or remote server message
-happens to print \"error:\"/\"fatal:\" on an otherwise-successful push."
-  (message "Pushing branch %s to origin..." branch)
-  (with-temp-buffer
-    (let ((exit (call-process "git" nil t nil "push" "-u" "origin" branch)))
-      (if (zerop exit)
-          (progn
-            (message "Branch %s pushed to origin" branch)
-            t)
-        (message "Push failed (git exit %s): %s"
-                 exit (string-trim (buffer-string)))
-        nil))))
-
 (defun shipit-preview--ensure-branch-pushed ()
   "Ensure current branch is pushed to remote. Return t if ready for PR."
   (let ((branch shipit-preview--branch))
@@ -1270,7 +1271,7 @@ happens to print \"error:\"/\"fatal:\" on an otherwise-successful push."
         t
       ;; Branch doesn't exist on remote - offer to push
       (if (y-or-n-p (format "Branch '%s' doesn't exist on remote. Push it now? " branch))
-          (shipit-preview--push-branch branch)
+          (shipit--push-branch branch)
         (message "Cannot create PR without pushing branch first")
         nil))))
 
@@ -1433,10 +1434,17 @@ Returns the existing PR data if found, nil otherwise."
                 (shipit-preview--apply-general-comments pr-number))
               ;; Clear saved state since PR was created successfully
               (shipit-preview--clear-saved-state)
-              ;; Open the new PR in shipit
-              (when (y-or-n-p "Open PR in shipit? ")
-                (kill-buffer)
-                (shipit-open-pr-buffer pr-number shipit-preview--repo)))
+              ;; Hand back to whatever opened this preview, then open the
+              ;; new PR.  The buffer that launched it is brought up to date
+              ;; before this one goes away, so a stack shows the pull
+              ;; request that was just made.
+              (let* ((preview (current-buffer))
+                     (done shipit-preview--on-done)
+                     (repo shipit-preview--repo)
+                     (open (y-or-n-p "Open PR in shipit? ")))
+                (when done (funcall done pr-number))
+                (when (or open done) (kill-buffer preview))
+                (when open (shipit-open-pr-buffer pr-number repo))))
           (user-error "Failed to create PR - check your permissions and try again"))))))
 
 (defun shipit-preview--apply-labels (pr-number)
@@ -1594,6 +1602,37 @@ Returns a list of usernames, or nil if no default."
       (when user (list user)))))
 
 ;;;###autoload
+(cl-defun shipit-preview-branch (repo branch base-ref &key tip on-done stacked)
+  "Open a preview of BRANCH in REPO as a pull request against BASE-REF.
+TIP names the newer end of the range when BRANCH is not the checked out
+branch, which is how a layer of a stack is previewed without disturbing
+the working tree.  ON-DONE is called once the preview is finished with,
+with the new pull request\='s number or nil.  STACKED marks the pull
+request as one layer of a stack."
+  (let ((buf-name (shipit-preview--buffer-name repo branch)))
+    (with-current-buffer (get-buffer-create buf-name)
+      (shipit-preview-mode)
+      (setq shipit-preview--repo repo
+            shipit-preview--branch branch
+            shipit-preview--base-ref base-ref
+            shipit-preview--tip tip
+            shipit-preview--on-done on-done)
+      ;; Try to restore saved state, otherwise use defaults
+      (unless (shipit-preview--restore-state)
+        (setq shipit-preview--title branch
+              shipit-preview--draft (shipit-preview--default-draft-p stacked)
+              shipit-preview--assignees (shipit-preview--get-default-assignees)))
+      ;; Auto-fill description from commit message if single commit
+      ;; (runs even after restore, in case description was empty)
+      (let ((commits (shipit-preview--get-commits)))
+        (setq shipit-preview--description
+              (shipit-preview--maybe-auto-fill-description
+               shipit-preview--description commits
+               (shipit-preview--pr-template (shipit--get-repo-root)))))
+      (shipit-preview--refresh nil t))
+    (switch-to-buffer buf-name)))
+
+;;;###autoload
 (defun shipit-preview-pr ()
   "Open a preview buffer for the current branch as a PR.
 If a PR already exists for this branch, offers to open it instead."
@@ -1612,34 +1651,14 @@ If a PR already exists for this branch, offers to open it instead."
                                   pr-number branch))
                 (shipit-open-pr-buffer pr-number repo)
               (message "PR #%d exists for this branch" pr-number)))
-        ;; No existing PR - open preview
         (let* ((stack (shipit-stack-detect))
                (parent (shipit-stack-parent-of stack))
                ;; A stack parent is a local branch that has usually not
                ;; been pushed, so it is used unqualified.  Only the
                ;; default branch is read from the remote.
                (base-ref (or parent
-                             (concat "origin/" (shipit--upstream-default-branch))))
-               (buf-name (shipit-preview--buffer-name repo branch)))
-          (with-current-buffer (get-buffer-create buf-name)
-            (shipit-preview-mode)
-            (setq shipit-preview--repo repo
-                  shipit-preview--branch branch
-                  shipit-preview--base-ref base-ref)
-            ;; Try to restore saved state, otherwise use defaults
-            (unless (shipit-preview--restore-state)
-              (setq shipit-preview--title branch
-                    shipit-preview--draft (shipit-preview--default-draft-p (and stack t))
-                    shipit-preview--assignees (shipit-preview--get-default-assignees)))
-            ;; Auto-fill description from commit message if single commit
-            ;; (runs even after restore, in case description was empty)
-            (let ((commits (shipit-preview--get-commits)))
-              (setq shipit-preview--description
-                    (shipit-preview--maybe-auto-fill-description
-                     shipit-preview--description commits
-                     (shipit-preview--pr-template (shipit--get-repo-root)))))
-            (shipit-preview--refresh nil t))
-          (switch-to-buffer buf-name))))))
+                             (concat "origin/" (shipit--upstream-default-branch)))))
+          (shipit-preview-branch repo branch base-ref :stacked (and stack t)))))))
 
 (provide 'shipit-preview)
 ;;; shipit-preview.el ends here

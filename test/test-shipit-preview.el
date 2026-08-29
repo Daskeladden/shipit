@@ -141,11 +141,11 @@ THEN the backend :create-pr receives nil as its draft argument."
 
 ;;; Branch push tests
 
-(ert-deftest test-shipit-preview--push-branch-succeeds-on-zero-exit ()
+(ert-deftest test-shipit--push-branch-succeeds-on-zero-exit ()
   "GIVEN git push succeeds (exit 0) but its output happens to contain
 the words \"error:\"/\"fatal:\" (e.g. from a pre-push hook or a remote
 server message)
-WHEN shipit-preview--push-branch runs
+WHEN shipit--push-branch runs
 THEN it returns t -- success is decided by the process exit code, not by
 grepping the output."
   ;; GIVEN both the process boundaries are stubbed: a stray \"error:\" in
@@ -156,18 +156,29 @@ grepping the output."
             ((symbol-function 'call-process)
              (lambda (_program &optional _infile _dest _display &rest _args) 0)))
     ;; WHEN / THEN
-    (should (shipit-preview--push-branch "feature"))))
+    (should (shipit--push-branch "feature"))))
 
-(ert-deftest test-shipit-preview--push-branch-fails-on-nonzero-exit ()
+(ert-deftest test-shipit--push-branch-fails-on-nonzero-exit ()
   "GIVEN git push fails (non-zero exit)
-WHEN shipit-preview--push-branch runs
+WHEN shipit--push-branch runs
 THEN it returns nil."
   (cl-letf (((symbol-function 'shell-command-to-string)
              (lambda (&rest _) "fatal: repository not found\n"))
             ((symbol-function 'call-process)
              (lambda (_program &optional _infile _dest _display &rest _args) 128)))
     ;; WHEN / THEN
-    (should-not (shipit-preview--push-branch "feature"))))
+    (should-not (shipit--push-branch "feature"))))
+
+(ert-deftest test-shipit-preview-range-follows-the-tip ()
+  "GIVEN a preview of a branch that is not checked out
+WHEN the range it describes is worked out
+THEN it ends at that branch rather than at HEAD.  A layer of a stack is
+previewed where it lies, without the working tree being moved onto it."
+  (with-temp-buffer
+    (setq shipit-preview--base-ref "origin/master")
+    (should (equal "origin/master..HEAD" (shipit-preview--range)))
+    (setq shipit-preview--tip "second-layer")
+    (should (equal "origin/master..second-layer" (shipit-preview--range)))))
 
 (provide 'test-shipit-preview)
 ;;; test-shipit-preview.el ends here

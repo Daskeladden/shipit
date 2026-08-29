@@ -4808,15 +4808,15 @@ SECTION is the magit section object that will contain the files."
   "Check if a commit-files section was just expanded and load files if needed."
   ;; Guard: only run if magit functions are available
   (when (fboundp 'magit-current-section)
-    (ignore-errors  ; Defensive: if magit isn't fully loaded, don't crash
-      (let ((current-section (magit-current-section)))
-        (when current-section
-          (let ((stype (magit-section-type current-section)))
-            (when (and (eq stype 'commit-files)
-                       (not (magit-section-hidden current-section))
-                       (not (equal shipit--last-section-at-point current-section)))
-              (setq shipit--last-section-at-point current-section)
-              (shipit--handle-commit-files-section-visibility-changed current-section t))))))))
+    (let ((current-section (magit-current-section)))
+      (when current-section
+        (let ((stype (oref current-section type)))
+          (when (and (eq stype 'commit-files)
+                     (not (magit-section-hidden current-section))
+                     (not (equal shipit--last-section-at-point current-section)))
+            (setq shipit--last-section-at-point current-section)
+            (shipit--handle-commit-files-section-visibility-changed
+             current-section t)))))))
 
 (add-hook 'post-command-hook #'shipit--check-section-expansion)
 
@@ -4869,20 +4869,20 @@ one reads when preparing a stack."
   "Handle visibility change for commit-files section.
 SECTION is the magit section object.
 VISIBLE is t when expanded, nil when collapsed."
-  (when (and visible (eq (magit-section-type section) 'commit-files))
+  (when (and visible (eq (oref section type) 'commit-files))
     ;; Get the commit SHA from the section value
-    (let* ((commit-sha (magit-section-value section))
+    (let* ((commit-sha (oref section value))
            ;; Get parent (commit) section to access repo and pr-number
-           (parent-section (magit-section-parent section))
+           (parent-section (oref section parent))
            (repo (and parent-section
-                      (get-text-property (magit-section-start parent-section) 'shipit-repo)))
+                      (get-text-property (oref parent-section start) 'shipit-repo)))
            ;; Read alongside the repository, from the same heading.  The
            ;; comment above has always said both were needed; only the
            ;; repository was ever taken, so the call below was one
            ;; argument short and signalled whenever a commit's file list
            ;; was expanded.
            (pr-number (and parent-section
-                           (get-text-property (magit-section-start parent-section)
+                           (get-text-property (oref parent-section start)
                                               'shipit-pr-number))))
       (when repo
         (let ((files (shipit--fetch-commit-files repo commit-sha)))

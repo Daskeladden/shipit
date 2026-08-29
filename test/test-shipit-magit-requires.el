@@ -117,5 +117,49 @@ This mirrors the isolated subprocess Emacs uses for native compilation."
                          (test-shipit-magit--unknown-macro-warning-p output))
                    (list (file-name-nondirectory file) nil))))))))
 
+;;; Declarations of functions in libraries we do not own
+
+(defconst test-shipit-magit--declared-re
+  (rx "(declare-function" (+ space) (group (+ (not (any " \n"))))
+      (+ space) "\"" (group (+ (not (any "\"")))) "\"")
+  "Regexp matching a declaration of a function defined elsewhere.")
+
+(defconst test-shipit-magit--checkable-libraries
+  '("magit" "magit-section" "magit-diff" "transient")
+  "Libraries whose declarations can be checked.
+Ours are loaded by the tests anyway; these are the ones the compiler
+cannot see and takes our word for.")
+
+(defun test-shipit-magit--declarations ()
+  "Return (FUNCTION . LIBRARY) for each declaration we can check."
+  (let (found)
+    (dolist (file (test-shipit-magit--source-files) (nreverse found))
+      (let ((contents (test-shipit-magit--file-contents file))
+            (start 0))
+        (while (string-match test-shipit-magit--declared-re contents start)
+          (let ((function (match-string 1 contents))
+                (library (match-string 2 contents)))
+            (when (member library test-shipit-magit--checkable-libraries)
+              (push (cons function library) found)))
+          (setq start (match-end 0)))))))
+
+(ert-deftest test-shipit-declared-functions-exist ()
+  "GIVEN the functions we declare from libraries we do not own
+WHEN each is looked for, with the library loaded
+THEN it is there.
+
+A declaration is a promise to the compiler, which then says nothing
+about calls to it.  Promising a function that does not exist buys
+silence for a call that fails the moment it runs.  That is how three
+calls to a magit section accessor that magit has never had survived:
+one declaration covered the file it was in, and the others were never
+questioned."
+  (dolist (library test-shipit-magit--checkable-libraries)
+    (require (intern library) nil t))
+  (let ((missing (seq-remove (lambda (declaration)
+                               (fboundp (intern (car declaration))))
+                             (test-shipit-magit--declarations))))
+    (should (equal '() missing))))
+
 (provide 'test-shipit-magit-requires)
 ;;; test-shipit-magit-requires.el ends here

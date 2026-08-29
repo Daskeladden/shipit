@@ -48,8 +48,6 @@
                   (repo branch base-ref &rest keys))
 
 (declare-function shipit--insert-processed-commit-section "shipit-pr-sections")
-(declare-function magit-section-type "magit-section")
-(declare-function magit-section-value "magit-section")
 
 (defvar-local shipit-stacked-preview--repo nil
   "Repository these commits belong to.")
@@ -377,8 +375,8 @@ columns line up on rows where one has run out."
   "Return the SHA of the commit at point, or nil."
   (or (get-text-property (point) 'shipit-commit-sha)
       (let ((section (magit-current-section)))
-        (when (and section (eq (magit-section-type section) 'shipit-commit))
-          (magit-section-value section)))))
+        (when (and section (eq (oref section type) 'shipit-commit))
+          (oref section value)))))
 
 (defun shipit-stacked-preview-divide ()
   "Make the commit at point the end of a layer."

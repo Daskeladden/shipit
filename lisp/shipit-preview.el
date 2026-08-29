@@ -21,6 +21,7 @@
 ;;; Code:
 
 (require 'shipit-core)
+(require 'shipit-stack)
 (require 'shipit-render)
 (require 'shipit-pr-sections)
 (require 'shipit-buffer)
@@ -563,7 +564,43 @@ Open diff for files."
       (insert (format "%s %-7s %s\n"
                       (shipit--get-pr-field-icon "refs" "🔗")
                       "Refs:"
-                      refs-line)))))
+                      refs-line))
+      (shipit-preview--insert-stack-lines))))
+
+(defun shipit-preview--stack-ambiguity (stack)
+  "Return text naming a layer of STACK whose branch name is undecided.
+Nil when every layer has one name.  Several names on one commit
+usually means a backup was kept while the branches were rearranged,
+and nothing local says which of them is the layer, so the choice is
+the reader\='s to make."
+  (let ((n 0) line)
+    (dolist (layer (cdr (assq 'layers stack)))
+      (setq n (1+ n))
+      (when (and (null line) (cdr (assq 'ambiguous layer)))
+        (setq line (format "layer %d has more than one name (%s)" n
+                           (string-join
+                            (cons (cdr (assq 'branch layer))
+                                  (cdr (assq 'aliases layer)))
+                            ", ")))))
+    line))
+
+(defun shipit-preview--insert-stack-lines ()
+  "Note the stack this branch sits in, when it sits in one.
+States which layer this is, so it is clear that the diff below covers
+one layer rather than everything since the default branch."
+  (let ((stack (shipit-stack-detect)))
+    (when stack
+      (insert (format "%s %-7s %s of %s, over %s\n"
+                      (shipit--get-pr-field-icon "stack" "⛁")
+                      "Stack:"
+                      (cdr (assq 'position stack))
+                      (cdr (assq 'size stack))
+                      (cdr (assq 'base stack))))
+      (let ((ambiguity (shipit-preview--stack-ambiguity stack)))
+        (when ambiguity
+          (insert (propertize
+                   (format "         %s -- RET on Refs to pick the base\n" ambiguity)
+                   'font-lock-face 'warning)))))))
 
 (defun shipit-preview--toggle-draft ()
   "Toggle whether this PR will be created as a draft."
@@ -1580,13 +1617,18 @@ If a PR already exists for this branch, offers to open it instead."
                 (shipit-open-pr-buffer pr-number repo)
               (message "PR #%d exists for this branch" pr-number)))
         ;; No existing PR - open preview
-        (let ((base-ref (shipit--upstream-default-branch))
-              (buf-name (shipit-preview--buffer-name repo branch)))
+        (let* ((parent (shipit-stack-parent-branch))
+               ;; A stack parent is a local branch that has usually not
+               ;; been pushed, so it is used unqualified.  Only the
+               ;; default branch is read from the remote.
+               (base-ref (or parent
+                             (concat "origin/" (shipit--upstream-default-branch))))
+               (buf-name (shipit-preview--buffer-name repo branch)))
           (with-current-buffer (get-buffer-create buf-name)
             (shipit-preview-mode)
             (setq shipit-preview--repo repo
                   shipit-preview--branch branch
-                  shipit-preview--base-ref (concat "origin/" base-ref))
+                  shipit-preview--base-ref base-ref)
             ;; Try to restore saved state, otherwise use defaults
             (unless (shipit-preview--restore-state)
               (setq shipit-preview--title branch

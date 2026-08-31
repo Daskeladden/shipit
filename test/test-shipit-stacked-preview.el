@@ -9,6 +9,7 @@
 
 (require 'ert)
 (require 'shipit-stacked-preview)
+(require 'shipit-pr-github)
 ;; Loaded here so the require inside `shipit-stacked-preview-visit-layer'
 ;; is a no-op and cannot replace the stub this file puts in its place.
 (require 'shipit-preview)

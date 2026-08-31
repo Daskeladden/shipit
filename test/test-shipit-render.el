@@ -1113,5 +1113,30 @@ THEN `shipit-strikethrough-face' lives on `font-lock-face' -- so every
                   (and (listp flf)
                        (memq 'shipit-strikethrough-face flf)))))))
 
+(ert-deftest test-shipit-render-icon-cache-keys-on-font-height ()
+  "GIVEN the same icon asked for while the default face height differs
+WHEN each request is served
+THEN svg-lib builds one icon per height rather than one for both,
+AND a repeat under the latest height comes from the cache.
+svg-lib bakes the selected frame\='s font height into the SVG it
+builds, so an icon cached under one font answers at the wrong size
+under another: notification rows then mix icon sizes."
+  (let ((shipit--svg-lib-icon-cache (make-hash-table :test 'equal))
+        (builds 0)
+        (old-height (face-attribute 'default :height)))
+    (cl-letf (((symbol-function 'svg-lib-icon)
+               (lambda (&rest _) (cl-incf builds) '(image :type svg :data "<svg/>"))))
+      (unwind-protect
+          (progn
+            (set-face-attribute 'default nil :height 100)
+            (shipit--svg-lib-icon-with-bg "bell" nil :collection "octicons")
+            (set-face-attribute 'default nil :height 150)
+            (shipit--svg-lib-icon-with-bg "bell" nil :collection "octicons")
+            (should (= 2 builds))
+            (shipit--svg-lib-icon-with-bg "bell" nil :collection "octicons")
+            (should (= 2 builds)))
+        (when (numberp old-height)
+          (set-face-attribute 'default nil :height old-height))))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

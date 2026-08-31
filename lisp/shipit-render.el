@@ -5400,27 +5400,39 @@ behavior when switching between multiple PR buffers."
 
 (defvar shipit--svg-lib-icon-cache (make-hash-table :test 'equal :size 256)
   "Cache for `shipit--svg-lib-icon-with-bg' results.
-Key is `(NAME FACE-OR-NIL BG ARGS)'.  Each call to `svg-lib-icon'
-parses XML files and allocates significant memory; with notifications
-re-rendering 50+ items per refresh that becomes the dominant CPU cost
-in profiles.  Cache hits return the previously-built image object.")
+Key is `(NAME FACE-OR-NIL BG ARGS HEIGHT)'.  Each call to
+`svg-lib-icon' parses XML files and allocates significant memory; with
+notifications re-rendering 50+ items per refresh that becomes the
+dominant CPU cost in profiles.  Cache hits return the previously-built
+image object.")
 
 (defun shipit--svg-lib-icon-cache-clear ()
   "Clear `shipit--svg-lib-icon-cache' (e.g. after theme/font changes)."
   (interactive)
   (clrhash shipit--svg-lib-icon-cache))
 
+(defun shipit--svg-lib-icon-size (face-or-nil)
+  "The font height svg-lib will bake into an icon built now.
+svg-lib sizes an icon from FACE-OR-NIL\='s height, defaulting to the
+default face on the selected frame, so the same name comes out at
+different sizes as frames, fonts and themes change."
+  (face-attribute (or face-or-nil 'default) :height nil 'default))
+
 (defun shipit--svg-lib-icon-with-bg (name face-or-nil &rest args)
   "Call svg-lib-icon with NAME, FACE-OR-NIL and ARGS, adding theme-aware background.
 Automatically sets :background to the default face background if not specified.
 Memoized via `shipit--svg-lib-icon-cache' so repeated renders of the
-same icon do not re-parse the SVG XML each time."
+same icon do not re-parse the SVG XML each time.  The font height is
+part of the key: an icon built under one font answers at the wrong
+size under another, and rows rendered at different times then mix
+icon sizes."
   (let* ((bg-raw (face-background 'default nil 'default))
          ;; Drop the symbolic "unspecified-bg" string svg-lib can't parse.
          (bg (and bg-raw
                   (not (member bg-raw '("unspecified-bg" "unspecified-fg")))
                   bg-raw))
-         (key (list name face-or-nil bg args))
+         (key (list name face-or-nil bg args
+                    (shipit--svg-lib-icon-size face-or-nil)))
          (cached (gethash key shipit--svg-lib-icon-cache)))
     (or cached
         (let ((icon (apply #'svg-lib-icon name face-or-nil

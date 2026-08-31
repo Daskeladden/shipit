@@ -166,6 +166,7 @@ Each entry is (TYPE . VALUE).  Supported types:
 (defvar shipit-issue-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-issue-buffer-refresh)
     (define-key map (kbd "r") #'shipit-issue-buffer-refresh)
     (define-key map (kbd "o") #'shipit-issue--open-in-browser)

@@ -97,6 +97,7 @@
 (defvar shipit-commit-comments-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-commit-comments-buffer-refresh)
     (define-key map (kbd "r") #'shipit-commit-comments-buffer-refresh)
     (define-key map (kbd "RET") #'shipit--open-file-at-point)

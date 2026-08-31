@@ -254,6 +254,7 @@ GraphQL round-trip only happens once per session.  Cleared by
 (defvar shipit-notifications-buffer-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-notifications-buffer-refresh)
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "f") #'shipit-notifications-buffer-filter-menu)

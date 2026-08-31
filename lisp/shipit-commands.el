@@ -1718,6 +1718,7 @@ Finds all activity event IDs in the buffer and marks them as read."
 (defvar shipit-doctor-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-doctor)
     map)
   "Keymap for `shipit-doctor-mode'.")

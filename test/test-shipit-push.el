@@ -178,5 +178,52 @@ can be read."
         (should (string-match-p "--dry-run" text))
         (should (string-match-p "feature" text))))))
 
+(ert-deftest test-shipit-push-the-process-buffer-is-reachable-everywhere ()
+  "GIVEN any of shipit's browsing buffers
+THEN $ opens the process buffer, as it does in magit, so what shipit
+ran is one key away wherever the reader happens to stand."
+  (dolist (entry '((shipit-buffer . shipit-mode-map)
+                   (shipit-stacked-preview . shipit-stacked-preview-mode-map)
+                   (shipit-preview . shipit-preview-mode-map)
+                   (shipit-actions . shipit-actions-mode-map)
+                   (shipit-actions-list . shipit-actions-list-mode-map)
+                   (shipit-discussions-buffer . shipit-discussion-mode-map)
+                   (shipit-issues-buffer . shipit-issue-mode-map)
+                   (shipit-issue-create . shipit-issue-create-mode-map)
+                   (shipit-review-history . shipit-review-history-mode-map)
+                   (shipit-commands . shipit-doctor-mode-map)
+                   (shipit-atlassian-dashboard
+                    . shipit-atlassian-dashboard-mode-map)
+                   (shipit-review-mode . shipit-review-actions-mode-map)
+                   (shipit-commit-comments-buffer
+                    . shipit-commit-comments-mode-map)
+                   (shipit-releases-buffer . shipit-releases-mode-map)
+                   (shipit-repo-buffer . shipit-repo-mode-map)
+                   (shipit-subscriptions-buffer . shipit-subscriptions-mode-map)
+                   (shipit-notifications-buffer
+                    . shipit-notifications-buffer-mode-map)))
+    (require (car entry))
+    (should (eq #'shipit-process-buffer
+                (lookup-key (symbol-value (cdr entry)) (kbd "$"))))))
+
+(ert-deftest test-shipit-push-debug-lines-reach-the-process-buffer-on-request ()
+  "GIVEN a debug line on its way to the log file
+WHEN the process-buffer mirror is opted into
+THEN the line lands there too AND without the opt-in it does not.
+Tested at the mirror decision itself: the suite stubs the debug
+logger wholesale for other files, so going through it here would
+test the stub."
+  (when (get-buffer shipit-process-buffer-name)
+    (kill-buffer shipit-process-buffer-name))
+  (let ((shipit-process-log-debug nil))
+    (shipit-process--maybe-mirror-debug "[ts] quiet mouse\n"))
+  (should-not (and (get-buffer shipit-process-buffer-name)
+                   (with-current-buffer shipit-process-buffer-name
+                     (string-match-p "quiet mouse" (buffer-string)))))
+  (let ((shipit-process-log-debug t))
+    (shipit-process--maybe-mirror-debug "[ts] loud lion\n"))
+  (should (with-current-buffer shipit-process-buffer-name
+            (string-match-p "loud lion" (buffer-string)))))
+
 (provide 'test-shipit-push)
 ;;; test-shipit-push.el ends here

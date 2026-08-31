@@ -48,6 +48,7 @@
 (defvar shipit-subscriptions-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-subscriptions-refresh)
     (define-key map (kbd "r") #'shipit-subscriptions-refresh)
     (define-key map (kbd "q") #'quit-window)

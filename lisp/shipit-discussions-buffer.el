@@ -169,6 +169,7 @@ VIEWER-HAS-UPVOTED highlights the vote when non-nil."
 (defvar shipit-discussion-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-discussion-buffer-refresh)
     (define-key map (kbd "r") #'shipit-discussion-buffer-refresh)
     (define-key map (kbd "o") #'shipit-discussion--open-in-browser)

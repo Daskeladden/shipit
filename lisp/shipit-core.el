@@ -460,6 +460,30 @@ else: the push changes nothing, so no ref moves to look at."
   (interactive)
   (pop-to-buffer (get-buffer-create shipit-process-buffer-name)))
 
+(defcustom shipit-process-log-debug nil
+  "Whether debug log lines also land in the process buffer.
+Off by default: the debug log is chatty, and the process buffer
+exists to show the commands shipit runs.  Turn it on to watch both
+streams in one place under $."
+  :type 'boolean
+  :group 'shipit)
+
+(defun shipit-process-log-line (text)
+  "Append TEXT to the process buffer as a dim line of its own."
+  (with-current-buffer (get-buffer-create shipit-process-buffer-name)
+    (unless (derived-mode-p 'special-mode) (special-mode))
+    (let ((inhibit-read-only t))
+      (goto-char (point-max))
+      (insert (propertize text 'font-lock-face 'font-lock-comment-face)
+              "\n"))))
+
+(defun shipit-process--maybe-mirror-debug (line)
+  "Mirror the debug LINE into the process buffer when opted into.
+Split out so the decision can be tested where the suite stubs
+`shipit--debug-log\=' itself."
+  (when shipit-process-log-debug
+    (shipit-process-log-line (string-trim-right line))))
+
 (defun shipit--run-git (&rest args)
   "Run git with ARGS, logged to the process buffer.
 Return (EXIT . OUTPUT).  For commands that change something; the
@@ -778,6 +802,7 @@ Examples:
           ;; every render-time `--debug-log\=' call into a whole-file
           ;; copy on PRs with a long-lived log.
           (write-region line nil shipit--debug-log-file 'append 'silent)
+          (shipit-process--maybe-mirror-debug line)
           ;; Rotate occasionally, not per line.
           (when (zerop (% (cl-incf shipit--debug-log-write-counter)
                           (max 16 (/ shipit-debug-log-max-lines 16))))

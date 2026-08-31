@@ -151,6 +151,7 @@ On exit, call CALLBACK with the parsed commit list."
 (defvar shipit-review-history-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "RET") #'shipit-review-history-view-commit)
     (define-key map (kbd "=") #'shipit-review-history-ediff-vs-head)
     (define-key map (kbd "m") #'shipit-review-history-mark-commit)

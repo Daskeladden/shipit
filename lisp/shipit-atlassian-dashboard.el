@@ -151,6 +151,7 @@ section point was in.")
 (defvar shipit-atlassian-dashboard-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-atlassian-dashboard-refresh)
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "RET") #'shipit-atlassian-dashboard--ret-action)

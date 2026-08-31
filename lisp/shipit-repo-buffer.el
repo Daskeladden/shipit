@@ -169,6 +169,7 @@ An alist from the API, nil for participating, or symbol
 (defvar shipit-repo-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") 'shipit-repo-buffer-refresh)
     (define-key map (kbd "r") 'shipit-repo-buffer-refresh)
     (define-key map (kbd "o") 'shipit-repo-buffer--open-in-browser)

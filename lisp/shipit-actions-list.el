@@ -129,6 +129,7 @@ Case-insensitive substring match.  Nil or empty FILTER-TEXT matches all."
 (defvar shipit-actions-list-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "RET") #'shipit-actions-list-dwim)
     (define-key map (kbd "TAB") #'shipit-actions-list-toggle-section)
     (define-key map [tab] #'shipit-actions-list-toggle-section)

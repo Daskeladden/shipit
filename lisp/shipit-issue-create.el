@@ -160,6 +160,7 @@ field names: `title\=', `body\=', `issue-type\=', `labels\=',
 (define-key shipit-issue-create-mode-map (kbd "RET") #'shipit-issue-create--dwim)
 (define-key shipit-issue-create-mode-map (kbd "C-c C-c") #'shipit-issue-create--submit)
 (define-key shipit-issue-create-mode-map (kbd "g") #'shipit-issue-create--refresh)
+(define-key shipit-issue-create-mode-map (kbd "$") #'shipit-process-buffer)
 (define-key shipit-issue-create-mode-map (kbd "q") #'shipit-issue-create--quit)
 
 (define-derived-mode shipit-issue-create-mode magit-section-mode "Shipit-Issue-Create"

@@ -148,6 +148,7 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 ;; Always ensure bindings are set (survives reload)
 (define-key shipit-preview-mode-map (kbd "f") #'shipit-files-filter)
 (define-key shipit-preview-mode-map (kbd "g") #'shipit-preview--refresh)
+(define-key shipit-preview-mode-map (kbd "$") #'shipit-process-buffer)
 (define-key shipit-preview-mode-map (kbd "RET") #'shipit-preview--dwim)
 (define-key shipit-preview-mode-map (kbd "C-c C-c") #'shipit-preview--create-pr)
 ;; Bound here rather than from the stacked preview's own file, which

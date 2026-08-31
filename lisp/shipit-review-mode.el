@@ -585,6 +585,7 @@ active side."
 
 (defvar shipit-review-actions-mode-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "$") #'shipit-process-buffer)
     ;; Navigate hunks
     (define-key map (kbd "n")   #'shipit-review--next-diff-hunk)
     (define-key map (kbd "p")   #'shipit-review--prev-diff-hunk)

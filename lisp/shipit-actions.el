@@ -110,6 +110,7 @@ Each job's logs are fetched lazily on first expand.")
 (defvar shipit-actions-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "RET") #'shipit-actions-dwim)
     (define-key map (kbd "q") #'shipit-actions-quit)
     (define-key map (kbd "g") #'shipit-actions-refresh)

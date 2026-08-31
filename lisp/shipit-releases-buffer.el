@@ -93,6 +93,7 @@ back to `browse-url'.  Otherwise delegate to
 (defvar shipit-releases-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-releases-buffer-refresh)
     (define-key map (kbd "r") #'shipit-releases-buffer-refresh)
     (define-key map (kbd "q") #'quit-window)

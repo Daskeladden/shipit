@@ -144,5 +144,55 @@ of the session, and on a stack of six that is the whole buffer."
       (shipit-sections-insert-stack-rows test-stack-render--rows "main"))
     (should (oref (car (oref magit-root-section children)) hidden))))
 
+(ert-deftest test-shipit-stack-render-a-born-shut-body-is-invisible ()
+  "GIVEN rows drawn with a body
+WHEN a layer is inspected before anyone touches it
+THEN its body is invisible, not merely marked hidden: the hidden slot
+without the overlay shows the body anyway and TAB then has to be
+pressed twice."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (magit-insert-section (shipit-pr-buffer)
+      (shipit-sections-insert-stack-rows
+       test-stack-render--rows "main"
+       (lambda (row)
+         (insert (format "      about %s\n" (cdr (assq 'name row)))))))
+    (dolist (layer (oref magit-root-section children))
+      (should (oref layer hidden))
+      (should (invisible-p (marker-position (oref layer content)))))))
+
+(ert-deftest test-shipit-stack-render-washer-fills-a-row-on-first-show ()
+  "GIVEN rows drawn with a washer instead of a body
+WHEN the buffer is drawn
+THEN the rows carry nothing yet
+WHEN a layer is shown
+THEN the washer's content appears, nested under that layer, and
+showing again adds nothing: the forge is asked when the reader asks."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (let ((washes 0))
+      (magit-insert-section (shipit-pr-buffer)
+        (shipit-sections-insert-stack-rows
+         test-stack-render--rows "main" nil
+         (lambda (row)
+           (cl-incf washes)
+           (magit-insert-section (shipit-stack-layer-detail)
+             (magit-insert-heading
+               (format "      washed %s" (cdr (assq 'name row))))))))
+      (should (equal 0 washes))
+      (should-not (string-match-p "washed" (buffer-string)))
+      (let ((layer (car (oref magit-root-section children))))
+        (magit-section-show layer)
+        (should (equal 1 washes))
+        (should (string-match-p (format "washed %s" (oref layer value))
+                                (buffer-string)))
+        (should (equal 1 (length (oref layer children))))
+        (should (eq layer (oref (car (oref layer children)) parent)))
+        (magit-section-hide layer)
+        (magit-section-show layer)
+        (should (equal 1 washes))))))
+
 (provide 'test-shipit-stack-render)
 ;;; test-shipit-stack-render.el ends here

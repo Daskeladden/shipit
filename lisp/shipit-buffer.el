@@ -1667,22 +1667,43 @@ with the entry, so they win over the raw state the API reports."
    (t (or (cdr (assq 'state entry)) "open"))))
 
 (defun shipit--stack-entry-keymap (repo number)
-  "Return a keymap where RET opens pull request NUMBER in REPO."
+  "Return a keymap where RET opens pull request NUMBER in REPO.
+In a shipit buffer the sibling opens as one too, whatever
+`shipit-use-dedicated-buffer' says: that option chooses how magit\='s
+own views open things, and falling back to them from inside a shipit
+buffer looked like RET doing nothing."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET")
       (lambda ()
         (interactive)
-        (shipit-maybe-use-dedicated-buffer number repo)))
+        (if (derived-mode-p 'shipit-mode)
+            (shipit-open-pr-buffer number repo)
+          (shipit-maybe-use-dedicated-buffer number repo))))
     map))
 
+(defun shipit--stack-entry-state-text (entry)
+  "Return the state column for ENTRY: the word in its state\='s colour.
+The SVG icon rides in front where those are on; the emoji fallback is
+empty because the word is already there."
+  (let ((state (shipit--stack-entry-state entry)))
+    (concat (shipit--get-pr-state-icon state "")
+            (shipit--colorize-pr-state state))))
+
 (defun shipit--stack-entry-row (entry repo)
-  "Return the render row for stack ENTRY of REPO."
+  "Return the render row for stack ENTRY of REPO.
+The title names the row when the forge gave one; a title says what a
+sibling is about where a branch name only hints.  The branch moves
+into the row\='s body."
   (let ((number (cdr (assq 'number entry))))
     `((label . ,(format "#%s" number))
-      (name . ,(or (cdr (assq 'head entry)) ""))
-      (extra . ,(shipit--stack-entry-state entry))
+      (name . ,(or (cdr (assq 'title entry))
+                   (cdr (assq 'head entry))
+                   ""))
+      (extra . ,(shipit--stack-entry-state-text entry))
       (current . ,(cdr (assq 'current entry)))
       (marker . "this PR")
+      (entry . ,entry)
+      (repo . ,repo)
       (props . (shipit-stack-pr-number ,number
                 shipit-stack-repo ,repo
                 keymap ,(shipit--stack-entry-keymap repo number))))))
@@ -1692,7 +1713,71 @@ with the entry, so they win over the raw state the API reports."
   (shipit-sections-insert-stack-rows
    (mapcar (lambda (entry) (shipit--stack-entry-row entry repo))
            (cdr (assq 'entries stack)))
-   (or (cdr (assq 'base stack)) "")))
+   (or (cdr (assq 'base stack)) "")
+   nil
+   #'shipit--wash-stack-entry))
+
+(defun shipit--wash-stack-entry (row)
+  "Fill the body of stack ROW: branch, author, description, comments.
+Runs on the row\='s first expand.  Six siblings fetched as the buffer
+draws would put a dozen requests on every render, so a sibling\='s
+description and comments are asked for when the reader asks."
+  (let* ((entry (cdr (assq 'entry row)))
+         (repo (cdr (assq 'repo row)))
+         (number (cdr (assq 'number entry))))
+    (shipit--insert-stack-entry-lines entry)
+    (condition-case err
+        (shipit--insert-stack-description repo number)
+      (error
+       (insert (format "     could not fetch: %s\n"
+                       (error-message-string err)))))))
+
+(defun shipit--insert-stack-entry-lines (entry)
+  "Insert the branch and author lines for stack ENTRY.
+Two columns deeper than the row\='s own text, as everything washed
+into a row is: the ladder is what says these belong to the row above."
+  (when-let* ((head (cdr (assq 'head entry))))
+    (insert (format "     %s\n"
+                    (propertize head 'font-lock-face 'magit-branch-local))))
+  (let* ((author (cdr (assq 'author entry)))
+         (merged (cdr (assq 'merged-at entry)))
+         (byline (delq nil (list (and author
+                                      (propertize author 'font-lock-face
+                                                  'magit-log-author))
+                                 (and merged
+                                      (propertize (substring merged 0 10)
+                                                  'font-lock-face
+                                                  'magit-log-date))))))
+    (when byline (insert (format "     %s\n" (string-join byline "  "))))))
+
+(defun shipit--insert-stack-markdown (text)
+  "Insert TEXT rendered as markdown, indented under a child heading.
+Deeper than the heading\='s own word: the icon widens the heading
+past its column, so content at the same depth read as flush with it."
+  (let ((beg (point))
+        ;; `indent-rigidly' obeys the buffer's tab settings, and a tab
+        ;; is however wide the window says: the ladder must be spaces.
+        (indent-tabs-mode nil))
+    (insert (shipit--render-markdown text))
+    (unless (bolp) (insert "\n"))
+    (indent-rigidly beg (point) 8)))
+
+(defun shipit--insert-stack-description (repo number)
+  "Insert the description of pull request NUMBER in REPO as a section.
+Born shut: expanding a row shows a ladder of headings, not everything
+the forge knows at once."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (fn (plist-get (car resolved) :fetch-pr))
+         (pr (and fn (funcall fn (cdr resolved) number)))
+         (body (cdr (assq 'body pr))))
+    (magit-insert-section (shipit-stack-description nil t)
+      (magit-insert-heading
+        (format "     %s Description"
+                (shipit--get-pr-field-icon "description" "\U0001F4DD")))
+      (if (and body (not (string-empty-p (string-trim body))))
+          (shipit--insert-stack-markdown body)
+        (insert (propertize "        No description provided\n"
+                            'font-lock-face 'italic))))))
 
 (defun shipit--insert-stack-section (repo pr-data)
   "Insert the Stack section for PR-DATA in REPO.

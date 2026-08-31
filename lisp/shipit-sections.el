@@ -369,6 +369,7 @@ errors out."
 ;;; Stack rendering
 
 (put 'shipit-stack-layer 'magit-section t)
+(put 'shipit-stack-description 'magit-section t)
 
 ;; The stack reads as a list to take in at a glance, so the section
 ;; holding it opens and each layer within stays shut until asked for.
@@ -397,40 +398,87 @@ keeps a deep stack readable is built here."
   "Return the column width the names of ROWS need."
   (apply #'max 8 (mapcar (lambda (row) (length (cdr (assq 'name row)))) rows)))
 
-(defun shipit-sections--insert-stack-row (row width body-fn)
+(defun shipit-sections--stack-extra-width (rows)
+  "Return the column width the extras of ROWS need.
+A fixed width cut \"merged\" loose from the marker column: the widest
+extra decides, as it does for names."
+  (apply #'max 6 (mapcar (lambda (row) (length (or (cdr (assq 'extra row)) "")))
+                 rows)))
+
+(defun shipit-sections--insert-stack-row (row width extra-width body-fn washer-fn)
   "Insert ROW as its own section, names padded to WIDTH.
-BODY-FN, when given, is called with ROW to fill the section body,
-which is where the commits that layer adds belong."
-  (magit-insert-section (shipit-stack-layer (cdr (assq 'name row)) t)
-    (let ((start (point)))
+EXTRA-WIDTH pads the extra column the same way.  BODY-FN, when given,
+is called with ROW to fill the section body as the row is drawn.
+WASHER-FN instead fills it on the row\='s first expand, for bodies
+that cost a fetch; give one or the other, not both, since washing
+moves the content marker past anything built eagerly."
+  (let ((start (point)))
+    (magit-insert-section (shipit-stack-layer (cdr (assq 'name row)) t)
       (magit-insert-heading
-        (format "   %-3s %s %-6s%s"
+        (format "   %-3s %s %s%s"
                 (or (cdr (assq 'label row)) "")
                 (shipit-sections--pad (or (cdr (assq 'name row)) "") width)
-                (or (cdr (assq 'extra row)) "")
+                (shipit-sections--pad (or (cdr (assq 'extra row)) "")
+                                      extra-width)
                 (shipit-sections--stack-row-suffix row)))
-      ;; A row may need to be actionable, which for the stack of pull
-      ;; requests means carrying enough to open the one named on it.
-      (let ((props (cdr (assq 'props row))))
-        (when props (add-text-properties start (point) props))))
-    ;; Inserted now, not deferred.  A deferred body runs as a magit
-    ;; washer, and a section created inside one does not nest under the
-    ;; layer the way it does here; the tree ended up wrong and
-    ;; collapsing reached for the root.  A layer's body is a few lines
-    ;; of git output, so building it up front costs nothing worth
-    ;; having.  The layer still starts collapsed.
-    (when body-fn
-      (funcall body-fn row))))
+      ;; Inserted now, not deferred.  A deferred body runs as a magit
+      ;; washer, and a section created inside one does not nest under
+      ;; the layer the way it does here; the tree ended up wrong and
+      ;; collapsing reached for the root.  A layer's body is a few
+      ;; lines of git output, so building it up front costs nothing
+      ;; worth having.  The layer still starts collapsed.
+      (when body-fn
+        (funcall body-fn row)))
+    ;; Closing a section only sets its hidden slot; magit realizes the
+    ;; hiding as an invisibility overlay elsewhere, and nothing on this
+    ;; render path does, so a row born shut still showed its body and
+    ;; TAB had to be pressed twice.  Realize it here.
+    (let ((section (get-text-property start 'magit-section)))
+      (when (and section washer-fn)
+        (oset section washer
+              (lambda ()
+                ;; The same policy the rows themselves get: what washes
+                ;; in starts shut every time, whatever a visibility
+                ;; cache remembers from an earlier render.
+                (let ((magit-section-set-visibility-hook nil))
+                  (funcall washer-fn row)))))
+      (when (and section (oref section hidden))
+        (magit-section-hide section)))
+    ;; A row may need to be actionable, which for the stack of pull
+    ;; requests means carrying enough to open the one named on it.
+    ;; Applied after the section closes: at close magit lays its own
+    ;; keymap over the heading of a section that has a body, and a nil
+    ;; one over a section that has none, so anything put on the line
+    ;; before that is gone by now.  The row\='s keys go in front of
+    ;; whatever magit left, keeping its mouse bindings behind them.
+    (when-let* ((props (cdr (assq 'props row))))
+      (shipit-sections--add-row-props start props))))
 
-(defun shipit-sections-insert-stack-rows (rows base &optional body-fn)
+(defun shipit-sections--add-row-props (start props)
+  "Apply PROPS to the row heading at START, composing keymaps.
+A `keymap\=' in PROPS goes in front of the one already on the line."
+  (save-excursion
+    (goto-char start)
+    (let* ((eol (line-end-position))
+           (map (plist-get props 'keymap))
+           (existing (and map (get-text-property start 'keymap))))
+      (add-text-properties start eol props)
+      (when (and map existing)
+        (put-text-property start eol 'keymap
+                           (make-composed-keymap (list map existing)))))))
+
+(defun shipit-sections-insert-stack-rows (rows base &optional body-fn washer-fn)
   "Insert ROWS as a stack over BASE, top of the stack first.
 ROWS arrive bottom first, the order they have to merge in, and are
 shown reversed so the picture matches the word stack.  Each row is an
 alist of `label\=', `name\=', `extra\=', `current\=' and an optional
 `note\=', plus optional `props\=' applied to its line.  Each row
 becomes its own section, so it can be expanded and stepped between.
-BODY-FN, when given, fills those bodies as the rows are drawn."
+BODY-FN, when given, fills those bodies as the rows are drawn, and
+WASHER-FN on a row\='s first expand instead; keys beyond the listed
+ones ride along untouched for either to read."
   (let ((width (shipit-sections--stack-name-width rows))
+        (extra-width (shipit-sections--stack-extra-width rows))
         ;; A layer starts shut every time.  magit decides visibility
         ;; from two things before it reaches the value asked for here:
         ;; a hook that reads what was remembered, and the previous
@@ -441,7 +489,7 @@ BODY-FN, when given, fills those bodies as the rows are drawn."
         (magit-section-set-visibility-hook nil)
         (magit-insert-section--oldroot nil))
     (dolist (row (reverse rows))
-      (shipit-sections--insert-stack-row row width body-fn))
+      (shipit-sections--insert-stack-row row width extra-width body-fn washer-fn))
     (insert (format "   %-3s %s\n" "" base))))
 
 (provide 'shipit-sections)

@@ -30,21 +30,27 @@
   '((id . 900) (number . 7) (node_id . "S_kw") (open . t)
     (base . ((ref . "main")))
     (pull_requests . [((number . 101) (state . "open") (draft . t)
-                       (merged_at . nil) (head . ((ref . "feat/auth") (sha . "a1"))))
+                       (merged_at . nil) (head . ((ref . "feat/auth") (sha . "a1")))
+                       (title . "Add auth") (user . ((login . "ada"))))
                       ((number . 102) (state . "open") (draft . nil)
-                       (merged_at . nil) (head . ((ref . "feat/api") (sha . "b2"))))
+                       (merged_at . nil) (head . ((ref . "feat/api") (sha . "b2")))
+                       (title . "Add api") (user . ((login . "ada"))))
                       ((number . 103) (state . "open") (draft . nil)
-                       (merged_at . nil) (head . ((ref . "feat/ui") (sha . "c3"))))]))
+                       (merged_at . nil) (head . ((ref . "feat/ui") (sha . "c3")))
+                       (title . "Add ui") (user . ((login . "lin"))))]))
   "The stack resource returned by GET /repos/{owner}/{repo}/stacks/{n}.")
 
 (defconst test-stack--normalized
   '((number . 7) (size . 3) (position . 2) (base . "main") (open . t)
     (entries . (((number . 101) (state . "open") (draft . t) (merged-at . nil)
-                 (head . "feat/auth") (current . nil))
+                 (head . "feat/auth") (title . "Add auth") (author . "ada")
+                 (current . nil))
                 ((number . 102) (state . "open") (draft . nil) (merged-at . nil)
-                 (head . "feat/api") (current . t))
+                 (head . "feat/api") (title . "Add api") (author . "ada")
+                 (current . t))
                 ((number . 103) (state . "open") (draft . nil) (merged-at . nil)
-                 (head . "feat/ui") (current . nil)))))
+                 (head . "feat/ui") (title . "Add ui") (author . "lin")
+                 (current . nil)))))
   "What the backend must hand back for PR 102 of the fixture stack.")
 
 (defun test-stack--with-backend (plist body)
@@ -177,7 +183,7 @@ collapsing work the way every other section in the buffer does."
   "GIVEN a pull request that sits second in a stack of three
 WHEN the stack section is inserted
 THEN the heading states the position, every sibling is listed with its
-branch, and the row for this pull request is marked."
+title, and the row for this pull request is marked."
   (with-temp-buffer
     (magit-section-mode)
     (setq inhibit-read-only t)
@@ -191,7 +197,7 @@ branch, and the row for this pull request is marked."
          (should (string-match-p "2 of 3" text))
          (dolist (n '("101" "102" "103"))
            (should (string-match-p n text)))
-         (should (string-match-p "feat/auth" text))
+         (should (string-match-p "Add auth" text))
          (should (string-match-p "this PR" text)))))))
 
 (ert-deftest test-shipit-stack-section-elides-without-backend-support ()
@@ -276,6 +282,131 @@ render of every ordinary pull request."
       (should-not (shipit-pr-github--fetch-stack
                    '(:repo "o/r") 55 '((number . 55) (title . "solo"))))
       (should (equal 0 requests)))))
+
+(ert-deftest test-shipit-stack-row-washes-in-details-on-expand ()
+  "GIVEN a rendered stack whose backend can answer for each sibling
+WHEN the buffer is drawn
+THEN nothing is fetched and no detail is shown, since six siblings
+fetched eagerly would put a dozen requests on every render
+WHEN a row is expanded
+THEN the sibling's branch, author and description appear, nested
+under that row, fetched once
+WHEN the row is hidden and expanded again
+THEN nothing is fetched again: a row washes once per render."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (let ((pr-fetches 0))
+      (test-stack--with-backend
+       (list :name "Stacked"
+             :fetch-stack (lambda (&rest _) test-stack--normalized)
+             :fetch-pr (lambda (_config number)
+                         (cl-incf pr-fetches)
+                         (list (cons 'number number)
+                               (cons 'body "Why this layer exists."))))
+       (lambda ()
+         (magit-insert-section (shipit-pr-buffer)
+           (shipit--insert-stack-section "o/r" '((number . 102))))
+         (should (equal 0 pr-fetches))
+         (should-not (string-match-p "feat/auth" (buffer-string)))
+         (should-not (string-match-p "Why this layer exists." (buffer-string)))
+         (let ((layer (seq-find (lambda (s) (equal "Add auth" (oref s value)))
+                                (shipit--find-all-sections-by-type
+                                 'shipit-stack-layer))))
+           (should layer)
+           (should (oref layer hidden))
+           (magit-section-show layer)
+           (should (string-match-p "feat/auth" (buffer-string)))
+           (should (string-match-p "ada" (buffer-string)))
+           (should (string-match-p "Why this layer exists." (buffer-string)))
+           (should (equal 1 pr-fetches))
+           (should (oref layer children))
+           (dolist (child (oref layer children))
+             (should (eq layer (oref child parent))))
+           (magit-section-hide layer)
+           (magit-section-show layer)
+           (should (equal 1 pr-fetches))))))))
+
+(ert-deftest test-shipit-stack-washed-children-start-shut-and-indented ()
+  "GIVEN a row washed in on expand
+WHEN its details arrive
+THEN the description is its own section, born shut, so expanding a
+row shows a ladder rather than everything at once
+AND every washed line sits deeper than the row's own text: branch and
+the child heading two columns in, its content deeper still, past the
+column the heading's icon and word occupy."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (test-stack--with-backend
+     (list :name "Stacked"
+           :fetch-stack (lambda (&rest _) test-stack--normalized)
+           :fetch-pr (lambda (_config number)
+                       (list (cons 'number number)
+                             (cons 'body "Why this layer exists."))))
+     (lambda ()
+       (magit-insert-section (shipit-pr-buffer)
+         (shipit--insert-stack-section "o/r" '((number . 102))))
+       (let ((layer (seq-find (lambda (s) (equal "Add auth" (oref s value)))
+                              (shipit--find-all-sections-by-type
+                               'shipit-stack-layer))))
+         (magit-section-show layer)
+         (let ((children (oref layer children)))
+           (should (equal 1 (length children)))
+           (dolist (child children)
+             (should (oref child hidden))
+             (should (invisible-p (marker-position (oref child content))))))
+         (let ((text (buffer-string)))
+           (should (string-match-p "^     feat/auth$" text))
+           (should (string-match-p "^     [^ ].*Description" text))
+           (should (string-match-p "^        Why this layer exists\\." text))))))))
+
+(ert-deftest test-shipit-stack-state-column-wears-the-state-colour ()
+  "GIVEN a rendered stack holding a draft and an open sibling
+WHEN the state column is inspected
+THEN each state word carries the face shipit gives that state
+everywhere else, under both icon variants."
+  (dolist (shipit-use-svglib-icons '(nil t))
+    (with-temp-buffer
+      (magit-section-mode)
+      (setq inhibit-read-only t)
+      (test-stack--with-backend
+       (list :name "Stacked" :fetch-stack (lambda (&rest _) test-stack--normalized))
+       (lambda ()
+         (magit-insert-section (shipit-pr-buffer)
+           (shipit--insert-stack-section "o/r" '((number . 102))))
+         (dolist (state '("draft" "open"))
+           (goto-char (point-min))
+           (should (search-forward state nil t))
+           (should (equal (get-text-property (match-beginning 0) 'font-lock-face)
+                          (get-text-property 0 'font-lock-face
+                                             (shipit--colorize-pr-state state))))))))))
+
+(ert-deftest test-shipit-stack-ret-in-a-shipit-buffer-opens-a-shipit-buffer ()
+  "GIVEN the stack rendered inside a dedicated shipit buffer
+WHEN RET is pressed on a sibling's row
+THEN the sibling opens as a dedicated buffer too, whatever
+`shipit-use-dedicated-buffer' says.  That option chooses how magit's
+own views open things; a reader already in a shipit buffer stays in
+shipit, which is where RET on this row used to fall back to the magit
+integration and look like nothing happened."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (setq major-mode 'shipit-mode)
+    (test-stack--with-backend
+     (list :name "Stacked" :fetch-stack (lambda (&rest _) test-stack--normalized))
+     (lambda ()
+       (magit-insert-section (shipit-pr-buffer)
+         (shipit--insert-stack-section "o/r" '((number . 102))))
+       (let ((shipit-use-dedicated-buffer nil)
+             (opened nil))
+         (cl-letf (((symbol-function 'shipit-open-pr-buffer)
+                    (lambda (n &optional r &rest _) (setq opened (list n r)))))
+           (goto-char (text-property-any (point-min) (point-max)
+                                         'shipit-stack-pr-number 101))
+           (funcall (key-binding (kbd "RET"))))
+         (should (equal '(101 "o/r") opened)))))))
 
 (provide 'test-shipit-pr-stack)
 ;;; test-shipit-pr-stack.el ends here

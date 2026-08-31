@@ -1533,6 +1533,8 @@ renderer marks so the reader can see where they are in the stack."
       (draft . ,(eq (cdr (assq 'draft entry)) t))
       (merged-at . ,(cdr (assq 'merged_at entry)))
       (head . ,(cdr (assq 'ref (cdr (assq 'head entry)))))
+      (title . ,(cdr (assq 'title entry)))
+      (author . ,(cdr (assq 'login (cdr (assq 'user entry)))))
       (current . ,(and (equal number current-number) t)))))
 
 (defun shipit-pr-github--normalize-stack (stack membership number)

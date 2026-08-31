@@ -587,6 +587,7 @@ section and search for the child by name."
     (define-key map (kbd "r") #'shipit-buffer-refresh)
     (define-key map (kbd "g") #'shipit-buffer-refresh)
     (define-key map (kbd "s") #'shipit-buffer-select-pr)
+    (define-key map (kbd "$") #'shipit-process-buffer)
 
     ;; Quick actions
     (define-key map (kbd "a") #'shipit-suggestion-or-approve)

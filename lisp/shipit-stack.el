@@ -39,6 +39,15 @@
                     (mapcar #'string-trim
                             (split-string (buffer-string) "\n")))))))
 
+(defun shipit-stack--git-do (&rest args)
+  "Run git with ARGS for its effect, logged, erroring on failure.
+The reads stay off the log: `shipit-stack--git-lines\=' runs
+constantly and would bury the commands worth seeing under $."
+  (pcase-let ((`(,exit . ,output) (apply #'shipit--run-git args)))
+    (unless (zerop exit)
+      (error "git %s failed: %s" (string-join args " ") output))
+    output))
+
 (defun shipit-stack--rev (ref)
   "Return the commit REF resolves to, or nil when it does not exist."
   (car (shipit-stack--git-lines "rev-parse" "--verify" "-q" ref)))

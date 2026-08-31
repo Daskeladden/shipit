@@ -700,6 +700,10 @@ THEN the git branch moves with it."
              (car (shipit-stacked-preview--current-layers)) "part-1")
             (should (shipit-stack--rev "part-1"))
             (should-not (shipit-stack--rev "part-one"))
+            ;; the move is a mutation, so the process buffer has it
+            (should (with-current-buffer shipit-process-buffer-name
+                      (string-match-p "branch -m part-one part-1"
+                                      (buffer-string))))
             (should (equal "part-1"
                            (cdr (assq 'branch
                                       (car (shipit-stacked-preview--current-layers))))))))

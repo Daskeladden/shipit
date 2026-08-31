@@ -338,7 +338,7 @@ within a layer history grows upward too."
   '((("RET" . "open layer") ("s" . "divide here") ("u" . "undo"))
     (("c" . "create branches") ("P" . "push") ("R" . "register stack"))
     (("r" . "rename layer") ("a" . "suggest name"))
-    (("g" . "refresh") ("q" . "quit")))
+    (("g" . "refresh") ("q" . "quit") ("$" . "process log")))
   "The keys this buffer offers, a list per column.
 Down each column rather than across: dividing the stack, making it
 exist on the remote, then leaving.")
@@ -504,7 +504,7 @@ whose branch exists is renamed in git, checked out or not."
     (when (shipit-stack--rev name)
       (user-error "A branch called %s already exists" name))
     (when (shipit-stack--rev old)
-      (shipit-stack--git-lines "branch" "-m" old name))
+      (shipit-stack--git-do "branch" "-m" old name))
     (when (cdr (assq 'existing layer))
       (setq shipit-stacked-preview--branch name))
     (setf (alist-get tip shipit-stacked-preview--names nil nil #'equal)
@@ -568,7 +568,7 @@ this can be run again after dividing differently."
     (dolist (layer (shipit-stacked-preview--current-layers))
       (let ((branch (cdr (assq 'branch layer))))
         (unless (or (cdr (assq 'existing layer)) (shipit-stack--rev branch))
-          (shipit-stack--git-lines "branch" branch (cdr (assq 'tip layer)))
+          (shipit-stack--git-do "branch" branch (cdr (assq 'tip layer)))
           (setq made (1+ made)))))
     (shipit-stacked-preview--render)
     (message "shipit: %d branch%s created" made (if (= made 1) "" "es"))))
@@ -647,7 +647,9 @@ same reason: what stands on it could not be submitted anyway."
       (shipit-stacked-preview--render))
     (message "Pushed %d branch%s%s" (length branches)
              (if (cdr branches) "es" "")
-             (if (member "--dry-run" args) " (dry run)" ""))))
+             (if (member "--dry-run" args)
+                 " (dry run -- $ shows what it tried)"
+               ""))))
 
 (defun shipit-stacked-preview--push-arguments ()
   "Return the git arguments chosen in the push transient."
@@ -784,6 +786,7 @@ elsewhere."
     (define-key map (kbd "r") #'shipit-stacked-preview-rename-layer)
     (define-key map (kbd "a") #'shipit-stacked-preview-suggest-name)
     (define-key map (kbd "g") #'shipit-stacked-preview-refresh)
+    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "q") #'quit-window)
     map)
   "Keymap for `shipit-stacked-preview-mode'.")

@@ -140,5 +140,43 @@ worked."
                    (apply #'test-push--call-process program args)))))
       (should-not (shipit--push-branch "feature" '("--dry-run"))))))
 
+(ert-deftest test-shipit-push-the-process-buffer-remembers-commands ()
+  "GIVEN two logged commands from different directories
+WHEN the process buffer is read
+THEN both commands, their output and their exit status are there, in
+order, with the directory noted where it changed."
+  (when (get-buffer shipit-process-buffer-name)
+    (kill-buffer shipit-process-buffer-name))
+  (shipit-process-log "/tmp/a/" '("git" "push" "origin" "x") 0 "to origin")
+  (shipit-process-log "/tmp/b/" '("git" "branch" "-m" "x" "y") 128 "fatal: no")
+  (with-current-buffer shipit-process-buffer-name
+    (let ((text (buffer-string)))
+      (should (string-match "git push origin x" text))
+      (should (string-match "to origin" text))
+      (should (string-match "git branch -m x y" text))
+      (should (string-match "fatal: no" text))
+      (should (< (cl-search "git push" text) (cl-search "git branch" text)))
+      (should (string-match-p "/tmp/a/" text))
+      (should (string-match-p "/tmp/b/" text))
+      (should (string-match-p "128" text)))))
+
+(ert-deftest test-shipit-push-a-dry-run-shows-what-it-tried ()
+  "GIVEN a dry run of a new branch
+WHEN it is pushed
+THEN the remote is left untouched AND the process buffer holds the
+command and git's answer, which is the only place a dry run's answer
+can be read."
+  (test-push--with-remote
+    (when (get-buffer shipit-process-buffer-name)
+      (kill-buffer shipit-process-buffer-name))
+    (test-push--git "checkout" "-q" "-b" "feature")
+    (test-push--commit "more work")
+    (should (shipit--push-branch "feature" '("--dry-run")))
+    (should-not (test-push--remote-has "feature"))
+    (with-current-buffer shipit-process-buffer-name
+      (let ((text (buffer-string)))
+        (should (string-match-p "--dry-run" text))
+        (should (string-match-p "feature" text))))))
+
 (provide 'test-shipit-push)
 ;;; test-shipit-push.el ends here

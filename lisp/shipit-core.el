@@ -425,6 +425,51 @@ success."
              (there (shipit--remote-branch-rev branch)))
          (and here there (equal here there)))))
 
+(defvar shipit-process-buffer-name "*shipit-process*"
+  "Buffer collecting the commands shipit runs, like magit\='s under $.")
+
+(defvar shipit-process--last-directory nil
+  "Directory of the last logged command, so repeats stay off the log.")
+
+(defun shipit-process-log (directory command exit output)
+  "Append COMMAND, run in DIRECTORY, with its EXIT status and OUTPUT.
+The buffer answers what shipit just ran, the way magit\='s process
+buffer does.  A dry run\='s answer in particular can be read nowhere
+else: the push changes nothing, so no ref moves to look at."
+  (with-current-buffer (get-buffer-create shipit-process-buffer-name)
+    (unless (derived-mode-p 'special-mode) (special-mode))
+    (let ((inhibit-read-only t))
+      (when (zerop (buffer-size))
+        (setq shipit-process--last-directory nil))
+      (goto-char (point-max))
+      (unless (equal directory shipit-process--last-directory)
+        (setq shipit-process--last-directory directory)
+        (insert (propertize (format "-- in %s\n" directory)
+                            'font-lock-face 'font-lock-comment-face)))
+      (insert (propertize (format "$ %s" (string-join command " "))
+                          'font-lock-face 'bold)
+              (propertize (format "  [exit %d]\n" exit)
+                          'font-lock-face (if (zerop exit)
+                                              'font-lock-comment-face
+                                            'error)))
+      (when (> (length output) 0)
+        (insert output "\n")))))
+
+(defun shipit-process-buffer ()
+  "Show the commands shipit has run."
+  (interactive)
+  (pop-to-buffer (get-buffer-create shipit-process-buffer-name)))
+
+(defun shipit--run-git (&rest args)
+  "Run git with ARGS, logged to the process buffer.
+Return (EXIT . OUTPUT).  For commands that change something; the
+constant reads would bury the commands worth seeing."
+  (with-temp-buffer
+    (let* ((exit (apply #'call-process "git" nil t nil args))
+           (output (string-trim (buffer-string))))
+      (shipit-process-log default-directory (cons "git" args) exit output)
+      (cons exit output))))
+
 (defun shipit--push-branch (branch &optional args)
   "Push BRANCH to origin with ARGS, setting upstream tracking.
 Return t when git exits successfully, nil otherwise.  Success is
@@ -433,23 +478,25 @@ produces false failures when a pre-push hook or remote server message
 happens to print \"error:\"/\"fatal:\" on an otherwise-successful push.
 Lives here rather than in a buffer because more than one buffer
 pushes: the preview pushes the branch it is about to raise a pull
-request for, and preparing a stack pushes the layers."
+request for, and preparing a stack pushes the layers.  The command
+and git\='s answer go to the process buffer under $."
   (message "Pushing branch %s to origin..." branch)
-  (with-temp-buffer
-    (let ((exit (apply #'call-process "git" nil t nil
-                       (append (list "push" "-u") args (list "origin" branch)))))
-      (cond
-       ((zerop exit)
-        (message "Branch %s pushed to origin" branch)
-        t)
-       ((shipit--branch-arrived-p branch args)
-        (message "git failed pushing %s but origin has it: %s"
-                 branch (string-trim (buffer-string)))
-        t)
-       (t
-        (message "Pushing %s failed: %s" branch
-                 (string-trim (buffer-string)))
-        nil)))))
+  (pcase-let ((`(,exit . ,output)
+               (apply #'shipit--run-git
+                      (append (list "push" "-u") args
+                              (list "origin" branch)))))
+    (cond
+     ((zerop exit)
+      (if (member "--dry-run" args)
+          (message "Dry run: %s stays put -- $ shows git's answer" branch)
+        (message "Branch %s pushed to origin" branch))
+      t)
+     ((shipit--branch-arrived-p branch args)
+      (message "git failed pushing %s but origin has it: %s" branch output)
+      t)
+     (t
+      (message "Pushing %s failed: %s" branch output)
+      nil))))
 
 (defun shipit--commits-in-range (&optional range)
   "Return the commits in RANGE as plists, oldest first.

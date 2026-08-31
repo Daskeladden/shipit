@@ -198,7 +198,9 @@ title, and the row for this pull request is marked."
          (dolist (n '("101" "102" "103"))
            (should (string-match-p n text)))
          (should (string-match-p "Add auth" text))
-         (should (string-match-p "this PR" text)))))))
+         (should (string-match-p "this PR" text))
+         ;; the base is a row like the others, not an indented orphan
+         (should (string-match-p "^   main" text)))))))
 
 (ert-deftest test-shipit-stack-section-elides-without-backend-support ()
   "GIVEN a backend that cannot report stacks

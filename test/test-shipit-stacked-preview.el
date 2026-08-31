@@ -544,5 +544,212 @@ second."
         (should (equal '(100 "owner/demo") opened))
         (should-not previewed)))))
 
+(ert-deftest test-shipit-stacked-preview-commits-show-newest-first ()
+  "GIVEN a layer's commits, oldest first as they merge
+WHEN they are ordered for display
+THEN the newest comes first, matching the direction the stack is
+drawn: the base sits at the bottom and history grows upward."
+  (should (equal '(3 2 1)
+                 (mapcar (lambda (c) (plist-get c :n))
+                         (shipit-stacked-preview--display-commits
+                          '((:n 1) (:n 2) (:n 3)))))))
+
+(ert-deftest test-shipit-stacked-preview-a-layer-starts-open ()
+  "GIVEN a freshly drawn preview layer
+THEN it is shown, commits and all: the preview exists to look at the
+division, and a layer born shut made every reader press TAB first."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (magit-insert-section (shipit-pr-buffer)
+      (magit-insert-section (shipit-stack-layer "work")
+        (magit-insert-heading "  HEAD 1 work")
+        (magit-insert-section-body (insert "    c1\n"))))
+    (let ((layer (car (oref magit-root-section children))))
+      (should-not (oref layer hidden)))))
+
+(ert-deftest test-shipit-stacked-preview-refs-name-head-upstream-and-base ()
+  "GIVEN a branch whose upstream is not the base the stack is over
+WHEN the refs are inserted
+THEN the buffer names the branch, its upstream with how far ahead,
+and the base in its resolved form, so the branch stood on is not
+mistaken for the base stacked over."
+  (require 'shipit-sandbox)
+  (let ((root (make-temp-file "shipit-refs-test-" t)))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory
+                                  (shipit-sandbox-build root))))
+          (shipit-sandbox--git
+           "push" "-q" "origin"
+           (concat (car (shipit-stack--git-lines "rev-parse" "work~3"))
+                   ":refs/heads/elsewhere"))
+          (shipit-sandbox--git "branch" "-q" "-u" "origin/elsewhere")
+          (with-temp-buffer
+            (setq default-directory (file-name-as-directory
+                                     (expand-file-name "work" root)))
+            (setq-local shipit-stacked-preview--base "origin/main")
+            (shipit-stacked-preview--insert-refs)
+            (let ((text (buffer-string)))
+              (should (string-match-p "Head:.*work" text))
+              (should (string-match-p "Upstream:.*origin/elsewhere.*3 ahead" text))
+              (should (string-match-p "Base:.*origin/main" text)))))
+      (delete-directory root t))))
+
+(defmacro test-stacked-preview--with-pr-backend (branch-with-pr &rest body)
+  "Run BODY with a backend that has an open PR for BRANCH-WITH-PR only."
+  (declare (indent 1))
+  `(let ((shipit-pr-backend 'test-preview)
+         (shipit-pr-backends
+          (list (cons 'test-preview
+                      (list :name "Preview"
+                            :fetch-pr-for-branch
+                            (lambda (_config branch)
+                              (and (equal branch ,branch-with-pr) 7)))))))
+     ,@body))
+
+(ert-deftest test-shipit-stacked-preview-base-follows-an-open-pr ()
+  "GIVEN a commit below HEAD that is the tip of a remote branch
+AND that branch has an open pull request
+WHEN the base is detected
+THEN it is that branch: the commit is already on its way to the
+default branch, and stacking it again would raise it twice."
+  (require 'shipit-sandbox)
+  (let ((root (make-temp-file "shipit-base-test-" t)))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory
+                                  (shipit-sandbox-build root))))
+          (shipit-sandbox--git
+           "push" "-q" "origin"
+           (concat (car (shipit-stack--git-lines "rev-parse" "work~3"))
+                   ":refs/heads/part-one"))
+          (test-stacked-preview--with-pr-backend "part-one"
+            (should (equal "origin/part-one"
+                           (shipit-stacked-preview--detect-base
+                            "o/r" "origin/main")))))
+      (delete-directory root t))))
+
+(ert-deftest test-shipit-stacked-preview-base-stays-without-an-open-pr ()
+  "GIVEN a commit below HEAD marked by a remote branch with no pull
+request
+WHEN the base is detected
+THEN the default stands: a branch alone promises nothing about
+reaching the default branch."
+  (require 'shipit-sandbox)
+  (let ((root (make-temp-file "shipit-base-test-" t)))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory
+                                  (shipit-sandbox-build root))))
+          (shipit-sandbox--git
+           "push" "-q" "origin"
+           (concat (car (shipit-stack--git-lines "rev-parse" "work~3"))
+                   ":refs/heads/part-one"))
+          (test-stacked-preview--with-pr-backend "something-else"
+            (should (equal "origin/main"
+                           (shipit-stacked-preview--detect-base
+                            "o/r" "origin/main")))))
+      (delete-directory root t))))
+
+(ert-deftest test-shipit-stacked-preview-base-never-eats-the-whole-stack ()
+  "GIVEN the newest commit itself is the tip of a remote branch with
+an open pull request
+WHEN the base is detected
+THEN the default stands: a base at HEAD would leave a stack of
+nothing."
+  (require 'shipit-sandbox)
+  (let ((root (make-temp-file "shipit-base-test-" t)))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory
+                                  (shipit-sandbox-build root))))
+          (shipit-sandbox--git "push" "-q" "origin" "work:refs/heads/part-two")
+          (test-stacked-preview--with-pr-backend "part-two"
+            (should (equal "origin/main"
+                           (shipit-stacked-preview--detect-base
+                            "o/r" "origin/main")))))
+      (delete-directory root t))))
+
+(ert-deftest test-shipit-stacked-preview-rename-layer-takes-the-new-name ()
+  "GIVEN a divided stack in a repository
+WHEN a layer with only a derived name is renamed
+THEN the new name shows on the row and is what `c' will create
+WHEN a layer whose branch exists is renamed
+THEN the git branch moves with it."
+  (require 'shipit-sandbox)
+  (let ((root (make-temp-file "shipit-rename-test-" t)))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory
+                                  (shipit-sandbox-build root))))
+          (with-temp-buffer
+            (setq default-directory (file-name-as-directory
+                                     (expand-file-name "work" root)))
+            (setq-local shipit-stacked-preview--branch "work")
+            (setq-local shipit-stacked-preview--commits
+                        (shipit--commits-in-range "origin/main..HEAD"))
+            (setq-local shipit-stacked-preview--boundaries
+                        (list (plist-get (nth 1 shipit-stacked-preview--commits)
+                                         :sha)))
+            (setq-local shipit-stacked-preview--names nil)
+            (shipit-stacked-preview--rename
+             (car (shipit-stacked-preview--current-layers)) "part-one")
+            (should (equal "part-one"
+                           (cdr (assq 'branch
+                                      (car (shipit-stacked-preview--current-layers))))))
+            (shipit-stack--git-lines
+             "branch" "part-one"
+             (plist-get (nth 1 shipit-stacked-preview--commits) :sha))
+            (shipit-stacked-preview--rename
+             (car (shipit-stacked-preview--current-layers)) "part-1")
+            (should (shipit-stack--rev "part-1"))
+            (should-not (shipit-stack--rev "part-one"))
+            (should (equal "part-1"
+                           (cdr (assq 'branch
+                                      (car (shipit-stacked-preview--current-layers))))))))
+      (delete-directory root t))))
+
+(defmacro test-stacked--with-auth-layer (&rest body)
+  "Run BODY in a stacked preview of one layer of two auth commits.
+The rename prompt takes the text it is offered."
+  (declare (indent 0))
+  `(with-temp-buffer
+     (setq-local shipit-stacked-preview--branch "work")
+     (setq-local shipit-stacked-preview--commits
+                 '((:sha "a1" :first-line "auth: add flow"
+                    :message "auth: add flow\n\nWhy the flow exists.")
+                   (:sha "b2" :first-line "auth: verify token"
+                    :message "auth: verify token")))
+     (setq-local shipit-stacked-preview--boundaries nil)
+     (setq-local shipit-stacked-preview--names nil)
+     (cl-letf (((symbol-function 'read-string)
+                (lambda (_prompt &optional initial &rest _) initial)))
+       ,@body)))
+
+(ert-deftest test-shipit-stacked-preview-suggester-names-a-layer ()
+  "GIVEN a suggester of branch names
+WHEN a name is asked for a layer
+THEN the suggester gets the commits' full messages, its answer prefills
+the rename prompt, and the layer takes the confirmed name."
+  (let* ((descriptions nil)
+         (shipit-branch-name-suggester
+          (lambda (description callback)
+            (push description descriptions)
+            (funcall callback "Add-Auth-Flow"))))
+    (test-stacked--with-auth-layer
+      (shipit-stacked-preview--suggest-name-for
+       (car (shipit-stacked-preview--current-layers)) (current-buffer))
+      (should (string-match-p "Why the flow exists." (car descriptions)))
+      (should (string-match-p "verify token" (car descriptions)))
+      (should (equal "add-auth-flow"
+                     (cdr (assq 'branch
+                                (car (shipit-stacked-preview--current-layers)))))))))
+
+(ert-deftest test-shipit-stacked-preview-without-a-suggester-says-so ()
+  "GIVEN no suggester of branch names
+WHEN a name is asked for a layer
+THEN that is refused, and the layer keeps its name."
+  (let ((shipit-branch-name-suggester nil))
+    (test-stacked--with-auth-layer
+      (should-error (shipit-stacked-preview--suggest-name-for
+                     (car (shipit-stacked-preview--current-layers)) (current-buffer))
+                    :type 'user-error))))
+
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

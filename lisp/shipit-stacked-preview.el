@@ -190,6 +190,42 @@ misses included, so redrawing the list does not ask again."
   (completing-read "Stack sits on: " (magit-list-refnames) nil t nil nil
                    (shipit-stack--base-ref)))
 
+(defun shipit-stacked-preview--remote-tips ()
+  "Alist of commit sha to the remote branch names standing there."
+  (let (tips)
+    (dolist (line (shipit-stack--git-lines
+                   "for-each-ref" "refs/remotes/origin"
+                   "--format=%(objectname) %(refname:short)"))
+      (pcase-let ((`(,sha ,name) (split-string line " ")))
+        (unless (equal name "origin/HEAD")
+          (push name (alist-get sha tips nil nil #'equal)))))
+    tips))
+
+(defun shipit-stacked-preview--detect-base (repo default)
+  "Return the ref the stack sits on: DEFAULT, unless a pull request says else.
+A commit below HEAD that is the tip of a remote branch with an open
+pull request is already on its way to DEFAULT, and stacking it again
+would raise it twice.  The nearest such branch becomes the base, so
+the buffer holds only work no pull request carries yet.  The newest
+commit never does: a base at HEAD would leave a stack of nothing.
+With REPO nil, or no such branch, DEFAULT stands."
+  (or (when repo
+        (let ((tips (shipit-stacked-preview--remote-tips))
+              (current (shipit-stack--current-branch)))
+          (seq-some
+           (lambda (sha)
+             (seq-some
+              (lambda (ref)
+                (let ((name (shipit-stacked-preview--base-name ref)))
+                  (and (not (equal name current))
+                       (not (equal ref default))
+                       (shipit-stack-plan--pr-for-branch repo name)
+                       ref)))
+              (alist-get sha tips nil nil #'equal)))
+           (cdr (shipit-stack--git-lines
+                 "log" "--format=%H" (format "%s..HEAD" default))))))
+      default))
+
 (defun shipit-stacked-preview--layer-at-point ()
   "Return the layer whose section holds point.
 Signals when point is on none: every action here works on one layer,
@@ -275,10 +311,17 @@ marks the newest end of the line of commits."
         ;; it changed exactly as it does there.  The section around
         ;; them is skipped: it would put a second "Commits" heading
         ;; inside a layer that already says how many it holds.
-        (dolist (commit commits)
+        (dolist (commit (shipit-stacked-preview--display-commits commits))
           (shipit--insert-processed-commit-section
            commit shipit-stacked-preview--repo nil
            shipit-stacked-preview--commit-indent))))))
+
+(defun shipit-stacked-preview--display-commits (commits)
+  "Return COMMITS ordered for display, newest first.
+Layers hold them oldest first, the order they merge in, but the
+buffer draws the stack top first with the base at the bottom, so
+within a layer history grows upward too."
+  (reverse commits))
 
 (defun shipit-stacked-preview--insert-base (width)
   "Insert the line naming what the lowest layer sits on, padded to WIDTH."
@@ -294,6 +337,7 @@ marks the newest end of the line of commits."
 (defconst shipit-stacked-preview--key-columns
   '((("RET" . "open layer") ("s" . "divide here") ("u" . "undo"))
     (("c" . "create branches") ("P" . "push") ("R" . "register stack"))
+    (("r" . "rename layer") ("a" . "suggest name"))
     (("g" . "refresh") ("q" . "quit")))
   "The keys this buffer offers, a list per column.
 Down each column rather than across: dividing the stack, making it
@@ -339,6 +383,55 @@ columns line up on rows where one has run out."
               "\n"))
     (insert "\n")))
 
+(defun shipit-stacked-preview--ahead-behind (upstream)
+  "Return \"N ahead, M behind\" of HEAD against UPSTREAM, or nil.
+A count of zero is left out; nil when the two are level."
+  (when-let* ((counts (car (shipit-stack--git-lines
+                            "rev-list" "--left-right" "--count"
+                            (format "%s...HEAD" upstream))))
+              (parts (split-string counts)))
+    (let* ((behind (string-to-number (car parts)))
+           (ahead (string-to-number (cadr parts)))
+           (words (delq nil
+                        (list (and (> ahead 0) (format "%d ahead" ahead))
+                              (and (> behind 0)
+                                   (format "%d behind" behind))))))
+      (and words (string-join words ", ")))))
+
+(defun shipit-stacked-preview--insert-refs ()
+  "Say where HEAD, its upstream and the base actually point.
+The stack is measured over the base, not over the branch\='s
+upstream, and when the two differ a reader can believe they stand on
+one branch while standing on another."
+  (let* ((branch (or (shipit-stack--current-branch) "detached HEAD"))
+         (subject (car (shipit-stack--git-lines "log" "--format=%s" "-1")))
+         (upstream (car (shipit-stack--git-lines
+                         "rev-parse" "--abbrev-ref"
+                         "--symbolic-full-name" "@{u}")))
+         (counts (and upstream
+                      (shipit-stacked-preview--ahead-behind upstream))))
+    (insert (format "  %-9s %s  %s\n" "Head:"
+                    (propertize branch 'font-lock-face 'magit-branch-local)
+                    (or subject "")))
+    (when upstream
+      (insert (format "  %-9s %s%s\n" "Upstream:"
+                      (propertize upstream
+                                  'font-lock-face 'magit-branch-remote)
+                      (if counts
+                          (propertize (concat "  " counts) 'font-lock-face
+                                      'font-lock-comment-face)
+                        ""))))
+    (insert (format "  %-9s %s%s\n" "Base:"
+                    (propertize (or shipit-stacked-preview--base "")
+                                'font-lock-face 'magit-branch-remote)
+                    (if-let* ((pr (and shipit-stacked-preview--base
+                                       (shipit-stacked-preview--pr-number
+                                        (shipit-stacked-preview--base-name
+                                         shipit-stacked-preview--base)))))
+                        (propertize (format "  PR #%s" pr)
+                                    'font-lock-face 'font-lock-comment-face)
+                      "")))))
+
 (defun shipit-stacked-preview--insert-header ()
   "Insert the banner saying what this buffer is."
   (insert (propertize
@@ -348,6 +441,7 @@ columns line up on rows where one has run out."
                    (shipit-stacked-preview--base-name
                     shipit-stacked-preview--base))
            'font-lock-face '(:foreground "orange" :weight bold)))
+  (shipit-stacked-preview--insert-refs)
   (shipit-stacked-preview--insert-keys))
 
 (defun shipit-stacked-preview--render ()
@@ -398,6 +492,72 @@ columns line up on rows where one has run out."
     (setq shipit-stacked-preview--boundaries
           (delete sha shipit-stacked-preview--boundaries))
     (shipit-stacked-preview--render)))
+
+(defun shipit-stacked-preview--rename (layer name)
+  "Give LAYER the branch NAME.
+A layer with only a derived name takes it for `c\=' to create; one
+whose branch exists is renamed in git, checked out or not."
+  (let ((old (cdr (assq 'branch layer)))
+        (tip (cdr (assq 'tip layer))))
+    (when (equal old name)
+      (user-error "The layer is already called %s" name))
+    (when (shipit-stack--rev name)
+      (user-error "A branch called %s already exists" name))
+    (when (shipit-stack--rev old)
+      (shipit-stack--git-lines "branch" "-m" old name))
+    (when (cdr (assq 'existing layer))
+      (setq shipit-stacked-preview--branch name))
+    (setf (alist-get tip shipit-stacked-preview--names nil nil #'equal)
+          name)))
+
+(defun shipit-stacked-preview-rename-layer ()
+  "Rename the layer at point.
+The names the buffer proposes come from commit subjects; this is for
+when the subjects name the work badly."
+  (interactive)
+  (let* ((layer (shipit-stacked-preview--layer-at-point))
+         (name (read-string "Rename layer to: "
+                            (cdr (assq 'branch layer)))))
+    (when (> (length name) 0)
+      (shipit-stacked-preview--rename layer name)
+      (shipit-stacked-preview--render))))
+
+(defun shipit-stacked-preview--layer-description (layer)
+  "The work of LAYER, for a suggestion of its name: its commit messages."
+  (mapconcat (lambda (commit)
+               (or (plist-get commit :message)
+                   (plist-get commit :first-line)
+                   ""))
+             (cdr (assq 'commits layer))
+             "\n---\n"))
+
+(defun shipit-stacked-preview--suggest-name-for (layer buffer)
+  "Have `shipit-branch-name-suggester' name LAYER, confirm in BUFFER, apply.
+The answer prefills the rename prompt rather than being applied as
+it is: the suggester proposes, the reader decides."
+  (unless shipit-branch-name-suggester
+    (user-error "shipit: nothing suggests branch names here"))
+  (with-current-buffer buffer
+    (funcall
+     shipit-branch-name-suggester
+     (shipit-stacked-preview--layer-description layer)
+     (lambda (answer)
+       (when (and answer (buffer-live-p buffer))
+         (with-current-buffer buffer
+           (let ((name (read-string "Rename layer to: "
+                                    (shipit-stack--slug answer))))
+             (when (> (length name) 0)
+               (shipit-stacked-preview--rename layer name)
+               (when (derived-mode-p 'shipit-stacked-preview-mode)
+                 (shipit-stacked-preview--render))))))))))
+
+(defun shipit-stacked-preview-suggest-name ()
+  "Have `shipit-branch-name-suggester' suggest a name for the layer at point.
+Its commit messages go to the suggester; the answer prefills the
+rename prompt, to confirm or edit."
+  (interactive)
+  (shipit-stacked-preview--suggest-name-for
+   (shipit-stacked-preview--layer-at-point) (current-buffer)))
 
 (defun shipit-stacked-preview-create-branches ()
   "Put a branch on each layer that has not got one.
@@ -621,6 +781,8 @@ elsewhere."
     (define-key map (kbd "RET") #'shipit-stacked-preview-visit-layer)
     (define-key map (kbd "P") #'shipit-stacked-preview-push)
     (define-key map (kbd "R") #'shipit-stacked-preview-register)
+    (define-key map (kbd "r") #'shipit-stacked-preview-rename-layer)
+    (define-key map (kbd "a") #'shipit-stacked-preview-suggest-name)
     (define-key map (kbd "g") #'shipit-stacked-preview-refresh)
     (define-key map (kbd "q") #'quit-window)
     map)
@@ -648,9 +810,11 @@ With a prefix argument CHOOSE-BASE, ask which branch the stack sits on
 instead of measuring from the default branch, for a stack raised
 against a release branch."
   (interactive "P")
-  (let* ((base (if choose-base
+  (let* ((repo (shipit--get-repo-from-remote))
+         (base (if choose-base
                    (shipit-stacked-preview--read-base)
-                 (shipit-stack--base-ref)))
+                 (shipit-stacked-preview--detect-base
+                  repo (shipit-stack--base-ref))))
          (branch (shipit-stack--current-branch))
          (commits (shipit--commits-in-range (format "%s..HEAD" base))))
     (unless branch (user-error "Not on a branch"))
@@ -659,7 +823,7 @@ against a release branch."
                    (format "*shipit-stacked-preview: %s*" branch))))
       (with-current-buffer buffer
         (shipit-stacked-preview-mode)
-        (setq shipit-stacked-preview--repo (shipit--get-repo-from-remote)
+        (setq shipit-stacked-preview--repo repo
               shipit-stacked-preview--base base
               shipit-stacked-preview--branch branch
               shipit-stacked-preview--commits commits)

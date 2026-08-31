@@ -56,11 +56,14 @@ runs here and what a user does are the same thing."
        (delete-directory root t))))
 
 (defun test-flow--goto-layer (branch)
-  "Put point on the row of BRANCH."
-  (goto-char (point-min))
-  (unless (search-forward branch nil t)
-    (error "No row for %s in %s" branch (buffer-string)))
-  (goto-char (match-beginning 0)))
+  "Put point on the row of BRANCH.
+Found by its section, not by searching the text: the header names
+the same branch in its Head line, and text can move."
+  (let ((layer (seq-find (lambda (s) (equal branch (oref s value)))
+                         (shipit--find-all-sections-by-type
+                          'shipit-stack-layer))))
+    (unless layer (error "No row for %s in %s" branch (buffer-string)))
+    (goto-char (oref layer start))))
 
 (defun test-flow--submit (branch)
   "Submit the layer of BRANCH the way pressing RET on it does."

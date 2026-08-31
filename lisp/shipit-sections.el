@@ -371,13 +371,6 @@ errors out."
 (put 'shipit-stack-layer 'magit-section t)
 (put 'shipit-stack-description 'magit-section t)
 
-;; The stack reads as a list to take in at a glance, so the section
-;; holding it opens and each layer within stays shut until asked for.
-;; Declared rather than left to the HIDE argument alone, which sets
-;; only the starting value that a remembered one then overrides.
-(with-eval-after-load 'magit-section
-  (unless (assq 'shipit-stack-layer magit-section-initial-visibility-alist)
-    (push '(shipit-stack-layer . hide) magit-section-initial-visibility-alist)))
 
 (defun shipit-sections--pad (text width)
   "Return TEXT padded with spaces to at least WIDTH.
@@ -398,6 +391,13 @@ keeps a deep stack readable is built here."
   "Return the column width the names of ROWS need."
   (apply #'max 8 (mapcar (lambda (row) (length (cdr (assq 'name row)))) rows)))
 
+(defun shipit-sections--stack-label-width (rows)
+  "Return the column width the labels of ROWS need.
+Computed rather than format-padded so the base row below the stack
+can span the label and name columns and still meet the state column."
+  (apply #'max 3 (mapcar (lambda (row) (length (or (cdr (assq 'label row)) "")))
+                 rows)))
+
 (defun shipit-sections--stack-extra-width (rows)
   "Return the column width the extras of ROWS need.
 A fixed width cut \"merged\" loose from the marker column: the widest
@@ -405,9 +405,11 @@ extra decides, as it does for names."
   (apply #'max 6 (mapcar (lambda (row) (length (or (cdr (assq 'extra row)) "")))
                  rows)))
 
-(defun shipit-sections--insert-stack-row (row width extra-width body-fn washer-fn)
-  "Insert ROW as its own section, names padded to WIDTH.
-EXTRA-WIDTH pads the extra column the same way.  BODY-FN, when given,
+(defun shipit-sections--insert-stack-row (row label-width width extra-width
+                                               body-fn washer-fn)
+  "Insert ROW as its own section, labels and names padded to widths.
+LABEL-WIDTH and WIDTH pad the first two columns, EXTRA-WIDTH the
+state column.  BODY-FN, when given,
 is called with ROW to fill the section body as the row is drawn.
 WASHER-FN instead fills it on the row\='s first expand, for bodies
 that cost a fetch; give one or the other, not both, since washing
@@ -415,8 +417,9 @@ moves the content marker past anything built eagerly."
   (let ((start (point)))
     (magit-insert-section (shipit-stack-layer (cdr (assq 'name row)) t)
       (magit-insert-heading
-        (format "   %-3s %s %s%s"
-                (or (cdr (assq 'label row)) "")
+        (format "   %s %s %s%s"
+                (shipit-sections--pad (or (cdr (assq 'label row)) "")
+                                      label-width)
                 (shipit-sections--pad (or (cdr (assq 'name row)) "") width)
                 (shipit-sections--pad (or (cdr (assq 'extra row)) "")
                                       extra-width)
@@ -467,7 +470,8 @@ A `keymap\=' in PROPS goes in front of the one already on the line."
         (put-text-property start eol 'keymap
                            (make-composed-keymap (list map existing)))))))
 
-(defun shipit-sections-insert-stack-rows (rows base &optional body-fn washer-fn)
+(defun shipit-sections-insert-stack-rows (rows base &optional body-fn
+                                               washer-fn base-extra)
   "Insert ROWS as a stack over BASE, top of the stack first.
 ROWS arrive bottom first, the order they have to merge in, and are
 shown reversed so the picture matches the word stack.  Each row is an
@@ -476,8 +480,11 @@ alist of `label\=', `name\=', `extra\=', `current\=' and an optional
 becomes its own section, so it can be expanded and stepped between.
 BODY-FN, when given, fills those bodies as the rows are drawn, and
 WASHER-FN on a row\='s first expand instead; keys beyond the listed
-ones ride along untouched for either to read."
-  (let ((width (shipit-sections--stack-name-width rows))
+ones ride along untouched for either to read.  BASE-EXTRA, when
+given, marks the base\='s row in the state column, the way the rows
+above carry their states."
+  (let ((label-width (shipit-sections--stack-label-width rows))
+        (width (shipit-sections--stack-name-width rows))
         (extra-width (shipit-sections--stack-extra-width rows))
         ;; A layer starts shut every time.  magit decides visibility
         ;; from two things before it reaches the value asked for here:
@@ -489,8 +496,18 @@ ones ride along untouched for either to read."
         (magit-section-set-visibility-hook nil)
         (magit-insert-section--oldroot nil))
     (dolist (row (reverse rows))
-      (shipit-sections--insert-stack-row row width extra-width body-fn washer-fn))
-    (insert (format "   %-3s %s\n" "" base))))
+      (shipit-sections--insert-stack-row row label-width width extra-width
+                                         body-fn washer-fn))
+    ;; The base is a row like the others: it starts where the labels
+    ;; start and, given BASE-EXTRA, is marked in the state column.  An
+    ;; icon mark is a space carrying a display property, so the line
+    ;; is only trimmed when there is no mark to trim away.
+    (let ((line (format "   %s"
+                        (shipit-sections--pad base (+ label-width 1 width)))))
+      (insert (if (and base-extra (> (length base-extra) 0))
+                  (concat line " " base-extra)
+                (string-trim-right line))
+              "\n"))))
 
 (provide 'shipit-sections)
 ;;; shipit-sections.el ends here

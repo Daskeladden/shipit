@@ -1715,7 +1715,27 @@ into the row\='s body."
            (cdr (assq 'entries stack)))
    (or (cdr (assq 'base stack)) "")
    nil
-   #'shipit--wash-stack-entry))
+   #'shipit--wash-stack-entry
+   (shipit--stack-base-icon)))
+
+(defun shipit--stack-base-icon ()
+  "Grey hollow dot marking the stack\='s base, or an empty string.
+The base is a branch, not a pull request: it has no state, so a grey
+circle sits in the state column the way the forge\='s own view draws
+it."
+  (let ((use-svglib (and (display-graphic-p)
+                         shipit-use-svglib-icons
+                         (featurep 'svg-lib)
+                         (fboundp 'svg-lib-icon))))
+    (if use-svglib
+        (condition-case _err
+            (let ((icon (shipit--svg-lib-icon-with-bg
+                         "dot" nil :collection "octicons"
+                         :height 1.0 :width 1.0 :padding 0.1
+                         :foreground "#6e7781" :stroke 0)))
+              (if (imagep icon) (propertize " " 'display icon) ""))
+          (error ""))
+      "")))
 
 (defun shipit--wash-stack-entry (row)
   "Fill the body of stack ROW: branch, author, description, comments.

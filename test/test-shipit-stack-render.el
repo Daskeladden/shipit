@@ -194,5 +194,38 @@ showing again adds nothing: the forge is asked when the reader asks."
         (magit-section-show layer)
         (should (equal 1 washes))))))
 
+(ert-deftest test-shipit-stack-render-base-is-left-aligned-and-marked ()
+  "GIVEN rows over a base, with something to mark the base row
+WHEN the stack is drawn
+THEN the base starts where the row labels start, not indented under
+the names, AND its mark sits in the same column as the rows' states.
+WHEN the mark is an icon, a space carrying a display property
+THEN it survives on the line rather than being trimmed as whitespace."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (magit-insert-section (shipit-pr-buffer)
+      (shipit-sections-insert-stack-rows
+       '(((label . "#1") (name . "alpha") (extra . "E1"))
+         ((label . "#22") (name . "beta-long") (extra . "E2")))
+       "main" nil nil "BX"))
+    (let* ((text (buffer-string))
+           (row (progn (string-match "^.*E1.*$" text) (match-string 0 text)))
+           (base (progn (string-match "^.*BX.*$" text) (match-string 0 text))))
+      (should (string-match-p "^   main" base))
+      (should (equal (cl-search "E1" row) (cl-search "BX" base))))
+    (erase-buffer)
+    ;; `text-property-any' compares with `eq', so the mark must be the
+    ;; same object in the buffer and in the assertion.
+    (let ((mark "MARK"))
+      (magit-insert-section (shipit-pr-buffer)
+        (shipit-sections-insert-stack-rows
+         '(((label . "#1") (name . "alpha") (extra . "E1")))
+         "main" nil nil (propertize " " 'display mark)))
+      (goto-char (point-min))
+      (search-forward "main")
+      (should (text-property-any (line-beginning-position) (line-end-position)
+                                 'display mark)))))
+
 (provide 'test-shipit-stack-render)
 ;;; test-shipit-stack-render.el ends here

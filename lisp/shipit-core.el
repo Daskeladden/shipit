@@ -2051,5 +2051,12 @@ Returns t on success, nil if section not found."
           (magit-section-update-highlight))
         t))))
 
+(defvar shipit-branch-name-suggester nil
+  "A function that suggests a name for a new branch, or nil for none.
+It is called in the buffer of the work with DESCRIPTION, text that
+describes the work, such as its commit messages, and CALLBACK.  It
+calls CALLBACK with the name, or with nil when it has none.  Another
+package can set it.")
+
 (provide 'shipit-core)
 ;;; shipit-core.el ends here

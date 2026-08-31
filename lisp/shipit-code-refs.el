@@ -211,19 +211,31 @@ the current line with `shipit-code-refs-pattern'."
 ;;; Actions
 
 (defun shipit-code-refs--current-repo ()
-  "Return the repo (owner/repo) associated with the current buffer, or nil."
-  (ignore-errors (shipit--get-repo-from-remote)))
+  "Return the repo (owner/repo) the current buffer is about, or nil.
+The buffer decides, not `default-directory\=': a shipit buffer\='s
+directory is wherever Emacs happened to be, and resolving through it
+sent a Jira key to the GitHub issue tracker."
+  (shipit--repo-for-buffer))
+
+(defun shipit-code-refs--resolved-for-key (key)
+  "Resolve the issue backend answering for KEY in this buffer.
+The buffer\='s repository resolves first.  When that backend\='s
+project keys do not claim KEY\='s project and some configured
+backend\='s do, the key\='s own backend answers instead."
+  (let* ((repo (shipit-code-refs--current-repo))
+         (primary (and repo
+                       (ignore-errors (shipit-issue--resolve-for-repo repo)))))
+    (if (shipit-issue--claims-key-p primary key)
+        primary
+      (or (ignore-errors (shipit-issue--resolve-for-key key))
+          primary))))
 
 (defun shipit-code-refs--browse-url (key)
-  "Return the browse URL for issue KEY under the current repo's backend."
-  (let* ((repo (shipit-code-refs--current-repo))
-         (resolved (and repo
-                        (ignore-errors (shipit-issue--resolve-for-repo repo))))
-         (backend (car resolved))
-         (config (cdr resolved))
-         (browse-fn (and backend (plist-get backend :browse-url))))
+  "Return the browse URL for issue KEY under the backend that claims it."
+  (let* ((resolved (shipit-code-refs--resolved-for-key key))
+         (browse-fn (and resolved (plist-get (car resolved) :browse-url))))
     (when browse-fn
-      (funcall browse-fn config key))))
+      (funcall browse-fn (cdr resolved) key))))
 
 ;;;###autoload
 (defun shipit-code-refs-open-issue (&optional key)

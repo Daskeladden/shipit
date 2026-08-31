@@ -102,6 +102,34 @@ Returns (BACKEND-PLIST . CONFIG-PLIST) with :repo injected into config."
                        (list :repo repo))))
         (cons backend-plist config)))))
 
+(defun shipit-issue--key-project (key)
+  "The project prefix of issue KEY: PRJ for PRJ-123."
+  (car (split-string key "-")))
+
+(defun shipit-issue--claims-key-p (resolved key)
+  "Non-nil when RESOLVED\='s project keys claim KEY.
+RESOLVED is a (BACKEND-PLIST . CONFIG-PLIST) pair.  A backend whose
+config names no project keys claims nothing by name."
+  (and resolved
+       (member (shipit-issue--key-project key)
+               (plist-get (cdr resolved) :project-keys))))
+
+(defun shipit-issue--resolve-for-key (key)
+  "Resolve a backend by KEY\='s project alone, or nil.
+Scans `shipit-issue-repo-backends\=' for an entry whose project keys
+claim KEY.  This is the answer of last resort: when whatever
+repository a buffer resolves to does not claim the key, the key still
+says which tracker it belongs to."
+  (let ((project (shipit-issue--key-project key)))
+    (cl-loop for (_pattern . config-plist) in shipit-issue-repo-backends
+             when (member project (plist-get config-plist :project-keys))
+             return (let* ((backend-id (plist-get config-plist :backend))
+                           (backend (or (cdr (assq backend-id
+                                                   shipit-issue-backends))
+                                        (error "No issue backend registered for `%s'"
+                                               backend-id))))
+                      (cons backend (copy-sequence config-plist))))))
+
 (defun shipit-issue--all-reference-patterns (repo)
   "Return reference patterns for REPO from the resolved backend.
 Each element is (BACKEND-ID REGEX GROUP EXTRACTOR)."

@@ -362,6 +362,26 @@ during a session."
         (puthash dir result shipit--repo-from-remote-cache)
         result)))))
 
+(defun shipit--buffer-repo-variable ()
+  "The repository a buffer-local variable names, or nil.
+Each kind of shipit buffer records what it is about in its own
+variable; there is no single one they share."
+  (seq-some (lambda (variable)
+              (and (boundp variable) (symbol-value variable)))
+            '(shipit-buffer-repo shipit-issue-buffer-repo
+              shipit-preview--repo shipit-stacked-preview--repo
+              shipit-actions--repo)))
+
+(defun shipit--repo-for-buffer ()
+  "Return the repository this buffer is about, or the directory\='s.
+A row names its repository most precisely, then the buffer; only when
+neither says anything does the directory\='s git remote answer.  A
+buffer\='s directory is wherever Emacs happened to be, which for
+shipit\='s own buffers has nothing to do with what they show."
+  (or (get-text-property (point) 'shipit-repo)
+      (shipit--buffer-repo-variable)
+      (ignore-errors (shipit--get-repo-from-remote))))
+
 (defun shipit--upstream-default-branch ()
   "Return the default branch of the upstream remote.
 Reads `refs/remotes/origin/HEAD' (set by clone or `git remote

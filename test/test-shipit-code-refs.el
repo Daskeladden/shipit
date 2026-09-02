@@ -95,5 +95,47 @@ and the directory's remote only answers when nothing else does."
       (goto-char (point-min))
       (should (equal "row/repo" (shipit--repo-for-buffer))))))
 
+(ert-deftest test-code-refs-in-comment-p-does-not-move-point ()
+  "GIVEN a position somewhere in the buffer
+WHEN `shipit-code-refs--in-comment-p' classifies it
+THEN point is left where it was.
+A `...-p' predicate must not move point: the `syntax-ppss' fallback
+otherwise leaves point at the queried spot, and a font-lock matcher
+looping over a rejected match then re-matches the same key forever."
+  (with-temp-buffer
+    (emacs-lisp-mode)
+    (insert ";; a comment mentioning PRJ-1\n")
+    (insert "(setq x \"PRJ-2 in a string\")\n")
+    (goto-char (point-max))
+    (let ((origin (point)))
+      (shipit-code-refs--in-comment-p 5)   ; a spot inside the comment
+      (should (= (point) origin))
+      (shipit-code-refs--in-comment-p 35)  ; a spot inside the code
+      (should (= (point) origin)))))
+
+(ert-deftest test-code-refs-matcher-advances-past-a-rejected-key ()
+  "GIVEN a predicate that (like `syntax-ppss') leaves point at the spot
+it was asked about and rejects the match
+WHEN the font-lock matcher scans past that key
+THEN it advances instead of re-matching the same key forever.
+The stub caps its own call count so a regression fails loudly rather
+than hanging the suite."
+  (with-temp-buffer
+    (insert "value PRJ-123 here\n")
+    (goto-char (point-min))
+    (let ((calls 0)
+          (shipit-code-refs-comments-only t)
+          (shipit-code-refs-restrict-to-project-keys nil))
+      (cl-letf (((symbol-function 'shipit-code-refs--in-comment-p)
+                 (lambda (pos)
+                   (setq calls (1+ calls))
+                   (when (> calls 50)
+                     (error "matcher looped: in-comment-p called %d times"
+                            calls))
+                   (goto-char pos)   ; reproduce syntax-ppss's point move
+                   nil)))            ; and reject: not a comment
+        (should-not (shipit-code-refs--matcher (point-max)))
+        (should (<= calls 1))))))
+
 (provide 'test-shipit-code-refs)
 ;;; test-shipit-code-refs.el ends here

@@ -138,14 +138,20 @@ Strategy:
   can backtrack hard there.
 - When a tree-sitter parser is active in the buffer, use
   `treesit-node-at' (fast, incremental).
-- Otherwise fall back to `syntax-ppss'."
-  (cond
-   ((apply #'derived-mode-p shipit-code-refs-prose-modes) t)
-   ((and (fboundp 'treesit-parser-list) (treesit-parser-list))
-    (when-let* ((node (treesit-node-at pos))
-                (type (treesit-node-type node)))
-      (string-match-p "comment" type)))
-   (t (nth 4 (syntax-ppss pos)))))
+- Otherwise fall back to `syntax-ppss'.
+
+Point is preserved.  `syntax-ppss' leaves point at POS, and a matcher
+that queries a rejected match would then re-search from the match
+start forever; callers that insert at point (the auto-picker) would
+also act at the wrong place."
+  (save-excursion
+    (cond
+     ((apply #'derived-mode-p shipit-code-refs-prose-modes) t)
+     ((and (fboundp 'treesit-parser-list) (treesit-parser-list))
+      (when-let* ((node (treesit-node-at pos))
+                  (type (treesit-node-type node)))
+        (string-match-p "comment" type)))
+     (t (nth 4 (syntax-ppss pos))))))
 
 (defvar shipit-code-refs-keymap
   (let ((map (make-sparse-keymap)))
@@ -162,18 +168,24 @@ Strategy:
 Honors `shipit-code-refs-comments-only' and
 `shipit-code-refs-restrict-to-project-keys'.  Wraps predicate checks
 in `save-match-data' so that group 1 remains valid for font-lock to
-read after the matcher returns."
+read after the matcher returns.
+
+Point is forced to the match end after each rejected candidate so a
+predicate that moves point cannot stall the scan into an infinite
+loop re-matching the same key."
   (let ((case-fold-search nil)
         (found nil))
     (while (and (not found)
                 (re-search-forward shipit-code-refs-pattern bound t))
-      (save-match-data
-        (let ((key (match-string-no-properties 1))
-              (mb (match-beginning 0)))
-          (when (and (shipit-code-refs--key-allowed-p key)
-                     (or (not shipit-code-refs-comments-only)
-                         (shipit-code-refs--in-comment-p mb)))
-            (setq found t)))))
+      (let ((end (match-end 0)))
+        (save-match-data
+          (let ((key (match-string-no-properties 1))
+                (mb (match-beginning 0)))
+            (when (and (shipit-code-refs--key-allowed-p key)
+                       (or (not shipit-code-refs-comments-only)
+                           (shipit-code-refs--in-comment-p mb)))
+              (setq found t))))
+        (unless found (goto-char end))))
     found))
 
 (defvar shipit-code-refs--font-lock-keywords nil

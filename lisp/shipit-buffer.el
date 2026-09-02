@@ -1682,25 +1682,35 @@ buffer looked like RET doing nothing."
           (shipit-maybe-use-dedicated-buffer number repo))))
     map))
 
-(defun shipit--stack-entry-state-text (entry)
+(defun shipit--stack-entry-state-text (entry &optional statuses)
   "Return the state column for ENTRY: the word in its state\='s colour.
 The SVG icon rides in front where those are on; the emoji fallback is
-empty because the word is already there."
-  (let ((state (shipit--stack-entry-state entry)))
-    (concat (shipit--get-pr-state-icon state "")
-            (shipit--colorize-pr-state state))))
+empty because the word is already there.  STATUSES, when given, rides
+behind the word as the rollup and review glyphs, so a red or waiting
+sibling is seen from here without opening it."
+  (let* ((state (shipit--stack-entry-state entry))
+         (icon (shipit--get-pr-state-icon state "")))
+    (concat icon
+            ;; Breathing room after a real icon; the empty fallback
+            ;; must not indent the word instead.
+            (if (> (length icon) 0) " " "")
+            (shipit--colorize-pr-state state)
+            (shipit--stack-status-glyphs statuses))))
 
-(defun shipit--stack-entry-row (entry repo)
+(defun shipit--stack-entry-row (entry repo statuses)
   "Return the render row for stack ENTRY of REPO.
 The title names the row when the forge gave one; a title says what a
 sibling is about where a branch name only hints.  The branch moves
-into the row\='s body."
+into the row\='s body.  STATUSES maps sibling numbers to their check
+rollup and review decision; the entry\='s, when there, joins the
+state column."
   (let ((number (cdr (assq 'number entry))))
     `((label . ,(format "#%s" number))
       (name . ,(or (cdr (assq 'title entry))
                    (cdr (assq 'head entry))
                    ""))
-      (extra . ,(shipit--stack-entry-state-text entry))
+      (extra . ,(shipit--stack-entry-state-text
+                 entry (cdr (assq number statuses))))
       (current . ,(cdr (assq 'current entry)))
       (marker . "this PR")
       (entry . ,entry)
@@ -1711,13 +1721,17 @@ into the row\='s body."
 
 (defun shipit--insert-stack-body (stack repo)
   "Insert the rows of STACK for REPO through the shared stack renderer."
-  (shipit-sections-insert-stack-rows
-   (mapcar (lambda (entry) (shipit--stack-entry-row entry repo))
-           (cdr (assq 'entries stack)))
-   (or (cdr (assq 'base stack)) "")
-   nil
-   #'shipit--wash-stack-entry
-   (shipit--stack-base-icon)))
+  (let* ((entries (cdr (assq 'entries stack)))
+         (statuses (shipit-pr--stack-statuses-quietly
+                    repo (mapcar (lambda (entry) (cdr (assq 'number entry)))
+                                 entries))))
+    (shipit-sections-insert-stack-rows
+     (mapcar (lambda (entry) (shipit--stack-entry-row entry repo statuses))
+             entries)
+     (or (cdr (assq 'base stack)) "")
+     nil
+     #'shipit--wash-stack-entry
+     (shipit--stack-base-icon))))
 
 (defun shipit--stack-base-icon ()
   "Grey hollow dot marking the stack\='s base, or an empty string.

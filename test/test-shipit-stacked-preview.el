@@ -848,5 +848,93 @@ THEN that is refused, and the layer keeps its name."
                      (car (shipit-stacked-preview--current-layers)) (current-buffer))
                     :type 'user-error))))
 
+(ert-deftest test-shipit-stacked-preview-statuses-are-fetched-once ()
+  "GIVEN layers where two branches have pull requests and one has none
+WHEN their statuses are asked for
+THEN the backend is asked once with only the numbers that exist, and
+its answer comes back as it stands, so one query serves every row."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let* ((layers (test-stacked--layers "one" "two" "three"))
+           (asked nil)
+           (shipit-pr-backend 'test-preview)
+           (shipit-pr-backends
+            (list (cons 'test-preview
+                        (list :name "Preview"
+                              :fetch-stack-statuses
+                              (lambda (_config numbers)
+                                (push numbers asked)
+                                '((101 . ((review . "approved"))))))))))
+      (cl-letf (((symbol-function 'shipit-stack-plan--pr-for-branch)
+                 (lambda (_repo branch)
+                   (cdr (assoc branch '(("one" . 101) ("three" . 103)))))))
+        (should (equal '((101 . ((review . "approved"))))
+                       (shipit-stacked-preview--statuses layers)))
+        (should (equal '((101 103)) asked))))))
+
+(ert-deftest test-shipit-stacked-preview-status-carries-the-pr-statuses ()
+  "GIVEN a layer whose branch has a pull request with checks and a
+review decision
+WHEN its status is drawn with SVG icons off
+THEN the glyphs ride behind the pull request number, so a red or
+waiting layer is seen from the preview without opening it."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((shipit-use-svglib-icons nil)
+          (layer (car (test-stacked--layers "one"))))
+      (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
+                ((symbol-function 'shipit-stack-plan--pr-for-branch)
+                 (lambda (&rest _) 4471)))
+        (let ((status (shipit-stacked-preview--layer-status
+                       layer '((4471 . ((checks . "success")
+                                        (review . "changes_requested")))))))
+          (should (string-match-p "PR #4471" status))
+          (should (string-match-p "✅" status))
+          (should (string-match-p "❌" status)))))))
+
+(ert-deftest test-shipit-stacked-preview-rows-carry-the-pr-statuses ()
+  "GIVEN a stack of two layers with pull requests and a backend
+answering their statuses
+WHEN the buffer is drawn with SVG icons off
+THEN each row wears its own glyphs: the approved layer the green
+check, the one still waiting the hourglass."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (setq shipit-stacked-preview--repo "owner/repo"
+          shipit-stacked-preview--base "origin/master")
+    (let ((shipit-use-svglib-icons nil)
+          (layers (test-stacked--layers "one" "two"))
+          (shipit-pr-backend 'test-preview)
+          (shipit-pr-backends
+           (list (cons 'test-preview
+                       (list :name "Preview"
+                             :fetch-stack-statuses
+                             (lambda (&rest _)
+                               '((101 . ((review . "approved")))
+                                 (102 . ((review . "review_required"))))))))))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--insert-header)
+                 (lambda () nil))
+                ((symbol-function 'shipit-stacked-preview--insert-problems)
+                 (lambda () nil))
+                ((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
+                ((symbol-function 'shipit-stack-plan--pr-for-branch)
+                 (lambda (_repo branch)
+                   (cdr (assoc branch '(("one" . 101) ("two" . 102))))))
+                ((symbol-function 'shipit--insert-processed-commit-section)
+                 (lambda (&rest _) nil)))
+        (shipit-stacked-preview--render)
+        (let* ((lines (split-string (buffer-string) "\n"))
+               (row-one (cl-find-if
+                         (lambda (l) (string-match-p "PR #101" l)) lines))
+               (row-two (cl-find-if
+                         (lambda (l) (string-match-p "PR #102" l)) lines)))
+          (should row-one)
+          (should row-two)
+          (should (string-match-p "✅" row-one))
+          (should (string-match-p "⏳" row-two)))))))
+
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

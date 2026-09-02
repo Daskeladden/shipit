@@ -50,6 +50,9 @@
                   (pr-number &optional repo backend-id backend-config))
 
 (declare-function shipit--insert-processed-commit-section "shipit-pr-sections")
+(declare-function shipit--stack-status-glyphs "shipit-render" (statuses))
+(declare-function shipit-pr--stack-statuses-quietly "shipit-pr-backends"
+                  (repo numbers))
 
 (defvar-local shipit-stacked-preview--repo nil
   "Repository these commits belong to.")
@@ -178,12 +181,14 @@ version of the stack."
       (concat status "  " (propertize drift 'font-lock-face 'font-lock-comment-face))
     status))
 
-(defun shipit-stacked-preview--layer-status (layer)
+(defun shipit-stacked-preview--layer-status (layer &optional statuses)
   "Return where LAYER has got to, coloured by how far that is.
 Dim while the layer is still only local, orange while it is on its way,
 green once it is on the remote, and the branch colour once it has a
 pull request of its own.  A layer on the remote also says how far its
-copy there has fallen behind this one."
+copy there has fallen behind this one.  STATUSES maps pull request
+numbers to their check rollup and review decision; a layer with a
+pull request wears its glyphs behind the number."
   (let ((branch (cdr (assq 'branch layer))))
     (cond
      ((shipit-stacked-preview--sending-p branch)
@@ -195,10 +200,23 @@ copy there has fallen behind this one."
      (t (shipit-stacked-preview--with-drift
          (let ((number (shipit-stacked-preview--pr-number branch)))
            (if number
-               (propertize (format "PR #%s" number)
-                           'font-lock-face 'magit-branch-remote)
+               (concat
+                (propertize (format "PR #%s" number)
+                            'font-lock-face 'magit-branch-remote)
+                (shipit--stack-status-glyphs (cdr (assq number statuses))))
              (propertize "pushed" 'font-lock-face 'success)))
          branch)))))
+
+(defun shipit-stacked-preview--statuses (layers)
+  "Return the statuses of LAYERS\=' pull requests, keyed by number.
+One quiet fetch answers for the whole stack; a layer without a pull
+request asks for nothing, and a forge that cannot answer right now
+leaves every row bare."
+  (shipit-pr--stack-statuses-quietly
+   shipit-stacked-preview--repo
+   (mapcar (lambda (layer)
+             (shipit-stacked-preview--pr-number (cdr (assq 'branch layer))))
+           layers)))
 
 (defun shipit-stacked-preview--pr-number (branch)
   "Return the number of the open pull request whose head is BRANCH.
@@ -303,10 +321,12 @@ out of line the moment one does."
                                               (length (cdr (assq 'commits l))))))
                          layers)))
 
-(defun shipit-stacked-preview--insert-layer (layer index width count-width top-p)
+(defun shipit-stacked-preview--insert-layer
+    (layer index width count-width top-p &optional statuses)
   "Insert LAYER, numbered INDEX from the bottom.
 Names are padded to WIDTH and commit counts to COUNT-WIDTH.  TOP-P
-marks the newest end of the line of commits."
+marks the newest end of the line of commits.  STATUSES carries the
+stack\='s pull request statuses for the layer\='s status glyphs."
   (let ((commits (cdr (assq 'commits layer))))
     (magit-insert-section (shipit-stack-layer (cdr (assq 'branch layer)))
       (magit-insert-heading
@@ -327,7 +347,7 @@ marks the newest end of the line of commits."
                 (let ((n (number-to-string (length commits))))
                   (concat (make-string (- count-width (length n)) ?\s) n))
                 (if (cdr commits) "s" " ")
-                (shipit-stacked-preview--layer-status layer)))
+                (shipit-stacked-preview--layer-status layer statuses)))
       (magit-insert-section-body
         ;; Each commit through the renderer the pull request buffer
         ;; uses, so a commit here opens onto its message and the files
@@ -479,12 +499,13 @@ one branch while standing on another."
       ;; Newest at the top and the base at the bottom, which is the way
       ;; a stack is drawn and the way the commits actually sit.
       (let* ((layers (shipit-stacked-preview--current-layers))
+             (statuses (shipit-stacked-preview--statuses layers))
              (width (shipit-stacked-preview--name-width layers))
              (count-width (shipit-stacked-preview--count-width layers))
              (index (length layers)))
         (dolist (layer (reverse layers))
           (shipit-stacked-preview--insert-layer
-           layer index width count-width (= index (length layers)))
+           layer index width count-width (= index (length layers)) statuses)
           (setq index (1- index)))
         (shipit-stacked-preview--insert-base width)))
     (goto-char (min position (point-max)))))

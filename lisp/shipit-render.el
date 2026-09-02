@@ -5627,6 +5627,47 @@ Returns (octicon . color) or nil."
             emoji-fallback))
       emoji-fallback)))
 
+(defun shipit--stack-checks-glyph (state)
+  "Return the glyph for a stack sibling\='s check rollup STATE, or nothing.
+The checks section\='s own vocabulary: green check, red x, yellow dot
+for anything still running.  Nothing for nil, which is a sibling with
+no checks at all."
+  (pcase state
+    ('nil "")
+    ("success" (shipit--get-check-status-icon nil "success" "✅"))
+    ((or "failure" "error")
+     (shipit--get-check-status-icon nil "failure" "❌"))
+    (_ (shipit--get-check-status-icon "in_progress" nil "\U0001F7E1"))))
+
+(defun shipit--stack-review-glyph (decision)
+  "Return the glyph for a stack sibling\='s review DECISION, or nothing.
+The approval section\='s own vocabulary: green check for approved,
+red x for changes requested, hourglass while review is still
+required.  Nothing for nil, which is a sibling the forge reports no
+decision for."
+  (pcase decision
+    ('nil "")
+    ("approved" (shipit--get-approval-status-icon "APPROVED" "✅"))
+    ("changes_requested"
+     (shipit--get-approval-status-icon "CHANGES_REQUESTED" "❌"))
+    ("review_required"
+     (shipit--get-approval-status-icon "REVIEW_REQUIRED" "⏳"))
+    (_ "")))
+
+(defun shipit--stack-status-glyphs (statuses)
+  "Return the glyph tail of a stack row\='s STATUSES, leading spaces included.
+Check rollup first, review decision behind it; a status the sibling
+does not have adds nothing, so a bare state word stays bare.  Shared
+by the pull request buffer\='s stack section and the stacked preview,
+which must not require one another."
+  (mapconcat (lambda (glyph)
+               (if (> (length glyph) 0) (concat " " glyph) ""))
+             (list (shipit--stack-checks-glyph
+                    (cdr (assq 'checks statuses)))
+                   (shipit--stack-review-glyph
+                    (cdr (assq 'review statuses))))
+             ""))
+
 (defun shipit--comment-type-to-icon-color (comment-type)
   "Map COMMENT-TYPE to octicon name and color.
 Returns (octicon . color) or nil."

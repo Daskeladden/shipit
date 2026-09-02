@@ -382,7 +382,11 @@ everywhere else, under both icon variants."
            (should (search-forward state nil t))
            (should (equal (get-text-property (match-beginning 0) 'font-lock-face)
                           (get-text-property 0 'font-lock-face
-                                             (shipit--colorize-pr-state state))))))))))
+                                             (shipit--colorize-pr-state state)))))
+         ;; without an icon the word starts the column; the space
+         ;; belongs to the icon, not the text
+         (should-not (string-prefix-p " " (shipit--stack-entry-state-text
+                                           '((state . "open"))))))))))
 
 (ert-deftest test-shipit-stack-ret-in-a-shipit-buffer-opens-a-shipit-buffer ()
   "GIVEN the stack rendered inside a dedicated shipit buffer
@@ -409,6 +413,156 @@ integration and look like nothing happened."
                                          'shipit-stack-pr-number 101))
            (funcall (key-binding (kbd "RET"))))
          (should (equal '(101 "o/r") opened)))))))
+
+;;;; Check rollups and review decisions on the rows
+
+(ert-deftest test-shipit-stack-statuses-one-query-answers-for-the-stack ()
+  "GIVEN the github backend
+WHEN the statuses of a stack's numbers are fetched
+THEN one GraphQL query asks for every number and the answer maps each
+to its downcased check rollup and review decision, leaving out
+siblings with neither, so the caller draws nothing for them the way
+the forge does."
+  (let ((queries nil))
+    (cl-letf (((symbol-function 'shipit--graphql-query)
+               (lambda (query _variables)
+                 (push query queries)
+                 '((repository
+                    . ((p101 . ((reviewDecision . "APPROVED")
+                                (commits
+                                 . ((nodes
+                                     . [((commit
+                                          . ((statusCheckRollup
+                                              . ((state . "SUCCESS"))))))])))))
+                       (p102 . ((reviewDecision . "CHANGES_REQUESTED")
+                                (commits
+                                 . ((nodes
+                                     . [((commit
+                                          . ((statusCheckRollup
+                                              . ((state . "FAILURE"))))))])))))
+                       (p103 . ((reviewDecision . "REVIEW_REQUIRED")
+                                (commits
+                                 . ((nodes
+                                     . [((commit
+                                          . ((statusCheckRollup
+                                              . nil))))])))))
+                       (p104 . ((reviewDecision . nil)
+                                (commits
+                                 . ((nodes
+                                     . [((commit
+                                          . ((statusCheckRollup
+                                              . nil))))])))))))))))
+      (let ((op (plist-get (cdr (assq 'github shipit-pr-backends))
+                           :fetch-stack-statuses)))
+        (should (functionp op))
+        (should (equal '((101 . ((checks . "success") (review . "approved")))
+                         (102 . ((checks . "failure")
+                                 (review . "changes_requested")))
+                         (103 . ((review . "review_required"))))
+                       (funcall op '(:repo "o/r") '(101 102 103 104))))
+        (should (equal 1 (length queries)))
+        (dolist (number '("101" "102" "103" "104"))
+          (should (string-match-p number (car queries))))
+        (should (string-match-p "statusCheckRollup" (car queries)))
+        (should (string-match-p "reviewDecision" (car queries)))))))
+
+(ert-deftest test-shipit-stack-statuses-absent-op-answers-nothing ()
+  "GIVEN a backend with no :fetch-stack-statuses, as the sandbox and
+GitLab have none
+WHEN statuses are asked for
+THEN the dispatch answers nil rather than erroring, so rows render
+without a glyph."
+  (test-stack--with-backend
+   '(:name "Stackless")
+   (lambda ()
+     (should-not (shipit-pr--fetch-stack-statuses "o/r" '(1 2))))))
+
+(ert-deftest test-shipit-stack-rows-carry-the-check-rollup ()
+  "GIVEN a backend that reports stacks and their check rollups
+WHEN the stack section is inserted with SVG icons off
+THEN a passing sibling's row carries the green check, a failing one's
+the red x, and one with no checks nothing extra, so whether the stack
+is green can be read without opening each sibling."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (let ((shipit-use-svglib-icons nil)
+          (asked nil))
+      (test-stack--with-backend
+       (list :name "Stacked"
+             :fetch-stack (lambda (&rest _) test-stack--normalized)
+             :fetch-stack-statuses
+             (lambda (_config numbers)
+               (setq asked numbers)
+               '((101 . ((checks . "success")))
+                 (102 . ((checks . "failure"))))))
+       (lambda ()
+         (magit-insert-section (shipit-pr-buffer)
+           (shipit--insert-stack-section "o/r" '((number . 102))))
+         (should (equal '(101 102 103) asked))
+         (let ((lines (split-string (buffer-string) "\n")))
+           (dolist (want '(("Add auth" "✅" t)
+                           ("Add api" "❌" t)
+                           ("Add ui" "✅\\|❌\\|🟡" nil)))
+             (let ((line (cl-find-if
+                          (lambda (l) (string-match-p (nth 0 want) l))
+                          lines)))
+               (should line)
+               (if (nth 2 want)
+                   (should (string-match-p (nth 1 want) line))
+                 (should-not (string-match-p (nth 1 want) line)))))))))))
+
+(ert-deftest test-shipit-stack-rows-carry-the-review-decision ()
+  "GIVEN a backend that reports stacks and their review decisions
+WHEN the stack section is inserted with SVG icons off
+THEN an approved sibling's row carries the green check, one with
+changes requested the red x, and one still waiting for review the
+hourglass, so where the stack stands with its reviewers can be read
+without opening each sibling."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (let ((shipit-use-svglib-icons nil))
+      (test-stack--with-backend
+       (list :name "Stacked"
+             :fetch-stack (lambda (&rest _) test-stack--normalized)
+             :fetch-stack-statuses
+             (lambda (&rest _)
+               '((101 . ((review . "approved")))
+                 (102 . ((review . "changes_requested")))
+                 (103 . ((review . "review_required"))))))
+       (lambda ()
+         (magit-insert-section (shipit-pr-buffer)
+           (shipit--insert-stack-section "o/r" '((number . 102))))
+         (let ((lines (split-string (buffer-string) "\n")))
+           (dolist (want '(("Add auth" "✅")
+                           ("Add api" "❌")
+                           ("Add ui" "⏳")))
+             (let ((line (cl-find-if
+                          (lambda (l) (string-match-p (nth 0 want) l))
+                          lines)))
+               (should line)
+               (should (string-match-p (nth 1 want) line))))))))))
+
+(ert-deftest test-shipit-stack-rollup-failure-does-not-break-the-section ()
+  "GIVEN a rollup fetch that fails
+WHEN the stack section is inserted
+THEN the rows still render, without glyphs: the rollup is a nicety
+and its failure belongs in the debug log, not across the buffer."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (let ((shipit-use-svglib-icons nil))
+      (test-stack--with-backend
+       (list :name "Stacked"
+             :fetch-stack (lambda (&rest _) test-stack--normalized)
+             :fetch-stack-statuses (lambda (&rest _) (error "rollup down")))
+       (lambda ()
+         (magit-insert-section (shipit-pr-buffer)
+           (shipit--insert-stack-section "o/r" '((number . 102))))
+         (let ((text (buffer-string)))
+           (should (string-match-p "Add auth" text))
+           (should-not (string-match-p "✅\\|❌" text))))))))
 
 (provide 'test-shipit-pr-stack)
 ;;; test-shipit-pr-stack.el ends here

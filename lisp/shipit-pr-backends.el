@@ -112,6 +112,9 @@
 ;;   :fetch-stack             — (config number &optional pr-data) → stack
 ;;                              alist, or nil when
 ;;                              the pull request is not in a stack
+;;   :fetch-stack-statuses    — (config numbers) → alist of
+;;                              (number . statuses), statuses an alist
+;;                              with `checks' and `review' keys
 
 ;;; Code:
 
@@ -310,6 +313,38 @@ draws nothing in either case."
          (config (cdr resolved))
          (fn (plist-get backend :fetch-stack)))
     (when fn (funcall fn config number pr-data))))
+
+(defun shipit-pr--fetch-stack-statuses (repo numbers)
+  "Return (NUMBER . STATUSES) for each pull request of NUMBERS.
+STATUSES is an alist with up to two keys: `checks', the forge\='s
+rollup verdict over the head commit\='s checks (\"success\",
+\"failure\" or \"pending\"), and `review', the forge\='s review
+decision (\"approved\", \"changes_requested\" or \"review_required\").
+Resolved through the active backend\='s optional :fetch-stack-statuses
+operation.  Answers nil when the backend has none, and a number whose
+pull request has neither checks nor a review decision is absent from
+the answer; the caller draws nothing in either case, the way the
+forge shows nothing beside such a pull request."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (fn (plist-get backend :fetch-stack-statuses)))
+    (when fn (funcall fn (cdr resolved) numbers))))
+
+(defun shipit-pr--stack-statuses-quietly (repo numbers)
+  "Return the stack statuses for NUMBERS in REPO, nil on failure.
+Nils among NUMBERS stand for rows without a pull request and are
+dropped; with none left the backend is not asked at all.  The
+statuses are a nicety on top of a stack view: a forge that cannot
+answer for them right now still gets its rows drawn, and the failure
+goes to the debug log instead of across the section."
+  (let ((numbers (delq nil numbers)))
+    (when numbers
+      (condition-case err
+          (shipit-pr--fetch-stack-statuses repo numbers)
+        (error
+         (shipit--debug-log "stack statuses fetch failed for %s: %s"
+                            repo (error-message-string err))
+         nil)))))
 
 ;;; Bot reviewers
 

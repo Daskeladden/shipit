@@ -1591,6 +1591,7 @@ part of one."
     (shipit--api-request-post endpoint data)))
 
 (declare-function shipit-get-pr-for-branch "shipit-http" (branch &optional repo))
+(declare-function shipit--graphql-query "shipit-http" (query variables))
 
 (defun shipit-pr-github--fetch-pr-for-branch (config branch)
   "Return the number of the open pull request whose head is BRANCH.
@@ -1598,6 +1599,67 @@ Backed by the branch lookup the rest of shipit uses, so the answer
 and its cache are shared."
   (cdr (assq 'number
              (shipit-get-pr-for-branch branch (plist-get config :repo)))))
+
+(defun shipit-pr-github--stack-statuses-query (owner name numbers)
+  "Return the GraphQL query for the statuses of NUMBERS.
+One aliased field per pull request asks for its review decision and
+its head commit\='s check rollup, so the whole stack is answered in a
+single request."
+  (format "query { repository(owner:\"%s\", name:\"%s\") { %s } }"
+          owner name
+          (mapconcat
+           (lambda (number)
+             (format "p%d: pullRequest(number:%d) { reviewDecision commits(last:1) { nodes { commit { statusCheckRollup { state } } } } }"
+                     number number))
+           numbers " ")))
+
+(defun shipit-pr-github--stack-checks-state (pr)
+  "Return the downcased rollup state in PR\='s query answer, or nil.
+Nil both for a missing pull request and for one whose head commit has
+no checks at all, which the API reports as a null rollup."
+  (let* ((nodes (cdr (assq 'nodes (cdr (assq 'commits pr)))))
+         (commit (and (> (length nodes) 0)
+                      (cdr (assq 'commit (elt nodes 0)))))
+         (state (cdr (assq 'state (cdr (assq 'statusCheckRollup commit))))))
+    (and state (downcase state))))
+
+(defun shipit-pr-github--stack-review-decision (pr)
+  "Return the downcased review decision in PR\='s query answer, or nil.
+Nil for a missing pull request and for a null decision, which the API
+reports when no review is required and none was given."
+  (let ((decision (cdr (assq 'reviewDecision pr))))
+    (and (stringp decision) (downcase decision))))
+
+(defun shipit-pr-github--stack-statuses (pr)
+  "Return the statuses alist in PR\='s query answer, or nil.
+Up to two keys: `checks' with the rollup state and `review' with the
+review decision.  Nil when the pull request has neither, so the
+caller leaves it out of its answer."
+  (let ((checks (shipit-pr-github--stack-checks-state pr))
+        (review (shipit-pr-github--stack-review-decision pr)))
+    (append (and checks (list (cons 'checks checks)))
+            (and review (list (cons 'review review))))))
+
+(defun shipit-pr-github--fetch-stack-statuses (config numbers)
+  "Return (NUMBER . STATUSES) for each of NUMBERS with any status.
+One GraphQL query answers for the whole stack: the rollup and the
+review decision are the forge\='s own verdicts, where asking REST
+would cost a round of requests per sibling on every render."
+  (when numbers
+    (let* ((repo (split-string (plist-get config :repo) "/"))
+           (data (shipit--graphql-query
+                  (shipit-pr-github--stack-statuses-query
+                   (car repo) (cadr repo) numbers)
+                  nil))
+           (answers (cdr (assq 'repository data))))
+      (delq nil
+            (mapcar
+             (lambda (number)
+               (let* ((key (intern (format "p%d" number)))
+                      (statuses (shipit-pr-github--stack-statuses
+                                 (cdr (assq key answers)))))
+                 (and statuses (cons number statuses))))
+             numbers)))))
 
 (defun shipit-pr-github--fetch-stack (config number &optional pr-data)
   "Return the stack pull request NUMBER belongs to, or nil.
@@ -1637,6 +1699,7 @@ data should pass it: this runs on every render of the section."
        :set-pr-draft #'shipit-pr-github--set-pr-draft
        :fetch-pr-for-branch #'shipit-pr-github--fetch-pr-for-branch
        :fetch-stack #'shipit-pr-github--fetch-stack
+       :fetch-stack-statuses #'shipit-pr-github--fetch-stack-statuses
        :create-stack #'shipit-pr-github--create-stack
        :add-to-stack #'shipit-pr-github--add-to-stack
        :fetch-reviews #'shipit-pr-github--fetch-reviews

@@ -1752,6 +1752,27 @@ it."
           (error ""))
       "")))
 
+(defun shipit--stack-section-url-handler (section)
+  "Return the address of what the stack SECTION at point names, or nil.
+For M-w\='s copy dwim: the stack heading answers with the stack\='s
+own address, and a row with its sibling pull request\='s, the same
+one the pull request title copies.  Anywhere else in the section nil,
+and the dwim keeps its fallback."
+  (pcase (oref section type)
+    ('shipit-stack-section
+     (let ((repo (get-text-property (point) 'shipit-repo))
+           (number (get-text-property (point) 'shipit-stack-number)))
+       (when (and repo number)
+         (shipit-pr--browse-stack-url repo number))))
+    ('shipit-stack-layer
+     (let ((repo (get-text-property (point) 'shipit-stack-repo))
+           (number (get-text-property (point) 'shipit-stack-pr-number)))
+       (when (and repo number)
+         (shipit-pr--browse-url repo number))))))
+
+(add-hook 'shipit-buffer-section-url-functions
+          #'shipit--stack-section-url-handler)
+
 (defun shipit--wash-stack-entry (row)
   "Fill the body of stack ROW: branch, author, description, comments.
 Runs on the row\='s first expand.  Six siblings fetched as the buffer
@@ -1834,7 +1855,9 @@ exactly as it did before."
                       (cdr (assq 'position stack))
                       (cdr (assq 'size stack))))
             (add-text-properties heading-start (point)
-                                 `(shipit-stack t shipit-repo ,repo)))
+                                 `(shipit-stack t shipit-repo ,repo
+                                   shipit-stack-number
+                                   ,(cdr (assq 'number stack)))))
           (magit-insert-section-body
             (shipit--insert-stack-body stack repo)))))))
 

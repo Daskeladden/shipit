@@ -115,6 +115,7 @@
 ;;   :fetch-stack-statuses    — (config numbers) → alist of
 ;;                              (number . statuses), statuses an alist
 ;;                              with `checks' and `review' keys
+;;   :browse-stack-url        — (config number) → the stack's web URL
 
 ;;; Code:
 
@@ -345,6 +346,24 @@ goes to the debug log instead of across the section."
          (shipit--debug-log "stack statuses fetch failed for %s: %s"
                             repo (error-message-string err))
          nil)))))
+
+(defun shipit-pr--browse-url (repo number)
+  "Return the web address of pull request NUMBER in REPO, or nil.
+Resolved through the active backend\='s :browse-url operation; nil
+when the backend has none, and the caller keeps whatever fallback it
+has."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (fn (plist-get (car resolved) :browse-url)))
+    (when fn (funcall fn (cdr resolved) number))))
+
+(defun shipit-pr--browse-stack-url (repo number)
+  "Return the web address of stack NUMBER in REPO, or nil.
+Resolved through the active backend\='s optional :browse-stack-url
+operation; nil when the backend has none, and the caller keeps
+whatever fallback it has."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (fn (plist-get (car resolved) :browse-stack-url)))
+    (when fn (funcall fn (cdr resolved) number))))
 
 ;;; Bot reviewers
 

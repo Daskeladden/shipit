@@ -211,6 +211,12 @@ by the enrichment pipeline in `shipit-checks.el'."
   "Return browser URL for PR NUMBER using CONFIG."
   (format "https://github.com/%s/pull/%s" (plist-get config :repo) number))
 
+(defun shipit-pr-github--browse-stack-url (config number)
+  "Return the browser URL of stack NUMBER in CONFIG\='s repository.
+The API names no web address for a stack anywhere on its resources,
+so this mirrors the API\='s stacks path under the web host."
+  (format "https://github.com/%s/stacks/%s" (plist-get config :repo) number))
+
 ;;; Optional operations
 
 (defun shipit-pr-github--fetch-review-threads (config number)
@@ -1700,6 +1706,7 @@ data should pass it: this runs on every render of the section."
        :fetch-pr-for-branch #'shipit-pr-github--fetch-pr-for-branch
        :fetch-stack #'shipit-pr-github--fetch-stack
        :fetch-stack-statuses #'shipit-pr-github--fetch-stack-statuses
+       :browse-stack-url #'shipit-pr-github--browse-stack-url
        :create-stack #'shipit-pr-github--create-stack
        :add-to-stack #'shipit-pr-github--add-to-stack
        :fetch-reviews #'shipit-pr-github--fetch-reviews

@@ -564,5 +564,59 @@ and its failure belongs in the debug log, not across the buffer."
            (should (string-match-p "Add auth" text))
            (should-not (string-match-p "✅\\|❌" text))))))))
 
+;;;; Copying the stack's address
+
+(ert-deftest test-shipit-stack-github-names-the-stacks-web-address ()
+  "GIVEN the github backend
+WHEN asked where a stack of a repository lives
+THEN it answers the stacks path under the web host, mirroring the API
+path the way the pull request URL mirrors its own."
+  (let ((op (plist-get (cdr (assq 'github shipit-pr-backends))
+                       :browse-stack-url)))
+    (should (functionp op))
+    (should (equal "https://github.com/o/r/stacks/17"
+                   (funcall op '(:repo "o/r") 17)))))
+
+(ert-deftest test-shipit-stack-copy-absent-op-answers-nothing ()
+  "GIVEN a backend with no :browse-stack-url
+WHEN the URL dispatch is asked
+THEN nil, so M-w falls back to copying the line rather than erroring."
+  (test-stack--with-backend
+   '(:name "Stackless")
+   (lambda ()
+     (should-not (shipit-pr--browse-stack-url "o/r" 7)))))
+
+(ert-deftest test-shipit-stack-copy-yields-the-address-of-what-is-named ()
+  "GIVEN a rendered stack section
+WHEN the copy command runs on the stack heading and then on a row
+THEN the heading yields the stack's web address and the row its
+sibling pull request's, the same address the pull request title
+copies.  A row names a pull request, and M-w answering with a line of
+text there read as not working."
+  (require 'shipit-actions)
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq inhibit-read-only t)
+    (test-stack--with-backend
+     (list :name "Stacked"
+           :fetch-stack (lambda (&rest _) test-stack--normalized)
+           :browse-url
+           (lambda (_config number)
+             (format "https://forge.example/pull/%s" number))
+           :browse-stack-url
+           (lambda (_config number)
+             (format "https://forge.example/stacks/%s" number)))
+     (lambda ()
+       (magit-insert-section (shipit-pr-buffer)
+         (shipit--insert-stack-section "o/r" '((number . 102))))
+       (goto-char (text-property-any (point-min) (point-max)
+                                     'shipit-stack t))
+       (shipit-buffer-copy-dwim)
+       (should (equal "https://forge.example/stacks/7" (current-kill 0)))
+       (goto-char (text-property-any (point-min) (point-max)
+                                     'shipit-stack-pr-number 101))
+       (shipit-buffer-copy-dwim)
+       (should (equal "https://forge.example/pull/101" (current-kill 0)))))))
+
 (provide 'test-shipit-pr-stack)
 ;;; test-shipit-pr-stack.el ends here

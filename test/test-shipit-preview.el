@@ -180,5 +180,48 @@ previewed where it lies, without the working tree being moved onto it."
     (setq shipit-preview--tip "second-layer")
     (should (equal "origin/master..second-layer" (shipit-preview--range)))))
 
+(ert-deftest test-shipit-preview-find-pr-for-branch-asks-the-branch-lookup ()
+  "GIVEN a backend that can look a branch's pull request up directly
+WHEN an existing pull request is looked for
+THEN the cached branch lookup answers, enriched to full data, and the
+search scan is never run: the scan broke silently on GitHub and the
+lookup is what the rest of shipit already trusts."
+  (let ((searches 0))
+    (cl-letf (((symbol-function 'shipit-pr--resolve-for-repo)
+               (lambda (_repo)
+                 (cons (list :name "T"
+                             :fetch-pr-for-branch
+                             (lambda (_config branch)
+                               (and (equal branch "feature") 18))
+                             :fetch-pr
+                             (lambda (_config number)
+                               (list (cons 'number number)
+                                     (cons 'html_url "https://example/18")))
+                             :search
+                             (lambda (&rest _) (cl-incf searches) nil))
+                       '(:repo "o/r")))))
+      (let ((found (shipit-preview--find-pr-for-branch "feature" "o/r")))
+        (should (equal 18 (cdr (assq 'number found))))
+        (should (equal 0 searches))))))
+
+(ert-deftest test-shipit-preview-find-pr-for-branch-falls-back-to-search ()
+  "GIVEN a backend without a branch lookup, as GitLab has none
+WHEN an existing pull request is looked for
+THEN the search scan answers, given arguments in the plist form the
+scan sends."
+  (cl-letf (((symbol-function 'shipit-pr--resolve-for-repo)
+             (lambda (_repo)
+               (cons (list :name "T"
+                           :search
+                           (lambda (_config args)
+                             (should (keywordp (car args)))
+                             (list (list (cons 'number 7)
+                                         (cons 'head
+                                               (list (cons 'ref "feature")))))))
+                     '(:repo "o/r")))))
+    (should (equal 7 (cdr (assq 'number
+                                (shipit-preview--find-pr-for-branch
+                                 "feature" "o/r")))))))
+
 (provide 'test-shipit-preview)
 ;;; test-shipit-preview.el ends here

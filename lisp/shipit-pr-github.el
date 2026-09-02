@@ -45,9 +45,20 @@ CONFIG must contain :repo.  Uses ETag caching for performance."
            (json-data (plist-get result :json)))
       json-data)))
 
+(defun shipit-pr-github--normalize-search-args (args)
+  "Return ARGS as the transient strings the query builders take.
+Callers hand over either raw transient arguments or a plist; the
+plist crashed the builders, and the crash was swallowed upstream."
+  (if (keywordp (car args))
+      (cl-loop for (key value) on args by #'cddr
+               collect (format "--%s=%s"
+                               (substring (symbol-name key) 1) value))
+    args))
+
 (defun shipit-pr-github--search (config args)
-  "Search PRs using CONFIG with transient ARGS."
-  (let* ((repo (plist-get config :repo))
+  "Search PRs using CONFIG with transient ARGS, or a plist of them."
+  (let* ((args (shipit-pr-github--normalize-search-args args))
+         (repo (plist-get config :repo))
          (query-parts (shipit--build-advanced-search-query args repo))
          (limit (shipit--extract-limit-from-args args))
          (sort-by (shipit--extract-sort-from-args args))

@@ -1340,18 +1340,33 @@ COMMENT-ID is the comment to update, CONTENT is the new text."
 
 (defun shipit-preview--find-pr-for-branch (branch repo)
   "Find an existing PR/MR for BRANCH in REPO via the PR backend.
-Returns normalized PR data if found, nil otherwise."
-  (condition-case nil
+Returns PR data when found, nil otherwise.  The backend\='s branch
+lookup answers first, cached like everything else that uses it; a
+backend without one is scanned through search.  A failure is logged
+rather than swallowed: an error eaten here left every existing pull
+request undiscovered, and a preview offered for a branch that
+already had one."
+  (condition-case err
       (let* ((resolved (shipit-pr--resolve-for-repo repo))
              (backend (car resolved))
              (config (cdr resolved))
-             (search-fn (plist-get backend :search))
-             (results (when search-fn
-                        (funcall search-fn config (list :state "all")))))
-        (cl-find-if (lambda (pr)
-                      (string= (cdr (assq 'ref (cdr (assq 'head pr)))) branch))
-                    results))
-    (error nil)))
+             (by-branch (plist-get backend :fetch-pr-for-branch)))
+        (if by-branch
+            (when-let* ((number (funcall by-branch config branch)))
+              (or (ignore-errors
+                    (funcall (plist-get backend :fetch-pr) config number))
+                  (list (cons 'number number))))
+          (let* ((search-fn (plist-get backend :search))
+                 (results (when search-fn
+                            (funcall search-fn config (list :state "all")))))
+            (cl-find-if (lambda (pr)
+                          (string= (cdr (assq 'ref (cdr (assq 'head pr))))
+                                   branch))
+                        results))))
+    (error
+     (shipit--debug-log "find-pr-for-branch %s in %s failed: %s"
+                        branch repo (error-message-string err))
+     nil)))
 
 (defun shipit-preview--check-existing-pr ()
   "Check if a PR already exists for the current branch.

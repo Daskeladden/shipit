@@ -11,6 +11,9 @@
 (require 'shipit-core)
 (require 'shipit-pr-backends)
 (require 'shipit-pr-github)
+;; The search path reaches query builders living outside the backend;
+;; under make an earlier file loads them, alone nothing did.
+(require 'shipit-commands)
 
 (defun test-github--create-pr-payload (draft)
   "Call create-pr with DRAFT and return the captured POST data alist."
@@ -127,6 +130,18 @@ THEN Copilot maps to the copilot-pull-request-reviewer bot login."
                  (funcall (plist-get (cdr (assq 'github shipit-pr-backends))
                                      :reviewer-bot-candidates)
                           '(:repo "owner/repo")))))
+
+(ert-deftest test-github-search-takes-a-plist ()
+  "GIVEN search arguments as a plist, the form the preview sends
+WHEN the github backend searches
+THEN the query is built rather than the arguments crashing the
+builders, which expect transient strings; the crash was swallowed
+upstream and every existing pull request went undiscovered."
+  (let ((reached nil))
+    (cl-letf (((symbol-function 'shipit--search-prs-with-encoded-query)
+               (lambda (&rest args) (setq reached args) nil)))
+      (shipit-pr-github--search '(:repo "o/r") '(:state "all"))
+      (should reached))))
 
 (provide 'test-shipit-pr-github)
 ;;; test-shipit-pr-github.el ends here

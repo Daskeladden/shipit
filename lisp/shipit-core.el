@@ -209,6 +209,18 @@ Call once at startup before any async HTTP work begins."
   :type 'integer
   :group 'shipit)
 
+(defcustom shipit-push-max-refs nil
+  "How many branches one push to origin may update, or nil when unknown.
+A GitHub ruleset can refuse any push that updates more than a set
+number of branches or tags, and the rule is not readable without
+administrator rights.  When the limit is known, a stack deeper than it
+goes bottom-up in atomic chunks of this size from the start.  When nil,
+the first refusal that names the limit is learned from and the push is
+retried in chunks."
+  :type '(choice (const :tag "Unknown" nil)
+                 (integer :tag "Refs per push"))
+  :group 'shipit)
+
 (defcustom shipit-worktree-directory ".worktrees/"
   "Directory where PR worktrees are created, relative to repository root.
 Can be customized per-user or per-project (via CLAUDE.md).
@@ -409,6 +421,13 @@ fetched, and the question here is what the remote has now."
                                (format "refs/heads/%s" branch)))
       (car (split-string (string-trim (buffer-string)) "[ \t]" t)))))
 
+(defun shipit--branches-arrived-p (branches args)
+  "Return non-nil when origin holds every one of BRANCHES as it is here.
+See `shipit--branch-arrived-p\=' for why a failed push is asked this."
+  (and (not (member "--dry-run" args))
+       (seq-every-p (lambda (branch) (shipit--branch-arrived-p branch args))
+                    branches)))
+
 (defun shipit--branch-arrived-p (branch args)
   "Return non-nil when origin holds BRANCH at the commit it is on here.
 Asked after git has reported a failure.  A push can move the branch and
@@ -494,33 +513,102 @@ constant reads would bury the commands worth seeing."
       (shipit-process-log default-directory (cons "git" args) exit output)
       (cons exit output))))
 
-(defun shipit--push-branch (branch &optional args)
-  "Push BRANCH to origin with ARGS, setting upstream tracking.
-Return t when git exits successfully, nil otherwise.  Success is
+(defun shipit--push-branches (branches &optional args)
+  "Push BRANCHES to origin atomically with ARGS, tracking set.
+Return t when every branch landed, nil otherwise.  Success is
 determined by git\='s exit code -- never by grepping the output, which
 produces false failures when a pre-push hook or remote server message
 happens to print \"error:\"/\"fatal:\" on an otherwise-successful push.
-Lives here rather than in a buffer because more than one buffer
-pushes: the preview pushes the branch it is about to raise a pull
-request for, and preparing a stack pushes the layers.  The command
-and git\='s answer go to the process buffer under $."
-  (message "Pushing branch %s to origin..." branch)
-  (pcase-let ((`(,exit . ,output)
-               (apply #'shipit--run-git
-                      (append (list "push" "-u") args
-                              (list "origin" branch)))))
+
+One push for the whole set, and atomic: git checks every lease and
+takes every branch, or refuses and takes none.  Sent one at a time a
+stack could arrive in two halves, the lower layers moved and the upper
+ones refused.  A remote that caps the refs one push may update gets
+the stack bottom-up in atomic chunks instead, see
+`shipit--push-in-chunks\='.  Lives here rather than in a buffer because
+more than one buffer pushes: the preview pushes the branch it is about
+to raise a pull request for, and preparing a stack pushes the layers.
+The command and git\='s answer go to the process buffer under $."
+  (message "Pushing %s to origin..." (string-join branches ", "))
+  (if (shipit--over-ref-limit-p branches shipit-push-max-refs)
+      (shipit--push-in-chunks branches args shipit-push-max-refs)
+    (pcase-let ((`(,exit . ,output) (shipit--push-once branches args)))
+      (let ((limit (and (not (zerop exit))
+                        (shipit--ref-limit-from-refusal output))))
+        (if (shipit--over-ref-limit-p branches limit)
+            (shipit--push-in-chunks branches args limit)
+          (shipit--report-push branches args exit output))))))
+
+(defun shipit--push-once (branches args)
+  "Push BRANCHES to origin in one atomic push with ARGS.
+Return (EXIT . OUTPUT) as git gave them."
+  (apply #'shipit--run-git
+         (append (list "push" "-u" "--atomic") args (list "origin") branches)))
+
+(defun shipit--over-ref-limit-p (branches limit)
+  "Return non-nil when BRANCHES are more than LIMIT allows in one push."
+  (and limit (> (length branches) limit)))
+
+(defun shipit--ref-limit-from-refusal (output)
+  "Return the refs-per-push limit a remote\='s refusal OUTPUT names, or nil.
+GitHub words it \"Pushes can not update more than N branches or tags\"."
+  (and (string-match "can not update more than \\([0-9]+\\) branches or tags"
+                     output)
+       (string-to-number (match-string 1 output))))
+
+(defun shipit--push-landed-p (branches args exit)
+  "Return non-nil when the push of BRANCHES that ended with EXIT landed.
+A non-zero exit still counts when origin holds every branch, see
+`shipit--branch-arrived-p\='."
+  (or (zerop exit) (shipit--branches-arrived-p branches args)))
+
+(defun shipit--report-push (branches args exit output)
+  "Say how the one push of BRANCHES went and return non-nil when it landed."
+  (let ((names (string-join branches ", ")))
     (cond
      ((zerop exit)
       (if (member "--dry-run" args)
-          (message "Dry run: %s stays put -- $ shows git's answer" branch)
-        (message "Branch %s pushed to origin" branch))
+          (message "Dry run: %s stay put -- $ shows git's answer" names)
+        (message "Pushed %s to origin" names))
       t)
-     ((shipit--branch-arrived-p branch args)
-      (message "git failed pushing %s but origin has it: %s" branch output)
+     ((shipit--branches-arrived-p branches args)
+      (message "git failed pushing %s but origin has them: %s" names output)
       t)
      (t
-      (message "Pushing %s failed: %s" branch output)
+      (message "Pushing %s failed: %s" names output)
       nil))))
+
+(defun shipit--push-in-chunks (branches args limit)
+  "Push BRANCHES bottom-up in atomic chunks of at most LIMIT.
+Return t when every chunk landed.  A chunk that is refused stops the
+ones above it and the report names what landed and what was not sent.
+Bottom-up, whatever has landed is a stack whose every branch has its
+base on the remote, and the next push carries only the rest, since git
+skips refs that are already up to date."
+  (let ((chunks (seq-partition branches limit))
+        (landed nil)
+        (ok t))
+    (while (and ok chunks)
+      (let ((chunk (pop chunks)))
+        (pcase-let ((`(,exit . ,output) (shipit--push-once chunk args)))
+          (if (shipit--push-landed-p chunk args exit)
+              (setq landed (append landed chunk))
+            (setq ok nil)
+            (message "Pushing %s failed: %s -- landed: %s; not sent: %s"
+                     (string-join chunk ", ") output
+                     (if landed (string-join landed ", ") "nothing")
+                     (if chunks (string-join (apply #'append chunks) ", ")
+                       "nothing"))))))
+    (when ok
+      (message "Pushed %s to origin, %d refs per push" (string-join branches ", ")
+               limit))
+    ok))
+
+(defun shipit--push-branch (branch &optional args)
+  "Push BRANCH to origin with ARGS, setting upstream tracking.
+The one-branch form of `shipit--push-branches\=', which says what
+success and failure mean."
+  (shipit--push-branches (list branch) args))
 
 (defun shipit--commits-in-range (&optional range)
   "Return the commits in RANGE as plists, oldest first.

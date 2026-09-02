@@ -164,26 +164,40 @@ THEN it says so rather than acting on a name that resolves to nothing."
       (should-error (shipit-stacked-preview--require-branch layer)
                     :type 'user-error))))
 
-(ert-deftest test-shipit-stacked-preview-stops-at-the-branch-that-failed ()
-  "GIVEN three layers where the middle one cannot be sent
+(ert-deftest test-shipit-stacked-preview-sends-every-layer-in-one-push ()
+  "GIVEN three layers
 WHEN every layer is sent
-THEN the ones below it were tried, the ones above it were left alone,
-and the failure is raised.  A branch whose parent never arrived cannot
-be the base of a pull request."
+THEN git is asked once for all three, bottom first.  One push is one
+lease check for the whole stack, and what git refuses it refuses whole."
   (let ((layers (test-stacked--layers "one" "two" "three"))
-        (tried nil))
+        (calls nil))
     (cl-letf (((symbol-function 'shipit-stacked-preview--refuse-when-broken)
                (lambda (_layer) nil))
               ((symbol-function 'shipit-stacked-preview--current-layers)
                (lambda () layers))
               ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
-              ((symbol-function 'shipit--push-branch)
-               (lambda (branch _args)
-                 (setq tried (append tried (list branch)))
-                 (not (equal branch "two")))))
-      (should-error (shipit-stacked-preview--push-through (nth 2 layers) nil)
-                    :type 'user-error)
-      (should (equal '("one" "two") tried)))))
+              ((symbol-function 'redisplay) (lambda (&rest _) nil))
+              ((symbol-function 'shipit--push-branches)
+               (lambda (branches _args) (push branches calls) t)))
+      (shipit-stacked-preview--push-through (nth 2 layers) nil)
+      (should (equal '(("one" "two" "three")) calls)))))
+
+(ert-deftest test-shipit-stacked-preview-a-refused-push-says-where-to-look ()
+  "GIVEN a stack git refuses to take
+WHEN every layer is sent
+THEN the failure says each push was atomic and points at the process
+buffer, which says what landed when the stack went in chunks."
+  (let ((layers (test-stacked--layers "one" "two")))
+    (cl-letf (((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+               (lambda (_layer) nil))
+              ((symbol-function 'shipit-stacked-preview--current-layers)
+               (lambda () layers))
+              ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
+              ((symbol-function 'redisplay) (lambda (&rest _) nil))
+              ((symbol-function 'shipit--push-branches) (lambda (&rest _) nil)))
+      (let ((err (should-error (shipit-stacked-preview--push-through (nth 1 layers) nil)
+                               :type 'user-error)))
+        (should (string-match-p "atomic" (cadr err)))))))
 
 (ert-deftest test-shipit-stacked-preview-dry-run-asks-git-for-one ()
   "GIVEN the dry run argument
@@ -199,8 +213,9 @@ way."
                (lambda () layers))
               ((symbol-function 'shipit-stacked-preview--render)
                (lambda () (setq redrawn t)))
-              ((symbol-function 'shipit--push-branch)
-               (lambda (_branch args) (setq seen args) t)))
+              ((symbol-function 'redisplay) (lambda (&rest _) nil))
+              ((symbol-function 'shipit--push-branches)
+               (lambda (_branches args) (setq seen args) t)))
       (shipit-stacked-preview--push-through (nth 1 layers) '("--dry-run"))
       (should (equal '("--dry-run") seen))
       (should redrawn)
@@ -267,7 +282,7 @@ which is easier to prevent than to unpick."
                 ((symbol-function 'shipit-stack--rev) (lambda (_) "abc1234"))
                 ((symbol-function 'shipit-stack-problems)
                  (lambda (_branches _base) '("two is not built on one")))
-                ((symbol-function 'shipit--push-branch)
+                ((symbol-function 'shipit--push-branches)
                  (lambda (&rest _) (setq sent t) t)))
         (should-error (shipit-stacked-preview--push-through (nth 1 layers) nil)
                       :type 'user-error)
@@ -288,7 +303,8 @@ next: a layer standing on a broken one cannot be submitted either."
                 ((symbol-function 'shipit-stack-problems)
                  (lambda (branches _base) (setq asked branches) nil))
                 ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
-                ((symbol-function 'shipit--push-branch) (lambda (&rest _) t)))
+                ((symbol-function 'redisplay) (lambda (&rest _) nil))
+                ((symbol-function 'shipit--push-branches) (lambda (&rest _) t)))
         (shipit-stacked-preview--push-through (nth 1 layers) nil)
         (should (equal '("one" "two") asked))))))
 
@@ -328,8 +344,9 @@ so a layer sent by itself would arrive unsubmittable."
                 ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
                  (lambda (_layer) nil))
                 ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
-                ((symbol-function 'shipit--push-branch)
-                 (lambda (branch _args) (setq sent (append sent (list branch))) t)))
+                ((symbol-function 'redisplay) (lambda (&rest _) nil))
+                ((symbol-function 'shipit--push-branches)
+                 (lambda (branches _args) (setq sent branches) t)))
         (shipit-stacked-preview--push-through (nth 1 layers) nil)
         (should (equal '("one" "two") sent))))))
 
@@ -434,10 +451,86 @@ that survived until the next redraw."
                  (lambda (_layer) nil))
                 ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
                 ((symbol-function 'redisplay) (lambda (&rest _) nil))
-                ((symbol-function 'shipit--push-branch) (lambda (&rest _) nil)))
+                ((symbol-function 'shipit--push-branches) (lambda (&rest _) nil)))
         (should-error (shipit-stacked-preview--push-through (nth 1 layers) nil)
                       :type 'user-error)
         (should-not shipit-stacked-preview--sending)))))
+
+(ert-deftest test-shipit-stacked-preview-the-branches-on-their-way-say-so ()
+  "GIVEN a whole stack being sent in one push
+WHEN the rows are drawn
+THEN every layer in it says so, since one push carries them all."
+  (with-temp-buffer
+    (let ((layers (test-stacked--layers "one" "two")))
+      (setq shipit-stacked-preview--sending '("one" "two"))
+      (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) nil)))
+        (dolist (layer layers)
+          (should (equal "sending…" (shipit-stacked-preview--layer-status layer))))))))
+
+(ert-deftest test-shipit-stacked-preview-a-refused-push-moves-no-layer ()
+  "GIVEN two layers on the remote, the upper one moved there since the
+last fetch, and both rewritten here
+WHEN the stack is sent with a lease
+THEN it is refused and neither branch on the remote moves.  Sent one
+at a time the lower layer would have gone through and left the stack
+half-moved."
+  (require 'shipit-sandbox)
+  (let ((root (make-temp-file "shipit-atomic-test-" t)))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory
+                                  (shipit-sandbox-build root))))
+          (shipit-sandbox--git "branch" "-q" "one" "work~2")
+          (shipit-sandbox--git "branch" "-q" "two" "work")
+          (should (shipit--push-branches '("one" "two")))
+          (let ((one-before (shipit--remote-branch-rev "one"))
+                (elsewhere (shipit--branch-rev "main"))
+                (layers (test-stacked--layers "one" "two")))
+            (shipit-sandbox--git "--git-dir" (expand-file-name "origin.git" root)
+                                 "update-ref" "refs/heads/two" elsewhere)
+            (shipit-sandbox--git "checkout" "-q" "one")
+            (shipit-sandbox--commit "more on one")
+            (shipit-sandbox--git "checkout" "-q" "two")
+            (shipit-sandbox--git "commit" "-q" "--amend" "--allow-empty" "-m" "two again")
+            (with-temp-buffer
+              (setq default-directory (file-name-as-directory
+                                       (expand-file-name "work" root)))
+              (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                         (lambda () layers))
+                        ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
+                         (lambda (_layer) nil))
+                        ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
+                        ((symbol-function 'redisplay) (lambda (&rest _) nil)))
+                (should-error (shipit-stacked-preview--push-through
+                               (nth 1 layers) '("--force-with-lease"))
+                              :type 'user-error)
+                (should-not shipit-stacked-preview--sending)))
+            (should (equal one-before (shipit--remote-branch-rev "one")))
+            (should (equal elsewhere (shipit--remote-branch-rev "two")))))
+      (delete-directory root t))))
+
+(ert-deftest test-shipit-stacked-preview-status-says-how-far-a-branch-drifted ()
+  "GIVEN a layer whose branch is on the remote
+WHEN the branch is rewritten here after the last fetch
+THEN its status says how far the two have drifted apart, so a stack
+whose remote copies are stale can be read off the rows instead of
+looking pushed."
+  (require 'shipit-sandbox)
+  (let ((root (make-temp-file "shipit-drift-test-" t)))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory
+                                  (shipit-sandbox-build root))))
+          (shipit-sandbox--git "branch" "-q" "one" "work")
+          (shipit-sandbox--git "push" "-q" "-u" "origin" "one")
+          (with-temp-buffer
+            (setq default-directory (file-name-as-directory
+                                     (expand-file-name "work" root)))
+            (let ((layer (car (test-stacked--layers "one"))))
+              (should (equal "pushed" (shipit-stacked-preview--layer-status layer)))
+              (shipit-sandbox--git "checkout" "-q" "one")
+              (shipit-sandbox--git "commit" "-q" "--amend" "--allow-empty" "-m" "one again")
+              (should (string-match-p "pushed.*1 ahead, 1 behind"
+                                      (shipit-stacked-preview--layer-status layer))))))
+      (delete-directory root t))))
 
 (ert-deftest test-shipit-stacked-preview-counts-an-unbroken-run-only ()
   "GIVEN layers where the middle one has no pull request

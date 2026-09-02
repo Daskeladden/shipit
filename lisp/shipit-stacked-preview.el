@@ -158,24 +158,47 @@ it ends the top layer, and the top of a pile is not a division."
 
 ;;;; Rendering
 
+(defun shipit-stacked-preview--sending-p (branch)
+  "Return non-nil when BRANCH is among the ones on their way."
+  (let ((sending shipit-stacked-preview--sending))
+    (member branch (if (listp sending) sending (list sending)))))
+
+(defun shipit-stacked-preview--drift (branch)
+  "Return how far BRANCH and its copy on the remote have come apart.
+Nil when they stand on the same commit, or when the remote has none."
+  (and (shipit-stack--rev (concat "origin/" branch))
+       (shipit-stacked-preview--ahead-behind (concat "origin/" branch) branch)))
+
+(defun shipit-stacked-preview--with-drift (status branch)
+  "Return STATUS with how far BRANCH has drifted from the remote appended.
+A branch rewritten since it was pushed still has its remote copy, so
+without this it would read as pushed while the remote holds the old
+version of the stack."
+  (if-let* ((drift (shipit-stacked-preview--drift branch)))
+      (concat status "  " (propertize drift 'font-lock-face 'font-lock-comment-face))
+    status))
+
 (defun shipit-stacked-preview--layer-status (layer)
   "Return where LAYER has got to, coloured by how far that is.
 Dim while the layer is still only local, orange while it is on its way,
 green once it is on the remote, and the branch colour once it has a
-pull request of its own."
+pull request of its own.  A layer on the remote also says how far its
+copy there has fallen behind this one."
   (let ((branch (cdr (assq 'branch layer))))
     (cond
-     ((equal branch shipit-stacked-preview--sending)
+     ((shipit-stacked-preview--sending-p branch)
       (propertize "sending…" 'font-lock-face 'warning))
      ((not (or (cdr (assq 'existing layer)) (shipit-stack--rev branch)))
       (propertize "no branch yet" 'font-lock-face 'font-lock-comment-face))
      ((not (shipit-stack--rev (concat "origin/" branch)))
       (propertize "not pushed" 'font-lock-face 'font-lock-comment-face))
-     (t (let ((number (shipit-stacked-preview--pr-number branch)))
-          (if number
-              (propertize (format "PR #%s" number)
-                          'font-lock-face 'magit-branch-remote)
-            (propertize "pushed" 'font-lock-face 'success)))))))
+     (t (shipit-stacked-preview--with-drift
+         (let ((number (shipit-stacked-preview--pr-number branch)))
+           (if number
+               (propertize (format "PR #%s" number)
+                           'font-lock-face 'magit-branch-remote)
+             (propertize "pushed" 'font-lock-face 'success)))
+         branch)))))
 
 (defun shipit-stacked-preview--pr-number (branch)
   "Return the number of the open pull request whose head is BRANCH.
@@ -383,12 +406,13 @@ columns line up on rows where one has run out."
               "\n"))
     (insert "\n")))
 
-(defun shipit-stacked-preview--ahead-behind (upstream)
-  "Return \"N ahead, M behind\" of HEAD against UPSTREAM, or nil.
-A count of zero is left out; nil when the two are level."
+(defun shipit-stacked-preview--ahead-behind (upstream &optional local)
+  "Return \"N ahead, M behind\" of LOCAL against UPSTREAM, or nil.
+LOCAL defaults to HEAD.  A count of zero is left out; nil when the two
+are level."
   (when-let* ((counts (car (shipit-stack--git-lines
                             "rev-list" "--left-right" "--count"
-                            (format "%s...HEAD" upstream))))
+                            (format "%s...%s" upstream (or local "HEAD")))))
               (parts (split-string counts)))
     (let* ((behind (string-to-number (car parts)))
            (ahead (string-to-number (cadr parts)))
@@ -614,32 +638,35 @@ it has just stopped being true."
         (shipit-stacked-preview--render))
       (pop-to-buffer buffer))))
 
-(defun shipit-stacked-preview--show-sending (branch)
-  "Mark BRANCH as the one on its way, and put that on screen now.
-Each push blocks until it finishes, so without asking for the screen to
-be brought up to date the buffer would sit unchanged until every layer
-had gone and then change all at once."
-  (setq shipit-stacked-preview--sending branch)
+(defun shipit-stacked-preview--show-sending (branches)
+  "Mark BRANCHES as on their way, and put that on screen now.
+The push blocks until it finishes, so without asking for the screen to
+be brought up to date the buffer would sit unchanged until it was done."
+  (setq shipit-stacked-preview--sending branches)
   (shipit-stacked-preview--render)
   (redisplay))
 
 (defun shipit-stacked-preview--push-through (layer args)
-  "Push the branches from the bottom layer up to LAYER, oldest first.
+  "Push the branches from the bottom layer up to LAYER, in one push.
 The layers below go too, asked for or not.  A pull request cannot be
 raised against a base the remote does not have, so a layer sent on its
 own would arrive unsubmittable: its commits are all there, but the
 branch its pull request is based on is not.
 
-Stops at the first branch that fails and leaves the rest alone, for the
-same reason: what stands on it could not be submitted anyway."
+One atomic push carries them all.  Git checks every branch\='s lease
+before it moves any, so a refusal leaves the whole stack where it was
+on the remote rather than half-moved.  A remote that caps the refs one
+push may update gets the layers bottom-up in atomic chunks instead, and
+a refusal then leaves a stack complete from the bottom up to the chunk
+that was refused; the process buffer under $ says which."
   (shipit-stacked-preview--refuse-when-broken layer)
   (let ((branches (shipit-stacked-preview--branches-through layer)))
     (unwind-protect
-        (dolist (branch branches)
-          (shipit-stacked-preview--show-sending branch)
-          (unless (shipit--push-branch branch args)
-            (user-error "Pushing %s failed -- the layers above it are left alone"
-                        branch)))
+        (progn
+          (shipit-stacked-preview--show-sending branches)
+          (unless (shipit--push-branches branches args)
+            (user-error "Pushing %s refused -- every push is atomic, $ shows what landed"
+                        (string-join branches ", "))))
       ;; However this ends, no layer may be left saying it is on its
       ;; way: after a failure that would be a lie standing until the
       ;; next redraw.

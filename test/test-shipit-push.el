@@ -70,6 +70,24 @@ THEN success is reported and the remote holds the same commit."
     (should (equal (shipit--branch-rev "feature")
                    (test-push--remote-has "feature")))))
 
+(ert-deftest test-shipit-push-a-stack-whose-top-was-never-pushed-arrives-whole ()
+  "GIVEN a stack whose lower branch origin holds at an older commit and
+whose top branch origin has never seen
+WHEN both are pushed together, forced with a lease
+THEN both arrive, and the new branch tracks its copy on origin."
+  (test-push--with-remote
+    (test-push--git "checkout" "-q" "-b" "one")
+    (test-push--commit "one before")
+    (test-push--git "push" "-q" "-u" "origin" "one")
+    (test-push--git "commit" "-q" "--amend" "-m" "one after")
+    (test-push--git "checkout" "-q" "-b" "two")
+    (test-push--commit "two")
+    (should (shipit--push-branches '("one" "two") '("--force-with-lease")))
+    (should (equal (shipit--branch-rev "one") (test-push--remote-has "one")))
+    (should (equal (shipit--branch-rev "two") (test-push--remote-has "two")))
+    (should (equal "origin/two"
+                   (test-push--git "rev-parse" "--abbrev-ref" "two@{upstream}")))))
+
 (ert-deftest test-shipit-push-an-unchanged-branch-is-not-a-failure ()
   "GIVEN a branch the remote already holds at the same commit
 WHEN it is pushed again
@@ -226,4 +244,126 @@ test the stub."
             (string-match-p "loud lion" (buffer-string)))))
 
 (provide 'test-shipit-push)
+(defun test-push--recorded-pushes (recorder body)
+  "Run BODY with every git push argv handed to RECORDER, and git still run."
+  (cl-letf (((symbol-function 'call-process)
+             (lambda (program &rest args)
+               (when (and (equal program "git") (equal (nth 3 args) "push"))
+                 (funcall recorder (nthcdr 3 args)))
+               (apply #'test-push--call-process program args))))
+    (funcall body)))
+
+(ert-deftest test-shipit-push-several-branches-go-in-one-atomic-push ()
+  "GIVEN two branches to send
+WHEN they are pushed together
+THEN git is asked once, atomically, for both, and both arrive.  One
+push is one lease check for the whole stack; six pushes are six
+chances to leave the stack half-moved on the remote."
+  (test-push--with-remote
+    (test-push--git "checkout" "-q" "-b" "one")
+    (test-push--commit "one")
+    (test-push--git "checkout" "-q" "-b" "two")
+    (test-push--commit "two")
+    (let ((pushes nil))
+      (test-push--recorded-pushes
+       (lambda (argv) (push argv pushes))
+       (lambda () (should (shipit--push-branches '("one" "two")))))
+      (should (equal 1 (length pushes)))
+      (should (member "--atomic" (car pushes)))
+      (should (member "one" (car pushes)))
+      (should (member "two" (car pushes)))
+      (should (equal (shipit--branch-rev "one") (test-push--remote-has "one")))
+      (should (equal (shipit--branch-rev "two") (test-push--remote-has "two"))))))
+
+(ert-deftest test-shipit-push-a-refused-lease-on-one-branch-moves-none ()
+  "GIVEN two branches already on the remote, the upper one moved there
+by someone else since the last fetch, and both rewritten here
+WHEN they are pushed together with a lease
+THEN the push is refused and neither branch moves: the lower one was a
+plain fast-forward git would otherwise have taken, and the stack would
+have arrived in two halves."
+  (test-push--with-remote
+    (test-push--git "checkout" "-q" "-b" "one")
+    (test-push--commit "one")
+    (test-push--git "checkout" "-q" "-b" "two")
+    (test-push--commit "two")
+    (should (shipit--push-branches '("one" "two")))
+    (let ((one-before (test-push--remote-has "one"))
+          (elsewhere (shipit--branch-rev "main")))
+      (test-push--git "--git-dir" remote "update-ref" "refs/heads/two" elsewhere)
+      (test-push--git "checkout" "-q" "one")
+      (test-push--commit "more on one")
+      (test-push--git "checkout" "-q" "two")
+      (test-push--git "commit" "-q" "--amend" "--allow-empty" "-m" "two, rewritten")
+      (should-not (shipit--push-branches '("one" "two") '("--force-with-lease")))
+      (should (equal one-before (test-push--remote-has "one")))
+      (should (equal elsewhere (test-push--remote-has "two"))))))
+
+(defvar test-push--calls nil
+  "Every git command the fake remote below was asked to run, newest first.")
+
+(defun test-push--fake-git (limit &optional refused)
+  "A stand-in for `shipit--run-git' behind a remote taking at most LIMIT refs per push.
+A push naming REFUSED among its branches is turned away with a stale
+lease.  Every call is recorded in `test-push--calls'."
+  (lambda (&rest args)
+    (push args test-push--calls)
+    (let ((branches (cdr (member "origin" args))))
+      (cond
+       ((> (length branches) limit)
+        (cons 1 (format "remote: error: GH013: Repository rule violations found for refs/heads/%s.
+remote: - Pushes can not update more than %d branches or tags." (car branches) limit)))
+       ((member refused branches)
+        (cons 1 (format " ! [rejected]  %s -> %s (stale info)" refused refused)))
+       (t (cons 0 ""))))))
+
+(defun test-push--branches-sent ()
+  "Return the branch lists of the recorded pushes, oldest first."
+  (mapcar (lambda (call) (cdr (member "origin" call)))
+          (reverse test-push--calls)))
+
+(ert-deftest test-shipit-push-a-limit-on-refs-per-push-splits-the-stack ()
+  "GIVEN a remote that refuses any push updating more than two refs, and
+says so in its refusal
+WHEN five branches are pushed together with a lease
+THEN the whole set is tried once, then goes bottom-up in chunks of two,
+each chunk with the same arguments, and success is reported."
+  (setq test-push--calls nil)
+  (cl-letf (((symbol-function 'shipit--run-git) (test-push--fake-git 2))
+            ((symbol-function 'shipit--branches-arrived-p) (lambda (&rest _) nil)))
+    (should (shipit--push-branches '("a" "b" "c" "d" "e") '("--force-with-lease")))
+    (should (equal '(("a" "b" "c" "d" "e") ("a" "b") ("c" "d") ("e"))
+                   (test-push--branches-sent)))
+    (dolist (call test-push--calls)
+      (should (member "--atomic" call))
+      (should (member "--force-with-lease" call)))))
+
+(ert-deftest test-shipit-push-a-refused-chunk-stops-the-ones-above ()
+  "GIVEN the same remote, with a stale lease on a branch in the second chunk
+WHEN five branches are pushed
+THEN the first chunk lands, the refusal is reported as a failure, the
+chunks above it are never sent, and the report names what was left."
+  (setq test-push--calls nil)
+  (let (said)
+    (cl-letf (((symbol-function 'shipit--run-git) (test-push--fake-git 2 "d"))
+              ((symbol-function 'shipit--branches-arrived-p) (lambda (&rest _) nil))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) said) nil)))
+      (should-not (shipit--push-branches '("a" "b" "c" "d" "e") '("--force-with-lease")))
+      (should (equal '(("a" "b" "c" "d" "e") ("a" "b") ("c" "d"))
+                     (test-push--branches-sent)))
+      (should (string-match-p "e" (car said)))
+      (should (string-match-p "not sent" (car said))))))
+
+(ert-deftest test-shipit-push-a-known-limit-skips-the-refused-attempt ()
+  "GIVEN the limit is already known, two refs per push
+WHEN five branches are pushed
+THEN no push carries more than two, starting from the bottom."
+  (setq test-push--calls nil)
+  (let ((shipit-push-max-refs 2))
+    (cl-letf (((symbol-function 'shipit--run-git) (test-push--fake-git 2))
+              ((symbol-function 'shipit--branches-arrived-p) (lambda (&rest _) nil)))
+      (should (shipit--push-branches '("a" "b" "c" "d" "e")))
+      (should (equal '(("a" "b") ("c" "d") ("e")) (test-push--branches-sent))))))
+
 ;;; test-shipit-push.el ends here

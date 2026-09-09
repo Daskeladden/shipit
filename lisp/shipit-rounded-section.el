@@ -216,6 +216,24 @@ Advice for `magit-section-show'."
      (when (fboundp 'shipit--debug-log)
        (shipit--debug-log "Rounded bg error: %s" (error-message-string err))))))
 
+(defun shipit-rounded--inherit-prefix (source target)
+  "Give TARGET the line and wrap prefixes drawn at SOURCE.
+Magit hides the range between a section's `content' and `end'
+markers, and `end' is where the next line begins, so the screen line
+that renders that next line starts at the hidden `content'.  Emacs
+reads `line-prefix' at the position a screen line starts from, not at
+its visible text, so the hidden position has to carry the prefix the
+visible line is drawn with -- otherwise the line loses the character
+of indent the pill's edge piece occupies."
+  (let ((source (if (markerp source) (marker-position source) source))
+        (target (if (markerp target) (marker-position target) target)))
+    (when (and source target (< target (point-max)))
+      (dolist (property '(line-prefix wrap-prefix))
+        (let ((prefix (get-text-property source property)))
+          (if prefix
+              (put-text-property target (1+ target) property prefix)
+            (remove-text-properties target (1+ target) (list property nil))))))))
+
 (defun shipit-rounded--after-section-hide (section)
   "Resize rounded background to heading-only after SECTION is hidden.
 Advice for `magit-section-hide'."
@@ -233,7 +251,9 @@ Advice for `magit-section-hide'."
                    (content-start (oref section content)))
               (shipit-rounded--remove-bg sect-start sect-end)
               (when (and content-start (< sect-start content-start))
-                (shipit-rounded--apply-bg sect-start content-start bg-color))))))
+                (shipit-rounded--apply-bg sect-start content-start bg-color))
+              (when (and content-start sect-end (< content-start sect-end))
+                (shipit-rounded--inherit-prefix sect-end content-start))))))
     (error nil)))
 
 (defun shipit-rounded--own-content-end (section)

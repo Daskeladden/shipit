@@ -13,6 +13,7 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'subr-x)
+(require 'magit-section)
 (require 'shipit-core)
 (require 'shipit-pr-backends)
 (require 'json)

@@ -12,6 +12,8 @@
 ;; SVG edge pieces for corners and overlays for the fill.
 
 ;;; Code:
+(require 'cl-lib)
+(require 'magit-section)
 (require 'svg)
 
 (defcustom shipit-rounded-section-bg-color "#1e3550"

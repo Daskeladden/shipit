@@ -25,6 +25,7 @@
 (require 'shipit-pr-backends)
 (require 'transient)
 (require 'cl-lib)
+(require 'magit-section)
 
 
 ;; Forward declarations

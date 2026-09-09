@@ -21,6 +21,12 @@
 ;;   eieio-oset@closql-object: Wrong type argument: ..., nil
 ;;
 ;; Every file that expands these macros must require magit-section itself.
+;;
+;; EIEIO's `oref' and `oset' are the same trap with a quieter landing.
+;; Unexpanded, `(oref section start)' is a call whose arguments are
+;; evaluated, so it signals `void-variable start' -- which, raised inside
+;; a magit washer, abandons the render halfway and leaves the section
+;; tree without its children.
 
 ;;; Code:
 
@@ -43,6 +49,15 @@
   (rx bol "(require '" (or "magit-section" "magit") ")")
   "Regexp matching a top-level require that defines the magit macros.")
 
+(defconst test-shipit-magit--eieio-macro-re
+  (rx "(" (or "oref-default" "oset-default" "oref" "oset" "with-slots")
+      (or " " "\n"))
+  "Regexp matching an expansion site of an EIEIO slot macro.")
+
+(defconst test-shipit-magit--eieio-require-re
+  (rx bol "(require '" (or "eieio" "magit-section" "magit") ")")
+  "Regexp matching a top-level require that defines the EIEIO macros.")
+
 (defun test-shipit-magit--source-files ()
   "Return the shipit source files that must be checked."
   (seq-remove (lambda (f) (string-match-p "autoloads" f))
@@ -54,33 +69,61 @@
     (insert-file-contents file)
     (buffer-string)))
 
-(defun test-shipit-magit--expands-macros-p (contents)
-  "Return non-nil when CONTENTS expands a magit-section macro."
-  (string-match-p test-shipit-magit--macro-re contents))
+(defun test-shipit-magit--expanders (macro-re)
+  "Return the source files carrying an expansion site matching MACRO-RE."
+  (seq-filter (lambda (file)
+                (string-match-p macro-re
+                                (test-shipit-magit--file-contents file)))
+              (test-shipit-magit--source-files)))
 
-(defun test-shipit-magit--requires-magit-p (contents)
-  "Return non-nil when CONTENTS requires magit-section at top level."
-  (string-match-p test-shipit-magit--require-re contents))
-
-(defun test-shipit-magit--offenders ()
-  "Return files expanding magit macros without requiring magit-section."
-  (seq-filter
-   (lambda (file)
-     (let ((contents (test-shipit-magit--file-contents file)))
-       (and (test-shipit-magit--expands-macros-p contents)
-            (not (test-shipit-magit--requires-magit-p contents)))))
-   (test-shipit-magit--source-files)))
+(defun test-shipit-magit--offenders (macro-re require-re)
+  "Return the files matching MACRO-RE that lack a require matching REQUIRE-RE."
+  (seq-remove (lambda (file)
+                (string-match-p require-re
+                                (test-shipit-magit--file-contents file)))
+              (test-shipit-magit--expanders macro-re)))
 
 (ert-deftest test-shipit-magit-requires-declared ()
   "Every file expanding magit-section macros must require magit-section."
   (let ((offenders (mapcar #'file-name-nondirectory
-                           (test-shipit-magit--offenders))))
+                           (test-shipit-magit--offenders
+                            test-shipit-magit--macro-re
+                            test-shipit-magit--require-re))))
+    (should (equal offenders nil))))
+
+(ert-deftest test-shipit-eieio-requires-declared ()
+  "GIVEN the files that expand an EIEIO slot macro
+WHEN each is checked for a top-level require defining it
+THEN it has one.
+
+`oref' and `oset' are macros, and a file that expands them without
+requiring `eieio' compiles by the same accident as the magit macros
+above: only when something else in the batch has pulled EIEIO in.
+Compiled alone, `(oref section start)' becomes an ordinary call that
+evaluates its arguments, and signals `void-variable start' the first
+time it runs."
+  (let ((offenders (mapcar #'file-name-nondirectory
+                           (test-shipit-magit--offenders
+                            test-shipit-magit--eieio-macro-re
+                            test-shipit-magit--eieio-require-re))))
     (should (equal offenders nil))))
 
 ;;; Isolated compilation -- the condition native-comp actually hits
 
+(defconst test-shipit-magit--package-dir
+  (expand-file-name "../.packages" test-shipit-magit--lisp-dir)
+  "Where the third-party packages the sources build against are installed.")
+
+(defvar test-shipit-magit--isolated-cache (make-hash-table :test 'equal)
+  "Isolated-compilation output, keyed by source file.
+One subprocess per file, however many checks read its warnings.")
+
 (defun test-shipit-magit--compile-isolated (file)
   "Byte-compile FILE in a subprocess that preloads nothing.
+The dependencies go on the load path by hand rather than through
+`package-initialize', which loads EIEIO along the way and would hide a
+missing `eieio' require.  The subprocess Emacs native-compiles in
+loads nothing either.
 Returns the compiler output as a string."
   (let ((out (make-temp-file "shipit-isolated" nil ".elc")))
     (unwind-protect
@@ -91,31 +134,52 @@ Returns the compiler output as a string."
            "-batch" "-Q"
            "-L" test-shipit-magit--lisp-dir
            "--eval" (prin1-to-string
-                     `(setq package-user-dir
-                            ,(expand-file-name
-                              "../.packages" test-shipit-magit--lisp-dir)))
-           "--eval" "(package-initialize)"
+                     `(dolist (dir (directory-files
+                                    ,test-shipit-magit--package-dir t "\\`[^.]"))
+                        (when (file-directory-p dir)
+                          (add-to-list 'load-path dir))))
            "--eval" (prin1-to-string
                      `(byte-compile-file ,file ,out)))
           (buffer-string))
       (ignore-errors (delete-file out)))))
+
+(defun test-shipit-magit--isolated-warnings (file)
+  "Return the isolated-compilation output for FILE, compiling it once."
+  (or (gethash file test-shipit-magit--isolated-cache)
+      (puthash file (test-shipit-magit--compile-isolated file)
+               test-shipit-magit--isolated-cache)))
 
 (defun test-shipit-magit--unknown-macro-warning-p (output)
   "Return non-nil when OUTPUT warns that a magit macro is an unknown function."
   (string-match-p "the function .magit-insert-\\(section\\|heading\\)."
                   output))
 
+(defun test-shipit-magit--unknown-eieio-warning-p (output)
+  "Return non-nil when OUTPUT warns that an EIEIO slot macro is an unknown function."
+  (string-match-p "the function .\\(oref\\|oset\\)\\(-default\\)?."
+                  output))
+
 (ert-deftest test-shipit-magit-compiles-in-isolation ()
-  "Each file must expand magit macros when compiled alone.
-This mirrors the isolated subprocess Emacs uses for native compilation."
-  (dolist (file (test-shipit-magit--source-files))
-    (let ((contents (test-shipit-magit--file-contents file)))
-      (when (test-shipit-magit--expands-macros-p contents)
-        (let ((output (test-shipit-magit--compile-isolated file)))
-          (should (equal
-                   (list (file-name-nondirectory file)
-                         (test-shipit-magit--unknown-macro-warning-p output))
-                   (list (file-name-nondirectory file) nil))))))))
+  "GIVEN a source file that expands a magit-section macro
+WHEN it is byte-compiled alone, as native compilation does
+THEN the macro expands instead of compiling to a call."
+  (dolist (file (test-shipit-magit--expanders test-shipit-magit--macro-re))
+    (let ((output (test-shipit-magit--isolated-warnings file)))
+      (should (equal
+               (list (file-name-nondirectory file)
+                     (test-shipit-magit--unknown-macro-warning-p output))
+               (list (file-name-nondirectory file) nil))))))
+
+(ert-deftest test-shipit-eieio-compiles-in-isolation ()
+  "GIVEN a source file that expands an EIEIO slot macro
+WHEN it is byte-compiled alone, as native compilation does
+THEN the macro expands instead of compiling to a call."
+  (dolist (file (test-shipit-magit--expanders test-shipit-magit--eieio-macro-re))
+    (let ((output (test-shipit-magit--isolated-warnings file)))
+      (should (equal
+               (list (file-name-nondirectory file)
+                     (test-shipit-magit--unknown-eieio-warning-p output))
+               (list (file-name-nondirectory file) nil))))))
 
 ;;; Declarations of functions in libraries we do not own
 

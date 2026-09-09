@@ -1677,6 +1677,14 @@ deferring a sync call via timer when the backend has no async support."
   "Return non-nil if FILENAME is marked as viewed."
   (equal "VIEWED" (cdr (assoc filename shipit--file-viewed-states))))
 
+(defun shipit--file-status-char (status)
+  "Return the one-letter mark for a changed file's STATUS."
+  (cond ((equal status "added") "A")
+        ((equal status "deleted") "D")
+        ((equal status "modified") "M")
+        ((equal status "renamed") "R")
+        (t "?")))
+
 (defun shipit--insert-pr-file-section (file repo pr-number &optional pr-data pr-head-sha)
   "Insert a single pr-file magit section for FILE.
 FILE is an alist with keys: filename, status, additions, deletions, patch.
@@ -1691,11 +1699,7 @@ PR-DATA and PR-HEAD-SHA are optional metadata to attach to the section."
          (outdated-count (shipit--get-file-outdated-comment-count pr-number filename))
          (resolved-count (shipit--get-file-resolved-comment-count pr-number filename))
          (comment-indicator (shipit--get-comment-indicator comment-count outdated-count resolved-count))
-         (status-char (cond ((equal status "added") "A")
-                            ((equal status "deleted") "D")
-                            ((equal status "modified") "M")
-                            ((equal status "renamed") "R")
-                            (t "?")))
+         (status-char (shipit--file-status-char status))
          ;; Text properties to apply - defined once, used in heading and body
          (file-props `(shipit-pr-file t
                                       shipit-file-path ,filename
@@ -4012,12 +4016,8 @@ INDENT is optional parent section indent in columns (default 0)."
 
      ;; Force push events
      ((string= event-type "head_ref_force_pushed")
-      (let ((icon (if (fboundp 'shipit--get-activity-event-icon)
-                      (shipit--get-activity-event-icon event-type nil "⬆️")
-                    "⬆️")))
-        (shipit--insert-activity-item icon actor-login
-                                      "force-pushed"
-                                      timestamp nil event repo pr-number indent)))
+      (shipit--insert-force-push-event event actor-login timestamp
+                                       repo pr-number indent))
 
      ;; Cross-referenced events (when another PR/issue references this one)
      ((string= event-type "mentioned")
@@ -4063,7 +4063,116 @@ INDENT is optional parent section indent in columns (default 0)."
                                       (format "%s" event-type)
                                       timestamp nil event repo pr-number indent))))))
 
-(defun shipit--insert-activity-item (icon actor action timestamp body event repo pr-number &optional indent)
+;;; Force pushes
+;; GitHub shows a force push as "<user> force-pushed the <branch>
+;; branch from <sha> to <newsha>", with a Compare button for the diff
+;; between the two heads.  The row says the same here, and expanding it
+;; renders that comparison in the buffer instead of the browser.
+
+(defun shipit--force-push-short-sha (sha)
+  "Return SHA abbreviated and faced like a commit hash."
+  (propertize (substring sha 0 (min 7 (length sha)))
+              'font-lock-face 'magit-hash))
+
+(defun shipit--force-push-action (before after branch)
+  "Return the activity line for a force push from BEFORE to AFTER on BRANCH.
+Falls back to the bare verb when the backend does not report the two
+heads, which is what GitLab and an unresolvable old head both give."
+  (if (and before after)
+      (format "force-pushed %s from %s to %s"
+              (if branch (format "the %s branch" branch) "the branch")
+              (shipit--force-push-short-sha before)
+              (shipit--force-push-short-sha after))
+    "force-pushed"))
+
+(defun shipit--pr-head-branch ()
+  "Return the head branch of the pull request in this buffer, or nil."
+  (cdr (assq 'ref (cdr (assq 'head (bound-and-true-p shipit-buffer-pr-data))))))
+
+(defun shipit--force-push-compare-files (repo before after)
+  "Return the files that differ between BEFORE and AFTER in REPO.
+Read from the local clone, whichever head is missing fetched first.
+The compare API only compares from the merge base, so after a rebase
+it reports every commit one head holds and the other does not, where
+GitHub\='s own Compare button shows only what the push changed."
+  (shipit--ensure-diff-revisions (cons before after) repo)
+  (shipit--range-files-from-git before after))
+
+(defun shipit--force-push-file-heading (file)
+  "Return the heading line for FILE in a force-push comparison."
+  (format "     %s %s (%s %s)"
+          (propertize (shipit--file-status-char (cdr (assq 'status file)))
+                      'font-lock-face 'magit-diff-file-heading)
+          (propertize (or (cdr (assq 'filename file)) "?")
+                      'font-lock-face 'shipit-filename-face)
+          (propertize (format "+%d" (or (cdr (assq 'additions file)) 0))
+                      'font-lock-face 'diff-added)
+          (propertize (format "-%d" (or (cdr (assq 'deletions file)) 0))
+                      'font-lock-face 'diff-removed)))
+
+(defun shipit--force-push-file-props (filename repo before after)
+  "Return the properties tying content to FILENAME of BEFORE..AFTER in REPO.
+The two heads ride along because the diff commands at point have to
+compare them and not the pull request\='s own base and head."
+  `(shipit-file-path ,filename
+    shipit-repo ,repo
+    shipit-base-sha ,before
+    shipit-head-sha ,after))
+
+(defun shipit--insert-force-push-file (file repo before after)
+  "Insert FILE of the force-push comparison BEFORE..AFTER in REPO.
+The diff is read and rendered when the file is opened rather than
+when the comparison is: a rebase moves every file the new base
+brought with it, and hundreds of diffs cost far more than the reader
+asked for.  The review-comment cache is emptied inside the body,
+where it is in force when the body actually runs."
+  (let* ((filename (cdr (assq 'filename file)))
+         (props (shipit--force-push-file-props filename repo before after))
+         (start (point)))
+    (magit-insert-section (pr-file filename t)
+      (magit-insert-heading (shipit--force-push-file-heading file))
+      (add-text-properties start (point) props)
+      (magit-insert-section-body
+        (let ((body-start (point))
+              (shipit--cached-inline-comments nil)
+              (shipit--inline-comments-fetched nil))
+          (shipit--insert-file-diff
+           (shipit--file-patch-from-git before after filename)
+           filename 0 repo nil)
+          (add-text-properties body-start (point) props))))))
+
+(defun shipit--insert-force-push-compare (repo before after)
+  "Insert the diff between the two heads BEFORE and AFTER of a force push.
+The pull request's review comments are left out.  Their line numbers
+belong to the pull request diff, and only the newest force push ends
+on the head those numbers are counted against."
+  (condition-case err
+      (let ((files (shipit--force-push-compare-files repo before after)))
+        (if (null files)
+            (insert "   No file changes between the two pushes\n")
+          (dolist (file files)
+            (shipit--insert-force-push-file file repo before after))))
+    ;; Signalling out of a washer abandons the render and leaves the
+    ;; section tree without its children, so the reason goes in the
+    ;; section instead.
+    (user-error (insert (format "   %s\n" (error-message-string err)))))
+  (insert "\n"))
+
+(defun shipit--insert-force-push-event (event actor timestamp repo pr-number indent)
+  "Insert the activity row for the force-push EVENT by ACTOR at TIMESTAMP.
+REPO, PR-NUMBER and INDENT are the usual activity context.  The body
+is the comparison between the two heads, fetched the first time the
+row is expanded."
+  (let ((before (cdr (assq 'shipit-force-push-before event)))
+        (after (cdr (assq 'shipit-force-push-after event))))
+    (shipit--insert-activity-item
+     "⬆️" actor
+     (shipit--force-push-action before after (shipit--pr-head-branch))
+     timestamp nil event repo pr-number indent
+     (when (and before after)
+       (lambda () (shipit--insert-force-push-compare repo before after))))))
+
+(defun shipit--insert-activity-item (icon actor action timestamp body event repo pr-number &optional indent body-fn)
   "Insert a single activity timeline item.
 ICON is the emoji/symbol for the event type.
 ACTOR is the GitHub username who performed the action.
@@ -4073,6 +4182,9 @@ BODY is optional additional content (comment text, etc.).
 EVENT is the full event data for potential navigation.
 REPO and PR-NUMBER provide context.
 INDENT is optional parent section indent in columns.
+BODY-FN renders the body itself instead of BODY, and is called with no
+arguments the first time the row is expanded.  A row whose body is a
+diff rather than markdown uses it.
 This function adds 3 to create child indent (default 0 → margin 3)."
   (let* ((start (point))
          (has-body (and body (not (string-empty-p body))))
@@ -4177,17 +4289,19 @@ This function adds 3 to create child indent (default 0 → margin 3)."
         (insert (format "%s%s%s %s" margin-str unread-indicator padded-left timestamp-str)))
       (insert "\n")
 
-      (when has-body
+      (when (or has-body body-fn)
         (magit-insert-section-body
           ;; Insert activity body with support for markdown tables and GFM details blocks
-          (let ((body-start (point)))
-            (shipit--insert-body-with-details body (+ (or indent 0) 3))
+          (if body-fn
+              (funcall body-fn)
+            (let ((body-start (point)))
+              (shipit--insert-body-with-details body (+ (or indent 0) 3))
             ;; Apply the same decorations comment bodies get -- blockquote /
             ;; strikethrough faces, code-block backgrounds, PR / commit /
             ;; user-mention / Jira / URL overlays.  Without this the activity
             ;; body renders as raw text (no `>'-line styling, no link
             ;; overlays).
-            (shipit--apply-comment-body-decorations body-start (point) repo pr-number))))
+              (shipit--apply-comment-body-decorations body-start (point) repo pr-number)))))
 
       ;; Add text properties for navigation
       (add-text-properties start (point)
@@ -4820,33 +4934,56 @@ SECTION is the magit section object that will contain the files."
 
 (add-hook 'post-command-hook #'shipit--check-section-expansion)
 
+(defun shipit--files-from-git (numstat statuses)
+  "Return file alists from NUMSTAT and STATUSES lines.
+Counts come from `--numstat\=' and the status letter from
+`--name-status\=', which are two reads rather than one because git will
+not print both at once."
+  (when numstat
+    (let ((status-of (make-hash-table :test 'equal)))
+      (dolist (line statuses)
+        (let ((parts (split-string line "\t" t)))
+          (when (cdr parts)
+            (puthash (car (last parts))
+                     (pcase (substring (car parts) 0 1)
+                       ("A" "added") ("D" "removed") ("R" "renamed") (_ "modified"))
+                     status-of))))
+      (delq nil
+            (mapcar (lambda (line)
+                      (let ((parts (split-string line "\t" t)))
+                        (when (cddr parts)
+                          (let ((name (nth 2 parts)))
+                            `((filename . ,name)
+                              (status . ,(or (gethash name status-of) "modified"))
+                              ;; A binary file reports `-' for both.
+                              (additions . ,(or (string-to-number (nth 0 parts)) 0))
+                              (deletions . ,(or (string-to-number (nth 1 parts)) 0)))))))
+                    numstat)))))
+
 (defun shipit--commit-files-from-git (commit-sha)
   "Return the files COMMIT-SHA changed, read from the repository.
-Nil when the commit is not here.  Counts come from `--numstat\=' and
-the status letter from `--name-status\=', which are two reads of the
-same commit rather than one because git will not print both at once."
-  (let ((numstat (magit-git-lines "show" "--format=" "--numstat" commit-sha))
-        (statuses (magit-git-lines "show" "--format=" "--name-status" commit-sha)))
-    (when numstat
-      (let ((status-of (make-hash-table :test 'equal)))
-        (dolist (line statuses)
-          (let ((parts (split-string line "\t" t)))
-            (when (cdr parts)
-              (puthash (car (last parts))
-                       (pcase (substring (car parts) 0 1)
-                         ("A" "added") ("D" "removed") ("R" "renamed") (_ "modified"))
-                       status-of))))
-        (delq nil
-              (mapcar (lambda (line)
-                        (let ((parts (split-string line "\t" t)))
-                          (when (cddr parts)
-                            (let ((name (nth 2 parts)))
-                              `((filename . ,name)
-                                (status . ,(or (gethash name status-of) "modified"))
-                                ;; A binary file reports `-' for both.
-                                (additions . ,(or (string-to-number (nth 0 parts)) 0))
-                                (deletions . ,(or (string-to-number (nth 1 parts)) 0)))))))
-                      numstat))))))
+Nil when the commit is not here."
+  (shipit--files-from-git
+   (magit-git-lines "show" "--format=" "--numstat" commit-sha)
+   (magit-git-lines "show" "--format=" "--name-status" commit-sha)))
+
+(defun shipit--range-files-from-git (base head)
+  "Return the files that differ between BASE and HEAD in the repository.
+This is the direct difference between the two, which is what the
+compare API cannot give: it only compares from the merge base."
+  (shipit--files-from-git
+   (magit-git-lines "diff" "--numstat" base head)
+   (magit-git-lines "diff" "--name-status" base head)))
+
+(defun shipit--file-patch-from-git (base head filename)
+  "Return the patch for FILENAME between BASE and HEAD, hunks only.
+Cut to the first hunk header, where the API\='s `patch\=' field starts
+and where the hunk parser expects to begin."
+  (let ((output (with-temp-buffer
+                  (magit-git-insert "diff" base head "--" filename)
+                  (buffer-string))))
+    (when (string-match "^@@" output)
+      (substring output (match-beginning 0)))))
 
 (defun shipit--fetch-commit-files (repo commit-sha)
   "Fetch files changed in a specific commit.

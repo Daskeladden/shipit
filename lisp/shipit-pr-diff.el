@@ -606,6 +606,45 @@ Dispatches to API-FN otherwise."
   "Check if SHA exists in the local git repository."
   (zerop (call-process "git" nil nil nil "cat-file" "-e" sha)))
 
+(defun shipit--fetch-sha (sha &optional remote)
+  "Fetch SHA from REMOTE, \"origin\" by default, into the local clone.
+Returns non-nil when the fetch succeeded."
+  (zerop (call-process "git" nil nil nil "fetch" (or remote "origin") sha)))
+
+(defun shipit--ensure-shas-local (shas &optional remote)
+  "Fetch whichever of SHAS the local clone does not have, from REMOTE.
+Returns the first one still missing afterwards, or nil when all
+arrived."
+  (dolist (sha shas)
+    (unless (shipit--sha-exists-locally-p sha)
+      (message "Fetching %s (please wait)..."
+               (substring sha 0 (min 12 (length sha))))
+      (shipit--fetch-sha sha remote)))
+  (seq-find (lambda (sha) (not (shipit--sha-exists-locally-p sha))) shas))
+
+(defun shipit--diff-remote-for (repo)
+  "Return the git remote to fetch REPO's commits from."
+  (or (and repo
+           (let* ((resolved (shipit-pr--resolve-for-repo repo))
+                  (remote-fn (plist-get (car resolved) :remote-for-fetch)))
+             (and remote-fn (funcall remote-fn (cdr resolved) repo))))
+      "origin"))
+
+(defun shipit--ensure-diff-revisions (revisions &optional repo)
+  "Return REVISIONS with both of its ends in the local clone, fetched from REPO.
+Nothing points at the head a force push moved off, so `git fetch\=' on
+its own never brings that commit in.  GitHub serves a commit by its
+hash, which is how the old side of the comparison gets here.  The
+remote is only looked up when something is actually missing."
+  (let ((shas (list (car revisions) (cdr revisions))))
+    (when (seq-remove #'shipit--sha-exists-locally-p shas)
+      (let ((missing (shipit--ensure-shas-local
+                      shas (shipit--diff-remote-for repo))))
+        (when missing
+          (user-error "Could not fetch %s from the remote"
+                      (substring missing 0 (min 12 (length missing))))))))
+  revisions)
+
 (defun shipit--ensure-pr-shas-local (repo pr-number head-ref base-sha head-sha &optional prompt-p)
   "Ensure BASE-SHA and HEAD-SHA exist locally for PR-NUMBER in REPO.
 HEAD-REF is fed to the backend's `:refspec-for-pr' to compute the
@@ -1855,10 +1894,19 @@ Works for both PR files and commit files.
 Uses raw magit-diff-range without shipit's PR context to avoid comment injection."
   (interactive)
   (let* ((file-path (get-text-property (point) 'shipit-file-path))
+         (revisions (shipit--diff-revisions-at-point))
          (commit-sha (get-text-property (point) 'shipit-commit-sha))
          (pr-number (get-text-property (point) 'shipit-pr-number))
          (repo (get-text-property (point) 'shipit-repo)))
     (cond
+     ;; Content spanning two revisions of its own -- diff exactly those
+     ((and file-path revisions)
+      (unless (fboundp 'magit-diff-range)
+        (user-error "magit-diff-range not available"))
+      (let ((ready (shipit--ensure-diff-revisions revisions repo))
+            (shipit--current-displayed-pr nil))
+        (magit-diff-range (format "%s..%s" (car ready) (cdr ready))
+                          nil (list file-path))))
      ;; Commit file - show commit diff
      ((and file-path commit-sha)
       (if (fboundp 'magit-diff-range)
@@ -2089,10 +2137,18 @@ If on a specific file, open ediff for that file."
   (interactive)
   (shipit--debug-log "shipit--ediff-file-at-point called")
   (let* ((file-path (get-text-property (point) 'shipit-file-path))
+         (revisions (shipit--diff-revisions-at-point))
          (commit-sha (get-text-property (point) 'shipit-commit-sha))
          (pr-number (get-text-property (point) 'shipit-pr-number))
          (repo (get-text-property (point) 'shipit-repo)))
     (cond
+     ;; Case 0: Content spanning two revisions of its own
+     ((and file-path revisions)
+      (shipit--debug-log "ediff comparison file: %s between %s and %s"
+                         file-path (car revisions) (cdr revisions))
+      (let ((ready (shipit--ensure-diff-revisions revisions repo)))
+        (shipit--open-file-ediff (car ready) (cdr ready) file-path)))
+
      ;; Case 1: Commit file - compare parent..commit
      ((and file-path commit-sha)
       (shipit--debug-log "ediff commit file: %s @ %s" file-path commit-sha)
@@ -2162,6 +2218,16 @@ stringp, nil\" out of `process-lines\='."
              (and (file-executable-p executable) executable)
            (executable-find executable)))))
 
+(defun shipit--diff-revisions-at-point ()
+  "Return (BASE-SHA . HEAD-SHA) for the comparison at point, or nil.
+Content that is a comparison in its own right carries the two
+revisions it spans, because the pull request\='s own base and head are
+then the wrong things to diff.  A force push\='s two heads are the case
+that needs this."
+  (let ((base (get-text-property (point) 'shipit-base-sha))
+        (head (get-text-property (point) 'shipit-head-sha)))
+    (and base head (cons base head))))
+
 (defun shipit--difftastic-write-version (sha file-path)
   "Write the contents of FILE-PATH at SHA to a temp file; return (PATH . FOUND).
 PATH is a temp file path tagged with the SHA + basename so
@@ -2222,6 +2288,7 @@ fetched."
     (user-error "Difftastic binary not found: `difftastic-executable' is %S"
                 (bound-and-true-p difftastic-executable)))
   (let* ((file-path (get-text-property (point) 'shipit-file-path))
+         (revisions (shipit--diff-revisions-at-point))
          (commit-sha (get-text-property (point) 'shipit-commit-sha))
          (pr-number (or (get-text-property (point) 'shipit-pr-number)
                         (bound-and-true-p shipit-buffer-pr-number)))
@@ -2231,6 +2298,9 @@ fetched."
     (cond
      ((not file-path)
       (user-error "No file at point"))
+     (revisions
+      (let ((ready (shipit--ensure-diff-revisions revisions repo)))
+        (shipit--difftastic-diff-shas (car ready) (cdr ready) file-path)))
      ((and commit-sha (not pr-number))
       (shipit--difftastic-diff-shas (concat commit-sha "^")
                                     commit-sha file-path))

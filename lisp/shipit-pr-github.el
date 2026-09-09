@@ -234,11 +234,114 @@ so this mirrors the API\='s stacks path under the web host."
     (shipit--debug-log "GitHub PR backend: fetching resolved threads for PR #%s" number)
     (shipit--fetch-resolved-threads-graphql owner name number)))
 
+(defconst shipit-pr-github--force-push-query
+  "query ForcePushes($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      timelineItems(last: 100, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT]) {
+        nodes {
+          ... on HeadRefForcePushedEvent {
+            beforeCommit { oid }
+            afterCommit { oid }
+          }
+        }
+      }
+    }
+  }
+}"
+  "GraphQL query for both heads of every force push on a pull request.
+The REST timeline names only the new head, in `commit_id\='.  The head
+it replaced, which GitHub\='s own page shows as the `from\=' half of
+\"force-pushed from A to B\", is only in GraphQL.")
+
+(defun shipit-pr-github--force-push-event-p (event)
+  "Return non-nil when EVENT is a head-ref force push."
+  (equal (cdr (assq 'event event)) "head_ref_force_pushed"))
+
+(defun shipit-pr-github--force-push-pair (node)
+  "Return (NEW-HEAD . OLD-HEAD) for GraphQL NODE, or nil.
+GitHub reports a head it can no longer resolve as null, and a push
+with only one end is of no use to a comparison."
+  (let ((before (cdr (assq 'oid (cdr (assq 'beforeCommit node)))))
+        (after (cdr (assq 'oid (cdr (assq 'afterCommit node))))))
+    (when (and before after)
+      (cons after before))))
+
+(defun shipit-pr-github--force-push-pairs (response)
+  "Return the (NEW-HEAD . OLD-HEAD) pairs in GraphQL RESPONSE."
+  (let* ((data (cdr (assq 'data response)))
+         (repository (cdr (assq 'repository data)))
+         (pull-request (cdr (assq 'pullRequest repository)))
+         (items (cdr (assq 'timelineItems pull-request)))
+         (nodes (append (cdr (assq 'nodes items)) nil)))
+    (delq nil (mapcar #'shipit-pr-github--force-push-pair nodes))))
+
+(defun shipit-pr-github--force-push-variables (config number)
+  "Return the GraphQL variables for the force pushes on PR NUMBER in CONFIG."
+  (let ((parts (split-string (plist-get config :repo) "/")))
+    `((owner . ,(car parts))
+      (repo . ,(cadr parts))
+      (number . ,number))))
+
+(defun shipit-pr-github--fetch-force-pushes (config number)
+  "Return the force pushes on PR NUMBER as (NEW-HEAD . OLD-HEAD) pairs.
+Keyed by the new head because that is what the REST timeline event
+carries in `commit_id\='."
+  (shipit--debug-log "GitHub PR backend: fetching force pushes for PR #%s" number)
+  (shipit-pr-github--force-push-pairs
+   (shipit--graphql-request shipit-pr-github--force-push-query
+                            (shipit-pr-github--force-push-variables config number))))
+
+(defun shipit-pr-github--fetch-force-pushes-async (config number callback)
+  "Call CALLBACK with the force pushes on PR NUMBER, as pairs."
+  (shipit--graphql-request
+   shipit-pr-github--force-push-query
+   (shipit-pr-github--force-push-variables config number)
+   (lambda (response)
+     (funcall callback (shipit-pr-github--force-push-pairs response)))))
+
+(defun shipit-pr-github--apply-force-push-pairs (events pairs)
+  "Return EVENTS with both heads added to every force push among them.
+PAIRS maps the new head to the head it replaced.  An event whose new
+head is not in PAIRS is left alone, so a row that cannot be compared
+still renders."
+  (mapcar
+   (lambda (event)
+     (let ((before (and (shipit-pr-github--force-push-event-p event)
+                        (cdr (assoc (cdr (assq 'commit_id event)) pairs)))))
+       (if before
+           (append `((shipit-force-push-before . ,before)
+                     (shipit-force-push-after . ,(cdr (assq 'commit_id event))))
+                   event)
+         event)))
+   events))
+
+(defun shipit-pr-github--annotate-force-pushes (config number events)
+  "Add both heads to the force pushes among EVENTS of PR NUMBER.
+EVENTS comes back untouched when it holds no force push, so the extra
+request is only made for the pull requests that were force-pushed."
+  (if (not (seq-some #'shipit-pr-github--force-push-event-p events))
+      events
+    (shipit-pr-github--apply-force-push-pairs
+     events (shipit-pr-github--fetch-force-pushes config number))))
+
+(defun shipit-pr-github--annotate-force-pushes-async (config number events callback)
+  "Call CALLBACK with EVENTS of PR NUMBER, force pushes carrying both heads.
+The second request stays asynchronous too, so opening a
+force-pushed pull request does not block on it."
+  (if (not (seq-some #'shipit-pr-github--force-push-event-p events))
+      (funcall callback events)
+    (shipit-pr-github--fetch-force-pushes-async
+     config number
+     (lambda (pairs)
+       (funcall callback (shipit-pr-github--apply-force-push-pairs events pairs))))))
+
 (defun shipit-pr-github--fetch-timeline (config number)
   "Fetch timeline events for PR NUMBER using CONFIG."
   (let ((repo (plist-get config :repo)))
     (shipit--debug-log "GitHub PR backend: fetching timeline for PR #%s" number)
-    (shipit--fetch-timeline-events repo number)))
+    (shipit-pr-github--annotate-force-pushes
+     config number (shipit--fetch-timeline-events repo number))))
 
 ;;; Async backend wrappers
 ;; These adapt the existing async functions to the (config number callback)
@@ -254,7 +357,11 @@ Calls CALLBACK with the review-info alist."
   "Fetch timeline events for PR NUMBER using CONFIG asynchronously.
 Calls CALLBACK with the list of events."
   (let ((repo (plist-get config :repo)))
-    (shipit--fetch-timeline-events-async repo number callback)))
+    (shipit--fetch-timeline-events-async
+     repo number
+     (lambda (events)
+       (shipit-pr-github--annotate-force-pushes-async
+        config number events callback)))))
 
 (defun shipit-pr-github--fetch-commits-async (config number callback)
   "Fetch commits for PR NUMBER using CONFIG asynchronously.
@@ -1721,6 +1828,7 @@ data should pass it: this runs on every render of the section."
        :fetch-review-threads #'shipit-pr-github--fetch-review-threads
        :fetch-resolved-threads #'shipit-pr-github--fetch-resolved-threads
        :fetch-timeline #'shipit-pr-github--fetch-timeline
+       :fetch-force-pushes #'shipit-pr-github--fetch-force-pushes
        :fetch-review-decision-async #'shipit-pr-github--fetch-review-decision-async
        :fetch-timeline-async #'shipit-pr-github--fetch-timeline-async
        :fetch-commits-async #'shipit-pr-github--fetch-commits-async

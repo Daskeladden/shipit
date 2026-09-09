@@ -2045,6 +2045,25 @@ Handles both PR files (shipit-pr-file property) and commit files
          :crossref-title (get-text-property (point) 'shipit-crossref-title)
          :inline-comment-path (get-text-property (point) 'shipit-inline-comment-path))))
 
+(defun shipit--force-push-comparable-p (section)
+  "Return non-nil when SECTION can show a force-push comparison.
+Until the row is first expanded its comparison is still a washer and
+the section has no content at all, which is why
+`magit-section-content-p\=' on its own is not the question to ask."
+  (and section
+       (or (oref section washer)
+           (magit-section-content-p section))))
+
+(defun shipit--toggle-force-push-compare ()
+  "Toggle the force-push row at point between its line and its comparison.
+The comparison is the diff between the two heads the push moved
+between, which is what the Compare button on GitHub\='s own page opens.
+A row whose two heads the backend never reported has none."
+  (let ((section (magit-current-section)))
+    (if (shipit--force-push-comparable-p section)
+        (magit-section-toggle section)
+      (message "No comparison available for this force push"))))
+
 (defun shipit-pr--dispatch-activity-navigation (props)
   "Navigate to the activity referenced by PROPS in the current PR buffer.
 PROPS is a plist with keys :comment-id, :commit-sha, :event-type,
@@ -2079,6 +2098,8 @@ the navigation actually moves point."
         (message "No file path available for this inline comment")))
      ((and (string= event-type "cross-referenced") crossref-number)
       (shipit--crossref-actions crossref-repo crossref-number crossref-url crossref-title))
+     ((string= event-type "head_ref_force_pushed")
+      (shipit--toggle-force-push-compare))
      (t
       (message "No navigation available for this activity event type: %s" event-type)))
     (unless (= (point) start-pos)

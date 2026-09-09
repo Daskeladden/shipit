@@ -2150,6 +2150,18 @@ If on a specific file, open ediff for that file."
               (message "shipit--add-comment-to-pr function not available")))))
     (message "Cannot add comment: not in a shipit ediff buffer")))
 
+(defun shipit--difftastic-executable ()
+  "Return the difftastic binary to run, or nil when there is none.
+The package loads without its binary, leaving `difftastic-executable\='
+nil or naming something that is not on `exec-path\='.  Either way the
+failure otherwise surfaces far from here, as \"Wrong type argument:
+stringp, nil\" out of `process-lines\='."
+  (let ((executable (bound-and-true-p difftastic-executable)))
+    (and (stringp executable)
+         (if (file-name-absolute-p executable)
+             (and (file-executable-p executable) executable)
+           (executable-find executable)))))
+
 (defun shipit--difftastic-write-version (sha file-path)
   "Write the contents of FILE-PATH at SHA to a temp file; return (PATH . FOUND).
 PATH is a temp file path tagged with the SHA + basename so
@@ -2206,6 +2218,9 @@ fetched."
   (interactive)
   (unless (fboundp 'difftastic-files)
     (user-error "difftastic is not installed (function `difftastic-files' is not bound)"))
+  (unless (shipit--difftastic-executable)
+    (user-error "Difftastic binary not found: `difftastic-executable' is %S"
+                (bound-and-true-p difftastic-executable)))
   (let* ((file-path (get-text-property (point) 'shipit-file-path))
          (commit-sha (get-text-property (point) 'shipit-commit-sha))
          (pr-number (or (get-text-property (point) 'shipit-pr-number)

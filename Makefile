@@ -49,6 +49,7 @@ test-unit: compile
 		-l test/test-shipit-editor.el \
 		-l test/test-shipit-magit-requires.el \
 		-l test/test-shipit-rounded-section.el \
+		-l test/test-shipit-diff-entry-points.el \
 		-l test/test-shipit-duplicate-defuns.el \
 		-l test/test-shipit-file-registration.el \
 		-l test/test-shipit-requires.el \

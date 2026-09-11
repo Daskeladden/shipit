@@ -36,10 +36,20 @@ clean:
 	rm -rf .packages
 	rm -f ~/.emacs.d/eln-cache/*/shipit*.eln
 
+# Tests run with a throwaway user-emacs-directory.  shipit keeps its
+# per-user state there, read and unread marks among it, and a test that
+# saves any of it would otherwise write over the session's own copy.
+# They read no logins either: a lookup decrypts the auth file of the
+# person running the suite, and with no passphrase cached in gpg-agent
+# that waits for a prompt a batch run never answers.
+TEST_HOME = -eval "(setq user-emacs-directory (file-name-as-directory (make-temp-file \"shipit-test-home-\" t)))" \
+	-eval "(setq auth-sources nil)"
+
 # Run unit tests
 test-unit: compile
 	$(EMACS) -batch -Q \
 		-eval "(setq package-user-dir \"$(PWD)/.packages\")" \
+		$(TEST_HOME) \
 		-eval "(package-initialize)" \
 		-eval "(unless (package-installed-p 'dash) (package-install 'dash))" \
 		-eval "(unless (package-installed-p 'transient) (package-install 'transient))" \
@@ -51,6 +61,7 @@ test-unit: compile
 		-l test/test-shipit-rounded-section.el \
 		-l test/test-shipit-force-push.el \
 		-l test/test-shipit-diff-entry-points.el \
+		-l test/test-shipit-gh-etag-exit.el \
 		-l test/test-shipit-duplicate-defuns.el \
 		-l test/test-shipit-file-registration.el \
 		-l test/test-shipit-requires.el \
@@ -125,6 +136,7 @@ test-unit: compile
 test-integration: compile
 	$(EMACS) -batch -Q \
 		-eval "(setq package-user-dir \"$(PWD)/.packages\")" \
+		$(TEST_HOME) \
 		-eval "(package-initialize)" \
 		-eval "(unless (package-installed-p 'dash) (package-install 'dash))" \
 		-eval "(unless (package-installed-p 'transient) (package-install 'transient))" \

@@ -999,8 +999,12 @@ Use this when encountering 'Opening input file: No such file or directory' error
                  (message "  %s: %d cached endpoints" repo count))
                repos))))
 
-;; Auto-save ETag cache on Emacs exit
-(add-hook 'kill-emacs-hook #'shipit-gh-etag--save-cache)
+;; Auto-save ETag cache on Emacs exit -- but not from a batch Emacs.
+;; One loads shipit with an empty cache, and saving that on the way out
+;; wrote the emptiness over the session's file, read state included:
+;; every `make test' did it.
+(unless noninteractive
+  (add-hook 'kill-emacs-hook #'shipit-gh-etag--save-cache))
 
 ;;;###autoload
 (defun shipit-save-etag-cache ()

@@ -62,6 +62,7 @@ test-unit: compile
 		-l test/test-shipit-force-push.el \
 		-l test/test-shipit-diff-entry-points.el \
 		-l test/test-shipit-key-hints.el \
+		-l test/test-shipit-open-in-worktree.el \
 		-l test/test-shipit-gh-etag-exit.el \
 		-l test/test-shipit-duplicate-defuns.el \
 		-l test/test-shipit-file-registration.el \

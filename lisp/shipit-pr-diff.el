@@ -2031,48 +2031,63 @@ PR-DATA is the full PR data object."
                              (substring pr-head-sha 0 7))))
       buf)))
 
-(defun shipit--repo-root-head-sha ()
-  "Return the current HEAD SHA of the repo-root working tree, or nil."
-  (let ((root (shipit--get-repo-root)))
-    (when root
-      (condition-case nil
-          (let ((sha (string-trim-right
-                      (shell-command-to-string
-                       (format "cd %s && git rev-parse HEAD"
-                               (shell-quote-argument root))))))
-            (and (not (string-empty-p sha)) sha))
-        (error nil)))))
+(defun shipit--head-sha-in (dir)
+  "Return the HEAD SHA of the working tree at DIR, or nil."
+  (when dir
+    (condition-case nil
+        (let ((sha (string-trim-right
+                    (shell-command-to-string
+                     (format "cd %s && git rev-parse HEAD"
+                             (shell-quote-argument dir))))))
+          (and (not (string-empty-p sha)) sha))
+      (error nil))))
+
+(defun shipit--pr-worktree-at-point ()
+  "Return the worktree of the pull request at point, or nil if it has none.
+The PR comes from the text properties at point, falling back to the
+buffer\='s own PR where a line did not inherit them."
+  (let* ((buf-pr (bound-and-true-p shipit-buffer-pr-data))
+         (pr-number (or (get-text-property (point) 'shipit-pr-number)
+                        (cdr (assq 'number buf-pr))
+                        (bound-and-true-p shipit-buffer-pr-number)))
+         (repo (or (get-text-property (point) 'shipit-repo)
+                   (bound-and-true-p shipit-buffer-repo)))
+         (worktree (and pr-number
+                        (fboundp 'shipit--find-worktree-for-pr)
+                        (shipit--find-worktree-for-pr pr-number repo))))
+    (and worktree (file-directory-p worktree) worktree)))
 
 (defun shipit--open-file-from-worktree-at-point ()
-  "Open the file-at-point from the filesystem under the repo root.
-Uses plain `find-file' on the working-tree path so LSP, xref, and
-flycheck attach normally.  The content is the current working-tree
-version — it may differ from the PR head SHA.  Positions point on
-the diff's current line when possible.
+  "Open the file at point from the filesystem, on the diff\='s current line.
+Uses plain `find-file\=' so LSP, xref and flycheck attach normally.
 
-When the working tree's HEAD differs from the PR head SHA, prints a
-short warning in the echo area so you know the file content may not
-match the diff.  Intended for users reviewing their own PR while
-checked out on the PR branch."
+The file comes from the pull request\='s worktree when it has one:
+that worktree sits on the PR head, so the file is the version the
+diff describes.  Without one it comes from the repository root, which
+only matches when the clone is checked out on the PR branch.
+
+Either way, when the tree\='s HEAD differs from the PR head, a short
+warning in the echo area says the content may not match the diff."
   (interactive)
   (let* ((file-path (or (get-text-property (point) 'shipit-file-path)
                         (user-error "No file at point")))
-         (repo-root (or (shipit--get-repo-root)
-                        (user-error "Not in a git repository")))
+         (root (or (shipit--pr-worktree-at-point)
+                   (shipit--get-repo-root)
+                   (user-error "Not in a git repository")))
          (pr-head-sha (or (get-text-property (point) 'shipit-pr-head-sha)
                           (and (boundp 'shipit-buffer-pr-data)
                                shipit-buffer-pr-data
                                (cdr (assq 'sha
                                           (cdr (assq 'head
                                                      shipit-buffer-pr-data)))))))
-         (head-sha (shipit--repo-root-head-sha))
+         (head-sha (shipit--head-sha-in root))
          (mismatch (and pr-head-sha head-sha
                         (not (string-equal head-sha pr-head-sha))))
          (line-number (shipit--get-diff-line-number-at-point))
-         (full-path (expand-file-name file-path repo-root)))
+         (full-path (expand-file-name file-path root)))
     (shipit--debug-log
-     "OPEN-WT: file=%s repo-root=%s pr-head=%s wt-head=%s mismatch=%s line=%s"
-     file-path repo-root
+     "OPEN-WT: file=%s root=%s pr-head=%s wt-head=%s mismatch=%s line=%s"
+     file-path root
      (or pr-head-sha "<nil>") (or head-sha "<nil>")
      mismatch (or line-number "<nil>"))
     (unless (file-exists-p full-path)

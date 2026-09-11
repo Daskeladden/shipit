@@ -23,6 +23,7 @@
 (require 'cl-lib)
 (require 'cl-lib)
 (require 'shipit-core)
+(require 'shipit-cache)
 (require 'shipit-stack)
 (declare-function shipit-stacked-preview "shipit-stacked-preview")
 (require 'shipit-sections)
@@ -1432,6 +1433,11 @@ Returns the existing PR data if found, nil otherwise."
         (if response
             (let ((pr-number (cdr (assq 'number response)))
                   (html-url (cdr (assq 'html_url response))))
+              ;; The branch was looked up before it had a pull request,
+              ;; and misses are remembered too.  Left alone, every other
+              ;; view goes on saying it has none.
+              (shipit-cache-forget-branch-pr shipit-preview--repo
+                                             shipit-preview--branch)
               (message "PR #%d created: %s" pr-number html-url)
               ;; Apply labels if any
               (when shipit-preview--labels

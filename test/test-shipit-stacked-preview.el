@@ -593,23 +593,180 @@ THEN it says so rather than asking the remote for a stack of one."
                  (lambda (_numbers) (error "should not be reached"))))
         (should-error (shipit-stacked-preview-register) :type 'user-error)))))
 
-(ert-deftest test-shipit-stacked-preview-forgets-what-it-knew-of-the-branch ()
-  "GIVEN a layer that has just been submitted
-WHEN the stack buffer takes over again
-THEN what was remembered about that branch is dropped.  That it had no
-pull request was cached, misses included, and it has just stopped being
-true."
+(defmacro test-stacked--with-github-answering (prs &rest body)
+  "Run BODY against the GitHub backend, the network answering PRS.
+PRS maps a branch to the number of its open pull request.  Only the
+network is stood in for, so the branch lookup and both of the caches
+in front of it run for real."
+  (declare (indent 1))
+  `(let ((shipit-pr-backend 'github)
+         (shipit--cached-branch-prs (make-hash-table :test 'equal))
+         (shipit-gh-etag--refresh-cache (make-hash-table :test 'equal)))
+     (cl-letf (((symbol-function 'shipit--github-token) (lambda () "token"))
+               ((symbol-function 'shipit-gh-etag-get-json)
+                (lambda (_endpoint params &rest _)
+                  (let* ((head (cdr (assq 'head params)))
+                         (branch (car (last (split-string head ":"))))
+                         (number (cdr (assoc branch ,prs))))
+                    ;; A list, as the ETag layer parses arrays.
+                    (list :json (and number
+                                     (list `((number . ,number)
+                                             (head . ((ref . ,branch)))
+                                             (base . ((ref . "main"))))))))))
+               ((symbol-function 'shipit--fetch-commits-and-files-parallel-sync)
+                (lambda (_repo _number pr) pr)))
+       ,@body)))
+
+(ert-deftest test-shipit-stacked-preview-register-asks-again ()
+  "GIVEN two layers looked up before either had a pull request
+AND both have one now, made outside this buffer
+WHEN the stack is registered
+THEN it asks again and groups both.  It used to believe the
+remembered answer and refuse with \"0 has been made\"."
   (with-temp-buffer
     (setq shipit-stacked-preview--repo "owner/repo")
-    (let ((forgotten nil))
-      (cl-letf (((symbol-function 'shipit-cache-forget-branch-pr)
-                 (lambda (repo branch) (setq forgotten (list repo branch))))
-                ((symbol-function 'shipit-stacked-preview--group-submitted)
-                 (lambda () nil))
-                ((symbol-function 'shipit-stacked-preview--render) (lambda () nil))
-                ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
-        (funcall (shipit-stacked-preview--return-to (current-buffer) "two") 42)
-        (should (equal '("owner/repo" "two") forgotten))))))
+    (let ((layers (test-stacked--layers "one" "two"))
+          (grouped nil))
+      (test-stacked--with-github-answering '(("one" . 11) ("two" . 12))
+        (dolist (branch '("one" "two"))
+          (puthash (shipit-cache-branch-pr-key "owner/repo" branch)
+                   nil shipit--cached-branch-prs))
+        (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                   (lambda () layers))
+                  ((symbol-function 'shipit-stacked-preview--group)
+                   (lambda (numbers) (setq grouped numbers)))
+                  ((symbol-function 'shipit-stacked-preview--render) #'ignore))
+          (shipit-stacked-preview-register)))
+      (should (equal '(11 12) grouped)))))
+
+(ert-deftest test-shipit-stacked-preview-register-sees-past-a-stale-request ()
+  "GIVEN a branch whose lookup was answered empty before its pull
+request existed, and that answer still held by the per-refresh request
+cache, which a PR buffer refresh opens and nothing closes
+WHEN the stack is registered
+THEN the pull request is found.  Dropping the branch's own answer was
+not enough: the request underneath it was served from that cache."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((layers (test-stacked--layers "one" "two"))
+          (grouped nil))
+      (test-stacked--with-github-answering '(("one" . 11) ("two" . 12))
+        (dolist (branch '("one" "two"))
+          (dolist (head (list (concat "owner:" branch) branch))
+            (puthash (concat "owner/repo/repos/owner/repo/pulls"
+                             (shipit-gh-etag--qstr
+                              `((state . ,(if shipit-magit-show-closed-prs "all" "open"))
+                                (head . ,head))))
+                     '(:status 200 :json nil)
+                     shipit-gh-etag--refresh-cache)))
+        (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                   (lambda () layers))
+                  ((symbol-function 'shipit-stacked-preview--group)
+                   (lambda (numbers) (setq grouped numbers)))
+                  ((symbol-function 'shipit-stacked-preview--render) #'ignore))
+          (shipit-stacked-preview-register)))
+      (should (equal '(11 12) grouped)))))
+
+(ert-deftest test-shipit-stacked-preview-counts-the-pr-it-sits-on ()
+  "GIVEN a stack raised over a branch whose pull request is open
+WHEN the submitted run is worked out
+THEN that pull request comes first.  Measuring from it leaves it out
+of the layers, but it is the bottom of the stack GitHub groups: two
+pull requests made one on the other otherwise never formed a stack."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo"
+          shipit-stacked-preview--base "origin/one")
+    (let ((layers (test-stacked--layers "two")))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stack--base-ref) (lambda () "origin/main"))
+                ((symbol-function 'shipit-stacked-preview--pr-number)
+                 (lambda (branch) (pcase branch ("one" 11) ("two" 12)))))
+        (should (equal '(11 12) (shipit-stacked-preview--submitted-numbers)))))))
+
+(ert-deftest test-shipit-stacked-preview-default-branch-is-no-pr-to-sit-on ()
+  "GIVEN a stack raised over the default branch
+AND some pull request with the default branch as its head, as one from
+master into a release branch has
+WHEN the submitted run is worked out, and the base line drawn
+THEN that pull request is no part of it.  The base line used to show
+it, as if the stack sat on it."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo"
+          shipit-stacked-preview--base "origin/main")
+    (let ((layers (test-stacked--layers "one" "two")))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stack--base-ref) (lambda () "origin/main"))
+                ((symbol-function 'shipit-stack--current-branch) (lambda () "two"))
+                ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) nil))
+                ((symbol-function 'shipit-stacked-preview--pr-number)
+                 (lambda (branch) (pcase branch ("main" 99) ("one" 11) ("two" 12)))))
+        (should (equal '(11 12) (shipit-stacked-preview--submitted-numbers)))
+        (shipit-stacked-preview--insert-refs)
+        (should-not (string-match-p "#99" (buffer-string)))))))
+
+(ert-deftest test-shipit-stacked-preview-register-groups-with-the-pr-below ()
+  "GIVEN two open pull requests, the second based on the first's branch,
+so the stack view sits on the first and holds the second as its layer
+WHEN the stack is registered
+THEN both are grouped, the one it sits on first.  This is the report:
+the view counted one and refused with \"1 has been made\"."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo"
+          shipit-stacked-preview--base "origin/one")
+    (let ((layers (test-stacked--layers "two"))
+          (grouped nil))
+      (test-stacked--with-github-answering '(("one" . 11) ("two" . 12))
+        (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                   (lambda () layers))
+                  ((symbol-function 'shipit-stack--base-ref) (lambda () "origin/main"))
+                  ((symbol-function 'shipit-stacked-preview--group)
+                   (lambda (numbers) (setq grouped numbers)))
+                  ((symbol-function 'shipit-stacked-preview--render) #'ignore))
+          (shipit-stacked-preview-register)))
+      (should (equal '(11 12) grouped)))))
+
+(ert-deftest test-shipit-stacked-preview-refresh-asks-again ()
+  "GIVEN layers whose branches were looked up before they had pull
+requests
+WHEN the buffer is refreshed
+THEN what was remembered about those branches is dropped, so a pull
+request made anywhere, on the web page included, shows up."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo"
+          shipit-stacked-preview--base "origin/main")
+    (let ((layers (test-stacked--layers "one" "two"))
+          (shipit--cached-branch-prs (make-hash-table :test 'equal)))
+      (dolist (branch '("one" "two" "unrelated"))
+        (puthash (shipit-cache-branch-pr-key "owner/repo" branch)
+                 nil shipit--cached-branch-prs))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit--commits-in-range) (lambda (_) nil))
+                ((symbol-function 'shipit-stacked-preview--render) #'ignore))
+        (shipit-stacked-preview-refresh))
+      (should (eq 'absent (gethash (shipit-cache-branch-pr-key "owner/repo" "one")
+                                   shipit--cached-branch-prs 'absent)))
+      (should (eq 'absent (gethash (shipit-cache-branch-pr-key "owner/repo" "two")
+                                   shipit--cached-branch-prs 'absent)))
+      (should-not (eq 'absent (gethash (shipit-cache-branch-pr-key "owner/repo" "unrelated")
+                                       shipit--cached-branch-prs 'absent))))))
+
+(ert-deftest test-shipit-stacked-preview-register-says-none-properly ()
+  "GIVEN a stack with no pull requests at all
+WHEN it is registered
+THEN the refusal reads as English."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((layers (test-stacked--layers "one" "two")))
+      (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                 (lambda () layers))
+                ((symbol-function 'shipit-stacked-preview--forget-layer-prs) #'ignore)
+                ((symbol-function 'shipit-stacked-preview--pr-number) (lambda (_) nil)))
+        (let ((raised (condition-case err (shipit-stacked-preview-register)
+                        (user-error (error-message-string err)))))
+          (should (string-match-p "0 have been made" raised)))))))
 
 (ert-deftest test-shipit-stacked-preview-a-submitted-layer-opens-its-pr ()
   "GIVEN a layer that has already been submitted

@@ -34,6 +34,7 @@
 
 (require 'cl-lib)
 (require 'shipit-core)
+(require 'shipit-cache)
 (require 'shipit-stack)
 (require 'shipit-sections)
 (require 'shipit-pr-sections)
@@ -468,10 +469,7 @@ one branch while standing on another."
     (insert (format "  %-9s %s%s\n" "Base:"
                     (propertize (or shipit-stacked-preview--base "")
                                 'font-lock-face 'magit-branch-remote)
-                    (if-let* ((pr (and shipit-stacked-preview--base
-                                       (shipit-stacked-preview--pr-number
-                                        (shipit-stacked-preview--base-name
-                                         shipit-stacked-preview--base)))))
+                    (if-let* ((pr (shipit-stacked-preview--base-pr-number)))
                         (propertize (format "  PR #%s" pr)
                                     'font-lock-face 'font-lock-comment-face)
                       "")))))
@@ -644,20 +642,29 @@ what it became.  The layer does not have to be checked out for this."
                              :on-done (shipit-stacked-preview--return-to
                                        (current-buffer) branch)))))
 
-(defun shipit-stacked-preview--return-to (buffer branch)
+(defun shipit-stacked-preview--return-to (buffer _branch)
   "Return a function that brings BUFFER up to date and shows it again.
-Called once BRANCH\='s preview is finished with, so submitting one layer
-leaves the list ready for the next.  What is remembered about BRANCH is
-dropped first: the answer that it has no pull request was cached, and
-it has just stopped being true."
+Called once a layer\='s preview is finished with, so submitting one layer
+leaves the list ready for the next.  The preview has already dropped
+the remembered answer that the branch had no pull request."
   (lambda (number)
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
         (when number
-          (shipit-cache-forget-branch-pr shipit-stacked-preview--repo branch)
           (shipit-stacked-preview--group-submitted))
         (shipit-stacked-preview--render))
       (pop-to-buffer buffer))))
+
+(defun shipit-stacked-preview--forget-layer-prs ()
+  "Drop what is remembered about which pull request each layer has.
+A pull request made outside this buffer, on the web page or from
+another preview, is otherwise hidden behind a miss remembered from
+before it existed."
+  (dolist (branch (cons (shipit-stacked-preview--base-branch)
+                        (shipit-stacked-preview--branch-names
+                         (shipit-stacked-preview--current-layers))))
+    (when branch
+      (shipit-cache-forget-branch-pr shipit-stacked-preview--repo branch))))
 
 (defun shipit-stacked-preview--show-sending (branches)
   "Mark BRANCHES as on their way, and put that on screen now.
@@ -739,12 +746,33 @@ part way through a sequence of writes."
       (user-error "Stacks are not supported for %s" shipit-stacked-preview--repo))
     (apply fn (cdr resolved) args)))
 
+(defun shipit-stacked-preview--base-branch ()
+  "Return the branch this stack sits on, or nil when it is the default.
+The default branch is never part of a stack, although a pull request
+can have it as its head: one from master into a release branch is no
+part of a feature stack built on master."
+  (let ((base (and shipit-stacked-preview--base
+                   (shipit-stacked-preview--base-name shipit-stacked-preview--base))))
+    (and base
+         (not (equal base (shipit-stacked-preview--base-name (shipit-stack--base-ref))))
+         base)))
+
+(defun shipit-stacked-preview--base-pr-number ()
+  "Return the open pull request this stack sits on, or nil.
+A stack raised over a pull request that is already open is measured
+from that pull request\='s branch, which leaves it out of the layers.
+It is still the bottom of the stack GitHub groups."
+  (let ((branch (shipit-stacked-preview--base-branch)))
+    (and branch (shipit-stacked-preview--pr-number branch))))
+
 (defun shipit-stacked-preview--submitted-numbers ()
   "Return the pull requests made from this stack, bottom first.
+The pull request the stack sits on comes first, when there is one.
 Stops at the first layer without one.  A stack is a chain, so only an
 unbroken run from the bottom can be registered as one; the layers above
 a gap are not part of it yet."
-  (let ((numbers nil))
+  (let ((numbers (let ((base (shipit-stacked-preview--base-pr-number)))
+                   (and base (list base)))))
     (catch 'gap
       (dolist (branch (shipit-stacked-preview--branch-names
                        (shipit-stacked-preview--current-layers)))
@@ -807,16 +835,18 @@ This happens as each layer is submitted; the key is for saying it again
 after a failure, or for a stack whose pull requests were made
 elsewhere."
   (interactive)
+  (shipit-stacked-preview--forget-layer-prs)
   (let ((numbers (shipit-stacked-preview--submitted-numbers)))
     (unless (cdr numbers)
       (user-error "A stack needs two pull requests, and %d %s been made"
-                  (length numbers) (if (cdr numbers) "have" "has")))
+                  (length numbers) (if (= (length numbers) 1) "has" "have")))
     (shipit-stacked-preview--group numbers)
     (shipit-stacked-preview--render)))
 
 (defun shipit-stacked-preview-refresh ()
-  "Read the commits again and redraw."
+  "Read the commits and each layer\='s pull request again, and redraw."
   (interactive)
+  (shipit-stacked-preview--forget-layer-prs)
   (setq shipit-stacked-preview--commits
         (shipit--commits-in-range
          (format "%s..HEAD" shipit-stacked-preview--base)))

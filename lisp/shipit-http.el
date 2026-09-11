@@ -2868,7 +2868,12 @@ Finds PRs where BRANCH is the head (source) branch."
                         (dolist (head-format head-formats)
                           (shipit--debug-log "Trying head format: %s" head-format)
                           (condition-case etag-error
-                              (let* ((result (shipit-gh-etag-get-json-with-refresh-cache endpoint `((state . ,state) (head . ,head-format)) shipit-github-token))
+                              ;; Not through the per-refresh cache: a PR buffer
+                              ;; refresh opens it and nothing closes it, so it
+                              ;; kept the answer from before the branch had a
+                              ;; pull request long after it got one.  The
+                              ;; branch's own cache above already asks once.
+                              (let* ((result (shipit-gh-etag-get-json endpoint `((state . ,state) (head . ,head-format)) shipit-github-token))
                                      (prs (plist-get result :json)))
                                 (when (and prs (> (length prs) 0))
                                   (let* ((found-pr (car prs))

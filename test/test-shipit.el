@@ -114,7 +114,7 @@ this is called from an idle timer whenever a magit diff appears."
     (cl-letf (((symbol-function 'shipit--get-repo-from-remote)
                (lambda () "owner/repo"))
               ((symbol-function 'shipit--ensure-cache-initialized) #'ignore)
-              ((symbol-function 'shipit-gh-etag-get-json-with-refresh-cache)
+              ((symbol-function 'shipit-gh-etag-get-json)
                (lambda (&rest _) (cl-incf searches) (list :json nil)))
               ((symbol-function 'shipit--api-request)
                (lambda (&rest _) (cl-incf searches) nil)))
@@ -136,7 +136,7 @@ this is called from an idle timer whenever a magit diff appears."
         (call-count 0)
         (original-cache shipit--cached-branch-prs))
     (setq shipit--cached-branch-prs (make-hash-table :test 'equal))
-    (cl-letf (((symbol-function 'shipit-gh-etag-get-json-with-refresh-cache)
+    (cl-letf (((symbol-function 'shipit-gh-etag-get-json)
                (lambda (endpoint params &optional token force-fresh)
                  (setq call-count (1+ call-count))
                  (let ((head-param (cdr (assq 'head params))))
@@ -573,7 +573,7 @@ THEN returns nil."
                        (funcall callback result)
                      result))))
               ;; Mock ETag API as well - return PR that matches the search
-              ((symbol-function 'shipit-gh-etag-get-json-with-refresh-cache)
+              ((symbol-function 'shipit-gh-etag-get-json)
                (lambda (endpoint params token)
                  (setq api-calls (1+ api-calls))
                  ;; Return matching PR ONLY for the first head format to simulate real API behavior

@@ -139,6 +139,20 @@ THEN the backend :create-pr receives nil as its draft argument."
   (should (equal (test-shipit-preview--create-pr-capturing nil)
                  (list '(:repo "owner/repo") "My title" "Body" "main" "feature" nil))))
 
+;;; The branch's pull request, once there is one
+
+(ert-deftest test-shipit-preview--create-pr-forgets-the-branch-had-none ()
+  "GIVEN a branch shipit already looked up before it had a pull request
+WHEN the preview creates one for it
+THEN the remembered answer is dropped.  Misses are remembered too, so
+without this every other view went on reporting no pull request for
+the branch until Emacs restarted, the stack view among them."
+  (let ((shipit--cached-branch-prs (make-hash-table :test 'equal))
+        (key (shipit-cache-branch-pr-key "owner/repo" "feature")))
+    (puthash key nil shipit--cached-branch-prs)
+    (test-shipit-preview--create-pr-capturing nil)
+    (should (eq 'absent (gethash key shipit--cached-branch-prs 'absent)))))
+
 ;;; Branch push tests
 
 (ert-deftest test-shipit--push-branch-succeeds-on-zero-exit ()

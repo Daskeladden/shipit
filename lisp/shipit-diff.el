@@ -23,6 +23,7 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'subr-x)
+(require 'shipit-core)  ; For shipit--key-hint
 (require 'shipit-lib)   ; For shipit--defer-refresh
 (require 'shipit-pr-backends)
 (require 'magit-section)
@@ -571,9 +572,8 @@ Uses the shipit-line-number text property which is set when rendering diffs."
 (defun shipit--blob-nav-disabled ()
   "Show message that blob navigation is disabled without worktree."
   (interactive)
-  (let ((key (where-is-internal 'shipit-dwim shipit-mode-map t)))
-    (message "Blob navigation requires a synced worktree. Use %s on Worktree section to create one."
-             (if key (key-description key) "shipit-dwim"))))
+  (message "Blob navigation requires a synced worktree. Use `%s' on the Worktree section to create one."
+           (shipit--key-hint 'shipit-dwim)))
 
 (defun shipit--disable-blob-navigation ()
   "Disable blob navigation in current buffer by overriding n/p keys."

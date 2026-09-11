@@ -27,6 +27,17 @@
 (require 'magit-section)
 (require 'shipit-faces)
 
+(defvar shipit-mode-map)
+
+(defun shipit--key-hint (command)
+  "Return how to reach COMMAND from a shipit buffer, for a message.
+Read from the keymap rather than written out, because a message that
+names a letter goes stale the moment the letter moves, and a wrong
+key is worse than none."
+  (let ((key (and (boundp 'shipit-mode-map)
+                  (where-is-internal command shipit-mode-map t))))
+    (if key (key-description key) (symbol-name command))))
+
 ;; CRITICAL: Set system-time-locale globally to ensure HTTP date headers use ASCII.
 ;; This prevents "Multibyte text in HTTP request" errors from url.el using
 ;; locale-specific date formatting (e.g., "sø." for Sunday in Norwegian).

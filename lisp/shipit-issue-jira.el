@@ -369,7 +369,11 @@ Maps Jira fields to the keys expected by shipit UI:
         (status-category . ,(cdr (assq 'key (cdr (assq 'statusCategory
                                                         (cdr (assq 'status fields)))))))
         (assignees . ,(when assignee
-                        (list `((login . ,(cdr (assq 'displayName assignee)))))))
+                        ;; The account id travels with the display name so a
+                        ;; caller can tell whether an issue is the current
+                        ;; user's without matching on a name.
+                        (list `((login . ,(cdr (assq 'displayName assignee)))
+                                (id . ,(cdr (assq 'accountId assignee)))))))
         (labels . ,(mapcar (lambda (l) `((name . ,l))) labels))
         (components . ,(mapcar (lambda (c) `((name . ,c))) components))
         (comments . ,(if comments-list (length comments-list) 0))

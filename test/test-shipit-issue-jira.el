@@ -1817,5 +1817,30 @@ THEN url.el is asked to inhibit them, keeping the global cookie jar clean."
     ;; url-retrieve is (URL CALLBACK &optional CBARGS SILENT INHIBIT-COOKIES)
     (should (nth 4 call-args))))
 
+(ert-deftest test-jira-normalize-keeps-the-assignee-account-id ()
+  "GIVEN a Jira issue with an assignee
+WHEN it is normalized
+THEN the assignee keeps its account id next to its display name, so a
+     caller can tell whose issue it is without matching on a name."
+  (let ((issue (shipit-issue-jira--normalize-issue
+                '((key . "PROJ-1")
+                  (fields . ((summary . "A task")
+                             (status . ((name . "Open") (id . "1")))
+                             (assignee . ((displayName . "Ronny Randen")
+                                          (accountId . "5f2a")))))))))
+    (let ((assignee (car (cdr (assq 'assignees issue)))))
+      (should (equal "Ronny Randen" (cdr (assq 'login assignee))))
+      (should (equal "5f2a" (cdr (assq 'id assignee)))))))
+
+(ert-deftest test-jira-normalize-without-an-assignee ()
+  "GIVEN a Jira issue nobody is assigned
+WHEN it is normalized
+THEN it carries no assignee at all, rather than an empty one."
+  (let ((issue (shipit-issue-jira--normalize-issue
+                '((key . "PROJ-1")
+                  (fields . ((summary . "A task")
+                             (status . ((name . "Open") (id . "1")))))))))
+    (should (null (cdr (assq 'assignees issue))))))
+
 (provide 'test-shipit-issue-jira)
 ;;; test-shipit-issue-jira.el ends here

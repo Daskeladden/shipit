@@ -6,6 +6,15 @@ PACKAGE_FILE = lisp/$(PACKAGE_NAME).el
 LISP_FILES = lisp/*.el
 AUTOLOADS_FILE = $(PACKAGE_NAME)-autoloads.el
 
+# canvas-diagram owns the canvas-cairo module the kanban draws with,
+# and it requires canvas-keys, so that checkout goes on the load path
+# too.  Both are sibling checkouts, and both are optional: without them
+# the kanban tests skip themselves and the rest of shipit is unaffected.
+# A missing one skips the canvas tests silently, so a run that skips
+# many more than usual is worth a look.
+CANVAS_DIAGRAM = ../canvas-diagram
+CANVAS_KEYS = ../canvas-keys
+
 .PHONY: all compile clean test install autoloads package
 
 all: compile autoloads
@@ -19,6 +28,8 @@ compile: $(LISP_FILES)
 		-eval "(unless (package-installed-p 'transient) (package-install 'transient))" \
 		-eval "(unless (package-installed-p 'magit) (package-install 'magit))" \
 		-L lisp \
+		-L $(CANVAS_DIAGRAM) \
+		-L $(CANVAS_KEYS) \
 		-f batch-byte-compile $(LISP_FILES)
 
 # Generate autoloads
@@ -55,6 +66,8 @@ test-unit: compile
 		-eval "(unless (package-installed-p 'transient) (package-install 'transient))" \
 		-L lisp \
 		-L test \
+		-L $(CANVAS_DIAGRAM) \
+		-L $(CANVAS_KEYS) \
 		-l test/test-shipit.el \
 		-l test/test-shipit-editor.el \
 		-l test/test-shipit-magit-requires.el \
@@ -109,7 +122,9 @@ test-unit: compile
 		-l test/test-shipit-render.el \
 		-l test/test-shipit-pr-actions.el \
 		-l test/test-shipit-repo-buffer.el \
+		-l test/test-shipit-canvas.el \
 		-l test/test-shipit-atlassian-board-shared.el \
+		-l test/test-shipit-atlassian-kanban.el \
 		-l test/test-shipit-atlassian-dashboard.el \
 		-l test/test-shipit-issues-buffer.el \
 		-l test/test-shipit-issue-branch.el \

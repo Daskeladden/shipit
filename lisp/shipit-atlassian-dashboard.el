@@ -30,6 +30,7 @@
 (require 'shipit-core)
 (require 'shipit-issue-backends)
 (require 'shipit-atlassian-board)
+(require 'shipit-canvas)
 
 ;; Forward declarations
 (declare-function shipit-issue-jira--api-request "shipit-issue-jira")
@@ -43,6 +44,7 @@
 (declare-function shipit-dwim "shipit-pr-actions")
 (declare-function shipit-register-dwim-handler "shipit-pr-actions")
 (declare-function shipit-issues-open-buffer "shipit-issues-buffer")
+(declare-function shipit-atlassian-kanban "shipit-atlassian-kanban")
 (declare-function shipit-issue-buffer-name "shipit-issues-buffer")
 (defvar shipit-issue-buffer-data)
 (defvar shipit-issue-buffer-repo)
@@ -146,6 +148,7 @@ section point was in.")
     (define-key map (kbd "f") #'shipit-atlassian-dashboard-filter-dispatch)
     (define-key map (kbd "l") #'shipit-atlassian-dashboard-load-dispatch)
     (define-key map (kbd "C-x C-q") #'shipit-atlassian-dashboard-toggle-edit-mode)
+    (define-key map (kbd "K") #'shipit-atlassian-dashboard-draw-board)
     (define-key map (kbd "M-n") #'shipit-atlassian-dashboard-issue-forward)
     (define-key map (kbd "M-p") #'shipit-atlassian-dashboard-issue-backward)
     (define-key map (kbd "C-c C-c") #'shipit-atlassian-dashboard-commit-pending)
@@ -1863,6 +1866,24 @@ parse to nothing are dropped."
       (setq section (oref section parent)))
     (when section (oref section value))))
 
+(defun shipit-atlassian-dashboard--canvas-available-p ()
+  "Return non-nil when a board can be drawn on a canvas here.
+The canvas is asked first, so an Emacs without it never loads the
+kanban, and the kanban is loaded on demand, so the dashboard never
+depends on it at load time."
+  (and (shipit-canvas-available-p)
+       (require 'shipit-atlassian-kanban nil t)))
+
+(defun shipit-atlassian-dashboard-draw-board ()
+  "Draw the board at point as cards on a canvas.
+RET on a board heading does the same; this key works anywhere in the
+dashboard and says why when there is no canvas to draw on."
+  (interactive)
+  (unless (shipit-atlassian-dashboard--canvas-available-p)
+    (user-error
+     "Drawing a board needs Emacs 32 and canvas-diagram; this board stays as text"))
+  (shipit-atlassian-kanban (shipit-atlassian-dashboard--read-configured-board-id)))
+
 (defun shipit-atlassian-dashboard--read-configured-board-id ()
   "Pick one configured board ID, preferring point context over prompting.
 With a single configured board it is returned directly; otherwise
@@ -1932,11 +1953,29 @@ remote detection."
    ("g" "Refresh" shipit-atlassian-dashboard-refresh)
    ("q" "Quit" transient-quit-one)])
 
+(defun shipit-atlassian-dashboard--board-heading-id ()
+  "Return the board ID when point is on a board heading itself, or nil.
+A column inside the board answers nil, so RET there still folds the
+column."
+  (let ((section (magit-current-section)))
+    (when (and section (eq (oref section type) 'atlassian-board))
+      (oref section value))))
+
+(defun shipit-atlassian-dashboard--toggle-at-point ()
+  "Fold or unfold the section at point."
+  (let ((section (magit-current-section)))
+    (when (and section (not (eq section magit-root-section)))
+      (magit-section-toggle section))))
+
 (defun shipit-atlassian-dashboard--ret-action ()
-  "Open the issue at point, configure board, or show actions menu."
+  "Open what point is on: an issue, a board on a canvas, or a fold.
+On a board heading RET draws the board as cards on a canvas, because
+TAB already folds it.  Without Emacs 32 and canvas-diagram there is no
+canvas to draw on, so RET folds the board as it always did."
   (interactive)
   (let ((issue-key (get-text-property (point) 'shipit-issuelink-key))
-        (configure (get-text-property (point) 'shipit-atlassian-configure)))
+        (configure (get-text-property (point) 'shipit-atlassian-configure))
+        (board-id (shipit-atlassian-dashboard--board-heading-id)))
     (cond
      (issue-key
       (shipit-issues-open-buffer
@@ -1944,10 +1983,10 @@ remote detection."
        shipit-atlassian-dashboard--repo))
      ((eq configure 'board-ids)
       (shipit-atlassian-dashboard--configure-board-ids))
+     ((and board-id (shipit-atlassian-dashboard--canvas-available-p))
+      (shipit-atlassian-kanban board-id))
      (t
-      (let ((section (magit-current-section)))
-        (when (and section (not (eq section magit-root-section)))
-          (magit-section-toggle section)))))))
+      (shipit-atlassian-dashboard--toggle-at-point)))))
 
 (defun shipit-atlassian-dashboard--open-in-browser ()
   "Open the issue at point in the browser, or the project base URL."

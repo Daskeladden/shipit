@@ -1237,5 +1237,76 @@ THEN the first occurrence wins and order is preserved."
       (should (equal "First" (cdr (assq 'title (nth 0 result)))))
       (should (equal "Second" (cdr (assq 'title (nth 1 result))))))))
 
+(ert-deftest test-atlassian-dashboard-draw-board-refuses-without-the-canvas ()
+  "GIVEN an Emacs that cannot draw a canvas
+WHEN the dashboard is asked to draw the board at point
+THEN it says so and the board stays as text, rather than failing obscurely."
+  (cl-letf (((symbol-function 'shipit-canvas-available-p) (lambda () nil)))
+    (let ((raised (condition-case err
+                      (shipit-atlassian-dashboard-draw-board)
+                    (error (error-message-string err)))))
+      (should (string-match-p "Emacs 32" raised))
+      (should (string-match-p "stays as text" raised)))))
+
+(defmacro test-atlassian--in-a-rendered-board (&rest body)
+  "Render one board section in a temp buffer and run BODY with point on its
+heading."
+  `(with-temp-buffer
+     (let ((magit-insert-section--parent nil)
+           (shipit-atlassian-dashboard--backend-plist
+            (cdr (assq 'jira shipit-issue-backends)))
+           (shipit-atlassian-dashboard--board-data
+            '(((id . 42) (name . "Firmware")
+               (columns . (((name . "Backlog")
+                            (issues . (((id . "F-1") (title . "A task") (state . "Open"))))))))))
+           (shipit-atlassian-board-ids '(42)))
+       (magit-insert-section (atlassian-dashboard)
+         (shipit-atlassian-dashboard--insert-boards-section))
+       (goto-char (or (text-property-any (point-min) (point-max) 'shipit-atlassian-board-heading t)
+                      (progn (goto-char (point-min))
+                             (search-forward "Firmware")
+                             (line-beginning-position))))
+       ,@body)))
+
+(ert-deftest test-atlassian-dashboard-ret-on-a-board-draws-it ()
+  "GIVEN point on a board heading and an Emacs that can draw a canvas
+WHEN RET is pressed
+THEN the board opens on a canvas, because TAB already folds the section."
+  (let ((drawn nil))
+    (cl-letf (((symbol-function 'shipit-atlassian-dashboard--canvas-available-p)
+               (lambda () t))
+              ((symbol-function 'shipit-atlassian-kanban)
+               (lambda (board-id) (setq drawn board-id))))
+      (test-atlassian--in-a-rendered-board
+       (shipit-atlassian-dashboard--ret-action)
+       (should (equal 42 drawn))))))
+
+(ert-deftest test-atlassian-dashboard-ret-on-a-board-folds-without-a-canvas ()
+  "GIVEN an Emacs that cannot draw a canvas
+WHEN RET is pressed on a board heading
+THEN it folds the section as it always did, rather than raising."
+  (cl-letf (((symbol-function 'shipit-atlassian-dashboard--canvas-available-p)
+             (lambda () nil)))
+    (test-atlassian--in-a-rendered-board
+     (let ((before (magit-section-hidden (magit-current-section))))
+       (shipit-atlassian-dashboard--ret-action)
+       (should-not (eq before (magit-section-hidden (magit-current-section))))))))
+
+(ert-deftest test-atlassian-dashboard-ret-inside-a-board-still-folds ()
+  "GIVEN point on a column inside a board, not on the board heading
+WHEN RET is pressed
+THEN the column folds; only the board heading itself draws a canvas."
+  (let ((drawn nil))
+    (cl-letf (((symbol-function 'shipit-atlassian-dashboard--canvas-available-p)
+               (lambda () t))
+              ((symbol-function 'shipit-atlassian-kanban)
+               (lambda (board-id) (setq drawn board-id))))
+      (test-atlassian--in-a-rendered-board
+       (goto-char (point-min))
+       (search-forward "Backlog")
+       (goto-char (line-beginning-position))
+       (shipit-atlassian-dashboard--ret-action)
+       (should-not drawn)))))
+
 (provide 'test-shipit-atlassian-dashboard)
 ;;; test-shipit-atlassian-dashboard.el ends here

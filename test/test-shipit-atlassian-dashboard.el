@@ -1153,44 +1153,6 @@ THEN the arg uses the literal \"unassigned\"."
                '(:assignee unassigned))))
     (should (member "--assignee=unassigned" args))))
 
-(ert-deftest test-atlassian-dashboard-match-transition-by-name ()
-  "GIVEN a list of transitions and a target status name
-WHEN matching by name (case-insensitive)
-THEN the transition whose `to.name\=' equals the target is
-     returned; nil if none match."
-  (let ((transitions '(((id . "11") (name . "Start Progress")
-                        (to . ((name . "In Progress"))))
-                       ((id . "21") (name . "Resolve")
-                        (to . ((name . "Done")))))))
-    (should (equal (cdr (assq 'id (shipit-atlassian-dashboard--match-transition
-                                    transitions "In Progress")))
-                   "11"))
-    (should (equal (cdr (assq 'id (shipit-atlassian-dashboard--match-transition
-                                    transitions "done")))
-                   "21"))
-    (should (null (shipit-atlassian-dashboard--match-transition
-                   transitions "Mythical")))))
-
-(ert-deftest test-atlassian-dashboard-find-issue-in-board-data ()
-  "GIVEN board data with an issue under one column
-WHEN `shipit-atlassian-dashboard--find-issue-in-board-data\=' is queried
-THEN the issue alist is returned (case-insensitive on the key)."
-  (let ((shipit-atlassian-dashboard--board-data
-         '(((id . 1) (name . "Alpha")
-            (columns . (((name . "In Progress")
-                         (issues . (((key . "PROJ-1") (status . "In Progress"))
-                                    ((key . "PROJ-2") (status . "In Progress")))))
-                        ((name . "Done")
-                         (issues . (((key . "PROJ-3") (status . "Done")))))))))))
-    (should (equal (cdr (assq 'key (shipit-atlassian-dashboard--find-issue-in-board-data
-                                      "PROJ-2")))
-                   "PROJ-2"))
-    (should (equal (cdr (assq 'key (shipit-atlassian-dashboard--find-issue-in-board-data
-                                      "proj-3")))
-                   "PROJ-3"))
-    (should (null (shipit-atlassian-dashboard--find-issue-in-board-data
-                   "PROJ-99")))))
-
 (ert-deftest test-atlassian-dashboard-pending-arrivals-into-column ()
   "GIVEN pending transitions targeting various status columns
 WHEN `shipit-atlassian-dashboard--pending-arrivals-into-column\=' is
@@ -1241,33 +1203,6 @@ THEN only the board that displays the issue reports the arrival."
     (should (null (shipit-atlassian-dashboard--pending-arrivals-into-column
                    board-b "Code Review")))))
 
-(ert-deftest test-atlassian-dashboard-column-name-for-status ()
-  "GIVEN board data where columns advertise their accepted statuses
-WHEN looking up which column accepts a given status name
-THEN the right column name is returned (case-insensitive),
-     even when the column name itself differs from the status.
-
-The lookup is what lets a canonical-order target like
-\"In Review\" route to a Jira board column named
-\"Code Review\" -- the link is the column\='s configured
-`statuses\=' list, not its display name."
-  (let ((shipit-atlassian-dashboard--board-data
-         '(((id . 1) (name . "Alpha")
-            (columns . (((name . "Open") (statuses . ("Open" "Reopened")))
-                        ((name . "Code Review") (statuses . ("In Review" "Awaiting Review")))
-                        ((name . "Done") (statuses . ("Done" "Closed"))))))
-           ((id . 2) (name . "Beta")
-            (columns . (((name . "Building") (statuses . ("Building")))))))))
-    (should (equal (shipit-atlassian-dashboard--column-name-for-status "in review")
-                   "Code Review"))
-    (should (equal (shipit-atlassian-dashboard--column-name-for-status "Closed")
-                   "Done"))
-    ;; Statuses only present on a later board still resolve.
-    (should (equal (shipit-atlassian-dashboard--column-name-for-status "Building")
-                   "Building"))
-    (should (null (shipit-atlassian-dashboard--column-name-for-status
-                   "Mythical")))))
-
 (ert-deftest test-atlassian-dashboard-pending-arrivals-routes-via-status-mapping ()
   "GIVEN a pending transition whose target name doesn\='t equal any column name
 WHEN `shipit-atlassian-dashboard--pending-arrivals-into-column\=' is queried
@@ -1289,29 +1224,6 @@ THEN the issue is included as an arrival -- routing happens
                      board "Code Review")))
       (should (= (length arrivals) 1))
       (should (equal (cdr (assq 'number (car arrivals))) "PROJ-1")))))
-
-(ert-deftest test-atlassian-dashboard-board-target-status-scoped-to-board ()
-  "GIVEN two boards whose columns would be adjacent in a flat list
-WHEN stepping forward from the last column of the first board
-THEN no cross-board target is produced, while stepping inside the
-     second board (explicitly or via status lookup) works."
-  (let ((shipit-atlassian-dashboard--board-data
-         '(((id . 1) (name . "Alpha")
-            (columns . (((name . "Open") (statuses . ("Open")))
-                        ((name . "Done") (statuses . ("Done"))))))
-           ((id . 2) (name . "Beta")
-            (columns . (((name . "Triage") (statuses . ("Triage")))
-                        ((name . "Building") (statuses . ("Building")))
-                        ((name . "Shipped") (statuses . ("Shipped")))))))))
-    ;; Last column of board 1 must not step into board 2.
-    (should (null (shipit-atlassian-dashboard--board-target-status "Done" 'forward 1)))
-    ;; Explicit board scoping steps inside board 2.
-    (should (equal "Building"
-                   (shipit-atlassian-dashboard--board-target-status "Triage" 'forward 2)))
-    ;; Without a board ID the owning board is resolved from the status.
-    (should (equal "Shipped"
-                   (shipit-atlassian-dashboard--board-target-status "Building" 'forward)))
-    (should (null (shipit-atlassian-dashboard--board-target-status "Open" 'backward 1)))))
 
 (ert-deftest test-atlassian-dashboard-dedup-issues-by-key ()
   "GIVEN issues where the same key appears twice (different case)

@@ -109,6 +109,7 @@ test-unit: compile
 		-l test/test-shipit-render.el \
 		-l test/test-shipit-pr-actions.el \
 		-l test/test-shipit-repo-buffer.el \
+		-l test/test-shipit-atlassian-board-shared.el \
 		-l test/test-shipit-atlassian-dashboard.el \
 		-l test/test-shipit-issues-buffer.el \
 		-l test/test-shipit-issue-branch.el \

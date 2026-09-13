@@ -1,5 +1,3 @@
-shipit-atlassian-dashboard.el:shipit-issues--get-transitions
-shipit-atlassian-dashboard.el:shipit-issues--transition-status
 shipit-atlassian-dashboard.el:shipit--prepend-font-lock-face
 shipit-cache.el:shipit-cache-menu
 shipit-checks.el:shipit--api-request

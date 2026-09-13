@@ -73,21 +73,6 @@
 
 ;;; Customization
 
-(defgroup shipit-atlassian nil
-  "Atlassian/Jira dashboard settings."
-  :group 'shipit
-  :prefix "shipit-atlassian-")
-
-(defcustom shipit-atlassian-board-ids nil
-  "List of Jira board IDs for the Boards section.
-Each board renders as its own collapsible subsection showing that
-board's columns.  When nil, the Boards section shows a
-configuration hint and What's Next has no sprint source."
-  :type '(repeat (integer :tag "Board ID"))
-  :group 'shipit-atlassian)
-
-(make-obsolete-variable 'shipit-atlassian-board-id 'shipit-atlassian-board-ids "1.7")
-
 (defcustom shipit-atlassian-frequently-visited-max 10
   "Maximum number of items in the Frequently Visited section."
   :type 'integer
@@ -168,19 +153,6 @@ section point was in.")
     map)
   "Keymap for `shipit-atlassian-dashboard-mode'.")
 
-(defun shipit-atlassian-dashboard--match-transition (transitions target-name)
-  "Find the transition in TRANSITIONS whose target name equals TARGET-NAME.
-TRANSITIONS is the list returned by the issue backend\='s
-`:get-transitions\=' op.  Each element is an alist; we match on
-the nested `to.name\='.  Comparison is case-insensitive.
-Returns the transition alist, or nil if none match."
-  (when target-name
-    (seq-find (lambda (tr)
-                (let ((to-name (cdr (assq 'name (cdr (assq 'to tr))))))
-                  (and to-name
-                       (string-equal-ignore-case to-name target-name))))
-              transitions)))
-
 (defun shipit-atlassian-dashboard--issue-at-point ()
   "Return a plist (:key K :status S :on-board P :board-id ID) for point, or nil.
 Walks up to the nearest `atlassian-issue\=' section, reads the
@@ -209,76 +181,6 @@ list."
           (shipit--debug-log "edit: --issue-at-point => %S" info)
           info)))))
 
-(defun shipit-atlassian-dashboard--board-columns (board)
-  "Return the columns list of BOARD (a board alist)."
-  (cdr (assq 'columns board)))
-
-(defun shipit-atlassian-dashboard--board-by-id (board-id)
-  "Return the board alist with BOARD-ID from the cached board data."
-  (cl-find board-id shipit-atlassian-dashboard--board-data
-           :key (lambda (board) (cdr (assq 'id board)))))
-
-(defun shipit-atlassian-dashboard--all-board-columns ()
-  "Concatenated columns of every cached board, in configured order."
-  (cl-mapcan (lambda (board)
-               (copy-sequence (shipit-atlassian-dashboard--board-columns board)))
-             shipit-atlassian-dashboard--board-data))
-
-(defun shipit-atlassian-dashboard--column-in (columns status)
-  "Return the column alist in COLUMNS accepting STATUS, or nil.
-Matches case-insensitively against each column\='s `statuses\=' list."
-  (when status
-    (cl-find-if
-     (lambda (col)
-       (cl-some (lambda (s)
-                  (and s (string-equal-ignore-case s status)))
-                (cdr (assq 'statuses col))))
-     columns)))
-
-(defun shipit-atlassian-dashboard--columns-accepting (status)
-  "Return the columns of the first cached board accepting STATUS, or nil."
-  (cl-loop for board in shipit-atlassian-dashboard--board-data
-           for cols = (shipit-atlassian-dashboard--board-columns board)
-           when (shipit-atlassian-dashboard--column-in cols status)
-           return cols))
-
-(defun shipit-atlassian-dashboard--board-target-status (current direction &optional board-id)
-  "Return a target status name one column DIRECTION from CURRENT, or nil.
-Steps within a single board's column order: BOARD-ID's board when
-given (the board the issue is displayed on), otherwise the first
-cached board with a column accepting CURRENT.  Returns the first
-status name listed for the destination column.  No-op when CURRENT
-isn\='t represented, or when stepping would move past either end --
-stepping never crosses a board boundary."
-  (when current
-    (let* ((cols (if board-id
-                     (shipit-atlassian-dashboard--board-columns
-                      (shipit-atlassian-dashboard--board-by-id board-id))
-                   (shipit-atlassian-dashboard--columns-accepting current)))
-           (cur-col (shipit-atlassian-dashboard--column-in cols current))
-           (idx (and cur-col (cl-position cur-col cols :test #'eq))))
-      (shipit--debug-log
-       "edit: --board-target-status current=%S board=%S col=%S idx=%S total-cols=%d"
-       current board-id
-       (and cur-col (cdr (assq 'name cur-col)))
-       idx (length cols))
-      (when idx
-        (let* ((step-idx (pcase direction
-                           ('forward (1+ idx))
-                           ('backward (1- idx))))
-               (next-col (and (integerp step-idx)
-                              (>= step-idx 0)
-                              (< step-idx (length cols))
-                              (nth step-idx cols)))
-               (statuses (and next-col (cdr (assq 'statuses next-col))))
-               (target (car statuses)))
-          (shipit--debug-log
-           "edit: --board-target-status step-idx=%S next-col=%S statuses=%S target=%S"
-           step-idx
-           (and next-col (cdr (assq 'name next-col)))
-           statuses target)
-          target)))))
-
 (defvar-local shipit-atlassian-dashboard-edit-mode nil
   "Non-nil while the dashboard buffer is in edit mode.
 Toggled via `C-x C-q' (`shipit-atlassian-dashboard-toggle-edit-mode\=').
@@ -288,64 +190,25 @@ keys with their global bindings.  The buffer remains
 `buffer-read-only\=' either way -- only the navigation keys
 change behaviour.")
 
-(defun shipit-atlassian-dashboard--issue-key (issue)
-  "Return the work-item key for raw issue ISSUE.
-Goes through `shipit-issue--normalize-to-work-item' so the
-helper works for either the post-normalised dashboard format
-\(`key' field) or the Jira-normalised format (`number' field)."
-  (cdr (assq 'key (shipit-issue--normalize-to-work-item issue))))
-
-(defun shipit-atlassian-dashboard--find-issue-in-columns (columns key)
-  "Return the issue alist with KEY somewhere in COLUMNS, or nil.
-Case-insensitive match.  Normalises each candidate issue via
-`shipit-atlassian-dashboard--issue-key' so this works against
-both raw Jira agile data and the mapped work-item shape used
-in tests."
-  (cl-loop for col in columns
-           thereis (cl-find-if
-                    (lambda (issue)
-                      (let ((k (shipit-atlassian-dashboard--issue-key issue)))
-                        (and k (string-equal-ignore-case k key))))
-                    (cdr (assq 'issues col)))))
-
-(defun shipit-atlassian-dashboard--find-issue-in-board-data (key)
-  "Return the issue alist with KEY on any cached board, or nil."
-  (cl-loop for board in shipit-atlassian-dashboard--board-data
-           thereis (shipit-atlassian-dashboard--find-issue-in-columns
-                    (shipit-atlassian-dashboard--board-columns board) key)))
-
-(defun shipit-atlassian-dashboard--column-name-for-status (status-name &optional columns)
-  "Return the column name that would accept STATUS-NAME, or nil.
-Searches COLUMNS when given (a single board's columns), otherwise
-every cached board in configured order.  When the status mapping
-comes from the board API (Jira agile boards), this is the right way
-to route a canonical-order target like \"In Review\" to whichever
-column the user has configured -- which might be \"Code Review\",
-\"In QA\", or anything else."
-  (cdr (assq 'name
-             (shipit-atlassian-dashboard--column-in
-              (or columns (shipit-atlassian-dashboard--all-board-columns))
-              status-name))))
-
 (defun shipit-atlassian-dashboard--pending-arrivals-into-column (board col-name)
   "Return issue alists whose pending target routes to COL-NAME on BOARD.
-Routes via `shipit-atlassian-dashboard--column-name-for-status\='
+Routes via `shipit-atlassian-board--column-name-for-status\='
 against BOARD's own columns \(falling back to a direct
 case-insensitive match) so a target like \"In Review\" lands in
 whichever column BOARD configures to accept it.  Only issues that
 BOARD actually displays are reported -- another board's same-named
 column must not claim the arrival."
   (when col-name
-    (let ((cols (shipit-atlassian-dashboard--board-columns board))
+    (let ((cols (shipit-atlassian-board--columns board))
           acc)
       (dolist (entry shipit-atlassian-dashboard--pending-transitions)
         (let* ((target (cdr entry))
                (resolved-col
-                (or (shipit-atlassian-dashboard--column-name-for-status target cols)
+                (or (shipit-atlassian-board--column-name-for-status target cols)
                     target)))
           (when (and resolved-col
                      (string-equal-ignore-case resolved-col col-name))
-            (let ((issue (shipit-atlassian-dashboard--find-issue-in-columns
+            (let ((issue (shipit-atlassian-board--issue-in-columns
                           cols (car entry))))
               (when issue (push issue acc))))))
       (nreverse acc))))
@@ -474,11 +337,11 @@ each board that actually displays the issue, so only that board's
 column sections are expanded."
   (let (result)
     (dolist (board shipit-atlassian-dashboard--board-data)
-      (let ((cols (shipit-atlassian-dashboard--board-columns board))
+      (let ((cols (shipit-atlassian-board--columns board))
             (names nil))
         (dolist (entry shipit-atlassian-dashboard--pending-transitions)
-          (when (shipit-atlassian-dashboard--find-issue-in-columns cols (car entry))
-            (let ((name (shipit-atlassian-dashboard--column-name-for-status
+          (when (shipit-atlassian-board--issue-in-columns cols (car entry))
+            (let ((name (shipit-atlassian-board--column-name-for-status
                          (cdr entry) cols)))
               (when name (push name names)))))
         (when names
@@ -544,7 +407,8 @@ press twice to skip a column, three times to skip two."
            (effective (shipit-atlassian-dashboard--effective-status-for
                        key status))
            (target (and on-board
-                        (shipit-atlassian-dashboard--board-target-status
+                        (shipit-atlassian-board--target-status
+                         shipit-atlassian-dashboard--board-data
                          effective direction (plist-get info :board-id)))))
       (shipit--debug-log
        "edit: stage %s key=%S status=%S effective=%S on-board=%s target=%S"
@@ -554,30 +418,12 @@ press twice to skip a column, three times to skip two."
       (unless target
         (user-error "No %s column from %S on this board"
                     direction (or effective "(unknown)")))
-      (shipit-atlassian-dashboard--stage-transition-to-target
-       key status target)
+      (setq shipit-atlassian-dashboard--pending-transitions
+            (shipit-atlassian-board--stage-move
+             shipit-atlassian-dashboard--pending-transitions
+             key status target))
       (shipit-atlassian-dashboard--rerender-and-update-modeline)
       (shipit-atlassian-dashboard--goto-issue-on-board key))))
-
-(defun shipit-atlassian-dashboard--stage-transition-to-target (key actual-status target)
-  "Stage a pending move for KEY (currently ACTUAL-STATUS) to TARGET.
-If TARGET equals ACTUAL-STATUS the entry is dropped (net-zero
-— the staged moves cancelled out).  Otherwise the pending
-entry is created or replaced -- pressing `M-n\=' a second time
-just bumps the staged target one column further, which is what
-multi-step moves like \"To Do\" -> \"Review & Test\" need."
-  (cond
-   ((and actual-status (string-equal-ignore-case target actual-status))
-    (setq shipit-atlassian-dashboard--pending-transitions
-          (assoc-delete-all key shipit-atlassian-dashboard--pending-transitions))
-    (shipit--debug-log "edit: net-zero, removed %S from pending" key))
-   (t
-    (setq shipit-atlassian-dashboard--pending-transitions
-          (cons (cons key target)
-                (assoc-delete-all key shipit-atlassian-dashboard--pending-transitions)))
-    (shipit--debug-log "edit: set %S -> %S; pending=%S"
-                       key target
-                       shipit-atlassian-dashboard--pending-transitions))))
 
 (defun shipit-atlassian-dashboard-issue-forward ()
   "Stage a move to the next board column for the issue at point.
@@ -598,91 +444,6 @@ Mirror of `shipit-atlassian-dashboard-issue-forward\='."
     (user-error "Press C-x C-q to enter edit mode first"))
   (shipit-atlassian-dashboard--stage-issue-at-point 'backward))
 
-(defun shipit-atlassian-dashboard--column-index-for-status (status columns)
-  "Return STATUS\='s column index within COLUMNS, or nil."
-  (when status
-    (cl-position-if
-     (lambda (col)
-       (cl-some (lambda (s)
-                  (and s (string-equal-ignore-case s status)))
-                (cdr (assq 'statuses col))))
-     columns)))
-
-(defun shipit-atlassian-dashboard--pick-step-transition (transitions target)
-  "Choose a transition that moves toward TARGET column.
-Returns the transition whose `to.name\=' matches TARGET directly,
-or -- when no direct path exists -- the one whose `to\=' column
-is closest to TARGET in the board\='s column order without
-overshooting.  Multi-step staged moves rely on this so the
-commit walker can step from \"To Do\" to \"Review & Test\" via
-\"In Progress\" automatically."
-  (let* ((direct (shipit-atlassian-dashboard--match-transition
-                  transitions target))
-         (cols (shipit-atlassian-dashboard--columns-accepting target))
-         (target-idx (and cols
-                          (shipit-atlassian-dashboard--column-index-for-status
-                           target cols))))
-    (or direct
-        (and target-idx
-             (let (best best-idx)
-               (dolist (tr transitions)
-                 (let* ((to-name (cdr (assq 'name (cdr (assq 'to tr)))))
-                        (idx (shipit-atlassian-dashboard--column-index-for-status
-                              to-name cols)))
-                   (when (and idx
-                              (or (null best-idx)
-                                  (< (abs (- idx target-idx))
-                                     (abs (- best-idx target-idx)))))
-                     (setq best tr best-idx idx))))
-               best)))))
-
-(defun shipit-atlassian-dashboard--commit-one (repo key target)
-  "Walk transitions for KEY in REPO until it reaches TARGET (or gets stuck).
-Returns t on success, signals an error otherwise.  Caps the
-walk at 8 steps -- a safety net against pathological workflows
-that would otherwise loop indefinitely."
-  (let* ((steps 0)
-         (last-fired nil)
-         (target-cols (shipit-atlassian-dashboard--columns-accepting target))
-         (target-idx (shipit-atlassian-dashboard--column-index-for-status
-                      target target-cols)))
-    (shipit--debug-log
-     "commit: %s target=%S target-idx=%S board-cols=%S"
-     key target target-idx
-     (mapcar (lambda (c)
-               (list :name (cdr (assq 'name c))
-                     :statuses (cdr (assq 'statuses c))))
-             target-cols))
-    (catch 'done
-      (while t
-        (when (>= steps 8)
-          (error "Gave up after 8 steps"))
-        (let* ((transitions (shipit-issues--get-transitions repo key))
-               (_ (shipit--debug-log
-                   "commit: %s step=%d available=%S"
-                   key steps
-                   (mapcar (lambda (tr)
-                             (cons (cdr (assq 'name tr))
-                                   (cdr (assq 'name (cdr (assq 'to tr))))))
-                           transitions)))
-               (tr (shipit-atlassian-dashboard--pick-step-transition
-                    transitions target))
-               (to-name (and tr (cdr (assq 'name (cdr (assq 'to tr)))))))
-          (shipit--debug-log "commit: %s picked=%S to-name=%S"
-                             key (cdr (assq 'name tr)) to-name)
-          (unless tr
-            (error "No transition toward %S available" target))
-          (when (and last-fired
-                     to-name
-                     (string-equal-ignore-case to-name last-fired))
-            (error "Transition loop detected at %S" last-fired))
-          (shipit-issues--transition-status repo key (cdr (assq 'id tr)))
-          (cl-incf steps)
-          (setq last-fired to-name)
-          (when (and to-name target
-                     (string-equal-ignore-case to-name target))
-            (throw 'done t)))))))
-
 (defun shipit-atlassian-dashboard-commit-pending ()
   "Apply all staged transitions to Jira, then refresh the dashboard.
 Each pending (KEY . TARGET) is walked one Jira transition at a
@@ -691,44 +452,31 @@ until the target column is reached.  This handles multi-step
 moves like \"To Do\" -> \"Review & Test\" that Jira workflows
 typically expose only as one-column-at-a-time transitions.
 
-Stops on the first failure; the failed entry stays pending so
-the user can retry or discard it.  All-success clears pending
-and refreshes."
+A failed entry stays pending so the user can retry or discard it.
+All-success clears pending and refreshes."
   (interactive)
   (unless shipit-atlassian-dashboard-edit-mode
     (user-error "Not in edit mode (C-x C-q to enter)"))
-  (let ((pending shipit-atlassian-dashboard--pending-transitions)
-        (repo (or shipit-atlassian-dashboard--repo
-                  (user-error "Dashboard buffer is missing repo context")))
-        (committed 0)
-        (failures '()))
-    (unless pending
-      (user-error "No pending transitions to commit"))
-    (dolist (entry pending)
-      (let ((key (car entry))
-            (target (cdr entry)))
-        (condition-case err
-            (progn
-              (shipit-atlassian-dashboard--commit-one repo key target)
-              (cl-incf committed)
-              (setq shipit-atlassian-dashboard--pending-transitions
-                    (assoc-delete-all
-                     key shipit-atlassian-dashboard--pending-transitions)))
-          (error
-           (push (format "%s -> %s: %s"
-                         key target (error-message-string err))
-                 failures)))))
-    (cond
-     (failures
-      (shipit-atlassian-dashboard--update-mode-line)
-      (message "Committed %d, failed %d: %s"
-               committed (length failures)
-               (mapconcat #'identity (nreverse failures) "; ")))
-     (t
-      (message "Committed %d transition%s"
-               committed (if (= committed 1) "" "s"))
-      (shipit-atlassian-dashboard-refresh)
-      (shipit-atlassian-dashboard--update-mode-line)))))
+  (unless shipit-atlassian-dashboard--pending-transitions
+    (user-error "No pending transitions to commit"))
+  (let ((repo (or shipit-atlassian-dashboard--repo
+                  (user-error "Dashboard buffer is missing repo context"))))
+    (pcase-let ((`(,committed ,remaining ,failures)
+                 (shipit-atlassian-board--commit-pending
+                  shipit-atlassian-dashboard--board-data repo
+                  shipit-atlassian-dashboard--pending-transitions)))
+      (setq shipit-atlassian-dashboard--pending-transitions remaining)
+      (cond
+       (failures
+        (shipit-atlassian-dashboard--update-mode-line)
+        (message "Committed %d, failed %d: %s"
+                 committed (length failures)
+                 (mapconcat #'identity failures "; ")))
+       (t
+        (message "Committed %d transition%s"
+                 committed (if (= committed 1) "" "s"))
+        (shipit-atlassian-dashboard-refresh)
+        (shipit-atlassian-dashboard--update-mode-line))))))
 
 (defun shipit-atlassian-dashboard-discard-pending ()
   "Drop every staged transition and re-render with actual statuses.
@@ -1056,7 +804,7 @@ Comparison is case-insensitive; the first occurrence wins.  Issues
 without a resolvable key are kept."
   (let (seen acc)
     (dolist (issue issues)
-      (let ((key (shipit-atlassian-dashboard--issue-key issue)))
+      (let ((key (shipit-atlassian-board--issue-key issue)))
         (unless (and key (member (upcase key) seen))
           (when key (push (upcase key) seen))
           (push issue acc))))
@@ -1279,7 +1027,7 @@ this, keeping every level one step (3 columns) inside its parent.")
 
 (defun shipit-atlassian-dashboard--board-issue-count (board)
   "Total number of issues across BOARD's columns."
-  (cl-loop for col in (shipit-atlassian-dashboard--board-columns board)
+  (cl-loop for col in (shipit-atlassian-board--columns board)
            sum (length (cdr (assq 'issues col)))))
 
 (defun shipit-atlassian-dashboard--insert-boards-section ()
@@ -1309,7 +1057,7 @@ this, keeping every level one step (3 columns) inside its parent.")
   "Insert BOARD as a collapsible section containing its columns."
   (let* ((board-id (cdr (assq 'id board)))
          (board-name (or (cdr (assq 'name board)) (format "Board %s" board-id)))
-         (cols (shipit-atlassian-dashboard--board-columns board))
+         (cols (shipit-atlassian-board--columns board))
          (all-issues (cl-mapcan (lambda (col)
                                   (copy-sequence (cdr (assq 'issues col))))
                                 cols))
@@ -1335,16 +1083,16 @@ hidden while pending arrivals from elsewhere on BOARD render in
 the pending face."
   (let* ((col-name (cdr (assq 'name col)))
          (col-issues (cdr (assq 'issues col)))
-         (board-cols (shipit-atlassian-dashboard--board-columns board))
+         (board-cols (shipit-atlassian-board--columns board))
          (arrivals (shipit-atlassian-dashboard--pending-arrivals-into-column
                     board col-name))
          (visible-native
           (cl-remove-if
            (lambda (issue)
-             (let* ((k (shipit-atlassian-dashboard--issue-key issue))
+             (let* ((k (shipit-atlassian-board--issue-key issue))
                     (target (cdr (assoc k shipit-atlassian-dashboard--pending-transitions))))
                (and target
-                    (shipit-atlassian-dashboard--column-name-for-status
+                    (shipit-atlassian-board--column-name-for-status
                      target board-cols))))
            col-issues))
          (visible-count (+ (length visible-native) (length arrivals))))
@@ -2125,7 +1873,8 @@ fetched names when board data is available."
         (car shipit-atlassian-board-ids))
       (let* ((candidates
               (mapcar (lambda (board-id)
-                        (let ((board (shipit-atlassian-dashboard--board-by-id board-id)))
+                        (let ((board (shipit-atlassian-board--by-id
+                                      shipit-atlassian-dashboard--board-data board-id)))
                           (cons (if board
                                     (format "%s (%d)" (cdr (assq 'name board)) board-id)
                                   (number-to-string board-id))

@@ -15,7 +15,7 @@ AUTOLOADS_FILE = $(PACKAGE_NAME)-autoloads.el
 CANVAS_DIAGRAM = ../canvas-diagram
 CANVAS_KEYS = ../canvas-keys
 
-.PHONY: all compile clean test install autoloads package
+.PHONY: all compile clean test test-older install autoloads package
 
 all: compile autoloads
 
@@ -170,6 +170,29 @@ test-integration: compile
 
 # Run all tests
 test: test-unit test-integration
+
+# The whole suite on an older Emacs, one without the canvas, which shipit
+# must still compile and run on.  It runs in a git worktree carrying the
+# working tree's changes: the older Emacs would otherwise write its .elc
+# files over this tree's and mix its packages into .packages, and some
+# tests need a git repository, which a plain copy is not and .git is far
+# too large to copy.  Its packages stay in .packages-older between runs.
+# The worktree's make is started from inside it, because make -C leaves
+# PWD pointing here and the package directory is built from PWD.
+OLDER_EMACS = /usr/bin/emacs
+
+test-older:
+	@tree=$$(mktemp -d); \
+	git worktree add --quiet --detach "$$tree" HEAD || { rm -rf "$$tree"; exit 1; }; \
+	rsync -a --delete --exclude .git --exclude '.packages*' --exclude .worktrees \
+		--exclude screenshots --exclude '*.elc' ./ "$$tree"/; \
+	mkdir -p "$(CURDIR)/.packages-older"; \
+	ln -s "$(CURDIR)/.packages-older" "$$tree/.packages"; \
+	echo "Suite under $$($(OLDER_EMACS) --version | head -1), in $$tree"; \
+	(cd "$$tree" && $(MAKE) test EMACS=$(OLDER_EMACS) \
+		CANVAS_DIAGRAM=$(abspath $(CANVAS_DIAGRAM)) \
+		CANVAS_KEYS=$(abspath $(CANVAS_KEYS))); \
+	status=$$?; git worktree remove --force "$$tree"; exit $$status
 
 # Install locally for testing
 install: compile autoloads

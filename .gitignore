@@ -17,6 +17,7 @@
 
 # Package directories
 .packages/
+.packages-older/
 .claude/
 
 # Local docs and plans

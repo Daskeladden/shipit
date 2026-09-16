@@ -3317,6 +3317,13 @@ Uses ETag caching for efficiency:
                                             (browse-url ,fallback-url)))
                              map))))))
 
+(defvar shipit-image-auth-functions nil
+  "Functions that give an image download the headers to log in with.
+Each is called with the image URL.  It returns an alist of headers when
+the URL is on its own site, and nil otherwise; the first answer is
+sent.  A tracker whose attachments need a login adds one, so this file
+holds no code for any one tracker.")
+
 (defun shipit--download-and-cache-image (url)
   "Download image from URL and return cached file path."
   (let* ((cache-dir (expand-file-name "shipit-images" temporary-file-directory))
@@ -3342,6 +3349,7 @@ Uses ETag caching for efficiency:
                   `(,@(let ((token (shipit--github-token)))
                         (when (and same-host-p token)
                           `(("Authorization" . ,(concat "token " token)))))
+                    ,@(run-hook-with-args-until-success 'shipit-image-auth-functions url)
                     ("User-Agent" . "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
                     ("Accept" . "image/*,*/*")))
                  (buffer (url-retrieve-synchronously url t nil 10)))

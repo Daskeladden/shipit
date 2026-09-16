@@ -1842,5 +1842,171 @@ THEN it carries no assignee at all, rather than an empty one."
                              (status . ((name . "Open") (id . "1")))))))))
     (should (null (cdr (assq 'assignees issue))))))
 
+;;; Images in descriptions and comments
+
+(defconst test-shipit-issue-jira--attachments
+  '(((id . "10001") (filename . "image-1.png") (mimeType . "image/png")
+     (content . "https://jira.example.com/rest/api/3/attachment/content/10001"))
+    ((id . "10002") (filename . "report.pdf") (mimeType . "application/pdf")
+     (content . "https://jira.example.com/rest/api/3/attachment/content/10002")))
+  "Two attachments of an issue: an image and a document.")
+
+(defconst test-shipit-issue-jira--image-markdown
+  "![image-1.png](https://jira.example.com/rest/api/3/attachment/content/10001?redirect=false)"
+  "The markdown the attached image becomes.")
+
+(defun test-shipit-issue-jira--media-doc (type attrs)
+  "Return an ADF document holding one media node of TYPE with ATTRS.
+A block image sits in a mediaSingle, as Jira writes one.  An inline
+file, a mediaInline, sits in a paragraph."
+  (if (equal type "mediaInline")
+      `((type . "doc") (version . 1)
+        (content . [((type . "paragraph")
+                     (content . [((type . "mediaInline") (attrs . ,attrs))]))]))
+    `((type . "doc") (version . 1)
+      (content . [((type . "mediaSingle") (attrs . ((layout . "center")))
+                   (content . [((type . "media") (attrs . ,attrs))]))]))))
+
+(defun test-shipit-issue-jira--attached-image-doc ()
+  "Return an ADF document holding the attached image, as Jira stores it."
+  (test-shipit-issue-jira--media-doc
+   "media" '((id . "a1b2c3") (type . "file") (collection . "jira-1") (alt . "image-1.png"))))
+
+(ert-deftest test-shipit-issue-jira-adf-image-attached-to-the-issue ()
+  "GIVEN a description holding an image that names an attachment of the issue
+WHEN it is converted to text
+THEN it is a markdown image of that attachment.  The URL asks Jira not
+to redirect, so the login header goes to Jira and not on to its media
+host."
+  (let ((shipit-issue-jira--attachments test-shipit-issue-jira--attachments))
+    (should (equal (concat test-shipit-issue-jira--image-markdown "\n")
+                   (shipit-issue-jira--adf-to-text (test-shipit-issue-jira--attached-image-doc))))))
+
+(ert-deftest test-shipit-issue-jira-adf-image-hosted-elsewhere ()
+  "GIVEN an image that the text links to on another site
+WHEN it is converted to text
+THEN it keeps its own URL."
+  (should (equal "![diagram](https://example.com/diagram.png)\n"
+                 (shipit-issue-jira--adf-to-text
+                  (test-shipit-issue-jira--media-doc
+                   "media" '((type . "external") (url . "https://example.com/diagram.png")
+                             (alt . "diagram")))))))
+
+(ert-deftest test-shipit-issue-jira-adf-attached-file-is-a-link ()
+  "GIVEN a paragraph holding an attached file that is no image
+WHEN it is converted to text
+THEN the file is a link, not an image the renderer cannot draw."
+  (let ((shipit-issue-jira--attachments test-shipit-issue-jira--attachments))
+    (should (equal "[report.pdf](https://jira.example.com/rest/api/3/attachment/content/10002?redirect=false)\n"
+                   (shipit-issue-jira--adf-to-text
+                    (test-shipit-issue-jira--media-doc
+                     "mediaInline" '((id . "d4e5") (type . "file") (alt . "report.pdf"))))))))
+
+(ert-deftest test-shipit-issue-jira-adf-image-without-its-attachment ()
+  "GIVEN an image naming a file the issue has no attachment for
+WHEN it is converted to text
+THEN its name stands in its place, where the image vanished before."
+  (let ((shipit-issue-jira--attachments test-shipit-issue-jira--attachments))
+    (should (equal "[image: gone.png]\n"
+                   (shipit-issue-jira--adf-to-text
+                    (test-shipit-issue-jira--media-doc
+                     "media" '((type . "file") (alt . "gone.png"))))))))
+
+(ert-deftest test-shipit-issue-jira-fetch-issue-shows-attached-images ()
+  "GIVEN an issue whose description holds an image of one of its attachments
+WHEN the issue is fetched
+THEN its attachments are asked for with it, and the description holds
+the image."
+  (let ((asked nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (push path asked)
+                 `((key . "PRJ-7")
+                   (fields . ((summary . "With a screenshot")
+                              (status . ((name . "Open")))
+                              (description . ,(test-shipit-issue-jira--attached-image-doc))
+                              (attachment . ,(vconcat test-shipit-issue-jira--attachments))))))))
+      (let ((issue (shipit-issue-jira--fetch-issue '(:base-url "https://jira.example.com") "PRJ-7")))
+        (should (string-match-p "attachment" (car (last asked))))
+        (should (equal test-shipit-issue-jira--image-markdown (cdr (assq 'body issue))))))))
+
+(defun test-shipit-issue-jira--answer (path)
+  "Return what the Jira API answers for PATH.
+The issue's attachments when PATH asks for them, else its one comment,
+which holds the attached image."
+  (if (string-match-p "fields=attachment" path)
+      `((fields . ((attachment . ,(vconcat test-shipit-issue-jira--attachments)))))
+    `((comments . [((id . "501")
+                    (author . ((displayName . "Alice")))
+                    (body . ,(test-shipit-issue-jira--attached-image-doc))
+                    (created . "2026-09-16T10:00:00.000+0000")
+                    (updated . "2026-09-16T10:00:00.000+0000"))]))))
+
+(ert-deftest test-shipit-issue-jira-fetch-comments-shows-attached-images ()
+  "GIVEN a comment holding an image attached to its issue
+WHEN the comments are fetched
+THEN the issue's attachments are asked for too, since the comments
+endpoint gives none, and the comment holds the image."
+  (let ((asked nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (push path asked)
+                 (test-shipit-issue-jira--answer path))))
+      (let ((comments (shipit-issue-jira--fetch-comments
+                       '(:base-url "https://jira.example.com") "PRJ-7")))
+        (should (cl-some (lambda (path) (string-match-p "fields=attachment" path)) asked))
+        (should (equal test-shipit-issue-jira--image-markdown
+                       (cdr (assq 'body (car comments)))))))))
+
+(ert-deftest test-shipit-issue-jira-fetch-comments-async-shows-attached-images ()
+  "GIVEN a comment holding an image attached to its issue
+WHEN the comments are fetched without blocking
+THEN the comment handed on holds the image."
+  (let ((got nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-async)
+               (lambda (_config path callback)
+                 (funcall callback (test-shipit-issue-jira--answer path)))))
+      (shipit-issue-jira--fetch-comments-async
+       '(:base-url "https://jira.example.com") "PRJ-7"
+       (lambda (comments) (setq got comments)))
+      (should (equal test-shipit-issue-jira--image-markdown
+                     (cdr (assq 'body (car got))))))))
+
+(defmacro test-shipit-issue-jira--with-site (&rest body)
+  "Run BODY with one Jira site configured, and a login for it."
+  `(let ((shipit-issue-repo-backends
+          '(("owner/repo" :backend jira :base-url "https://jira.example.com"))))
+     (cl-letf (((symbol-function 'auth-source-search)
+                (lambda (&rest _) (list (list :user "me@example.com" :secret "api-token")))))
+       ,@body)))
+
+(ert-deftest test-shipit-issue-jira-image-login-only-for-its-own-site ()
+  "GIVEN a configured Jira site
+WHEN the login headers of an image download are asked for
+THEN an image on that site gets Jira's login, and an image anywhere
+else gets none."
+  (test-shipit-issue-jira--with-site
+   (should (equal `(("Authorization" . ,(concat "Basic " (base64-encode-string
+                                                         "me@example.com:api-token" t))))
+                  (shipit-issue-jira--image-auth-headers
+                   "https://jira.example.com/rest/api/3/attachment/content/10001?redirect=false")))
+   (should-not (shipit-issue-jira--image-auth-headers "https://example.com/diagram.png"))))
+
+(ert-deftest test-shipit-issue-jira-image-download-logs-in-to-jira ()
+  "GIVEN a configured Jira site
+WHEN an image attached there is downloaded
+THEN the download sends Jira's login header."
+  (require 'shipit-http)
+  (let ((shipit-pr-backend-config nil)
+        (shipit-github-token "gh-token")
+        (captured nil))
+    (test-shipit-issue-jira--with-site
+     (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                (lambda (&rest _) (setq captured url-request-extra-headers) nil)))
+       (shipit--download-and-cache-image
+        (format "https://jira.example.com/rest/api/3/attachment/content/%d?redirect=false"
+                (random 1000000000)))
+       (should (string-prefix-p "Basic " (or (cdr (assoc "Authorization" captured)) "")))))))
+
 (provide 'test-shipit-issue-jira)
 ;;; test-shipit-issue-jira.el ends here

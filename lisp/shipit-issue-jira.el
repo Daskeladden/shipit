@@ -197,6 +197,44 @@ CONFIG is the Jira backend config plist."
 
 ;;; ADF (Atlassian Document Format) → plain text
 
+(defvar shipit-issue-jira--attachments nil
+  "Attachments of the issue whose text is being converted.
+Bound while an issue or its comments are normalized.  An image in the
+text names its file only by filename, which is the one link the REST
+API gives from an image to the attachment holding it.")
+
+(defun shipit-issue-jira--attachment-named (filename)
+  "Return the attachment called FILENAME, or nil.
+It is looked for in `shipit-issue-jira--attachments'.  Two attachments
+can share a filename, and then the first one is taken."
+  (and filename
+       (cl-find filename shipit-issue-jira--attachments
+                :key (lambda (attachment) (cdr (assq 'filename attachment)))
+                :test #'equal)))
+
+(defun shipit-issue-jira--attachment-url (attachment)
+  "Return the URL that downloads the content of ATTACHMENT.
+Jira answers the content URL with a redirect to its media host unless
+asked not to, and the login header would follow the redirect there."
+  (concat (cdr (assq 'content attachment)) "?redirect=false"))
+
+(defun shipit-issue-jira--adf-media (attrs)
+  "Return an ADF media node with ATTRS as markdown.
+An image hosted elsewhere keeps its own URL.  A file attached to the
+issue is found by its filename: an image becomes a markdown image and
+any other file a link.  A file with no such attachment shows its name."
+  (let* ((name (or (cdr (assq 'alt attrs)) "image"))
+         (external (and (equal (cdr (assq 'type attrs)) "external")
+                        (cdr (assq 'url attrs))))
+         (attachment (and (not external)
+                          (shipit-issue-jira--attachment-named (cdr (assq 'alt attrs))))))
+    (cond
+     (external (format "![%s](%s)" name external))
+     ((null attachment) (format "[image: %s]" name))
+     ((string-prefix-p "image/" (or (cdr (assq 'mimeType attachment)) ""))
+      (format "![%s](%s)" name (shipit-issue-jira--attachment-url attachment)))
+     (t (format "[%s](%s)" name (shipit-issue-jira--attachment-url attachment))))))
+
 (defun shipit-issue-jira--adf-apply-marks (text node)
   "Apply ADF marks from NODE to TEXT.
 Handles link marks by formatting as [text](url)."
@@ -227,6 +265,8 @@ DEPTH tracks nesting level for list indentation (default 0)."
          ((equal type "hardBreak") "\n")
          ((equal type "inlineCard")
           (or (cdr (assq 'url attrs)) ""))
+         ((member type '("media" "mediaInline"))
+          (shipit-issue-jira--adf-media attrs))
          ((equal type "mention")
           (let* ((mention-text (or (cdr (assq 'text attrs)) ""))
                  (account-id (cdr (assq 'id attrs)))
@@ -268,7 +308,7 @@ DEPTH tracks nesting level for list indentation (default 0)."
           (let ((children (mapconcat
                            (lambda (c) (shipit-issue-jira--adf-to-text c depth))
                            (append content nil) "")))
-            (if (member type '("paragraph" "blockquote" "taskList"))
+            (if (member type '("paragraph" "blockquote" "taskList" "mediaSingle" "mediaGroup"))
                 (concat children "\n")
               children)))
          (t "")))))))
@@ -476,6 +516,32 @@ Add to ~/.authinfo.gpg: machine %s login <email> password <api-token>" host host
             (concat "Basic "
                     (base64-encode-string
                      (concat user ":" token) t))))))))
+
+(defun shipit-issue-jira--configs ()
+  "Return the config of every Jira site shipit is set up for."
+  (append (cl-loop for (_pattern . config) in shipit-issue-repo-backends
+                   when (eq (plist-get config :backend) 'jira)
+                   collect config)
+          (when (and (eq shipit-issue-backend 'jira) shipit-issue-backend-config)
+            (list shipit-issue-backend-config))))
+
+(defun shipit-issue-jira--config-for-host (host)
+  "Return the config of the Jira site at HOST, or nil."
+  (cl-find host (shipit-issue-jira--configs)
+           :key (lambda (config)
+                  (url-host (url-generic-parse-url (or (plist-get config :base-url) ""))))
+           :test #'equal))
+
+(defun shipit-issue-jira--image-auth-headers (url)
+  "Return the headers that log an image download at URL in to Jira.
+Nil unless URL is on a Jira site shipit is set up for, so that no other
+site sees the login."
+  (when-let* ((config (shipit-issue-jira--config-for-host
+                       (url-host (url-generic-parse-url url))))
+              (auth (shipit-issue-jira--auth-header config)))
+    `(("Authorization" . ,auth))))
+
+(add-hook 'shipit-image-auth-functions #'shipit-issue-jira--image-auth-headers)
 
 ;;; API Functions
 
@@ -802,7 +868,7 @@ Returns normalized issue alist after re-fetching the created issue."
       (shipit-issue-jira--fetch-issue config created-key))))
 
 (defconst shipit-issue-jira--fields
-  "key,summary,status,description,reporter,assignee,labels,components,created,updated,comment,issuetype,issuelinks,parent"
+  "key,summary,status,description,reporter,assignee,labels,components,created,updated,comment,issuetype,issuelinks,parent,attachment"
   "Jira issue fields to request.  Limits response size for faster API calls.")
 
 (defun shipit-issue-jira--enrich-link-assignees (config issue-data)
@@ -845,36 +911,60 @@ Expands changelog to include activity history."
     (shipit--debug-log "Jira backend: fetched issue %s" id)
     (when raw
       (let ((shipit-issue-jira--mention-resolver
-             (lambda (aid dn) (shipit-issue-jira--resolve-mention config aid dn))))
+             (lambda (aid dn) (shipit-issue-jira--resolve-mention config aid dn)))
+            (shipit-issue-jira--attachments (shipit-issue-jira--raw-attachments raw)))
         (shipit-issue-jira--enrich-link-assignees
          config
          (shipit-issue-jira--normalize-issue raw))))))
 
+(defun shipit-issue-jira--raw-attachments (raw)
+  "Return the attachments of RAW, an issue as the API gives it."
+  (append (cdr (assq 'attachment (cdr (assq 'fields raw)))) nil))
+
+(defun shipit-issue-jira--attachments-path (id)
+  "Return the API path that asks for the attachments of issue ID alone.
+The comments endpoint gives none, and an image in a comment is an
+attachment of its issue."
+  (format "/rest/api/3/issue/%s?fields=attachment" id))
+
+(defun shipit-issue-jira--normalize-comments (config raw attachments)
+  "Return the comments of RAW, a comments response, normalized.
+CONFIG resolves mentions, and ATTACHMENTS are the issue\='s, for the
+images the comments hold."
+  (let ((shipit-issue-jira--mention-resolver
+         (lambda (aid dn) (shipit-issue-jira--resolve-mention config aid dn)))
+        (shipit-issue-jira--attachments attachments))
+    (mapcar #'shipit-issue-jira--normalize-comment
+            (append (cdr (assq 'comments raw)) nil))))
+
 (defun shipit-issue-jira--fetch-comments (config id)
   "Fetch comments for Jira issue ID using CONFIG."
-  (let* ((path (format "/rest/api/3/issue/%s/comment" id))
-         (raw (shipit-issue-jira--api-request config path))
-         (comments (append (cdr (assq 'comments raw)) nil)))
+  (let* ((raw (shipit-issue-jira--api-request
+               config (format "/rest/api/3/issue/%s/comment" id)))
+         (attachments (shipit-issue-jira--raw-attachments
+                       (shipit-issue-jira--api-request
+                        config (shipit-issue-jira--attachments-path id))))
+         (comments (shipit-issue-jira--normalize-comments config raw attachments)))
     (shipit--debug-log "Jira backend: fetched %d comments for %s"
                        (length comments) id)
-    (let ((shipit-issue-jira--mention-resolver
-           (lambda (aid dn) (shipit-issue-jira--resolve-mention config aid dn))))
-      (mapcar #'shipit-issue-jira--normalize-comment comments))))
+    comments))
 
 (defun shipit-issue-jira--fetch-comments-async (config id callback)
   "Fetch comments for Jira issue ID using CONFIG asynchronously.
-Calls CALLBACK with the normalized comment list."
-  (let ((path (format "/rest/api/3/issue/%s/comment" id)))
-    (shipit-issue-jira--api-request-async
-     config path
-     (lambda (raw)
-       (let ((comments (append (cdr (assq 'comments raw)) nil)))
-         (shipit--debug-log "Jira backend async: fetched %d comments for %s"
-                            (length comments) id)
-         (let ((shipit-issue-jira--mention-resolver
-                (lambda (aid dn) (shipit-issue-jira--resolve-mention config aid dn))))
-           (funcall callback
-                    (mapcar #'shipit-issue-jira--normalize-comment comments))))))))
+Calls CALLBACK with the normalized comment list.  The issue\='s
+attachments are fetched first, for the images the comments hold."
+  (shipit-issue-jira--api-request-async
+   config (shipit-issue-jira--attachments-path id)
+   (lambda (raw-attachments)
+     (shipit-issue-jira--api-request-async
+      config (format "/rest/api/3/issue/%s/comment" id)
+      (lambda (raw)
+        (let ((comments (shipit-issue-jira--normalize-comments
+                         config raw
+                         (shipit-issue-jira--raw-attachments raw-attachments))))
+          (shipit--debug-log "Jira backend async: fetched %d comments for %s"
+                             (length comments) id)
+          (funcall callback comments)))))))
 
 (defun shipit-issue-jira--summarize-history-items (items)
   "Render Jira changelog ITEMS to a one-line summary string.

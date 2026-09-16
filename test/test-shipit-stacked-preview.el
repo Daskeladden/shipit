@@ -1093,5 +1093,173 @@ check, the one still waiting the hourglass."
           (should (string-match-p "✅" row-one))
           (should (string-match-p "⏳" row-two)))))))
 
+(defmacro test-stacked--with-drawn-stack (buffer layers prs statuses &rest body)
+  "Draw LAYERS in a stacked preview bound to BUFFER, and run BODY there.
+LAYERS is read again each time the preview asks for its layers, so
+BODY can set it and redraw.  PRS maps a branch to its pull request,
+and STATUSES is what the forge answers when asked for their statuses.
+Every branch stands on one commit here and on the remote.  Only git
+and the forge are stood in for, besides the header and the commit rows,
+which ask git for more."
+  (declare (indent 4))
+  `(let ((,buffer (generate-new-buffer " *test-stacked-preview*"))
+         (shipit-use-svglib-icons nil)
+         (shipit-pr-backend 'test-preview)
+         (shipit-pr-backends
+          (list (cons 'test-preview
+                      (list :name "Preview"
+                            :fetch-stack-statuses (lambda (&rest _) ,statuses))))))
+     (unwind-protect
+         (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
+                    (lambda () ,layers))
+                   ((symbol-function 'shipit-stacked-preview--insert-header) #'ignore)
+                   ((symbol-function 'shipit-stacked-preview--insert-problems) #'ignore)
+                   ((symbol-function 'shipit--insert-processed-commit-section) #'ignore)
+                   ((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
+                   ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) nil))
+                   ((symbol-function 'shipit-stack-plan--pr-for-branch)
+                    (lambda (_repo branch) (cdr (assoc branch ,prs)))))
+           (with-current-buffer ,buffer
+             (shipit-stacked-preview-mode)
+             (setq shipit-stacked-preview--repo "owner/repo"
+                   shipit-stacked-preview--base "origin/master")
+             (shipit-stacked-preview--render)
+             ,@body))
+       (kill-buffer ,buffer))))
+
+;;;; The state of a layer, as data
+
+(ert-deftest test-shipit-stacked-preview-state-names-how-far-a-layer-got ()
+  "GIVEN a layer with no branch, then a branch only here, then a branch
+on the remote at the same commit
+WHEN its state is asked for
+THEN it names the stage as data, which the row and the stack canvas
+both draw from."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (let ((layer (car (test-stacked--layers "one"))))
+      (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) nil)))
+        (should (equal '(:state no-branch)
+                       (shipit-stacked-preview--layer-state layer))))
+      (cl-letf (((symbol-function 'shipit-stack--rev)
+                 (lambda (ref) (unless (string-prefix-p "origin/" ref) "abc"))))
+        (should (equal '(:state not-pushed)
+                       (shipit-stacked-preview--layer-state layer))))
+      (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
+                ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) nil))
+                ((symbol-function 'shipit-stack-plan--pr-for-branch)
+                 (lambda (&rest _) nil)))
+        (should (equal '(:state pushed :drift nil)
+                       (shipit-stacked-preview--layer-state layer)))))))
+
+(ert-deftest test-shipit-stacked-preview-state-of-a-branch-on-its-way ()
+  "GIVEN a layer whose branch is being sent
+WHEN its state is asked for
+THEN it is sending, whatever the branch was before the push began."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--sending "one")
+    (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) nil)))
+      (should (equal '(:state sending)
+                     (shipit-stacked-preview--layer-state
+                      (car (test-stacked--layers "one"))))))))
+
+(ert-deftest test-shipit-stacked-preview-state-of-a-branch-changed-since-its-push ()
+  "GIVEN a layer on the remote whose branch was rewritten here
+WHEN its state is asked for
+THEN it is drifted, and says how far the two copies came apart."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
+              ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) '("1 2")))
+              ((symbol-function 'shipit-stack-plan--pr-for-branch)
+               (lambda (&rest _) nil)))
+      (should (equal '(:state drifted :drift "2 ahead, 1 behind")
+                     (shipit-stacked-preview--layer-state
+                      (car (test-stacked--layers "one"))))))))
+
+(ert-deftest test-shipit-stacked-preview-state-of-a-layer-with-a-pull-request ()
+  "GIVEN a layer whose branch has a pull request with failing checks
+and an approval
+WHEN its state is asked for with the stack's statuses
+THEN it carries the number, the checks and the review."
+  (with-temp-buffer
+    (setq shipit-stacked-preview--repo "owner/repo")
+    (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
+              ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) nil))
+              ((symbol-function 'shipit-stack-plan--pr-for-branch)
+               (lambda (&rest _) 4471)))
+      (should (equal '(:state pull-request :number 4471 :checks "failure"
+                              :review "approved" :drift nil)
+                     (shipit-stacked-preview--layer-state
+                      (car (test-stacked--layers "one"))
+                      '((4471 . ((checks . "failure") (review . "approved"))))))))))
+
+;;;; The push menu, from here or from the stack canvas
+
+(ert-deftest test-shipit-stacked-preview-push-menu-opens-on-the-layer-at-point ()
+  "GIVEN point on a layer's row, and then below every layer
+WHEN the push menu is opened
+THEN it records this buffer with that layer, and then with no layer."
+  (let ((layers (test-stacked--layers "one" "two"))
+        (scope 'unset))
+    (test-stacked--with-drawn-stack preview layers nil nil
+      (cl-letf (((symbol-function 'transient-setup)
+                 (lambda (&rest args) (setq scope (plist-get (nthcdr 3 args) :scope)))))
+        (goto-char (shipit-stacked-preview--layer-position "one"))
+        (call-interactively #'shipit-stacked-preview-push)
+        (should (equal (cons preview "one") scope))
+        (goto-char (point-max))
+        (call-interactively #'shipit-stacked-preview-push)
+        (should (equal (cons preview nil) scope))))))
+
+(ert-deftest test-shipit-stacked-preview-push-menu-pushes-the-layer-it-opened-on ()
+  "GIVEN the push menu opened for a layer of a preview
+WHEN its layer suffix runs while another buffer is current
+THEN it pushes that layer from that preview.  A suffix runs in the
+buffer of the selected window, and the stack canvas opens the menu from
+its own buffer."
+  (let ((layers (test-stacked--layers "one" "two"))
+        (preview (generate-new-buffer " *test-push-scope*"))
+        (pushed nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'transient-scope)
+                   (lambda (&rest _) (cons preview "one")))
+                  ((symbol-function 'shipit-stacked-preview--current-layers)
+                   (lambda ()
+                     (unless (eq (current-buffer) preview)
+                       (error "Asked for the layers outside the preview"))
+                     layers))
+                  ((symbol-function 'shipit-stacked-preview--refuse-when-broken) #'ignore)
+                  ((symbol-function 'shipit-stacked-preview--render) #'ignore)
+                  ((symbol-function 'redisplay) #'ignore)
+                  ((symbol-function 'shipit--push-branches)
+                   (lambda (branches _args) (setq pushed branches) t)))
+          (with-temp-buffer
+            (shipit-stacked-preview-push-layer nil))
+          (should (equal '("one") pushed)))
+      (kill-buffer preview))))
+
+;;;; The canvas key
+
+(ert-deftest test-shipit-stacked-preview-canvas-key-is-offered ()
+  "GIVEN the keys this buffer advertises
+WHEN they are read
+THEN v, which draws the stack on a canvas, is among them and bound."
+  (should (assoc "v" (apply #'append shipit-stacked-preview--key-columns)))
+  (should (eq 'shipit-stacked-preview-canvas
+              (lookup-key shipit-stacked-preview-mode-map (kbd "v")))))
+
+(ert-deftest test-shipit-stacked-preview-canvas-key-without-a-canvas-says-so ()
+  "GIVEN an Emacs without the canvas
+WHEN v is pressed in the preview
+THEN it says the view needs Emacs 32, and signals nothing."
+  (with-temp-buffer
+    (let ((said nil))
+      (cl-letf (((symbol-function 'image-type-available-p) (lambda (_) nil))
+                ((symbol-function 'message)
+                 (lambda (fmt &rest args) (setq said (apply #'format-message fmt args)))))
+        (shipit-stacked-preview-canvas)
+        (should (string-match-p "Emacs 32" said))))))
+
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

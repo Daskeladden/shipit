@@ -6,13 +6,15 @@ PACKAGE_FILE = lisp/$(PACKAGE_NAME).el
 LISP_FILES = lisp/*.el
 AUTOLOADS_FILE = $(PACKAGE_NAME)-autoloads.el
 
-# canvas-diagram owns the canvas-cairo module the kanban draws with,
-# and it requires canvas-keys, so that checkout goes on the load path
-# too.  Both are sibling checkouts, and both are optional: without them
-# the kanban tests skip themselves and the rest of shipit is unaffected.
-# A missing one skips the canvas tests silently, so a run that skips
-# many more than usual is worth a look.
+# canvas-diagram owns the canvas-cairo module the canvas views draw
+# with, and canvas-graph lays out the stack canvas on top of it.
+# canvas-diagram requires canvas-keys, so its checkout goes on the load
+# path too.  All three are sibling checkouts, and all are optional:
+# without them the canvas tests skip themselves and the rest of shipit
+# is unaffected.  A missing one skips the canvas tests silently, so a
+# run that skips many more than usual is worth a look.
 CANVAS_DIAGRAM = ../canvas-diagram
+CANVAS_GRAPH = ../canvas-graph
 CANVAS_KEYS = ../canvas-keys
 
 .PHONY: all compile clean test test-older install autoloads package
@@ -29,6 +31,7 @@ compile: $(LISP_FILES)
 		-eval "(unless (package-installed-p 'magit) (package-install 'magit))" \
 		-L lisp \
 		-L $(CANVAS_DIAGRAM) \
+		-L $(CANVAS_GRAPH) \
 		-L $(CANVAS_KEYS) \
 		-f batch-byte-compile $(LISP_FILES)
 
@@ -67,6 +70,7 @@ test-unit: compile
 		-L lisp \
 		-L test \
 		-L $(CANVAS_DIAGRAM) \
+		-L $(CANVAS_GRAPH) \
 		-L $(CANVAS_KEYS) \
 		-l test/test-shipit.el \
 		-l test/test-shipit-editor.el \
@@ -125,6 +129,7 @@ test-unit: compile
 		-l test/test-shipit-canvas.el \
 		-l test/test-shipit-atlassian-board-shared.el \
 		-l test/test-shipit-atlassian-kanban.el \
+		-l test/test-shipit-stack-canvas.el \
 		-l test/test-shipit-atlassian-dashboard.el \
 		-l test/test-shipit-issues-buffer.el \
 		-l test/test-shipit-issue-branch.el \
@@ -191,6 +196,7 @@ test-older:
 	echo "Suite under $$($(OLDER_EMACS) --version | head -1), in $$tree"; \
 	(cd "$$tree" && $(MAKE) test EMACS=$(OLDER_EMACS) \
 		CANVAS_DIAGRAM=$(abspath $(CANVAS_DIAGRAM)) \
+		CANVAS_GRAPH=$(abspath $(CANVAS_GRAPH)) \
 		CANVAS_KEYS=$(abspath $(CANVAS_KEYS))); \
 	status=$$?; git worktree remove --force "$$tree"; exit $$status
 

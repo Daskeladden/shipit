@@ -18,6 +18,9 @@
 (require 'cl-lib)
 (require 'shipit-canvas)
 
+(defvar meow-mode-state-list)
+(defvar undo-tree-incompatible-major-modes)
+
 (defconst test-canvas--root
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name)))
   "Repository root.")
@@ -25,12 +28,17 @@
 (defun test-canvas--broken-diagram-dir ()
   "Return a directory holding a canvas-diagram that fails while loading.
 It fails the way canvas-cairo did on Emacs 29: the file is found, and
-loading it signals, which `require' with NOERROR does not catch."
+loading it signals, which `require' with NOERROR does not catch.  A
+canvas-graph beside it requires it, as the real one does."
   (let ((dir (make-temp-file "shipit-broken-canvas-" t)))
     (with-temp-file (expand-file-name "canvas-diagram.el" dir)
       (insert ";;; canvas-diagram.el --- fails to load -*- lexical-binding: t -*-\n"
               "(signal 'module-init-failed (list \"canvas-cairo.so\" 2))\n"
               "(provide 'canvas-diagram)\n"))
+    (with-temp-file (expand-file-name "canvas-graph.el" dir)
+      (insert ";;; canvas-graph.el --- needs canvas-diagram -*- lexical-binding: t -*-\n"
+              "(require 'canvas-diagram)\n"
+              "(provide 'canvas-graph)\n"))
     dir))
 
 (defun test-canvas--run-emacs (load-path-dirs form)
@@ -55,6 +63,40 @@ Return (EXIT-STATUS . OUTPUT)."
                          "--eval" (prin1-to-string form))))))
       (cons status (buffer-string)))))
 
+(defun test-canvas--beside-a-broken-canvas (form)
+  "Run FORM in a fresh Emacs whose canvas libraries fail while loading.
+Return (EXIT-STATUS . OUTPUT)."
+  (test-canvas--run-emacs
+   (list (expand-file-name "lisp" test-canvas--root)
+         (test-canvas--broken-diagram-dir))
+   form))
+
+(defun test-canvas--load-beside-a-broken-canvas (feature library)
+  "Load FEATURE beside broken canvas libraries and ask about LIBRARY.
+Return (EXIT-STATUS . OUTPUT); OUTPUT says available=nil when the
+question was answered without signalling."
+  (test-canvas--beside-a-broken-canvas
+   `(progn
+      (require ',feature)
+      (princ (format "available=%S" (shipit-canvas-available-p ',library))))))
+
+(defun test-canvas--compile-beside-a-broken-canvas (file)
+  "Byte-compile FILE, under `lisp/', beside broken canvas libraries.
+Return (EXIT-STATUS . OUTPUT)."
+  (let ((out (make-temp-file "shipit-canvas-compiled-" nil ".elc")))
+    (unwind-protect
+        (test-canvas--beside-a-broken-canvas
+         `(progn
+            ;; Loaded first: binding its variable before it loads
+            ;; makes the binding lexical, and loading it then signals.
+            (require 'bytecomp)
+            (let ((byte-compile-dest-file-function (lambda (_) ,out)))
+              (kill-emacs
+               (if (byte-compile-file
+                    ,(expand-file-name (concat "lisp/" file) test-canvas--root))
+                   0 1)))))
+      (ignore-errors (delete-file out)))))
+
 ;;;; The predicate
 
 (ert-deftest test-canvas-unavailable-without-the-image-type ()
@@ -63,8 +105,8 @@ WHEN shipit asks whether it can draw on a canvas
 THEN it says no without trying to load canvas-diagram at all."
   (let ((loaded nil))
     (cl-letf (((symbol-function 'image-type-available-p) (lambda (_) nil))
-              ((symbol-function 'shipit-canvas--load-diagram)
-               (lambda () (setq loaded t) t)))
+              ((symbol-function 'shipit-canvas--load)
+               (lambda (_library) (setq loaded t) t)))
       (should-not (shipit-canvas-available-p))
       (should-not loaded))))
 
@@ -80,6 +122,18 @@ THEN it says no instead of passing the error on."
                  t))))
     (should-not (shipit-canvas-available-p))))
 
+(ert-deftest test-canvas-loads-the-library-a-view-draws-with ()
+  "GIVEN the canvas image type
+WHEN a view that draws with canvas-graph asks whether it can draw
+THEN canvas-graph is the library loaded.  canvas-graph requires
+canvas-diagram, so one answer covers both."
+  (let ((loaded nil))
+    (cl-letf (((symbol-function 'image-type-available-p) (lambda (_) t))
+              ((symbol-function 'require)
+               (lambda (feature &rest _) (push feature loaded) t)))
+      (should (shipit-canvas-available-p 'canvas-graph))
+      (should (equal '(canvas-graph) loaded)))))
+
 (ert-deftest test-canvas-require-names-emacs-32-and-the-fallback ()
   "GIVEN an Emacs that cannot draw on a canvas
 WHEN a canvas view insists on it
@@ -91,18 +145,37 @@ THEN the error names Emacs 32 and the view to use instead."
       (should (string-match-p "Emacs 32" raised))
       (should (string-match-p "shipit-atlassian-dashboard" raised)))))
 
+(ert-deftest test-canvas-require-names-the-library-it-needs ()
+  "GIVEN an Emacs that cannot draw on a canvas
+WHEN a view that draws with canvas-graph insists on it
+THEN the error names canvas-graph."
+  (cl-letf (((symbol-function 'image-type-available-p) (lambda (_) nil)))
+    (let ((raised (condition-case err
+                      (shipit-canvas-require "The stack canvas" "shipit-stacked-preview"
+                                             'canvas-graph)
+                    (user-error (error-message-string err)))))
+      (should (string-match-p "canvas-graph" raised)))))
+
+(ert-deftest test-canvas-keeps-meow-and-undo-tree-away ()
+  "GIVEN meow and undo-tree loaded
+WHEN a canvas mode asks them to leave its buffers alone
+THEN meow starts it in insert state and undo-tree stays out.  Both
+take keys before a major mode map sees them."
+  (let ((meow-mode-state-list nil)
+        (undo-tree-incompatible-major-modes nil))
+    (shipit-canvas-keep-other-packages-away 'test-canvas-mode)
+    (shipit-canvas-keep-other-packages-away 'test-canvas-mode)
+    (should (equal '((test-canvas-mode . insert)) meow-mode-state-list))
+    (should (equal '(test-canvas-mode) undo-tree-incompatible-major-modes))))
+
 ;;;; With a canvas-diagram that cannot load
 
 (ert-deftest test-canvas-kanban-loads-beside-a-broken-canvas-diagram ()
   "GIVEN a canvas-diagram on the load path that fails while loading
 WHEN shipit's kanban is loaded and asked whether it can draw
 THEN it loads, and says it cannot, rather than signalling."
-  (let ((result (test-canvas--run-emacs
-                 (list (expand-file-name "lisp" test-canvas--root)
-                       (test-canvas--broken-diagram-dir))
-                 '(progn
-                    (require 'shipit-atlassian-kanban)
-                    (princ (format "available=%S" (shipit-canvas-available-p)))))))
+  (let ((result (test-canvas--load-beside-a-broken-canvas
+                 'shipit-atlassian-kanban 'canvas-diagram)))
     (should (equal 0 (car result)))
     (should (string-match-p "available=nil" (cdr result)))))
 
@@ -112,33 +185,34 @@ WHEN shipit's kanban is byte-compiled
 THEN it compiles.
 
 This is the break that stopped shipit compiling on Emacs 29."
-  (let* ((out (make-temp-file "shipit-kanban-" nil ".elc"))
-         (result (test-canvas--run-emacs
-                  (list (expand-file-name "lisp" test-canvas--root)
-                        (test-canvas--broken-diagram-dir))
-                  `(progn
-                     ;; Loaded first: binding its variable before it loads
-                     ;; makes the binding lexical, and loading it then signals.
-                     (require 'bytecomp)
-                     (let ((byte-compile-dest-file-function (lambda (_) ,out)))
-                     (kill-emacs
-                      (if (byte-compile-file
-                           ,(expand-file-name "lisp/shipit-atlassian-kanban.el"
-                                              test-canvas--root))
-                          0 1)))))))
-    (unwind-protect
-        (progn
-          (should (equal 0 (car result)))
-          (should-not (string-match-p "Error:" (cdr result))))
-      (ignore-errors (delete-file out)))))
+  (let ((result (test-canvas--compile-beside-a-broken-canvas
+                 "shipit-atlassian-kanban.el")))
+    (should (equal 0 (car result)))
+    (should-not (string-match-p "Error:" (cdr result)))))
+
+(ert-deftest test-canvas-stack-canvas-loads-beside-a-broken-canvas-graph ()
+  "GIVEN a canvas-graph on the load path whose canvas-diagram fails to load
+WHEN shipit's stack canvas is loaded and asked whether it can draw
+THEN it loads, and says it cannot, rather than signalling."
+  (let ((result (test-canvas--load-beside-a-broken-canvas
+                 'shipit-stack-canvas 'canvas-graph)))
+    (should (equal 0 (car result)))
+    (should (string-match-p "available=nil" (cdr result)))))
+
+(ert-deftest test-canvas-stack-canvas-compiles-beside-a-broken-canvas-graph ()
+  "GIVEN a canvas-graph on the load path whose canvas-diagram fails to load
+WHEN shipit's stack canvas is byte-compiled
+THEN it compiles."
+  (let ((result (test-canvas--compile-beside-a-broken-canvas
+                 "shipit-stack-canvas.el")))
+    (should (equal 0 (car result)))
+    (should-not (string-match-p "Error:" (cdr result)))))
 
 (ert-deftest test-canvas-dashboard-check-survives-a-broken-canvas-diagram ()
   "GIVEN a canvas-diagram on the load path that fails while loading
 WHEN the dashboard asks whether a board can be drawn on a canvas
 THEN it says no, so RET on a board heading folds it instead of signalling."
-  (let ((result (test-canvas--run-emacs
-                 (list (expand-file-name "lisp" test-canvas--root)
-                       (test-canvas--broken-diagram-dir))
+  (let ((result (test-canvas--beside-a-broken-canvas
                  '(progn
                     (require 'shipit-atlassian-dashboard)
                     (princ (format "drawable=%S"

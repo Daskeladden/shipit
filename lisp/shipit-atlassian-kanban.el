@@ -1605,22 +1605,11 @@ columns after it."
     map)
   "Keys a board has over those of every canvas diagram.")
 
-(defvar meow-mode-state-list)
-(defvar undo-tree-incompatible-major-modes)
-
-(defun shipit-atlassian-kanban--keep-other-packages-away ()
-  "Ask meow and undo-tree to leave a board buffer alone.
-Both take keys before a major mode map sees them."
-  (when (boundp 'meow-mode-state-list)
-    (add-to-list 'meow-mode-state-list '(shipit-atlassian-kanban-mode . insert)))
-  (when (boundp 'undo-tree-incompatible-major-modes)
-    (add-to-list 'undo-tree-incompatible-major-modes 'shipit-atlassian-kanban-mode)))
-
 (with-eval-after-load 'meow
-  (shipit-atlassian-kanban--keep-other-packages-away))
+  (shipit-canvas-keep-other-packages-away 'shipit-atlassian-kanban-mode))
 
 (with-eval-after-load 'undo-tree
-  (shipit-atlassian-kanban--keep-other-packages-away))
+  (shipit-canvas-keep-other-packages-away 'shipit-atlassian-kanban-mode))
 
 (define-derived-mode shipit-atlassian-kanban-mode canvas-diagram-mode "Kanban"
   "Major mode of a buffer drawing a Jira board as cards on a canvas.
@@ -1644,7 +1633,7 @@ it.  \\[shipit-atlassian-kanban-refresh] reads the board again.
 
 \\{shipit-atlassian-kanban-mode-map}"
   (set-keymap-parent shipit-atlassian-kanban-mode-map canvas-diagram-mode-map)
-  (shipit-atlassian-kanban--keep-other-packages-away))
+  (shipit-canvas-keep-other-packages-away 'shipit-atlassian-kanban-mode))
 
 ;;; Showing a board
 

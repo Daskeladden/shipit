@@ -16,44 +16,62 @@
 ;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
-;; Some shipit views draw on the Emacs 32 canvas through canvas-diagram.
-;; The canvas image type is not there on every Emacs shipit runs on, and
-;; canvas-diagram can be present and still unable to load: its
-;; canvas-cairo module is built for one Emacs, and another refuses it.
-;; Every canvas view asks here, so all of them give way the same way and
-;; none of them breaks loading or compiling shipit.
+;; Some shipit views draw on the Emacs 32 canvas through canvas-diagram,
+;; or through canvas-graph, which is built on it.  The canvas image type
+;; is not there on every Emacs shipit runs on, and canvas-diagram can be
+;; present and still unable to load: its canvas-cairo module is built
+;; for one Emacs, and another refuses it.  Every canvas view asks here,
+;; so all of them give way the same way and none of them breaks loading
+;; or compiling shipit.
 
 ;;; Code:
 
 (require 'shipit-core)
 
-(defun shipit-canvas--load-diagram ()
-  "Load canvas-diagram; return non-nil when it is there to use.
-`require' with NOERROR covers only a file that is not found.  A
-canvas-diagram that is found and then fails while loading signals from
-inside it, as its module does on an Emacs it was not built for, so that
-error is caught here and logged."
+(defvar meow-mode-state-list)
+(defvar undo-tree-incompatible-major-modes)
+
+(defun shipit-canvas--load (library)
+  "Load LIBRARY, a canvas library; return non-nil when it is there to use.
+`require' with NOERROR covers only a file that is not found.  A library
+that is found and then fails while loading signals from inside it, as
+canvas-diagram's module does on an Emacs it was not built for, so that
+error is caught here and logged.  canvas-graph fails the same way,
+through the canvas-diagram it requires."
   (condition-case err
-      (require 'canvas-diagram nil t)
+      (require library nil t)
     (error
-     (shipit--debug-log "canvas-diagram could not load: %S" err)
+     (shipit--debug-log "%s could not load: %S" library err)
      nil)))
 
-(defun shipit-canvas-available-p ()
+(defun shipit-canvas-available-p (&optional library)
   "Return non-nil when this Emacs can draw on a canvas.
-The canvas image type is asked first, so an Emacs without it never
-tries to load canvas-diagram at all."
+LIBRARY is the canvas library the view draws with, `canvas-diagram'
+unless given.  The canvas image type is asked first, so an Emacs
+without it never tries to load a canvas library at all."
   (and (image-type-available-p 'canvas)
-       (shipit-canvas--load-diagram)
+       (shipit-canvas--load (or library 'canvas-diagram))
        t))
 
-(defun shipit-canvas-require (view fallback)
+(defun shipit-canvas-require (view fallback &optional library)
   "Signal unless this Emacs can draw on a canvas.
-VIEW names what wants the canvas, and FALLBACK the command that shows
-the same thing without one."
-  (unless (shipit-canvas-available-p)
-    (user-error "%s needs Emacs 32 and canvas-diagram; use `%s' instead"
-                view fallback)))
+VIEW names what wants the canvas, FALLBACK the command that shows the
+same thing without one, and LIBRARY the canvas library VIEW draws with,
+`canvas-diagram' unless given."
+  (let ((library (or library 'canvas-diagram)))
+    (unless (shipit-canvas-available-p library)
+      (user-error "%s needs Emacs 32 and %s; use `%s' instead"
+                  view library fallback))))
+
+(defun shipit-canvas-keep-other-packages-away (mode)
+  "Ask meow and undo-tree to leave the buffers of MODE, a canvas mode, alone.
+Both take keys before a major mode map sees them.  meow starts MODE in
+insert state, and undo-tree stays out of it.  A package that is not
+loaded is left alone; each canvas file asks again once it loads."
+  (when (boundp 'meow-mode-state-list)
+    (add-to-list 'meow-mode-state-list (cons mode 'insert)))
+  (when (boundp 'undo-tree-incompatible-major-modes)
+    (add-to-list 'undo-tree-incompatible-major-modes mode)))
 
 (provide 'shipit-canvas)
 ;;; shipit-canvas.el ends here

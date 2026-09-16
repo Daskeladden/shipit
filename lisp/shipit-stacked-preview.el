@@ -34,6 +34,7 @@
 
 (require 'cl-lib)
 (require 'shipit-core)
+(require 'shipit-canvas)
 (require 'shipit-cache)
 (require 'shipit-stack)
 (require 'shipit-sections)
@@ -49,6 +50,9 @@
                   (repo branch base-ref &rest keys))
 (declare-function shipit-open-pr-buffer "shipit-buffer"
                   (pr-number &optional repo backend-id backend-config))
+;; The stack canvas draws this buffer on an Emacs 32 canvas.  It is
+;; loaded by the key that opens it, once the canvas is known to work.
+(declare-function shipit-stack-canvas-show "shipit-stack-canvas" (preview))
 
 (declare-function shipit--insert-processed-commit-section "shipit-pr-sections")
 (declare-function shipit--stack-status-glyphs "shipit-render" (statuses))
@@ -80,6 +84,12 @@ entry; a boundary is a division, and the top of the pile is not one.")
 (defvar-local shipit-stacked-preview--names nil
   "Commit SHA to the branch already marking that layer.
 A stack divided before keeps the names it was given.")
+
+(defvar-local shipit-stacked-preview--states-shown nil
+  "The state of each layer the rows were last drawn with, by branch.
+Working out a state asks git and the forge.  The stack canvas reads
+this buffer again after every redraw, so it reads these instead of
+asking again.")
 
 ;;;; Working out the layers
 
@@ -173,40 +183,78 @@ Nil when they stand on the same commit, or when the remote has none."
   (and (shipit-stack--rev (concat "origin/" branch))
        (shipit-stacked-preview--ahead-behind (concat "origin/" branch) branch)))
 
-(defun shipit-stacked-preview--with-drift (status branch)
-  "Return STATUS with how far BRANCH has drifted from the remote appended.
+(defun shipit-stacked-preview--with-drift (status drift)
+  "Return STATUS with DRIFT, how far the branch left the remote, appended.
 A branch rewritten since it was pushed still has its remote copy, so
 without this it would read as pushed while the remote holds the old
 version of the stack."
-  (if-let* ((drift (shipit-stacked-preview--drift branch)))
+  (if drift
       (concat status "  " (propertize drift 'font-lock-face 'font-lock-comment-face))
     status))
 
-(defun shipit-stacked-preview--layer-status (layer &optional statuses)
-  "Return where LAYER has got to, coloured by how far that is.
+(defun shipit-stacked-preview--remote-state (branch statuses)
+  "Return the state of a layer whose BRANCH is on the remote.
+STATUSES maps pull request numbers to their check rollup and review
+decision."
+  (let ((number (shipit-stacked-preview--pr-number branch))
+        (drift (shipit-stacked-preview--drift branch)))
+    (if number
+        (let ((status (cdr (assq number statuses))))
+          (list :state 'pull-request :number number
+                :checks (cdr (assq 'checks status))
+                :review (cdr (assq 'review status))
+                :drift drift))
+      (list :state (if drift 'drifted 'pushed) :drift drift))))
+
+(defun shipit-stacked-preview--layer-state (layer &optional statuses)
+  "Return where LAYER has got to, as a plist.
+`:state' is `sending', `no-branch', `not-pushed', `pushed', `drifted' or
+`pull-request'.  A layer on the remote also carries `:drift', the words
+for how far its copy there came apart from this one, or nil.  A pull
+request carries `:number', and `:checks' and `:review' from STATUSES,
+which maps pull request numbers to their check rollup and review
+decision.  The row and the stack canvas both draw from this, so the
+two cannot disagree about a layer."
+  (let ((branch (cdr (assq 'branch layer))))
+    (cond
+     ((shipit-stacked-preview--sending-p branch) (list :state 'sending))
+     ((not (or (cdr (assq 'existing layer)) (shipit-stack--rev branch)))
+      (list :state 'no-branch))
+     ((not (shipit-stack--rev (concat "origin/" branch)))
+      (list :state 'not-pushed))
+     (t (shipit-stacked-preview--remote-state branch statuses)))))
+
+(defun shipit-stacked-preview--remote-status (state)
+  "Return the status text of a layer on the remote in STATE, drift aside."
+  (if-let* ((number (plist-get state :number)))
+      (concat (propertize (format "PR #%s" number)
+                          'font-lock-face 'magit-branch-remote)
+              (shipit--stack-status-glyphs
+               (list (cons 'checks (plist-get state :checks))
+                     (cons 'review (plist-get state :review)))))
+    (propertize "pushed" 'font-lock-face 'success)))
+
+(defun shipit-stacked-preview--state-text (state)
+  "Return the status text of a layer in STATE, coloured by how far it got.
 Dim while the layer is still only local, orange while it is on its way,
 green once it is on the remote, and the branch colour once it has a
 pull request of its own.  A layer on the remote also says how far its
-copy there has fallen behind this one.  STATUSES maps pull request
-numbers to their check rollup and review decision; a layer with a
-pull request wears its glyphs behind the number."
-  (let ((branch (cdr (assq 'branch layer))))
-    (cond
-     ((shipit-stacked-preview--sending-p branch)
-      (propertize "sending…" 'font-lock-face 'warning))
-     ((not (or (cdr (assq 'existing layer)) (shipit-stack--rev branch)))
-      (propertize "no branch yet" 'font-lock-face 'font-lock-comment-face))
-     ((not (shipit-stack--rev (concat "origin/" branch)))
-      (propertize "not pushed" 'font-lock-face 'font-lock-comment-face))
-     (t (shipit-stacked-preview--with-drift
-         (let ((number (shipit-stacked-preview--pr-number branch)))
-           (if number
-               (concat
-                (propertize (format "PR #%s" number)
-                            'font-lock-face 'magit-branch-remote)
-                (shipit--stack-status-glyphs (cdr (assq number statuses))))
-             (propertize "pushed" 'font-lock-face 'success)))
-         branch)))))
+copy there has fallen behind this one, and a layer with a pull request
+wears its glyphs behind the number."
+  (pcase (plist-get state :state)
+    ('sending (propertize "sending…" 'font-lock-face 'warning))
+    ('no-branch (propertize "no branch yet" 'font-lock-face 'font-lock-comment-face))
+    ('not-pushed (propertize "not pushed" 'font-lock-face 'font-lock-comment-face))
+    (_ (shipit-stacked-preview--with-drift
+        (shipit-stacked-preview--remote-status state)
+        (plist-get state :drift)))))
+
+(defun shipit-stacked-preview--layer-status (layer &optional statuses)
+  "Return the status text of LAYER, as its row draws it.
+STATUSES maps pull request numbers to their check rollup and review
+decision."
+  (shipit-stacked-preview--state-text
+   (shipit-stacked-preview--layer-state layer statuses)))
 
 (defun shipit-stacked-preview--statuses (layers)
   "Return the statuses of LAYERS\=' pull requests, keyed by number.
@@ -268,19 +316,37 @@ With REPO nil, or no such branch, DEFAULT stands."
                  "log" "--format=%H" (format "%s..HEAD" default))))))
       default))
 
-(defun shipit-stacked-preview--layer-at-point ()
-  "Return the layer whose section holds point.
-Signals when point is on none: every action here works on one layer,
-and acting on the wrong one is worse than refusing to act."
+(defun shipit-stacked-preview--branch-at-point ()
+  "Return the branch of the layer whose section holds point, or nil."
   (let ((section (magit-current-section)))
     (while (and section (not (eq (oref section type) 'shipit-stack-layer)))
       (setq section (oref section parent)))
-    (unless section (user-error "Point is not on a layer"))
-    (let* ((branch (oref section value))
-           (layer (seq-find (lambda (l) (equal branch (cdr (assq 'branch l))))
-                            (shipit-stacked-preview--current-layers))))
-      (unless layer (user-error "No layer named %s" branch))
-      layer)))
+    (and section (oref section value))))
+
+(defun shipit-stacked-preview--layer-named (branch)
+  "Return the layer of this stack whose branch is BRANCH.
+Signals when there is none: every action here works on one layer, and
+acting on the wrong one is worse than refusing to act."
+  (or (seq-find (lambda (layer) (equal branch (cdr (assq 'branch layer))))
+                (shipit-stacked-preview--current-layers))
+      (user-error "No layer named %s" branch)))
+
+(defun shipit-stacked-preview--layer-at-point ()
+  "Return the layer whose section holds point, or signal on none."
+  (shipit-stacked-preview--layer-named
+   (or (shipit-stacked-preview--branch-at-point)
+       (user-error "Point is not on a layer"))))
+
+(defun shipit-stacked-preview--layer-position (branch)
+  "Return where the row of the layer BRANCH starts, or nil when not drawn.
+The section is found in the section tree by its type and its branch."
+  (when-let* ((section (and magit-root-section
+                            (magit-get-section
+                             `((shipit-stack-layer . ,branch) (shipit-stack-root))))))
+    (let ((start (oref section start)))
+      ;; A section starts at a marker, or at a plain position when
+      ;; `magit-section-inhibit-markers' is on.
+      (if (markerp start) (marker-position start) start))))
 
 (defun shipit-stacked-preview--base-of (layer)
   "Return the ref the pull request for LAYER should be raised against.
@@ -323,11 +389,11 @@ out of line the moment one does."
                          layers)))
 
 (defun shipit-stacked-preview--insert-layer
-    (layer index width count-width top-p &optional statuses)
+    (layer index width count-width top-p state)
   "Insert LAYER, numbered INDEX from the bottom.
 Names are padded to WIDTH and commit counts to COUNT-WIDTH.  TOP-P
-marks the newest end of the line of commits.  STATUSES carries the
-stack\='s pull request statuses for the layer\='s status glyphs."
+marks the newest end of the line of commits.  STATE is where the layer
+has got to, as `shipit-stacked-preview--layer-state' returns it."
   (let ((commits (cdr (assq 'commits layer))))
     (magit-insert-section (shipit-stack-layer (cdr (assq 'branch layer)))
       (magit-insert-heading
@@ -348,7 +414,7 @@ stack\='s pull request statuses for the layer\='s status glyphs."
                 (let ((n (number-to-string (length commits))))
                   (concat (make-string (- count-width (length n)) ?\s) n))
                 (if (cdr commits) "s" " ")
-                (shipit-stacked-preview--layer-status layer statuses)))
+                (shipit-stacked-preview--state-text state)))
       (magit-insert-section-body
         ;; Each commit through the renderer the pull request buffer
         ;; uses, so a commit here opens onto its message and the files
@@ -381,7 +447,7 @@ within a layer history grows upward too."
 (defconst shipit-stacked-preview--key-columns
   '((("RET" . "open layer") ("s" . "divide here") ("u" . "undo"))
     (("c" . "create branches") ("P" . "push") ("R" . "register stack"))
-    (("r" . "rename layer") ("a" . "suggest name"))
+    (("r" . "rename layer") ("a" . "suggest name") ("v" . "draw on canvas"))
     (("g" . "refresh") ("q" . "quit") ("$" . "process log")))
   "The keys this buffer offers, a list per column.
 Down each column rather than across: dividing the stack, making it
@@ -486,6 +552,14 @@ one branch while standing on another."
   (shipit-stacked-preview--insert-refs)
   (shipit-stacked-preview--insert-keys))
 
+(defun shipit-stacked-preview--layer-states (layers statuses)
+  "Return the state of each of LAYERS, by branch.
+STATUSES are the pull request statuses of the stack."
+  (mapcar (lambda (layer)
+            (cons (cdr (assq 'branch layer))
+                  (shipit-stacked-preview--layer-state layer statuses)))
+          layers))
+
 (defun shipit-stacked-preview--render ()
   "Draw the buffer from the state it holds."
   (let ((inhibit-read-only t)
@@ -497,13 +571,16 @@ one branch while standing on another."
       ;; Newest at the top and the base at the bottom, which is the way
       ;; a stack is drawn and the way the commits actually sit.
       (let* ((layers (shipit-stacked-preview--current-layers))
-             (statuses (shipit-stacked-preview--statuses layers))
+             (states (shipit-stacked-preview--layer-states
+                      layers (shipit-stacked-preview--statuses layers)))
              (width (shipit-stacked-preview--name-width layers))
              (count-width (shipit-stacked-preview--count-width layers))
              (index (length layers)))
+        (setq shipit-stacked-preview--states-shown states)
         (dolist (layer (reverse layers))
           (shipit-stacked-preview--insert-layer
-           layer index width count-width (= index (length layers)) statuses)
+           layer index width count-width (= index (length layers))
+           (cdr (assoc (cdr (assq 'branch layer)) states)))
           (setq index (1- index)))
         (shipit-stacked-preview--insert-base width)))
     (goto-char (min position (point-max)))))
@@ -627,8 +704,12 @@ request like any other, one whose base is the layer below -- and comes
 back here once it has been submitted or abandoned, so the list shows
 what it became.  The layer does not have to be checked out for this."
   (interactive)
-  (let* ((layer (shipit-stacked-preview--layer-at-point))
-         (branch (shipit-stacked-preview--require-branch layer))
+  (shipit-stacked-preview--visit (shipit-stacked-preview--layer-at-point)))
+
+(defun shipit-stacked-preview--visit (layer)
+  "Open LAYER, as `shipit-stacked-preview-visit-layer' describes.
+The stack canvas opens a layer through this, with this buffer current."
+  (let* ((branch (shipit-stacked-preview--require-branch layer))
          (number (shipit-stacked-preview--pr-number branch)))
     (if number
         (shipit-open-pr-buffer number shipit-stacked-preview--repo)
@@ -710,20 +791,42 @@ that was refused; the process buffer under $ says which."
   "Return the git arguments chosen in the push transient."
   (transient-args 'shipit-stacked-preview-push))
 
+(defun shipit-stacked-preview--push-scope ()
+  "Return (BUFFER . BRANCH), the preview and layer the push menu opened on.
+BRANCH is nil when the menu opened away from every layer.  A suffix
+runs in the buffer of the selected window, and the stack canvas opens
+the menu from its own buffer, so the menu carries the preview along.
+Without the menu, this buffer and the layer at point."
+  (or (transient-scope 'shipit-stacked-preview-push)
+      (cons (current-buffer) (shipit-stacked-preview--branch-at-point))))
+
+(defun shipit-stacked-preview--push-in-scope (layer-of args)
+  "Push with ARGS, in the preview the push menu opened on.
+LAYER-OF is called there with the branch the menu opened on, or nil,
+and returns the layer to push up to."
+  (pcase-let ((`(,buffer . ,branch) (shipit-stacked-preview--push-scope)))
+    (with-current-buffer buffer
+      (shipit-stacked-preview--push-through (funcall layer-of branch) args))))
+
 (transient-define-suffix shipit-stacked-preview-push-layer (args)
-  "Push the layer at point, and the layers below it."
+  "Push the layer the push menu opened on, and the layers below it."
   (interactive (list (shipit-stacked-preview--push-arguments)))
-  (shipit-stacked-preview--push-through
-   (shipit-stacked-preview--layer-at-point) args))
+  (shipit-stacked-preview--push-in-scope
+   (lambda (branch)
+     (shipit-stacked-preview--layer-named
+      (or branch (user-error "Point is not on a layer"))))
+   args))
 
 (transient-define-suffix shipit-stacked-preview-push-all (args)
   "Push every layer of the stack, from the base upwards."
   (interactive (list (shipit-stacked-preview--push-arguments)))
-  (shipit-stacked-preview--push-through
-   (car (last (shipit-stacked-preview--current-layers))) args))
+  (shipit-stacked-preview--push-in-scope
+   (lambda (_branch) (car (last (shipit-stacked-preview--current-layers))))
+   args))
 
-(transient-define-prefix shipit-stacked-preview-push ()
-  "Push the branches of this stack to origin."
+(transient-define-prefix shipit-stacked-preview-push (buffer branch)
+  "Push the branches of the stack in BUFFER to origin.
+BRANCH is the layer the menu opened on, or nil away from every layer."
   ["Arguments"
    ;; Rewriting a lower layer and rebasing the ones above it is the
    ;; ordinary way a stack moves, and every layer above the rewrite
@@ -733,7 +836,10 @@ that was refused; the process buffer under $ says which."
    ("-h" "Skip hooks" "--no-verify")]
   ["Push"
    ("p" "this layer and the ones below" shipit-stacked-preview-push-layer)
-   ("P" "every layer" shipit-stacked-preview-push-all)])
+   ("P" "every layer" shipit-stacked-preview-push-all)]
+  (interactive (list (current-buffer) (shipit-stacked-preview--branch-at-point)))
+  (transient-setup 'shipit-stacked-preview-push nil nil
+                   :scope (cons buffer branch)))
 
 (defun shipit-stacked-preview--backend-call (operation &rest args)
   "Call OPERATION on this repository\='s backend with ARGS.
@@ -852,6 +958,17 @@ elsewhere."
          (format "%s..HEAD" shipit-stacked-preview--base)))
   (shipit-stacked-preview--render))
 
+(defun shipit-stacked-preview-canvas ()
+  "Draw this stack as a graph on a canvas that follows this buffer.
+It needs Emacs 32 with canvas-graph.  Without them this says so and
+leaves the buffer as it is; the canvas file is not loaded until then."
+  (interactive)
+  (if (shipit-canvas-available-p 'canvas-graph)
+      (progn
+        (require 'shipit-stack-canvas)
+        (shipit-stack-canvas-show (current-buffer)))
+    (message "The stack canvas needs Emacs 32 with canvas-diagram and canvas-graph")))
+
 (defvar shipit-stacked-preview-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
@@ -863,6 +980,7 @@ elsewhere."
     (define-key map (kbd "R") #'shipit-stacked-preview-register)
     (define-key map (kbd "r") #'shipit-stacked-preview-rename-layer)
     (define-key map (kbd "a") #'shipit-stacked-preview-suggest-name)
+    (define-key map (kbd "v") #'shipit-stacked-preview-canvas)
     (define-key map (kbd "g") #'shipit-stacked-preview-refresh)
     (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "q") #'quit-window)

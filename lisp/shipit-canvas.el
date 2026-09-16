@@ -26,6 +26,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'shipit-core)
 
 (defvar meow-mode-state-list)
@@ -62,6 +63,19 @@ same thing without one, and LIBRARY the canvas library VIEW draws with,
     (unless (shipit-canvas-available-p library)
       (user-error "%s needs Emacs 32 and %s; use `%s' instead"
                   view library fallback))))
+
+(defun shipit-canvas-set-slot (type slot object value)
+  "Set SLOT of OBJECT, a struct of TYPE, to VALUE; return VALUE.
+Written this way on purpose.  Setting a slot with the struct's own
+accessor compiles to an inline write only when the struct is known at
+compile time, and to a call to a setter function that does not exist
+when it is not.  The canvas libraries are optional here, so which of
+the two we get depends on whether they happened to be on the load path
+during the compile.  Looking the slot up by name at runtime does not
+care.  TYPE is an argument, not a constant in the caller: with a
+constant, the compiler tries to inline a type check of a struct it may
+not know, and prints the error of that failure."
+  (setf (cl-struct-slot-value type slot object) value))
 
 (defun shipit-canvas-keep-other-packages-away (mode)
   "Ask meow and undo-tree to leave the buffers of MODE, a canvas mode, alone.

@@ -1090,6 +1090,18 @@ Returns a human-readable string like \"2m 34s\", or nil."
          (t
           (format "%ds" secs)))))))
 
+(defun shipit-actions--status-color (status)
+  "Return the colour a job or a step with STATUS is drawn in, as #rrggbb.
+STATUS is its conclusion, or its status while it has none.  The
+duration bars and the run timeline both draw in these."
+  (pcase status
+    ("success" "#28a745")
+    ("failure" "#cb2431")
+    ("cancelled" "#999999")
+    ("skipped" "#999999")
+    ("in_progress" "#fd7e14")
+    (_ "#0366d6")))
+
 (defun shipit-actions--duration-bar (seconds max-seconds status)
   "Return a proportional duration bar string.
 SECONDS is this item's duration, MAX-SECONDS is the longest duration
@@ -1098,13 +1110,7 @@ in the group, STATUS is the conclusion/status for color."
     (let* ((max-width 20)
            (ratio (/ (float seconds) max-seconds))
            (filled (max 1 (round (* ratio max-width))))
-           (color (pcase status
-                    ("success" "#28a745")
-                    ("failure" "#cb2431")
-                    ("cancelled" "#999999")
-                    ("skipped" "#999999")
-                    ("in_progress" "#fd7e14")
-                    (_ "#0366d6")))
+           (color (shipit-actions--status-color status))
            (bar (make-string filled ?█))
            (empty (make-string (- max-width filled) ?░)))
       (concat (propertize bar 'font-lock-face `(:foreground ,color))

@@ -130,6 +130,7 @@ test-unit: compile
 		-l test/test-shipit-atlassian-board-shared.el \
 		-l test/test-shipit-atlassian-kanban.el \
 		-l test/test-shipit-stack-canvas.el \
+		-l test/test-shipit-actions-timeline.el \
 		-l test/test-shipit-atlassian-dashboard.el \
 		-l test/test-shipit-issues-buffer.el \
 		-l test/test-shipit-issue-branch.el \

@@ -29,6 +29,12 @@
 (require 'shipit-http)
 (require 'shipit-render)
 (require 'shipit-actions)
+(require 'shipit-canvas)
+
+;; The run timeline draws on an Emacs 32 canvas.  It is loaded by the key
+;; that opens it, once the canvas is known to work.
+(declare-function shipit-actions-timeline-show "shipit-actions-timeline"
+                  (repo run jobs &optional job-id))
 
 ;; Forward declarations
 (declare-function shipit-buffer--copy-visible-region "shipit-buffer")
@@ -139,6 +145,7 @@ Case-insensitive substring match.  Nil or empty FILTER-TEXT matches all."
     (define-key map (kbd "f") #'shipit-actions-list-filter-menu)
     (define-key map (kbd "+") #'shipit-actions-list-fetch-more)
     (define-key map (kbd "M-w") #'shipit-actions-list-copy-url)
+    (define-key map (kbd "v") #'shipit-actions-list-timeline)
     (define-key map (kbd "L") #'shipit-actions-timestamps-menu)
     (define-key map (kbd "M-;") #'shipit-dwim)
     map)
@@ -1481,11 +1488,40 @@ With active region, copies only visible text (collapsed sections skipped)."
     (or (shipit-actions-copy-url-at-point (shipit-actions-list--url-at-point))
         (message "No URL available at point"))))
 
-(defun shipit-actions-list--find-workflow-section (section)
-  "Walk up from SECTION to find the nearest workflow section."
-  (while (and section (not (eq (oref section type) 'actions-list-workflow)))
+(defun shipit-actions-list--find-section (section type)
+  "Walk up from SECTION to the nearest section of TYPE, or return nil."
+  (while (and section (not (eq (oref section type) type)))
     (setq section (oref section parent)))
   section)
+
+(defun shipit-actions-list--find-workflow-section (section)
+  "Walk up from SECTION to find the nearest workflow section."
+  (shipit-actions-list--find-section section 'actions-list-workflow))
+
+(defun shipit-actions-list--with-run-jobs (run callback)
+  "Call CALLBACK with the jobs of RUN: the ones fetched already, else fetched now."
+  (let ((jobs (gethash (cdr (assq 'id run)) shipit-actions-list--run-jobs)))
+    (if jobs
+        (funcall callback jobs)
+      (shipit-actions-list--fetch-run-jobs (cdr (assq 'id run)) callback))))
+
+(defun shipit-actions-list-timeline ()
+  "Draw the run at point on a time axis, on a canvas.
+On a job, or on one of its steps, the keyboard starts on that job.  The
+timeline needs Emacs 32 with canvas-diagram; without them this says so."
+  (interactive)
+  (let* ((section (magit-current-section))
+         (run-section (or (shipit-actions-list--find-section section 'actions-list-run)
+                          (user-error "Point is not on a run")))
+         (job-section (shipit-actions-list--find-section section 'actions-list-run-job))
+         (job-id (and job-section (cdr (assq 'id (oref job-section value)))))
+         (run (oref run-section value))
+         (repo shipit-actions-list--repo))
+    (if (not (shipit-canvas-available-p))
+        (message "The run timeline needs Emacs 32 with canvas-diagram")
+      (require 'shipit-actions-timeline)
+      (shipit-actions-list--with-run-jobs
+       run (lambda (jobs) (shipit-actions-timeline-show repo run jobs job-id))))))
 
 (defun shipit-actions-list-filter ()
   "Filter workflows by name with live updates as you type.

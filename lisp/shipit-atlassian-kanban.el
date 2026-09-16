@@ -30,7 +30,7 @@
 ;; struct including it would need canvas-diagram at load time.
 ;;
 ;; Nothing here writes a canvas-diagram struct slot through its own
-;; accessor; see `shipit-atlassian-kanban--set-slot' for why.
+;; accessor; see `shipit-canvas-set-slot' for why.
 
 ;;; Code:
 
@@ -498,16 +498,6 @@ legend still lists the types in use."
              (when staged (list (format "Staged for: %s" staged))))
      "\n")))
 
-(defun shipit-atlassian-kanban--set-slot (type slot object value)
-  "Set SLOT of OBJECT, a struct of TYPE, to VALUE; return VALUE.
-Written this way on purpose.  Setting a slot with the struct's own
-accessor compiles to an inline write only when the struct is known at
-compile time, and to a call to a setter function that does not exist
-when it is not.  canvas-diagram is optional here, so which of the two
-we get depends on whether it happened to be on the load path during
-the compile.  Looking the slot up by name at runtime does not care."
-  (setf (cl-struct-slot-value type slot object) value))
-
 ;;; The layout
 
 (defcustom shipit-atlassian-kanban-card-width 240
@@ -576,7 +566,7 @@ them again from the node alone."
     (shipit-atlassian-kanban--remember
      model key :text (shipit-atlassian-kanban--card-text model key ctx))
     (shipit-atlassian-kanban--remember model key :node node)
-    (shipit-atlassian-kanban--set-slot
+    (shipit-canvas-set-slot
      'canvas-diagram-node 'note node (shipit-atlassian-kanban--note model key))
     (canvas-diagram-size-node diagram node measure)
     node))
@@ -648,9 +638,9 @@ makes the columns after it move left."
   "Place NODES down a column at X, starting at TOP, each WIDTH wide."
   (let ((y top))
     (dolist (node nodes)
-      (shipit-atlassian-kanban--set-slot 'canvas-diagram-node 'x node x)
-      (shipit-atlassian-kanban--set-slot 'canvas-diagram-node 'y node y)
-      (shipit-atlassian-kanban--set-slot 'canvas-diagram-node 'w node width)
+      (shipit-canvas-set-slot 'canvas-diagram-node 'x node x)
+      (shipit-canvas-set-slot 'canvas-diagram-node 'y node y)
+      (shipit-canvas-set-slot 'canvas-diagram-node 'w node width)
       (setq y (+ y (canvas-diagram-node-h node)
                  shipit-atlassian-kanban--card-gap)))))
 
@@ -1073,7 +1063,7 @@ See `shipit-atlassian-kanban--passes-p'.")
   "Draw the board again from the current board data and staged moves.
 The keyboard stays on its card, which canvas-diagram restores by the
 issue key."
-  (shipit-atlassian-kanban--set-slot
+  (shipit-canvas-set-slot
    'canvas-diagram 'spec shipit-atlassian-kanban--drawing
    (shipit-atlassian-kanban--spec shipit-atlassian-kanban--board
                                   shipit-atlassian-kanban--pending

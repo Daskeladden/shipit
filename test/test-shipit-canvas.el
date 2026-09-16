@@ -80,6 +80,15 @@ question was answered without signalling."
       (require ',feature)
       (princ (format "available=%S" (shipit-canvas-available-p ',library))))))
 
+(defun test-canvas--should-compile-cleanly (result)
+  "Check RESULT, of `test-canvas--compile-beside-a-broken-canvas'.
+The compile must succeed with no error and without a struct type the
+compiler cannot check: a `cl-struct-slot-value' of a canvas struct
+named in the code fails to inline, and the compiler prints the error."
+  (should (equal 0 (car result)))
+  (should-not (string-match-p "Error:" (cdr result)))
+  (should-not (string-match-p "Unknown type" (cdr result))))
+
 (defun test-canvas--compile-beside-a-broken-canvas (file)
   "Byte-compile FILE, under `lisp/', beside broken canvas libraries.
 Return (EXIT-STATUS . OUTPUT)."
@@ -170,6 +179,23 @@ take keys before a major mode map sees them."
 
 ;;;; With a canvas-diagram that cannot load
 
+(ert-deftest test-canvas-actions-timeline-loads-beside-a-broken-canvas-diagram ()
+  "GIVEN a canvas-diagram on the load path that fails while loading
+WHEN shipit's run timeline is loaded and asked whether it can draw
+THEN it loads, and says it cannot, rather than signalling."
+  (let ((result (test-canvas--load-beside-a-broken-canvas
+                 'shipit-actions-timeline 'canvas-diagram)))
+    (should (equal 0 (car result)))
+    (should (string-match-p "available=nil" (cdr result)))))
+
+(ert-deftest test-canvas-actions-timeline-compiles-beside-a-broken-canvas-diagram ()
+  "GIVEN a canvas-diagram on the load path that fails while loading
+WHEN shipit's run timeline is byte-compiled
+THEN it compiles."
+  (let ((result (test-canvas--compile-beside-a-broken-canvas
+                 "shipit-actions-timeline.el")))
+    (test-canvas--should-compile-cleanly result)))
+
 (ert-deftest test-canvas-kanban-loads-beside-a-broken-canvas-diagram ()
   "GIVEN a canvas-diagram on the load path that fails while loading
 WHEN shipit's kanban is loaded and asked whether it can draw
@@ -187,8 +213,7 @@ THEN it compiles.
 This is the break that stopped shipit compiling on Emacs 29."
   (let ((result (test-canvas--compile-beside-a-broken-canvas
                  "shipit-atlassian-kanban.el")))
-    (should (equal 0 (car result)))
-    (should-not (string-match-p "Error:" (cdr result)))))
+    (test-canvas--should-compile-cleanly result)))
 
 (ert-deftest test-canvas-stack-canvas-loads-beside-a-broken-canvas-graph ()
   "GIVEN a canvas-graph on the load path whose canvas-diagram fails to load
@@ -205,8 +230,7 @@ WHEN shipit's stack canvas is byte-compiled
 THEN it compiles."
   (let ((result (test-canvas--compile-beside-a-broken-canvas
                  "shipit-stack-canvas.el")))
-    (should (equal 0 (car result)))
-    (should-not (string-match-p "Error:" (cdr result)))))
+    (test-canvas--should-compile-cleanly result)))
 
 (ert-deftest test-canvas-dashboard-check-survives-a-broken-canvas-diagram ()
   "GIVEN a canvas-diagram on the load path that fails while loading

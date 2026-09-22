@@ -239,15 +239,16 @@ THEN it names Emacs 32 and the dashboard instead of failing obscurely."
   (list 'image :type 'canvas :id (make-symbol "test-kanban")
         :data-width 1200 :data-height 800))
 
-(defmacro test-kanban--with-layout (nodes model pending collapsed &rest body)
-  "Lay the fixture board out with PENDING staged and COLLAPSED shut; run BODY.
+(defmacro test-kanban--with-spec-layout (spec nodes model &rest body)
+  "Lay the board of SPEC out; run BODY.
 NODES is bound to the laid-out nodes in reading order and MODEL to the
-board model.  Skips when this Emacs cannot draw a canvas."
-  (declare (indent 4))
+board model, and BODY sees the `diagram' and the `ctx' it was laid out
+on.  Skips when this Emacs cannot draw a canvas."
+  (declare (indent 3))
   `(progn
      (skip-unless (shipit-canvas-available-p))
      (let* ((diagram (shipit-atlassian-kanban--diagram))
-            (spec (shipit-atlassian-kanban--spec (test-kanban--board) ,pending ,collapsed))
+            (spec ,spec)
             (ctx (canvas-cairo-context (test-kanban--canvas))))
        (unwind-protect
            (let* ((,model (shipit-atlassian-kanban--build diagram spec))
@@ -258,6 +259,15 @@ board model.  Skips when this Emacs cannot draw a canvas."
              (setf (canvas-diagram-nodes diagram) ,nodes)
              ,@body)
          (canvas-cairo-destroy ctx)))))
+
+(defmacro test-kanban--with-layout (nodes model pending collapsed &rest body)
+  "Lay the fixture board out with PENDING staged and COLLAPSED shut; run BODY.
+NODES, MODEL, `diagram' and `ctx' are as in `test-kanban--with-spec-layout'."
+  (declare (indent 4))
+  `(test-kanban--with-spec-layout
+       (shipit-atlassian-kanban--spec (test-kanban--board) ,pending ,collapsed)
+       ,nodes ,model
+     ,@body))
 
 (defun test-kanban--node (nodes key)
   "The node in NODES drawn for issue KEY or for the column called KEY."
@@ -344,7 +354,7 @@ Every icon lookup answers here, the way it does on a machine whose
 svg-lib has the icons cached.  In batch none are on disk, so without
 this the card that overflowed measured as if it fit."
   (let ((test-kanban--board-override (test-kanban--wordy-board)))
-    (cl-letf (((symbol-function 'canvas-diagram--icon-data)
+    (cl-letf (((symbol-function 'canvas-diagram-icon-data)
                (lambda (_name) "<svg/>")))
       (test-kanban--with-layout nodes model nil nil
       (let ((measure (canvas-diagram-measure ctx)))
@@ -484,12 +494,15 @@ THEN it loads, so requiring shipit never depends on the canvas."
 
 (defmacro test-kanban--with-buffer (buffer pending &rest body)
   "Open the fixture board in a kanban buffer bound to BUFFER; run BODY.
-PENDING is staged first.  Skips when this Emacs cannot draw a canvas."
+PENDING is staged first.  The repository's issues are on Jira, as those
+of a board are.  Skips when this Emacs cannot draw a canvas."
   (declare (indent 2))
   `(progn
      (skip-unless (shipit-canvas-available-p))
-     (let ((,buffer (shipit-atlassian-kanban--show
-                     (test-kanban--board) "owner/repo" '(:base-url "https://x") 1)))
+     (let ((,buffer (let ((shipit-issue-repo-backends
+                           '(("owner/repo" :backend jira :base-url "https://x"))))
+                      (shipit-atlassian-kanban--show
+                       (test-kanban--board) "owner/repo" '(:base-url "https://x") 1))))
        (unwind-protect
            (with-current-buffer ,buffer
              (when ,pending
@@ -648,6 +661,224 @@ THEN their names are fetched and the prompt offers each by name."
     (should (equal '("Alpha (7)" "Beta (9)") offered))
     (should (equal 9 chosen))))
 
+;;;; The priority of a card
+
+(defun test-kanban--high-is-red (name)
+  "A tracker's priority colour: red for High, and nothing for the rest."
+  (and (equal name "High") "#cb2431"))
+
+(defun test-kanban--red-tracker ()
+  "A tracker that colours the High priority red, and nothing else."
+  (list :priority-color #'test-kanban--high-is-red))
+
+(defmacro test-kanban--with-marks (board mark &rest body)
+  "Lay BOARD out with priorities coloured by `test-kanban--red-tracker'.
+Run BODY with MARK bound to a function of an issue key that gives the
+priority mark of its card, or nil."
+  (declare (indent 2))
+  (let ((nodes (make-symbol "nodes"))
+        (model (make-symbol "model")))
+    `(test-kanban--with-spec-layout
+         (shipit-atlassian-kanban--spec ,board nil nil nil nil (test-kanban--red-tracker))
+         ,nodes ,model
+       (let ((,mark (lambda (key)
+                      (shipit-atlassian-kanban--priority-mark
+                       ,model (test-kanban--node ,nodes key) ctx))))
+         ,@body))))
+
+(defun test-kanban--node-of (board key)
+  "Return the laid-out node KEY of BOARD, for a geometry check."
+  (let* ((diagram (shipit-atlassian-kanban--diagram))
+         (spec (shipit-atlassian-kanban--spec board nil))
+         (ctx (canvas-cairo-context (test-kanban--canvas))))
+    (unwind-protect
+        (progn
+          (setf (canvas-diagram-spec diagram) spec
+                (canvas-diagram-model diagram) (shipit-atlassian-kanban--build diagram spec))
+          (test-kanban--node (shipit-atlassian-kanban--lay-out diagram ctx) key))
+      (canvas-cairo-destroy ctx))))
+
+(ert-deftest test-kanban-card-shows-its-priority-at-the-top-right ()
+  "GIVEN a card of High priority, and a tracker that colours High red
+WHEN its priority mark is asked for
+THEN it is a pill saying High, in red, at the right of the card's first
+line."
+  (test-kanban--with-marks (test-kanban--board) mark
+    (let ((pill (funcall mark "PROJ-1"))
+          (node (test-kanban--node-of (test-kanban--board) "PROJ-1")))
+      (should (equal "High" (plist-get pill :text)))
+      (should-not (plist-get pill :dot))
+      (should (equal (canvas-diagram-rgb "#cb2431") (plist-get pill :rgb)))
+      (should (<= (+ (plist-get pill :x) (plist-get pill :w))
+                  (+ (canvas-diagram-node-x node) (canvas-diagram-node-w node))))
+      (should (> (plist-get pill :x)
+                 (+ (canvas-diagram-node-x node) (/ (canvas-diagram-node-w node) 2))))
+      (should (< (plist-get pill :y)
+                 (+ (canvas-diagram-node-y node) (/ (canvas-diagram-node-h node) 2)))))))
+
+(ert-deftest test-kanban-card-without-priority-has-no-mark ()
+  "GIVEN a card with no priority
+WHEN its priority mark is asked for
+THEN there is none."
+  (test-kanban--with-marks (test-kanban--board) mark
+    (should-not (funcall mark "PROJ-2"))))
+
+(ert-deftest test-kanban-card-priority-the-tracker-cannot-colour-is-plain ()
+  "GIVEN a card of a priority the tracker has no colour for
+WHEN its priority mark is asked for
+THEN it still says the priority, in the colour of the edges."
+  (let ((test-kanban--board-override (copy-tree (test-kanban--board))))
+    (setf (alist-get 'priority (car (cdr (assq 'issues (car (cdr (assq 'columns test-kanban--board-override)))))))
+          "Blocker")
+    (test-kanban--with-marks (test-kanban--board) mark
+      (let ((pill (funcall mark "PROJ-1")))
+        (should (equal "Blocker" (plist-get pill :text)))
+        (should (equal (canvas-diagram-color :edge) (plist-get pill :rgb)))))))
+
+(ert-deftest test-kanban-card-priority-is-a-dot-when-the-key-fills-the-line ()
+  "GIVEN a card whose key takes most of its first line
+WHEN its priority mark is asked for
+THEN it is a dot in the priority's colour, so it covers no text."
+  (let ((test-kanban--board-override
+         '((id . 1) (name . "Long")
+           (columns . (((name . "Open") (statuses . ("Open"))
+                        (issues . (((key . "AVERYLONGPROJECTKEYINDEED-123456")
+                                    (title . "Long key") (state . "Open")
+                                    (priority . "High"))))))))))
+    (test-kanban--with-marks (test-kanban--board) mark
+      (let ((dot (funcall mark "AVERYLONGPROJECTKEYINDEED-123456")))
+        (should (plist-get dot :dot))
+        (should (equal (canvas-diagram-rgb "#cb2431") (plist-get dot :rgb)))))))
+
+(ert-deftest test-kanban-board-takes-its-priority-colours-from-the-tracker ()
+  "GIVEN a board of a repository whose issues are on Jira
+WHEN its High card is drawn
+THEN the colour of its priority is the one the Jira backend gives High."
+  (test-kanban--with-buffer buffer nil
+    (let ((pill (shipit-atlassian-kanban--priority-mark
+                 (canvas-diagram-current-model)
+                 (test-kanban--node (canvas-diagram-nodes-shown) "PROJ-1")
+                 (canvas-cairo-context (test-kanban--canvas)))))
+      (should (equal (canvas-diagram-rgb
+                      (funcall (plist-get (cdr (assq 'jira shipit-issue-backends)) :priority-color)
+                               "High"))
+                     (plist-get pill :rgb))))))
+
+(ert-deftest test-kanban-draws-priority-marks ()
+  "GIVEN a board with a card of High priority
+WHEN it is drawn into a file
+THEN the drawing completes, its priority mark included."
+  (skip-unless (shipit-canvas-available-p))
+  (let ((file (make-temp-file "kanban-priority-" nil ".png")))
+    (unwind-protect
+        (progn
+          (canvas-diagram-export
+           (shipit-atlassian-kanban--diagram)
+           (shipit-atlassian-kanban--spec (test-kanban--board) nil nil nil nil
+                                          (test-kanban--red-tracker))
+           file)
+          (should (> (file-attribute-size (file-attributes file)) 0)))
+      (delete-file file))))
+
+;;;; The type icon of a card
+;;
+;; A card starts its key line with the icon of its issue type, in the
+;; colour the tracker gives that type.
+
+(defvar canvas-diagram-icon-directory)
+(defvar canvas-diagram--icons)
+
+(defconst test-kanban--icon-svg
+  "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\"><rect width=\"16\" height=\"16\"/></svg>"
+  "An icon: a square that fills its box.")
+
+(defmacro test-kanban--with-type-icons (&rest body)
+  "Run BODY where the icons Jira names for Bug, Task and Story are on disk.
+The icons canvas-diagram knows already are set aside, so each lookup
+reads the disk, and the session's are back afterwards."
+  (declare (indent 0))
+  `(let ((canvas-diagram-icon-directory (make-temp-file "kanban-icons" t))
+         (canvas-diagram--icons (make-hash-table :test 'equal)))
+     (dolist (name '("bug" "tasklist" "bookmark"))
+       (with-temp-file (expand-file-name (format "octicons_%s.svg" name)
+                                         canvas-diagram-icon-directory)
+         (insert test-kanban--icon-svg)))
+     (unwind-protect (progn ,@body)
+       (delete-directory canvas-diagram-icon-directory t))))
+
+(defun test-kanban--jira-tracker ()
+  "The tracker of a board whose issues are on Jira: the Jira backend."
+  (cdr (assq 'jira shipit-issue-backends)))
+
+(defun test-kanban--key-indent (ctx text)
+  "Pixels on CTX before the key, on the first line of the card TEXT."
+  (let ((line (car (split-string text "\n")))
+        (font (canvas-diagram-font)))
+    (- (car (canvas-cairo-text-size ctx line font))
+       (car (canvas-cairo-text-size ctx (string-trim-left line) font)))))
+
+(ert-deftest test-kanban-card-shows-its-type-icon-before-its-key ()
+  "GIVEN a board of a repository whose issues are on Jira, and the icon
+Jira names for a Bug on disk
+WHEN its Bug card is drawn
+THEN the card's type icon is that icon in the colour Jira gives a Bug,
+at the start of the key line, AND the key is written after it."
+  (test-kanban--with-type-icons
+    (test-kanban--with-buffer buffer nil
+      (let* ((node (test-kanban--node (canvas-diagram-nodes-shown) "PROJ-1"))
+             (ctx (canvas-cairo-context (test-kanban--canvas)))
+             (mark (shipit-atlassian-kanban--type-mark
+                    (canvas-diagram-current-model) node ctx))
+             (left (+ (canvas-diagram-node-x node) (shipit-atlassian-kanban--box-pad ctx))))
+        (unwind-protect
+            (progn
+              (should (equal test-kanban--icon-svg (plist-get mark :svg)))
+              (should (equal (canvas-diagram-rgb
+                              (funcall (plist-get (test-kanban--jira-tracker) :issue-type-color)
+                                       "Bug"))
+                             (plist-get mark :rgb)))
+              (should (= left (plist-get mark :x)))
+              (should (<= (+ (plist-get mark :x) (plist-get mark :side))
+                          (+ left (test-kanban--key-indent
+                                   ctx (shipit-atlassian-kanban--node-text
+                                        shipit-atlassian-kanban--drawing node))))))
+          (canvas-cairo-destroy ctx))))))
+
+(ert-deftest test-kanban-card-has-no-type-icon-the-tracker-does-not-name ()
+  "GIVEN a board whose tracker names no icon for an issue type
+WHEN it is laid out
+THEN no card has a type icon, AND no key line leaves room for one."
+  (test-kanban--with-type-icons
+    (test-kanban--with-layout nodes model nil nil
+      (dolist (node (test-kanban--cards model nodes))
+        (should-not (shipit-atlassian-kanban--type-mark model node ctx))
+        (should (= 0 (test-kanban--key-indent
+                      ctx (shipit-atlassian-kanban--node-text diagram node))))))))
+
+(ert-deftest test-kanban-draws-type-icons-in-their-colours ()
+  "GIVEN a board whose issues are on Jira, with the icons of its types on disk
+WHEN what goes over the cards is drawn
+THEN the middle of the Bug card's type icon has the colour Jira gives a Bug."
+  (test-kanban--with-type-icons
+    (test-kanban--with-spec-layout
+        (shipit-atlassian-kanban--spec (test-kanban--board) nil nil nil nil
+                                       (test-kanban--jira-tracker))
+        nodes model
+      (let* ((mark (shipit-atlassian-kanban--type-mark
+                    model (test-kanban--node nodes "PROJ-1") ctx))
+             (half (/ (plist-get mark :side) 2)))
+        (shipit-atlassian-kanban--draw-over diagram ctx)
+        (should (= (logior #xff000000
+                           (string-to-number
+                            (substring (funcall (plist-get (test-kanban--jira-tracker)
+                                                           :issue-type-color)
+                                                "Bug")
+                                       1)
+                            16))
+                   (canvas-cairo-pixel ctx
+                                       (round (+ (plist-get mark :x) half))
+                                       (round (+ (plist-get mark :y) half)))))))))
+
 ;;;; The menu
 
 (ert-deftest test-kanban-has-a-menu ()
@@ -689,6 +920,17 @@ THEN the width moves on to the next value in the list."
               ((symbol-function 'canvas-diagram-redraw) #'ignore))
       (ignore-errors (shipit-atlassian-kanban-cycle-card-width)))
     (should-not (equal 240 shipit-atlassian-kanban-card-width))))
+
+(ert-deftest test-kanban-plain-cards-have-the-page-colour ()
+  "GIVEN cards in two columns, neither staged nor moved
+WHEN each is asked for its fill
+THEN both take the colour of the page, and not a colour of their column,
+     which its frame already shows."
+  (test-kanban--with-layout nodes _model nil nil
+    (dolist (key '("PROJ-1" "PROJ-3"))
+      (should (equal (canvas-diagram-color :background)
+                     (shipit-atlassian-kanban--node-rgb
+                      diagram (test-kanban--node nodes key)))))))
 
 (ert-deftest test-kanban-staged-card-has-its-own-colour ()
   "GIVEN a staged card and a card that is where Jira has it
@@ -1257,6 +1499,46 @@ THEN only that type is drawn."
                                        (test-kanban--cards
                                         (canvas-diagram-current-model)
                                         (canvas-diagram-nodes-shown)))))))
+
+(defun test-kanban--prioritised-board ()
+  "The fixture board with a priority on each card of Open."
+  (let ((board (copy-tree (test-kanban--board))))
+    (setf (alist-get 'priority (cadr (cdr (assq 'issues (car (cdr (assq 'columns board)))))))
+          "Low")
+    board))
+
+(ert-deftest test-kanban-filter-priority-narrows-to-one-priority ()
+  "GIVEN cards of several priorities
+WHEN the board is narrowed to one, and then to none
+THEN only the cards of that priority are drawn and the mode line says
+the board is narrowed, and then every card is back."
+  (test-kanban--with-buffer buffer nil
+    (shipit-atlassian-kanban-filter-priority "High")
+    (should (equal '("PROJ-1") (mapcar #'canvas-diagram-node-label
+                                       (test-kanban--cards
+                                        (canvas-diagram-current-model)
+                                        (canvas-diagram-nodes-shown)))))
+    (should (string-match-p "filtered" mode-line-process))
+    (shipit-atlassian-kanban-filter-priority "")
+    (should (equal 3 (length (test-kanban--cards (canvas-diagram-current-model)
+                                                 (canvas-diagram-nodes-shown)))))))
+
+(ert-deftest test-kanban-filter-priority-offers-the-priorities-on-the-board ()
+  "GIVEN a board with a High card and a Low card
+WHEN the priorities to narrow to are asked for
+THEN they are the two, in the order the board shows them."
+  (let ((test-kanban--board-override (test-kanban--prioritised-board)))
+    (test-kanban--with-buffer buffer nil
+      (should (equal '("High" "Low")
+                     (shipit-atlassian-kanban--priorities-on-the-board))))))
+
+(ert-deftest test-kanban-menu-narrows-by-priority ()
+  "GIVEN the board's menu
+THEN p narrows the board to a priority."
+  (skip-unless (shipit-canvas-available-p))
+  (should (eq 'shipit-atlassian-kanban-filter-priority
+              (plist-get (cdr (transient-get-suffix 'shipit-atlassian-kanban-menu "p"))
+                         :command))))
 
 ;;;; Jumping to either end of a column
 

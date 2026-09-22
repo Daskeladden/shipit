@@ -2098,6 +2098,8 @@ Call `shipit-issue-jira--clear-icon-memo' after a theme switch.")
        :priority-icon-render #'shipit-issue-jira--render-priority-icon
        :issue-type-color
        (lambda (name) (cdr (shipit-issue-jira--issue-type-icon name)))
+       :issue-type-octicon
+       (lambda (name) (car (shipit-issue-jira--issue-type-icon name)))
        :priority-color
        (lambda (name) (cdr (shipit-issue-jira--priority-icon name)))
        :status-category-face #'shipit-issue-jira--status-category-face

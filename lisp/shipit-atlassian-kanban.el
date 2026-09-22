@@ -54,7 +54,7 @@
 (declare-function canvas-diagram-font "canvas-diagram")
 (declare-function canvas-diagram-color "canvas-diagram")
 (declare-function canvas-diagram-rgb "canvas-diagram")
-(declare-function canvas-diagram-palette-rgb "canvas-diagram")
+(declare-function canvas-diagram-icon-data "canvas-diagram" (name))
 (declare-function canvas-diagram-set-rgb "canvas-diagram")
 (declare-function canvas-diagram-rounded-rect "canvas-diagram")
 (declare-function canvas-diagram-export "canvas-diagram")
@@ -75,7 +75,11 @@
 (defvar canvas-diagram-mode-map)
 (declare-function canvas-cairo-text "canvas-cairo")
 (declare-function canvas-cairo-text-size "canvas-cairo")
+(declare-function canvas-cairo-svg "canvas-cairo")
 (declare-function canvas-cairo-fill "canvas-cairo")
+(declare-function canvas-diagram-ink-on "canvas-diagram")
+(declare-function canvas-diagram-node-x "canvas-diagram")
+(declare-function canvas-diagram-node-w "canvas-diagram")
 (defvar canvas-diagram-extra-kinds)
 
 ;;; Availability
@@ -91,14 +95,16 @@
 ;; part of what the drawing shows, so they travel in the spec rather
 ;; than being read from a buffer-local behind the callback's back.
 
-(defun shipit-atlassian-kanban--spec (board pending &optional collapsed me filter)
+(defun shipit-atlassian-kanban--spec (board pending &optional collapsed me filter tracker)
   "Return the drawing spec for BOARD.
 PENDING is the staged moves, COLLAPSED the names of the columns that
 are shut, ME the account id of the current user, and FILTER what the
-board is narrowed to.  A plist, so this can grow another thing the
-drawing shows without every caller changing."
+board is narrowed to.  TRACKER is the plist of the issue backend, whose
+`:priority-color', `:issue-type-color' and `:issue-type-octicon' the
+cards are drawn with, or nil.  A plist, so this can grow another thing
+the drawing shows without every caller changing."
   (list :board board :pending pending :collapsed collapsed
-        :me me :filter filter))
+        :me me :filter filter :tracker tracker))
 
 (defun shipit-atlassian-kanban--spec-board (spec)
   "Return the board alist of SPEC."
@@ -120,12 +126,16 @@ drawing shows without every caller changing."
   "Return what SPEC narrows the board to."
   (plist-get spec :filter))
 
+(defun shipit-atlassian-kanban--spec-tracker (spec)
+  "Return the plist of the issue backend SPEC draws the cards with, or nil."
+  (plist-get spec :tracker))
+
 ;;; Narrowing the board
 ;;
 ;; A filter is a plist: `:mine' shows only what the current user is
-;; assigned, `:type' only one issue type, and `:text' only the cards
-;; whose key or summary carries it.  They combine, so a card has to
-;; pass every part that is set.
+;; assigned, `:type' only one issue type, `:priority' only one
+;; priority, and `:text' only the cards whose key or summary carries
+;; it.  They combine, so a card has to pass every part that is set.
 
 (defun shipit-atlassian-kanban--mine-p (issue me)
   "Return non-nil when ISSUE is assigned to the account id ME."
@@ -148,6 +158,9 @@ drawing shows without every caller changing."
        (or (null (plist-get filter :type))
            (equal (plist-get filter :type)
                   (shipit-atlassian-kanban--issue-type issue)))
+       (or (null (plist-get filter :priority))
+           (equal (plist-get filter :priority)
+                  (shipit-atlassian-kanban--priority issue)))
        (or (null (plist-get filter :text))
            (let ((hit (shipit-atlassian-kanban--matches-text-p
                        issue (plist-get filter :text))))
@@ -158,6 +171,7 @@ drawing shows without every caller changing."
   "Return non-nil when FILTER narrows anything."
   (and (or (plist-get filter :mine)
            (plist-get filter :type)
+           (plist-get filter :priority)
            (plist-get filter :text))
        t))
 
@@ -180,8 +194,9 @@ the column name maps to a plist of `:column', `:column-index' and
 `:node'.  A header is a node so the keyboard can reach it and TAB can
 shut the column from there.
 
-ME is the account id of the current user, which marks their own cards."
-  name columns index frames headers me)
+ME is the account id of the current user, which marks their own cards.
+TRACKER is the plist of the issue backend, as in the spec, or nil."
+  name columns index frames headers me tracker)
 
 (cl-defstruct (shipit-atlassian-kanban-column
                (:constructor shipit-atlassian-kanban--column-create))
@@ -261,6 +276,7 @@ account id, which `:mine\=' needs."
                    (shipit-atlassian-kanban--spec-me spec))))
     (let ((model (shipit-atlassian-kanban--board-create
                   :me (shipit-atlassian-kanban--spec-me spec)
+                  :tracker (shipit-atlassian-kanban--spec-tracker spec)
                   :name (or (cdr (assq 'name board)) "Board")
                   :columns columns
                   :index (shipit-atlassian-kanban--index columns)
@@ -418,9 +434,9 @@ canvas-diagram does not know."
 
 (defcustom shipit-atlassian-kanban-mine-mark "●"
   "What marks a card the current user is assigned.
-It goes after the issue key.  The fill already says which column a
-card is in and whether a move is staged for it, and the outline
-already says its type, so the mark is text."
+It goes after the issue key.  The fill already says whether a move is
+staged for a card, and the outline already says its type, so the mark
+is text."
   :type 'string
   :group 'shipit-atlassian)
 
@@ -442,15 +458,24 @@ card the keyboard is on, and one colour cannot mean two things."
   "Return the Jira issue type of ISSUE, or nil."
   (cdr (assq 'issue-type issue)))
 
-(defun shipit-atlassian-kanban--types-in (columns)
-  "Return the issue types used across COLUMNS, in order of first appearance."
-  (let (types)
+(defun shipit-atlassian-kanban--priority (issue)
+  "Return the name of the priority of ISSUE, or nil."
+  (cdr (assq 'priority issue)))
+
+(defun shipit-atlassian-kanban--values-in (columns fn)
+  "Return what FN gives for the cards of COLUMNS, each once, in order.
+Nil answers are left out."
+  (let (values)
     (dolist (column columns)
       (dolist (card (shipit-atlassian-kanban-column-cards column))
-        (let ((type (shipit-atlassian-kanban--issue-type card)))
-          (when (and type (not (member type types)))
-            (push type types)))))
-    (nreverse types)))
+        (let ((value (funcall fn card)))
+          (when (and value (not (member value values)))
+            (push value values)))))
+    (nreverse values)))
+
+(defun shipit-atlassian-kanban--types-in (columns)
+  "Return the issue types used across COLUMNS, in order of first appearance."
+  (shipit-atlassian-kanban--values-in columns #'shipit-atlassian-kanban--issue-type))
 
 (defun shipit-atlassian-kanban--register-kinds (columns)
   "Tell canvas-diagram the colour of each issue type in COLUMNS.
@@ -546,9 +571,14 @@ keeps this exact rather than nearly right."
     key))
 
 (defun shipit-atlassian-kanban--card-text (model key ctx)
-  "Return what the card for KEY says: its key, then its wrapped summary."
+  "Return what the card for KEY says: its key, then its wrapped summary.
+The key leaves room before it for the icon of the issue type, when the
+type has one."
   (let ((issue (plist-get (shipit-atlassian-kanban--card model key) :issue)))
-    (concat (shipit-atlassian-kanban--key-line model key issue) "\n"
+    (concat (if (shipit-atlassian-kanban--type-icon model issue)
+                (shipit-atlassian-kanban--icon-room ctx)
+              "")
+            (shipit-atlassian-kanban--key-line model key issue) "\n"
             (shipit-atlassian-kanban--wrap
              (shipit-atlassian-kanban--summary issue)
              (shipit-atlassian-kanban--text-measure ctx)
@@ -718,6 +748,142 @@ The header is a node, so canvas-diagram draws it with the cards."
     (dolist (frame (shipit-atlassian-kanban-board-frames model))
       (shipit-atlassian-kanban--draw-frame ctx frame height))))
 
+;;; Drawing the priority of a card
+;;
+;; A card says its priority in a pill at the right of its first line,
+;; the line of its key, which has room to spare.  The pill is drawn over
+;; the card rather than put in its text: a canvas-diagram badge takes
+;; the height of all the lines of a card and pushes them all to the
+;; right.  The colour is the issue backend's, so a tracker without
+;; priorities gives no card a pill, and one without colours a plain one.
+;;
+;; The key line starts with the icon of the card's issue type, drawn
+;; over the card in the colour the tracker gives that type, in room the
+;; text leaves for it.  A canvas-diagram icon is as tall as all the
+;; lines of a card, which is why this one is drawn here too.
+(defconst shipit-atlassian-kanban--pill-pad 4
+  "Room left and right of the text of a priority pill, in pixels.")
+
+(defconst shipit-atlassian-kanban--icon-gap 4
+  "Pixels between the type icon of a card and its key.")
+
+(defun shipit-atlassian-kanban--tracker-rgb (model key name)
+  "Return the colour the tracker of MODEL gives NAME through its KEY.
+KEY is `:priority-color' or `:issue-type-color'.  The colour of the
+edges when the tracker gives none."
+  (or (when-let* ((fn (plist-get (shipit-atlassian-kanban-board-tracker model) key))
+                  (color (funcall fn name)))
+        (canvas-diagram-rgb color))
+      (canvas-diagram-color :edge)))
+
+(defun shipit-atlassian-kanban--type-icon (model issue)
+  "Return the icon of the issue type of ISSUE on the board MODEL draws, or nil.
+A cons of the icon\\='s SVG text and its colour.  Nil when the tracker
+names no octicon for the type, or the icon cannot be had."
+  (when-let* ((type (shipit-atlassian-kanban--issue-type issue))
+              (fn (plist-get (shipit-atlassian-kanban-board-tracker model)
+                             :issue-type-octicon))
+              (octicon (funcall fn type))
+              (svg (canvas-diagram-icon-data (concat "octicons:" octicon))))
+    (cons svg (shipit-atlassian-kanban--tracker-rgb model :issue-type-color type))))
+
+(defun shipit-atlassian-kanban--icon-side (ctx)
+  "Return the side of a type icon on CTX: the height of a line of text."
+  (cdr (canvas-cairo-text-size ctx "Ag" (canvas-diagram-font))))
+
+(defun shipit-atlassian-kanban--icon-room (ctx)
+  "Return the spaces that leave room for a type icon and its gap on CTX."
+  (let ((space (car (canvas-cairo-text-size ctx " " (canvas-diagram-font)))))
+    (make-string (ceiling (+ (shipit-atlassian-kanban--icon-side ctx)
+                             shipit-atlassian-kanban--icon-gap)
+                          (max 1 space))
+                 ?\s)))
+
+(defun shipit-atlassian-kanban--type-mark (model node ctx)
+  "Return the type icon of the card NODE draws in MODEL, or nil.
+A plist of `:svg' and `:rgb', and the square at the start of the key
+line: `:x', `:y' and `:side'.  Nil for a card whose type has no icon,
+and for a column header."
+  (when-let* ((card (shipit-atlassian-kanban--card-of model node))
+              (icon (shipit-atlassian-kanban--type-icon model (plist-get card :issue))))
+    (let ((pad (shipit-atlassian-kanban--box-pad ctx)))
+      (list :svg (car icon) :rgb (cdr icon)
+            :x (+ (canvas-diagram-node-x node) pad)
+            :y (+ (canvas-diagram-node-y node) pad)
+            :side (shipit-atlassian-kanban--icon-side ctx)))))
+
+(defun shipit-atlassian-kanban--draw-type-mark (ctx mark)
+  "Draw on CTX MARK, a type icon, in its colour."
+  (let ((side (plist-get mark :side)))
+    (canvas-diagram-set-rgb ctx (plist-get mark :rgb))
+    (canvas-cairo-svg ctx (plist-get mark :svg) (plist-get mark :x) (plist-get mark :y)
+                      side side)))
+
+(defun shipit-atlassian-kanban--box-pad (ctx)
+  "Return the padding of a box on CTX, on one side."
+  (/ (car (funcall (canvas-diagram-measure ctx) "")) 2.0))
+
+(defun shipit-atlassian-kanban--pill-or-dot (name rgb node ctx key-width)
+  "Return the mark of priority NAME in RGB on NODE: a pill, or a dot.
+The pill sits at the right of the first line, and becomes a dot when
+KEY-WIDTH, the width of the key line, leaves no room for it."
+  (let* ((font (canvas-diagram-font))
+         (pad (shipit-atlassian-kanban--box-pad ctx))
+         (size (canvas-cairo-text-size ctx name font))
+         (w (+ (car size) (* 2 shipit-atlassian-kanban--pill-pad)))
+         (h (cdr size))
+         (left (+ (canvas-diagram-node-x node) pad))
+         (right (- (+ (canvas-diagram-node-x node) (canvas-diagram-node-w node)) pad))
+         (top (+ (canvas-diagram-node-y node) pad)))
+    (if (<= (+ left key-width shipit-atlassian-kanban--pill-pad w) right)
+        (list :text name :rgb rgb :x (- right w) :y top :w w :h h)
+      (let ((d (/ h 2.0)))
+        (list :text name :rgb rgb :dot t
+              :x (- right d) :y (+ top (/ (- h d) 2.0)) :w d :h d)))))
+
+(defun shipit-atlassian-kanban--priority-mark (model node ctx)
+  "Return the mark of the priority of the card NODE draws in MODEL, or nil.
+A plist of `:text' and `:rgb', the box `:x', `:y', `:w' and `:h', and
+`:dot' when the key leaves no room for the name.  Nil for a card of no
+priority, and for a column header."
+  (when-let* ((card (shipit-atlassian-kanban--card-of model node))
+              (name (shipit-atlassian-kanban--priority (plist-get card :issue))))
+    (shipit-atlassian-kanban--pill-or-dot
+     name (shipit-atlassian-kanban--tracker-rgb model :priority-color name) node ctx
+     (car (canvas-cairo-text-size
+           ctx (car (split-string (plist-get card :text) "\n"))
+           (canvas-diagram-font))))))
+
+(defun shipit-atlassian-kanban--draw-mark (ctx mark)
+  "Draw on CTX MARK, a priority mark: a pill saying its text, or a dot."
+  (let ((x (plist-get mark :x))
+        (y (plist-get mark :y))
+        (h (plist-get mark :h))
+        (rgb (plist-get mark :rgb)))
+    (canvas-diagram-rounded-rect ctx x y (plist-get mark :w) h (/ h 2.0))
+    (canvas-diagram-set-rgb ctx rgb)
+    (canvas-cairo-fill ctx)
+    (unless (plist-get mark :dot)
+      (canvas-diagram-set-rgb ctx (canvas-diagram-ink-on rgb))
+      (canvas-cairo-text ctx (+ x shipit-atlassian-kanban--pill-pad) y
+                         (plist-get mark :text) (canvas-diagram-font)))))
+
+(defun shipit-atlassian-kanban--draw-card-marks (diagram ctx)
+  "Draw on CTX the type icon and the priority mark of every card DIAGRAM draws."
+  (let ((model (canvas-diagram-model diagram)))
+    (maphash (lambda (_key card)
+               (when-let* ((node (plist-get card :node)))
+                 (when-let* ((mark (shipit-atlassian-kanban--type-mark model node ctx)))
+                   (shipit-atlassian-kanban--draw-type-mark ctx mark))
+                 (when-let* ((mark (shipit-atlassian-kanban--priority-mark model node ctx)))
+                   (shipit-atlassian-kanban--draw-mark ctx mark))))
+             (shipit-atlassian-kanban-board-index model))))
+
+(defun shipit-atlassian-kanban--draw-over (diagram ctx)
+  "Draw on CTX what goes over the cards of DIAGRAM.
+The `:draw-over' callback: the type icons and the priority marks."
+  (shipit-atlassian-kanban--draw-card-marks diagram ctx))
+
 ;;; Moving between the cards
 
 (defun shipit-atlassian-kanban--header-node (model column-index)
@@ -858,6 +1024,10 @@ be staged and its effect seen without closing the menu."
           :description (lambda ()
                          (canvas-diagram-setting
                           "only type" 'shipit-atlassian-kanban--filter-type "all")))
+         ("p" shipit-atlassian-kanban-filter-priority :transient t
+          :description (lambda ()
+                         (canvas-diagram-setting
+                          "only priority" 'shipit-atlassian-kanban--filter-priority "all")))
          ("/" shipit-atlassian-kanban-focus :transient t
           :description (lambda ()
                          (canvas-diagram-setting
@@ -885,9 +1055,11 @@ be staged and its effect seen without closing the menu."
                :text)))
 
 (defun shipit-atlassian-kanban--node-rgb (diagram node)
-  "Return the fill of NODE\='s card in DIAGRAM.
-A staged card takes the selection colour, so a move shows without
-opening anything; any other card takes its column\='s palette colour."
+  "Return the fill of NODE\\='s card in DIAGRAM.
+A staged card takes the staged colour, so a move shows without
+opening anything.  Any other card takes the colour of the page: the
+column frame shows the column, so a colour of the column would only
+compete with the colours that mean something."
   (let* ((model (canvas-diagram-model diagram))
          (card (shipit-atlassian-kanban--card-of model node)))
     (cond
@@ -895,7 +1067,7 @@ opening anything; any other card takes its column\='s palette colour."
      ((plist-get card :staged)
       (or (canvas-diagram-rgb shipit-atlassian-kanban-staged-color)
           (canvas-diagram-color :selection)))
-     (t (canvas-diagram-palette-rgb (plist-get card :column-index))))))
+     (t (canvas-diagram-color :background)))))
 
 (defun shipit-atlassian-kanban--header (diagram node)
   "Return the header line of NODE in DIAGRAM: its board and its column."
@@ -982,6 +1154,7 @@ node, and folding a column threw the keyboard to the leftmost one."
         :move #'shipit-atlassian-kanban--move
         :node-key #'shipit-atlassian-kanban--node-key
         :restore #'shipit-atlassian-kanban--restore
+        :draw-over #'shipit-atlassian-kanban--draw-over
         :menu 'shipit-atlassian-kanban-menu)
   "How the board plugs into canvas-diagram.")
 
@@ -1037,6 +1210,9 @@ and answers the `:mine' part of the filter.")
   "What this buffer narrows the board to, a plist, or nil for all of it.
 See `shipit-atlassian-kanban--passes-p'.")
 
+(defvar-local shipit-atlassian-kanban--tracker nil
+  "The plist of the issue backend whose issues this board shows.")
+
 (defvar-local shipit-atlassian-kanban--drawing nil
   "The `canvas-diagram' this buffer draws, kept so its spec can be replaced.")
 
@@ -1069,7 +1245,8 @@ issue key."
                                   shipit-atlassian-kanban--pending
                                   shipit-atlassian-kanban--collapsed
                                   shipit-atlassian-kanban--me
-                                  shipit-atlassian-kanban--filter))
+                                  shipit-atlassian-kanban--filter
+                                  shipit-atlassian-kanban--tracker))
   (canvas-diagram-rebuild)
   (canvas-diagram-redraw)
   (shipit-atlassian-kanban--update-mode-line))
@@ -1177,6 +1354,9 @@ filter has one alongside `shipit-atlassian-kanban--filter\='.")
 (defvar-local shipit-atlassian-kanban--filter-type nil
   "The issue type the filter is narrowed to, for the menu to show.")
 
+(defvar-local shipit-atlassian-kanban--filter-priority nil
+  "The priority the filter is narrowed to, for the menu to show.")
+
 (defvar-local shipit-atlassian-kanban--filter-text nil
   "The text the filter is narrowed to, for the menu to show.")
 
@@ -1190,6 +1370,8 @@ filter has one alongside `shipit-atlassian-kanban--filter\='.")
         (plist-get shipit-atlassian-kanban--filter :mine)
         shipit-atlassian-kanban--filter-type
         (plist-get shipit-atlassian-kanban--filter :type)
+        shipit-atlassian-kanban--filter-priority
+        (plist-get shipit-atlassian-kanban--filter :priority)
         shipit-atlassian-kanban--filter-text
         (plist-get shipit-atlassian-kanban--filter :text))
   (shipit-atlassian-kanban--redraw))
@@ -1215,6 +1397,21 @@ filter has one alongside `shipit-atlassian-kanban--filter\='.")
                           nil nil nil nil "")))
   (shipit-atlassian-kanban--narrow
    :type (unless (string-empty-p type) type)))
+
+(defun shipit-atlassian-kanban--priorities-on-the-board ()
+  "Return the priorities the board holds, in order of first appearance."
+  (shipit-atlassian-kanban--values-in
+   (shipit-atlassian-kanban-board-columns (canvas-diagram-current-model))
+   #'shipit-atlassian-kanban--priority))
+
+(defun shipit-atlassian-kanban-filter-priority (priority)
+  "Show only the cards of PRIORITY.  An empty answer shows them all."
+  (interactive
+   (list (completing-read "Priority (empty for all): "
+                          (shipit-atlassian-kanban--priorities-on-the-board)
+                          nil nil nil nil "")))
+  (shipit-atlassian-kanban--narrow
+   :priority (unless (string-empty-p priority) priority)))
 
 (defun shipit-atlassian-kanban-filter-text (text)
   "Show only the cards whose key or summary carries TEXT.
@@ -1637,22 +1834,28 @@ second board costs nothing."
      (shipit--debug-log "kanban: could not tell who you are: %S" err)
      nil)))
 
+(defun shipit-atlassian-kanban--tracker-of (repo)
+  "Return the plist of the issue backend of REPO."
+  (car (shipit-issue--resolve-for-repo repo)))
+
 (defun shipit-atlassian-kanban--show (board repo config board-id)
   "Draw BOARD of REPO on a canvas and return the buffer.
 CONFIG is the Jira backend config plist and BOARD-ID the board\='s
 identifier, both kept for reading the board again."
   (shipit-atlassian-kanban--require-canvas)
   (let* ((drawing (shipit-atlassian-kanban--diagram))
+         (tracker (shipit-atlassian-kanban--tracker-of repo))
          (buffer (canvas-diagram-show
                   (shipit-atlassian-kanban--buffer-name repo board)
                   #'shipit-atlassian-kanban-mode
                   drawing
-                  (shipit-atlassian-kanban--spec board nil))))
+                  (shipit-atlassian-kanban--spec board nil nil nil nil tracker))))
     (with-current-buffer buffer
       (setq shipit-atlassian-kanban--repo repo
             shipit-atlassian-kanban--config config
             shipit-atlassian-kanban--board board
             shipit-atlassian-kanban--board-id board-id
+            shipit-atlassian-kanban--tracker tracker
             shipit-atlassian-kanban--drawing drawing
             shipit-atlassian-kanban--me (shipit-atlassian-kanban--whoami config))
       (when shipit-atlassian-kanban--me

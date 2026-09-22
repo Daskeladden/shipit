@@ -112,15 +112,16 @@ the request fails)."
     (shipit--debug-log "Board: fetched %d total issues" (length all-issues))
     all-issues))
 
-(defun shipit-atlassian-board--fetch-all-issues-async (config board-id callback &optional acc start-at)
-  "Paginated async fetch of all board issues.
-Accumulates issues in ACC starting at START-AT and chains to the next
-page until Jira reports no more results; then calls CALLBACK with the
-complete list of raw issues."
+(defun shipit-atlassian-board--fetch-pages-async (config path-fn callback &optional acc start-at)
+  "Read every page of a paged Jira issue list through CONFIG.
+PATH-FN gets the index of a page\\='s first issue and returns its path.
+The issues read so far are in ACC and the next page starts at
+START-AT.  Chains to the next page until Jira reports no more
+results, then calls CALLBACK with every raw issue."
   (let ((acc (or acc nil))
         (start-at (or start-at 0)))
     (shipit-issue-jira--api-request-async
-     config (shipit-atlassian-board--issues-path board-id start-at)
+     config (funcall path-fn start-at)
      (lambda (raw)
        (let* ((page-issues (append (cdr (assq 'issues raw)) nil))
               (total (cdr (assq 'total raw)))
@@ -128,8 +129,15 @@ complete list of raw issues."
               (new-start (+ start-at (length page-issues))))
          (if (or (null page-issues) (>= new-start (or total 0)))
              (funcall callback all-issues)
-           (shipit-atlassian-board--fetch-all-issues-async
-            config board-id callback all-issues new-start)))))))
+           (shipit-atlassian-board--fetch-pages-async
+            config path-fn callback all-issues new-start)))))))
+
+(defun shipit-atlassian-board--fetch-all-issues-async (config board-id callback)
+  "Read every issue of BOARD-ID through CONFIG; CALLBACK gets the raw issues."
+  (shipit-atlassian-board--fetch-pages-async
+   config
+   (lambda (start-at) (shipit-atlassian-board--issues-path board-id start-at))
+   callback))
 
 (defun shipit-atlassian-board--make-board (board-id board-config columns)
   "Assemble the board alist for BOARD-ID from BOARD-CONFIG and grouped COLUMNS.

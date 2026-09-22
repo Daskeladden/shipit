@@ -109,6 +109,34 @@ THEN an error is signaled."
         (shipit-issue-backend 'unknown))
     (should-error (shipit-issue--get-backend))))
 
+(ert-deftest test-shipit-issue-use-backend-of-a-repo ()
+  "GIVEN a repository mapped to the Jira backend
+WHEN a buffer is made to use that repository's backend
+THEN the buffer's own backend is Jira with the repository's config,
+and other buffers keep theirs."
+  (let ((shipit-issue-backends nil)
+        (shipit-issue-backend 'github)
+        (shipit-issue-repo-backends
+         '(("owner/repo" :backend jira :base-url "https://jira.example.com"))))
+    (shipit-issue-register-backend
+     'jira
+     (list :name "Jira"
+           :fetch-issue #'ignore
+           :fetch-comments #'ignore
+           :fetch-comments-async #'ignore
+           :search #'ignore
+           :create-issue #'ignore
+           :reference-patterns #'ignore
+           :browse-url #'ignore
+           :id-to-string #'ignore
+           :string-to-id #'ignore))
+    (with-temp-buffer
+      (shipit-issue--use-backend-of "owner/repo")
+      (should (string= "Jira" (plist-get (shipit-issue--get-backend) :name)))
+      (should (equal "https://jira.example.com"
+                     (plist-get (shipit-issue--get-config) :base-url))))
+    (should (eq 'github shipit-issue-backend))))
+
 (defun test-shipit-issue--tracker (&rest extra)
   "Register a stand-in tracker `tracker' with EXTRA added to its plist."
   (shipit-issue-register-backend

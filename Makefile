@@ -128,6 +128,7 @@ test-unit: compile
 		-l test/test-shipit-repo-buffer.el \
 		-l test/test-shipit-canvas.el \
 		-l test/test-shipit-atlassian-board-shared.el \
+		-l test/test-shipit-atlassian-history.el \
 		-l test/test-shipit-atlassian-kanban.el \
 		-l test/test-shipit-stack-canvas.el \
 		-l test/test-shipit-actions-timeline.el \

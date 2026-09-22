@@ -15,6 +15,7 @@
 (require 'cl-lib)
 (require 'shipit-atlassian-kanban)
 (require 'shipit-canvas)
+(require 'test-shipit-atlassian-history)
 
 ;; Load canvas-diagram now, when this Emacs can: the layout macros below
 ;; set its struct slots, and `load' expands a macro as it reads the form,
@@ -679,7 +680,7 @@ priority mark of its card, or nil."
   (let ((nodes (make-symbol "nodes"))
         (model (make-symbol "model")))
     `(test-kanban--with-spec-layout
-         (shipit-atlassian-kanban--spec ,board nil nil nil nil (test-kanban--red-tracker))
+         (shipit-atlassian-kanban--spec ,board nil nil nil nil nil (test-kanban--red-tracker))
          ,nodes ,model
        (let ((,mark (lambda (key)
                       (shipit-atlassian-kanban--priority-mark
@@ -774,7 +775,7 @@ THEN the drawing completes, its priority mark included."
         (progn
           (canvas-diagram-export
            (shipit-atlassian-kanban--diagram)
-           (shipit-atlassian-kanban--spec (test-kanban--board) nil nil nil nil
+           (shipit-atlassian-kanban--spec (test-kanban--board) nil nil nil nil nil
                                           (test-kanban--red-tracker))
            file)
           (should (> (file-attribute-size (file-attributes file)) 0)))
@@ -861,7 +862,7 @@ WHEN what goes over the cards is drawn
 THEN the middle of the Bug card's type icon has the colour Jira gives a Bug."
   (test-kanban--with-type-icons
     (test-kanban--with-spec-layout
-        (shipit-atlassian-kanban--spec (test-kanban--board) nil nil nil nil
+        (shipit-atlassian-kanban--spec (test-kanban--board) nil nil nil nil nil
                                        (test-kanban--jira-tracker))
         nodes model
       (let* ((mark (shipit-atlassian-kanban--type-mark
@@ -1654,6 +1655,971 @@ THEN the card is still marked, since a mark is held by the card's key."
     (shipit-atlassian-kanban-toggle-column)
     (should (canvas-diagram-marked-p
              (test-kanban--node (canvas-diagram-nodes-shown) "PROJ-1")))))
+
+;;;; The timeline
+
+(defvar test-kanban--history-override nil
+  "Raw issues with changelogs for one test, in place of the usual ones.")
+
+(defun test-kanban--history-issues ()
+  "The fixture board's issues as Jira sends them with their changelogs.
+Bob moved PROJ-3 from Open into review half a day ago."
+  (list (test-history--raw-issue "PROJ-1" "Open" 5)
+        (test-history--raw-issue "PROJ-2" "Open" 5)
+        (test-history--raw-issue
+         "PROJ-3" "In Review" 5
+         (test-history--change 0.5 "Bob" "Open" "In Review"))))
+
+(defun test-kanban--history-page ()
+  "One page of the board's history, all of it, as Jira sends it."
+  (let ((issues (or test-kanban--history-override (test-kanban--history-issues))))
+    `((total . ,(length issues)) (issues . ,(vconcat issues)))))
+
+(defun test-kanban--board-plus (issue column)
+  "Return the fixture board with ISSUE first in its COLUMNth column."
+  (let ((board (copy-tree (test-kanban--board))))
+    (push issue (cdr (assq 'issues (nth column (cdr (assq 'columns board))))))
+    board))
+
+(defmacro test-kanban--with-made-card (issue column raw &rest body)
+  "Run BODY on the fixture board with ISSUE, made since a day ago, in COLUMN.
+RAW is the issue as Jira sends it with its changelog, for its history."
+  (declare (indent 3))
+  `(let* ((test-kanban--board-override (test-kanban--board-plus ,issue ,column))
+          (test-kanban--history-override
+           (append (test-kanban--history-issues) (list ,raw))))
+     ,@body))
+
+(defmacro test-kanban--with-new-card (&rest body)
+  "Run BODY on a board that gained PROJ-4 since a day ago.
+Carol made it a few hours ago, and moved it into review since."
+  (declare (indent 0))
+  `(test-kanban--with-made-card
+       '((key . "PROJ-4") (title . "Made this morning") (state . "In Review")) 1
+       (test-history--raw-issue "PROJ-4" "In Review" 0.3
+                                (test-history--change 0.2 "Carol" "Open" "In Review"))
+     ,@body))
+
+(defmacro test-kanban--with-unmoved-new-card (&rest body)
+  "Run BODY on a board that gained PROJ-5 since a day ago, made in Open.
+It has not moved since it was made."
+  (declare (indent 0))
+  `(test-kanban--with-made-card
+       '((key . "PROJ-5") (title . "Made straight into Open") (state . "Open")) 0
+       (test-history--raw-issue "PROJ-5" "Open" 0.3)
+     ,@body))
+
+(defmacro test-kanban--with-history (&rest body)
+  "Run BODY with Jira answering with the fixture board's history."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'shipit-issue-jira--api-request-async)
+              (lambda (_config _path callback)
+                (funcall callback (test-kanban--history-page)))))
+     ,@body))
+
+(defmacro test-kanban--a-day-ago (buffer &rest body)
+  "Open the fixture board in BUFFER, step it a day back, and run BODY."
+  (declare (indent 1))
+  `(test-kanban--with-buffer ,buffer nil
+     (test-kanban--with-history
+       (shipit-atlassian-kanban-timeline-earlier)
+       ,@body)))
+
+(defun test-kanban--header-line ()
+  "Return the header line of the board buffer as redisplay draws it.
+Evaluated here, since `format-mode-line' gives nothing in batch."
+  (pcase header-line-format
+    (`(:eval ,form) (eval form t))
+    (format format)))
+
+(ert-deftest test-kanban-timeline-earlier-shows-where-the-cards-were ()
+  "GIVEN a card moved into Code Review half a day ago
+WHEN the board steps a day back in time
+THEN that card draws in Open again, where it was then."
+  (test-kanban--a-day-ago buffer
+    (should shipit-atlassian-kanban--timeline)
+    (should (equal '("PROJ-1" "PROJ-2" "PROJ-3")
+                   (test-kanban--keys-in (canvas-diagram-current-model) "Open")))
+    (should (equal '() (test-kanban--keys-in (canvas-diagram-current-model)
+                                             "Code Review")))))
+
+(ert-deftest test-kanban-timeline-is-read-only ()
+  "GIVEN the board shown as it was a day ago
+WHEN a move is staged, sent or discarded
+THEN each refuses, says the timeline is on and names the key that
+leaves it, and nothing is staged."
+  (test-kanban--a-day-ago buffer
+    (test-kanban--select "PROJ-1")
+    (dolist (command '(shipit-atlassian-kanban-stage-forward
+                       shipit-atlassian-kanban-stage-backward
+                       shipit-atlassian-kanban-commit
+                       shipit-atlassian-kanban-discard))
+      (let ((err (should-error (funcall command) :type 'user-error)))
+        (should (string-match-p "timeline" (cadr err)))
+        (should (string-match-p "\\bq\\b" (cadr err)))))
+    (should-not shipit-atlassian-kanban--pending)))
+
+(ert-deftest test-kanban-timeline-quit-comes-back-to-now-with-the-staged-moves ()
+  "GIVEN a staged move and the board stepped a day back
+WHEN the timeline is left
+THEN the old board showed no staged move, and the board at now shows
+the move still staged, and the header line no longer says TIMELINE."
+  (test-kanban--with-buffer buffer '(("PROJ-1" . "In Review"))
+    (test-kanban--with-history
+      (shipit-atlassian-kanban-timeline-earlier)
+      (should (member "PROJ-1" (test-kanban--keys-in (canvas-diagram-current-model) "Open")))
+      (shipit-atlassian-kanban-quit)
+      (should-not shipit-atlassian-kanban--timeline)
+      (should (equal '(("PROJ-1" . "In Review")) shipit-atlassian-kanban--pending))
+      (should (member "PROJ-1" (test-kanban--keys-in (canvas-diagram-current-model)
+                                                     "Code Review")))
+      (test-kanban--select "PROJ-1")
+      (should-not (string-match-p "TIMELINE" (test-kanban--header-line))))))
+
+(ert-deftest test-kanban-timeline-says-so-and-how-to-leave ()
+  "GIVEN the board stepped a day back
+WHEN the header line and the mode line are drawn
+THEN both say TIMELINE, and the header line names the keys that step
+and the one that leaves."
+  (test-kanban--a-day-ago buffer
+    (test-kanban--select "PROJ-1")
+    (let ((header (test-kanban--header-line)))
+      (should (string-match-p "TIMELINE" header))
+      (should (string-match-p "M-p earlier" header))
+      (should (string-match-p "M-n later" header))
+      (should (string-match-p "q back to now" header)))
+    (should (string-match-p "TIMELINE" mode-line-process))))
+
+(ert-deftest test-kanban-timeline-later-past-now-comes-back-to-now ()
+  "GIVEN the board one step back in time
+WHEN it steps one step later
+THEN the timeline ends and the board is the live one, not one in the future."
+  (test-kanban--a-day-ago buffer
+    (shipit-atlassian-kanban-timeline-later)
+    (should-not shipit-atlassian-kanban--timeline)
+    (should (equal '("PROJ-3") (test-kanban--keys-in (canvas-diagram-current-model)
+                                                     "Code Review")))))
+
+(ert-deftest test-kanban-timeline-later-at-now-says-so ()
+  "GIVEN the board at now
+WHEN it steps later
+THEN it says there is nothing later, rather than doing something else."
+  (test-kanban--with-buffer buffer nil
+    (should-error (shipit-atlassian-kanban-timeline-later) :type 'user-error)))
+
+(ert-deftest test-kanban-timeline-steps-by-the-chosen-step ()
+  "GIVEN the step cycled from a day to a week and then to an hour
+WHEN the board steps back twice and later once
+THEN it shows the board an hour ago."
+  (test-kanban--with-buffer buffer nil
+    (test-kanban--with-history
+      (should (eq 'day shipit-atlassian-kanban--timeline-step))
+      (shipit-atlassian-kanban-timeline-cycle-step)
+      (should (eq 'week shipit-atlassian-kanban--timeline-step))
+      (shipit-atlassian-kanban-timeline-cycle-step)
+      (should (eq 'hour shipit-atlassian-kanban--timeline-step))
+      (shipit-atlassian-kanban-timeline-earlier)
+      (shipit-atlassian-kanban-timeline-earlier)
+      (shipit-atlassian-kanban-timeline-later)
+      (should (= 3600 shipit-atlassian-kanban--timeline)))))
+
+(ert-deftest test-kanban-timeline-card-tells-its-moves-since ()
+  "GIVEN the board stepped a day back
+WHEN the moved card's note is read
+THEN it gives the status the card had then, and who moved it since."
+  (test-kanban--a-day-ago buffer
+    (let ((note (shipit-atlassian-kanban--note (canvas-diagram-current-model) "PROJ-3")))
+      (should (string-match-p "Status: Open" note))
+      (should (string-match-p "Bob: Open → In Review" note)))))
+
+(ert-deftest test-kanban-timeline-colours-a-card-that-moved-since ()
+  "GIVEN the board stepped a day back
+WHEN the cards are asked for their fill
+THEN the card that moved since then takes the timeline colour, and a
+card that stayed takes its column's."
+  (test-kanban--a-day-ago buffer
+    (let* ((nodes (canvas-diagram-nodes-shown))
+           (moved (shipit-atlassian-kanban--node-rgb
+                   shipit-atlassian-kanban--drawing (test-kanban--node nodes "PROJ-3")))
+           (stayed (shipit-atlassian-kanban--node-rgb
+                    shipit-atlassian-kanban--drawing (test-kanban--node nodes "PROJ-1"))))
+      (should (equal (canvas-diagram-rgb shipit-atlassian-kanban-timeline-color) moved))
+      (should-not (equal moved stayed)))))
+
+(ert-deftest test-kanban-timeline-lists-the-changes-since-then ()
+  "GIVEN the board stepped a day back
+WHEN the changes since then are listed
+THEN the list names the card, who moved it, and between which statuses."
+  (test-kanban--a-day-ago buffer
+    (let ((changes (shipit-atlassian-kanban-timeline-changes)))
+      (unwind-protect
+          (with-current-buffer changes
+            (should (string-match-p "PROJ-3 +Bob +Open → In Review" (buffer-string))))
+        (kill-buffer changes)))))
+
+(defmacro test-kanban--on-the-change (changes key &rest body)
+  "List the changes, bound to CHANGES, put point on KEY's line, run BODY.
+The list is killed afterwards."
+  (declare (indent 2))
+  `(let ((,changes (shipit-atlassian-kanban-timeline-changes)))
+     (unwind-protect
+         (with-current-buffer ,changes
+           (goto-char (point-min))
+           (re-search-forward ,key)
+           ,@body)
+       (kill-buffer ,changes))))
+
+(defun test-kanban--face-at (text)
+  "Return the face of the first TEXT in this buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward text)
+    (get-text-property (match-beginning 0) 'face)))
+
+(ert-deftest test-kanban-timeline-change-shows-its-card ()
+  "GIVEN the changes since a day ago listed
+WHEN a change is shown
+THEN the keyboard of the board goes to that card, and the list keeps
+the focus, so the next change can be shown."
+  (test-kanban--a-day-ago buffer
+    (test-kanban--select "PROJ-1")
+    (test-kanban--on-the-change changes "PROJ-3"
+      (shipit-atlassian-kanban-changes-show-card)
+      (should (eq changes (window-buffer (selected-window)))))
+    (should (equal "PROJ-3" (test-kanban--selected-label)))))
+
+(ert-deftest test-kanban-timeline-change-opens-its-issue ()
+  "GIVEN the changes since a day ago listed
+WHEN a change is visited
+THEN its issue opens in shipit, in the window of the board rather than
+in the short list.
+
+The issue buffer is stood in for where it is opened: it reads the issue
+from Jira, which is not what this is about."
+  (test-kanban--a-day-ago buffer
+    (let ((opened nil))
+      (cl-letf (((symbol-function 'shipit-issues-open-buffer)
+                 (lambda (key repo &rest _)
+                   (setq opened (list key repo (window-buffer (selected-window)))))))
+        (test-kanban--on-the-change changes "PROJ-3"
+          (shipit-atlassian-kanban-changes-visit)))
+      (should (equal (list "PROJ-3" "owner/repo" buffer) opened)))))
+
+(defun test-kanban--raw-jira-issue ()
+  "PROJ-3 as Jira sends it on its own: a description and the changelog."
+  `((key . "PROJ-3")
+    (fields . ((summary . "Ship the parser")
+               (status . ((name . "In Review")))
+               (description . ((type . "doc") (version . 1)
+                               (content . [((type . "paragraph")
+                                            (content . [((type . "text")
+                                                         (text . "Parse the whole file first."))]))])))))
+    (changelog . ((histories . [,(test-history--change 0.5 "Bob" "Open" "In Review")])))))
+
+(ert-deftest test-kanban-timeline-change-expands-to-its-issue ()
+  "GIVEN the changes since a day ago listed, for a repository on Jira
+WHEN a move is listed, and then expanded
+THEN nothing is read from Jira until it is expanded, and then the move
+shows the description and the activity of its issue."
+  (test-kanban--a-day-ago buffer
+    (let ((shipit-issue-repo-backends
+           '(("owner/repo" :backend jira :base-url "https://jira.example.com")))
+          (paths nil))
+      (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+                 (lambda (_config path)
+                   (push path paths)
+                   (test-kanban--raw-jira-issue))))
+        (test-kanban--on-the-change changes "PROJ-3"
+          (should-not paths)
+          (should-not (string-match-p "Parse the whole file" (buffer-string)))
+          (magit-section-show (magit-current-section))
+          (should (= 1 (length paths)))
+          (should (string-match-p "Parse the whole file first" (buffer-string)))
+          (should (string-match-p "Activity" (buffer-string))))))))
+
+(defun test-kanban--indicator-p (section)
+  "Return non-nil when the heading of SECTION carries magit's visibility mark."
+  (seq-some (lambda (overlay) (overlay-get overlay 'magit-vis-indicator))
+            (overlays-in (oref section start)
+                         (1+ (save-excursion (goto-char (oref section start))
+                                             (line-end-position))))))
+
+(ert-deftest test-kanban-timeline-changes-mark-every-move-as-shut ()
+  "GIVEN the changes since a day ago listed
+WHEN the moves are looked at before any is opened
+THEN each carries magit's mark for a shut section, as in any magit buffer.
+Without it the rows had no marks, and a mark left by an opened move
+showed on the row below it."
+  (test-kanban--a-day-ago buffer
+    (test-kanban--on-the-change changes "PROJ-3"
+      (dolist (move (oref magit-root-section children))
+        (should (test-kanban--indicator-p move))))))
+
+(ert-deftest test-kanban-timeline-change-details-start-with-a-plain-line ()
+  "GIVEN a move opened on its issue
+WHEN its details are looked at
+THEN they start with a plain line, not with the description section.
+Shutting the move hides its details from their first character on.  A
+section starting right there leaves its mark and its icon at the start
+of the hidden text, and Emacs still draws both there: on the next move\'s
+line."
+  (test-kanban--a-day-ago buffer
+    (let ((shipit-issue-repo-backends
+           '(("owner/repo" :backend jira :base-url "https://jira.example.com"))))
+      (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+                 (lambda (_config _path) (test-kanban--raw-jira-issue))))
+        (test-kanban--on-the-change changes "PROJ-3"
+          (let ((move (magit-current-section)))
+            (magit-section-show move)
+            (should (oref move children))
+            (should (> (oref (car (oref move children)) start)
+                       (oref move content)))))))))
+
+(ert-deftest test-kanban-timeline-change-visits-from-inside-its-details ()
+  "GIVEN a move expanded to its issue
+WHEN it is visited from a line of the details
+THEN it is that move's issue that opens."
+  (test-kanban--a-day-ago buffer
+    (let ((shipit-issue-repo-backends
+           '(("owner/repo" :backend jira :base-url "https://jira.example.com")))
+          (opened nil))
+      (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+                 (lambda (_config _path) (test-kanban--raw-jira-issue)))
+                ((symbol-function 'shipit-issues-open-buffer)
+                 (lambda (key &rest _) (setq opened key))))
+        (test-kanban--on-the-change changes "PROJ-3"
+          (magit-section-show (magit-current-section))
+          (re-search-forward "Parse the whole file")
+          (shipit-atlassian-kanban-changes-visit)))
+      (should (equal "PROJ-3" opened)))))
+
+(defun test-kanban--moves-listed (changes)
+  "Return the keys of the moves CHANGES lists, in order."
+  (with-current-buffer changes
+    (mapcar (lambda (section) (plist-get (oref section value) :key))
+            (oref magit-root-section children))))
+
+(ert-deftest test-kanban-timeline-changes-follow-the-steps ()
+  "GIVEN the changes since an hour ago listed, when nothing moved yet
+WHEN the timeline steps a day further back
+THEN the list shows the move made in between, and says since when."
+  (test-kanban--with-buffer buffer nil
+    (test-kanban--with-history
+      (shipit-atlassian-kanban-timeline-cycle-step)
+      (shipit-atlassian-kanban-timeline-cycle-step)
+      (shipit-atlassian-kanban-timeline-earlier)
+      (let ((changes (with-current-buffer buffer (shipit-atlassian-kanban-timeline-changes))))
+        (unwind-protect
+            (progn
+              (should (equal '() (test-kanban--moves-listed changes)))
+              (with-current-buffer buffer
+                (shipit-atlassian-kanban-timeline-cycle-step)
+                (shipit-atlassian-kanban-timeline-earlier))
+              (should (equal '("PROJ-3") (test-kanban--moves-listed changes)))
+              (should (string-match-p
+                       (format-time-string "since %a %Y-%m-%d"
+                                           (- (float-time) 86400 3600))
+                       (with-current-buffer changes (buffer-string)))))
+          (when (buffer-live-p changes) (kill-buffer changes)))))))
+
+(ert-deftest test-kanban-timeline-changes-close-with-the-timeline ()
+  "GIVEN the changes since a day ago listed
+WHEN the board goes back to now
+THEN the list closes, as there is no range left to list."
+  (test-kanban--a-day-ago buffer
+    (let ((changes (shipit-atlassian-kanban-timeline-changes)))
+      (with-current-buffer buffer
+        (shipit-atlassian-kanban-quit))
+      (should-not (buffer-live-p changes)))))
+
+(ert-deftest test-kanban-timeline-changes-keep-an-open-move-open ()
+  "GIVEN a move opened on its issue in the list
+WHEN the timeline steps further back
+THEN the move is still open, on the same details, and its issue was
+read from Jira once."
+  (test-kanban--a-day-ago buffer
+    (let ((shipit-issue-repo-backends
+           '(("owner/repo" :backend jira :base-url "https://jira.example.com")))
+          (reads 0))
+      (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+                 (lambda (_config _path)
+                   (cl-incf reads)
+                   (test-kanban--raw-jira-issue))))
+        (let ((changes (shipit-atlassian-kanban-timeline-changes)))
+          (unwind-protect
+              (progn
+                (with-current-buffer changes
+                  (goto-char (point-min))
+                  (re-search-forward "PROJ-3")
+                  (magit-section-show (magit-current-section)))
+                (with-current-buffer buffer
+                  (shipit-atlassian-kanban-timeline-earlier))
+                (with-current-buffer changes
+                  (should-not (oref (car (oref magit-root-section children)) hidden))
+                  (should (string-match-p "Parse the whole file first" (buffer-string))))
+                (should (= 1 reads)))
+            (when (buffer-live-p changes) (kill-buffer changes))))))))
+
+(ert-deftest test-kanban-timeline-changes-keep-their-place-in-the-window ()
+  "GIVEN the list of moves with its window on a move, and the board selected
+WHEN the timeline steps further back
+THEN the window of the list is still on that move.
+Filling the list again moved the point of its window to the top, onto
+the heading, since the window was not the selected one."
+  (test-kanban--with-buffer buffer nil
+    (test-kanban--with-history
+      (shipit-atlassian-kanban-timeline-cycle-step)
+      (shipit-atlassian-kanban-timeline-earlier)
+      (let ((changes (shipit-atlassian-kanban-timeline-changes))
+            (board-window (get-buffer-window buffer)))
+        (unwind-protect
+            (let ((window (get-buffer-window changes)))
+              (with-current-buffer changes
+                (set-window-point window (oref (car (oref magit-root-section children)) start)))
+              (select-window board-window)
+              (with-current-buffer buffer
+                (shipit-atlassian-kanban-timeline-earlier))
+              (with-current-buffer changes
+                (goto-char (window-point window))
+                (should (equal "PROJ-3" (shipit-atlassian-kanban--change-key)))))
+          (when (buffer-live-p changes) (kill-buffer changes)))))))
+
+(ert-deftest test-kanban-timeline-board-follows-point-in-the-changes ()
+  "GIVEN the changes since a day ago listed, and the board on another card
+WHEN point moves onto a move in the list
+THEN the keyboard of the board goes to that move's card."
+  (test-kanban--a-day-ago buffer
+    (test-kanban--select "PROJ-1")
+    (test-kanban--on-the-change changes "PROJ-3"
+      (run-hooks 'post-command-hook))
+    (should (equal "PROJ-3" (test-kanban--selected-label)))))
+
+(ert-deftest test-kanban-timeline-board-leaves-a-card-it-cannot-show ()
+  "GIVEN the changes listed, and the moved card in a shut column
+WHEN point moves onto its move
+THEN nothing signals and the board stays where it was."
+  (test-kanban--a-day-ago buffer
+    (test-kanban--select "PROJ-3")
+    (shipit-atlassian-kanban-toggle-column)
+    (let ((before (test-kanban--selected-label)))
+      (test-kanban--on-the-change changes "PROJ-3"
+        (run-hooks 'post-command-hook))
+      (should (equal before (test-kanban--selected-label))))))
+
+(ert-deftest test-kanban-timeline-shows-a-card-made-since-where-it-is-now ()
+  "GIVEN a card made after the time the timeline shows, and its move listed
+WHEN its card is asked for on the board
+THEN the board of then shows it in the column it is in now, AND its
+     key line and its note say it was made since then."
+  (test-kanban--with-new-card
+    (test-kanban--a-day-ago buffer
+      (let* ((model (canvas-diagram-current-model))
+             (card (shipit-atlassian-kanban--card model "PROJ-4")))
+        (should (equal "Code Review"
+                       (shipit-atlassian-kanban-column-name (plist-get card :column))))
+        (should (string-match-p (regexp-quote shipit-atlassian-kanban-new-mark)
+                                (car (split-string (plist-get card :text) "\n"))))
+        (should (string-match-p "Made since then: "
+                                (shipit-atlassian-kanban--note model "PROJ-4"))))
+      (test-kanban--on-the-change changes "PROJ-4"
+        (shipit-atlassian-kanban-changes-show-card)
+        (should (equal "PROJ-4" (with-current-buffer buffer (test-kanban--selected-label))))))))
+
+(ert-deftest test-kanban-timeline-says-a-card-made-since-is-filtered-out ()
+  "GIVEN a card made after the time the timeline shows, which a filter hides
+WHEN its card is asked for on the board
+THEN it says the card is not on the board shown, and not that it was
+     made since, which the board of then shows anyway."
+  (test-kanban--with-new-card
+    (test-kanban--a-day-ago buffer
+      (setq shipit-atlassian-kanban--filter '(:text "parser"))
+      (shipit-atlassian-kanban--redraw)
+      (test-kanban--on-the-change changes "PROJ-4"
+        (let ((err (should-error (shipit-atlassian-kanban-changes-show-card)
+                                 :type 'user-error)))
+          (should (string-match-p "PROJ-4 is not on the board shown" (cadr err))))))))
+
+(ert-deftest test-kanban-timeline-colours-a-card-made-since ()
+  "GIVEN a card made after the time the timeline shows, and not moved since
+WHEN its fill is asked for, and the board keeps only what changed
+THEN it takes the timeline colour, AND it stays on the board."
+  (test-kanban--with-unmoved-new-card
+    (test-kanban--a-day-ago buffer
+      (should (equal (shipit-atlassian-kanban--timeline-rgb)
+                     (shipit-atlassian-kanban--node-rgb
+                      shipit-atlassian-kanban--drawing
+                      (test-kanban--node (canvas-diagram-nodes-shown) "PROJ-5"))))
+      (shipit-atlassian-kanban-timeline-toggle-unchanged)
+      (should (test-kanban--node (canvas-diagram-nodes-shown) "PROJ-5")))))
+
+(ert-deftest test-kanban-timeline-changes-use-the-shipit-faces ()
+  "GIVEN the changes since a day ago listed
+WHEN the faces of a change are read
+THEN the key, the person and the time look as they do elsewhere in
+shipit."
+  (test-kanban--a-day-ago buffer
+    (test-kanban--on-the-change changes "PROJ-3"
+      (should (eq 'magit-hash (test-kanban--face-at "PROJ-3")))
+      (should (eq 'shipit-username-face (test-kanban--face-at "Bob")))
+      (should (eq 'shipit-timestamp-face
+                  (get-text-property (line-beginning-position) 'face))))))
+
+(ert-deftest test-kanban-timeline-changes-need-the-timeline ()
+  "GIVEN the board at now
+WHEN the changes are asked for
+THEN it says to step back first, since there is no range yet."
+  (test-kanban--with-buffer buffer nil
+    (should-error (shipit-atlassian-kanban-timeline-changes) :type 'user-error)))
+
+(ert-deftest test-kanban-timeline-says-it-is-reading-the-history ()
+  "GIVEN a history Jira has not sent yet
+WHEN the board steps back in time
+THEN the header line says the history is being read, and the cards
+stay where they are now until it arrives."
+  (test-kanban--with-buffer buffer nil
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-async) #'ignore))
+      (shipit-atlassian-kanban-timeline-earlier)
+      (test-kanban--select "PROJ-1")
+      (should (string-match-p "reading the history" (test-kanban--header-line)))
+      (should (equal '("PROJ-3") (test-kanban--keys-in (canvas-diagram-current-model)
+                                                       "Code Review"))))))
+
+(ert-deftest test-kanban-timeline-ends-when-the-history-cannot-be-read ()
+  "GIVEN Jira answers the history request with nothing
+WHEN the board steps back in time
+THEN the timeline ends, so the live board is never labelled as an old one."
+  (test-kanban--with-buffer buffer nil
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-async)
+               (lambda (_config _path callback) (funcall callback nil))))
+      (shipit-atlassian-kanban-timeline-earlier)
+      (should-not shipit-atlassian-kanban--timeline)
+      (should-not shipit-atlassian-kanban--histories))))
+
+(ert-deftest test-kanban-timeline-refresh-reads-the-history-again ()
+  "GIVEN the board stepped a day back
+WHEN the board is read again
+THEN its history is read again too, so the timeline shows the new moves."
+  (test-kanban--with-buffer buffer nil
+    (let ((reads 0))
+      (cl-letf (((symbol-function 'shipit-issue-jira--api-request-async)
+                 (lambda (_config path callback)
+                   ;; The board itself is left unanswered: only the
+                   ;; history is looked at here.
+                   (when (string-match-p "expand=changelog" path)
+                     (cl-incf reads)
+                     (funcall callback (test-kanban--history-page))))))
+        (shipit-atlassian-kanban-timeline-earlier)
+        (shipit-atlassian-kanban-refresh)
+        (should (= 2 reads))))))
+
+(ert-deftest test-kanban-timeline-keys ()
+  "GIVEN the board's keys
+THEN M-p and M-n step through time, q leaves the timeline, and the
+step, the list of changes, now side by side, hiding the unchanged
+cards and the arrows have a key each."
+  (dolist (binding '(("M-p" . shipit-atlassian-kanban-timeline-earlier)
+                     ("M-n" . shipit-atlassian-kanban-timeline-later)
+                     ("q" . shipit-atlassian-kanban-quit)
+                     ("T" . shipit-atlassian-kanban-timeline-cycle-step)
+                     ("d" . shipit-atlassian-kanban-timeline-changes)
+                     ("D" . shipit-atlassian-kanban-timeline-side-by-side)
+                     ("H" . shipit-atlassian-kanban-timeline-toggle-unchanged)
+                     ("A" . shipit-atlassian-kanban-timeline-toggle-arrows)))
+    (should (eq (cdr binding)
+                (lookup-key shipit-atlassian-kanban-mode-map (kbd (car binding)))))))
+
+;;;; Then and now side by side
+
+(defmacro test-kanban--side-by-side (then now &rest body)
+  "Step the fixture board a day back, put now beside it, and run BODY.
+THEN is bound to the board of a day ago and NOW to the board beside it."
+  (declare (indent 2))
+  `(test-kanban--a-day-ago ,then
+     (let ((,now (shipit-atlassian-kanban-timeline-side-by-side)))
+       (unwind-protect
+           (progn ,@body)
+         (when (buffer-live-p ,now)
+           (kill-buffer ,now))))))
+
+(ert-deftest test-kanban-side-by-side-shows-now-beside-then ()
+  "GIVEN the board stepped a day back
+WHEN now is put beside it
+THEN a second window shows the board now, with the moved card in Code
+Review, and the first still shows it in Open, where it was then."
+  (test-kanban--side-by-side then now
+    (should (get-buffer-window now))
+    (should (get-buffer-window then))
+    (with-current-buffer now
+      (should (equal '("PROJ-3") (test-kanban--keys-in (canvas-diagram-current-model)
+                                                       "Code Review"))))
+    (with-current-buffer then
+      (should (member "PROJ-3" (test-kanban--keys-in (canvas-diagram-current-model)
+                                                     "Open"))))))
+
+(ert-deftest test-kanban-side-by-side-colours-the-moved-card-on-both-sides ()
+  "GIVEN then and now side by side
+WHEN the cards of now are asked for their fill
+THEN the card that moved in between takes the timeline colour there too,
+and a card that stayed does not."
+  (test-kanban--side-by-side then now
+    (with-current-buffer now
+      (let ((nodes (canvas-diagram-nodes-shown)))
+        (should (equal (canvas-diagram-rgb shipit-atlassian-kanban-timeline-color)
+                       (shipit-atlassian-kanban--node-rgb
+                        shipit-atlassian-kanban--drawing (test-kanban--node nodes "PROJ-3"))))
+        (should-not (equal (canvas-diagram-rgb shipit-atlassian-kanban-timeline-color)
+                           (shipit-atlassian-kanban--node-rgb
+                            shipit-atlassian-kanban--drawing
+                            (test-kanban--node nodes "PROJ-1"))))))))
+
+(ert-deftest test-kanban-side-by-side-now-is-read-only ()
+  "GIVEN then and now side by side
+WHEN a move is staged on the side of now
+THEN it refuses and names the key that closes it."
+  (test-kanban--side-by-side then now
+    (with-current-buffer now
+      (test-kanban--select "PROJ-1")
+      (let ((err (should-error (shipit-atlassian-kanban-stage-forward) :type 'user-error)))
+        (should (string-match-p "\\bq\\b" (cadr err))))
+      (should-not shipit-atlassian-kanban--pending))))
+
+(ert-deftest test-kanban-side-by-side-says-which-side-is-now ()
+  "GIVEN then and now side by side
+WHEN the header line of the side of now is drawn
+THEN it says NOW, what it is compared with, and how to close it."
+  (test-kanban--side-by-side then now
+    (with-current-buffer now
+      (test-kanban--select "PROJ-1")
+      (let ((header (test-kanban--header-line)))
+        (should (string-match-p "NOW" header))
+        (should (string-match-p "1 day ago" header))
+        (should (string-match-p "q closes" header))))))
+
+(ert-deftest test-kanban-side-by-side-steps-from-either-side ()
+  "GIVEN then and now side by side
+WHEN the side of now steps back once more
+THEN the side of then shows two days ago, and now says so."
+  (test-kanban--side-by-side then now
+    (with-current-buffer now
+      (shipit-atlassian-kanban-timeline-earlier)
+      (test-kanban--select "PROJ-1")
+      (should (string-match-p "2 days ago" (test-kanban--header-line))))
+    (with-current-buffer then
+      (should (= (* 2 86400) shipit-atlassian-kanban--timeline)))))
+
+(ert-deftest test-kanban-side-by-side-keyboard-follows-the-card ()
+  "GIVEN then and now side by side
+WHEN the keyboard goes to a card on one side
+THEN it goes to the same card on the other side, wherever it sits there."
+  (test-kanban--side-by-side then now
+    (with-current-buffer then
+      (shipit-atlassian-kanban--go-to-key "PROJ-3"))
+    (should (equal "PROJ-3" (with-current-buffer now (test-kanban--selected-label))))
+    (with-current-buffer now
+      (shipit-atlassian-kanban--go-to-key "PROJ-2"))
+    (should (equal "PROJ-2" (with-current-buffer then (test-kanban--selected-label))))))
+
+(ert-deftest test-kanban-side-by-side-q-on-now-closes-it ()
+  "GIVEN then and now side by side
+WHEN q is pressed on the side of now
+THEN that side goes, and the other stays on the timeline."
+  (test-kanban--side-by-side then now
+    (with-current-buffer now
+      (shipit-atlassian-kanban-quit))
+    (should-not (buffer-live-p now))
+    (with-current-buffer then
+      (should shipit-atlassian-kanban--timeline))))
+
+(ert-deftest test-kanban-side-by-side-ends-with-the-timeline ()
+  "GIVEN then and now side by side
+WHEN the side of then goes back to now
+THEN the side of now goes too, since both would show the same."
+  (test-kanban--side-by-side then now
+    (with-current-buffer then
+      (shipit-atlassian-kanban-quit))
+    (should-not (buffer-live-p now))))
+
+(ert-deftest test-kanban-side-by-side-needs-the-timeline ()
+  "GIVEN the board at now
+WHEN now is asked for beside it
+THEN it says to step back first."
+  (test-kanban--with-buffer buffer nil
+    (should-error (shipit-atlassian-kanban-timeline-side-by-side) :type 'user-error)))
+
+(ert-deftest test-kanban-timeline-changes-sit-at-the-bottom-across-the-frame ()
+  "GIVEN then and now side by side
+WHEN the changes are listed
+THEN the list takes the bottom of the frame, across both boards, and
+has the focus."
+  (test-kanban--side-by-side then now
+    (with-current-buffer then
+      (let* ((changes (shipit-atlassian-kanban-timeline-changes))
+             (window (get-buffer-window changes)))
+        (unwind-protect
+            (progn
+              (should (window-at-side-p window 'bottom))
+              (should (= (window-total-width window)
+                         (window-total-width (frame-root-window))))
+              (should (eq window (selected-window))))
+          (kill-buffer changes))))))
+
+(ert-deftest test-kanban-side-by-side-both-boards-follow-point-in-the-changes ()
+  "GIVEN then and now side by side, and the changes listed
+WHEN point moves onto a move in the list
+THEN both boards put their keyboard on that move's card."
+  (test-kanban--side-by-side then now
+    (with-current-buffer then (test-kanban--select "PROJ-1"))
+    (with-current-buffer now (test-kanban--select "PROJ-1"))
+    (with-current-buffer then
+      (test-kanban--on-the-change changes "PROJ-3"
+        (run-hooks 'post-command-hook)))
+    (should (equal "PROJ-3" (with-current-buffer then (test-kanban--selected-label))))
+    (should (equal "PROJ-3" (with-current-buffer now (test-kanban--selected-label))))))
+
+(ert-deftest test-kanban-side-by-side-a-new-card-shows-on-both-sides ()
+  "GIVEN then and now side by side, and a card made in between
+WHEN point moves onto its move in the list
+THEN both sides go to the card, which the side of then shows where it
+     is now."
+  (test-kanban--with-new-card
+    (test-kanban--side-by-side then now
+      (with-current-buffer now (test-kanban--select "PROJ-1"))
+      (with-current-buffer then
+        (test-kanban--on-the-change changes "PROJ-4"
+          (run-hooks 'post-command-hook)))
+      (should (equal "PROJ-4" (with-current-buffer then (test-kanban--selected-label))))
+      (should (equal "PROJ-4" (with-current-buffer now (test-kanban--selected-label)))))))
+
+(defun test-kanban--zoom-of (buffer)
+  "Return the zoom BUFFER's board is drawn at."
+  (with-current-buffer buffer (canvas-diagram-current-zoom)))
+
+(ert-deftest test-kanban-side-by-side-zooms-both-sides ()
+  "GIVEN then and now side by side
+WHEN the side of then zooms in, and then the side of now zooms out twice
+THEN each time both sides are drawn at the same zoom."
+  (test-kanban--side-by-side then now
+    (with-current-buffer then (canvas-diagram-zoom-in))
+    (should (> (test-kanban--zoom-of now) 1.0))
+    (should (= (test-kanban--zoom-of then) (test-kanban--zoom-of now)))
+    (with-current-buffer now
+      (canvas-diagram-zoom-out)
+      (canvas-diagram-zoom-out))
+    (should (< (test-kanban--zoom-of then) 1.0))
+    (should (= (test-kanban--zoom-of then) (test-kanban--zoom-of now)))))
+
+(ert-deftest test-kanban-side-by-side-opens-at-the-zoom-of-then ()
+  "GIVEN the board of then zoomed in
+WHEN now is put beside it
+THEN the side of now is drawn at that zoom from the start."
+  (test-kanban--a-day-ago then
+    (canvas-diagram-zoom-in)
+    (let ((now (shipit-atlassian-kanban-timeline-side-by-side)))
+      (unwind-protect
+          (should (= (test-kanban--zoom-of then) (test-kanban--zoom-of now)))
+        (kill-buffer now)))))
+
+(ert-deftest test-kanban-side-by-side-goes-with-the-board-of-then ()
+  "GIVEN then and now side by side, and the changes listed
+WHEN the board of then is killed
+THEN the side of now and the list go with it."
+  (test-kanban--side-by-side then now
+    (let ((changes (with-current-buffer then (shipit-atlassian-kanban-timeline-changes))))
+      (kill-buffer then)
+      (should-not (buffer-live-p now))
+      (should-not (buffer-live-p changes)))))
+
+;;;; Cards that left the board
+
+(defvar test-kanban--searches nil
+  "The Jira searches made in one test, newest first, their paths decoded.")
+
+(defmacro test-kanban--with-a-lost-card (&rest body)
+  "Run BODY with Jira answering for a board whose filter has dropped PRJ-9.
+PRJ-9 was in review until yesterday, when it was done, and the filter
+keeps a done card for a few hours only.  Each request is answered by
+what it asks for."
+  (declare (indent 0))
+  `(let ((test-kanban--searches nil))
+     (cl-letf (((symbol-function 'shipit-issue-jira--api-request-async)
+                (lambda (_config path callback)
+                  (funcall
+                   callback
+                   (cond
+                    ((string-match-p "/board/1/configuration" path)
+                     '((filter . ((id . "77")))))
+                    ((string-match-p "/filter/77" path)
+                     '((jql . "project = PROJ AND (status != Done OR resolutiondate >= -4h) ORDER BY Rank ASC")))
+                    ((string-match-p "/search/jql" path)
+                     (push (url-unhex-string path) test-kanban--searches)
+                     `((issues . [,(test-history--left-raw-issue)]) (isLast . t)))
+                    (t (test-kanban--history-page)))))))
+       ,@body)))
+
+(ert-deftest test-kanban-timeline-brings-back-a-card-that-left-the-board ()
+  "GIVEN a board whose filter has dropped PRJ-9, done yesterday
+WHEN the board steps two days back
+THEN PRJ-9 is back in Code Review, where it was then, with a ghost in
+Done, and the search was the filter as it matched then, without its
+sort and without the cards the board has."
+  (test-kanban--with-buffer buffer nil
+    (test-kanban--with-a-lost-card
+      (shipit-atlassian-kanban-timeline-earlier)
+      (shipit-atlassian-kanban-timeline-earlier)
+      (should (member "PRJ-9" (test-kanban--keys-in (canvas-diagram-current-model)
+                                                    "Code Review")))
+      (should (member '("PRJ-9" . "Done") (test-kanban--ghosts)))
+      (let ((search (car test-kanban--searches)))
+        (should (string-match-p
+                 (regexp-quote (format "resolutiondate >= \"%s "
+                                       (format-time-string "%Y/%m/%d"
+                                                           (- (float-time) (* 2 86400) (* 4 3600)))))
+                 search))
+        (should (string-match-p "key not in (PROJ-1, PROJ-2, PROJ-3)" search))
+        (should-not (string-match-p "ORDER BY" search))))))
+
+(ert-deftest test-kanban-timeline-searches-each-time-once ()
+  "GIVEN a board whose filter drops cards
+WHEN the board steps back once, again, later, and earlier again
+THEN each of the two times is searched once, as the filter matched
+differently at each."
+  (test-kanban--with-buffer buffer nil
+    (test-kanban--with-a-lost-card
+      (shipit-atlassian-kanban-timeline-earlier)
+      (should (= 1 (length test-kanban--searches)))
+      (shipit-atlassian-kanban-timeline-earlier)
+      (should (= 2 (length test-kanban--searches)))
+      (shipit-atlassian-kanban-timeline-later)
+      (shipit-atlassian-kanban-timeline-earlier)
+      (should (= 2 (length test-kanban--searches))))))
+
+(ert-deftest test-kanban-timeline-changes-list-a-card-that-left ()
+  "GIVEN a board whose filter has dropped PRJ-9, done yesterday
+WHEN the changes since two days ago are listed
+THEN PRJ-9's move is among them."
+  (test-kanban--with-buffer buffer nil
+    (test-kanban--with-a-lost-card
+      (shipit-atlassian-kanban-timeline-earlier)
+      (shipit-atlassian-kanban-timeline-earlier)
+      (let ((changes (shipit-atlassian-kanban-timeline-changes)))
+        (unwind-protect
+            (should (member "PRJ-9" (test-kanban--moves-listed changes)))
+          (kill-buffer changes))))))
+
+;;;; Only the moved cards, and where they went
+
+(defun test-kanban--ghosts ()
+  "Return the ghost boxes of this buffer's board as (KEY . COLUMN)."
+  (mapcar (lambda (ghost) (cons (plist-get ghost :key) (plist-get ghost :column)))
+          (shipit-atlassian-kanban-board-ghosts (canvas-diagram-current-model))))
+
+(defun test-kanban--ghost (key)
+  "Return the ghost box of the card KEY on this buffer's board."
+  (cl-find key (shipit-atlassian-kanban-board-ghosts (canvas-diagram-current-model))
+           :key (lambda (ghost) (plist-get ghost :key)) :test #'equal))
+
+(defun test-kanban--bottom (node)
+  "Return the bottom edge of NODE."
+  (+ (canvas-diagram-node-y node) (canvas-diagram-node-h node)))
+
+(ert-deftest test-kanban-timeline-hides-the-unchanged-cards ()
+  "GIVEN the board stepped a day back, with one card moved since
+WHEN the unchanged cards are hidden, and then shown again
+THEN only the moved card is drawn, its column says how many are hidden,
+and afterwards every card is back."
+  (test-kanban--a-day-ago buffer
+    (shipit-atlassian-kanban-timeline-toggle-unchanged)
+    (let ((model (canvas-diagram-current-model)))
+      (should (equal '("PROJ-3") (test-kanban--keys-in model "Open")))
+      (should (equal "Open (1/3)" (shipit-atlassian-kanban--header-text
+                                   (test-kanban--column-named model "Open")))))
+    (shipit-atlassian-kanban-timeline-toggle-unchanged)
+    (should (equal '("PROJ-1" "PROJ-2" "PROJ-3")
+                   (test-kanban--keys-in (canvas-diagram-current-model) "Open")))))
+
+(ert-deftest test-kanban-timeline-hiding-reaches-the-side-of-now ()
+  "GIVEN then and now side by side
+WHEN the unchanged cards are hidden on the side of then
+THEN the side of now hides them too."
+  (test-kanban--side-by-side then now
+    (with-current-buffer then
+      (shipit-atlassian-kanban-timeline-toggle-unchanged))
+    (with-current-buffer now
+      (should (equal '() (test-kanban--keys-in (canvas-diagram-current-model) "Open")))
+      (should (equal '("PROJ-3") (test-kanban--keys-in (canvas-diagram-current-model)
+                                                       "Code Review"))))))
+
+(ert-deftest test-kanban-timeline-toggles-need-the-timeline ()
+  "GIVEN the board at now
+WHEN the unchanged cards or the arrows are toggled
+THEN each says to step back first, since at now nothing moved."
+  (test-kanban--with-buffer buffer nil
+    (should-error (shipit-atlassian-kanban-timeline-toggle-unchanged) :type 'user-error)
+    (should-error (shipit-atlassian-kanban-timeline-toggle-arrows) :type 'user-error)))
+
+(ert-deftest test-kanban-timeline-puts-a-ghost-where-the-card-is-now ()
+  "GIVEN the board stepped a day back, with PROJ-3 in Open then and in
+Code Review now
+WHEN it is drawn
+THEN a ghost of PROJ-3 sits in Code Review, under its header."
+  (test-kanban--a-day-ago buffer
+    (should (equal '(("PROJ-3" . "Code Review")) (test-kanban--ghosts)))
+    (let ((ghost (test-kanban--ghost "PROJ-3"))
+          (header (test-kanban--node (canvas-diagram-nodes-shown) "Code Review")))
+      (should (= (canvas-diagram-node-x header) (plist-get ghost :x)))
+      (should (> (plist-get ghost :y) (test-kanban--bottom header))))))
+
+(ert-deftest test-kanban-timeline-ghost-on-the-side-of-now-is-where-it-was ()
+  "GIVEN then and now side by side
+WHEN the side of now is drawn
+THEN a ghost of PROJ-3 sits in Open, where it was then, above the
+cards of that column."
+  (test-kanban--side-by-side then now
+    (with-current-buffer now
+      (should (equal '(("PROJ-3" . "Open")) (test-kanban--ghosts)))
+      (let ((ghost (test-kanban--ghost "PROJ-3"))
+            (first (test-kanban--node (canvas-diagram-nodes-shown) "PROJ-1")))
+        (should (<= (+ (plist-get ghost :y) (plist-get ghost :h))
+                    (canvas-diagram-node-y first)))))))
+
+(ert-deftest test-kanban-timeline-arrows-off-drops-the-ghosts ()
+  "GIVEN the board stepped a day back
+WHEN the arrows are turned off, and on again
+THEN there are no ghosts, and then the ghost is back."
+  (test-kanban--a-day-ago buffer
+    (shipit-atlassian-kanban-timeline-toggle-arrows)
+    (should-not (test-kanban--ghosts))
+    (shipit-atlassian-kanban-timeline-toggle-arrows)
+    (should (equal '(("PROJ-3" . "Code Review")) (test-kanban--ghosts)))))
+
+(ert-deftest test-kanban-timeline-arrows-go-over-the-cards ()
+  "GIVEN the callbacks the board gives canvas-diagram
+THEN the arrows are drawn in the layer over every card, so an arrow
+that crosses a card is not cut by it."
+  (should (eq #'shipit-atlassian-kanban--draw-over
+              (plist-get shipit-atlassian-kanban--callbacks :draw-over))))
+
+(ert-deftest test-kanban-timeline-draws-ghosts-and-arrows ()
+  "GIVEN the board of a day ago, with its ghost and its arrow
+WHEN it is drawn into a file
+THEN the drawing completes, ghost and arrow included."
+  (skip-unless (shipit-canvas-available-p))
+  (let* ((histories (mapcar #'shipit-atlassian-history--of-issue
+                            (append (cdr (assq 'issues (test-kanban--history-page))) nil)))
+         (back 86400)
+         (board (shipit-atlassian-history--board-at
+                 (test-kanban--board) histories (- (float-time) back)))
+         (file (make-temp-file "kanban-timeline-" nil ".png")))
+    (unwind-protect
+        (progn
+          (canvas-diagram-export
+           (shipit-atlassian-kanban--diagram)
+           (shipit-atlassian-kanban--spec board nil nil nil nil
+                                          (list :time (- (float-time) back) :back back
+                                                :step 'day :arrows t))
+           file)
+          (should (> (file-attribute-size (file-attributes file)) 0)))
+      (delete-file file))))
 
 (provide 'test-shipit-atlassian-kanban)
 ;;; test-shipit-atlassian-kanban.el ends here

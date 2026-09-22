@@ -39,7 +39,9 @@
 (require 'subr-x)
 (require 'shipit-core)
 (require 'shipit-atlassian-board)
+(require 'shipit-atlassian-history)
 (require 'shipit-canvas)
+(require 'magit-section)
 
 (declare-function canvas-diagram-create "canvas-diagram")
 (declare-function canvas-diagram-node-create "canvas-diagram")
@@ -65,9 +67,14 @@
 (declare-function canvas-diagram-go "canvas-diagram")
 (declare-function canvas-diagram-set-selected "canvas-diagram")
 (declare-function canvas-diagram-current-model "canvas-diagram")
+(declare-function canvas-diagram-current-zoom "canvas-diagram")
+(declare-function canvas-diagram-zoom-to "canvas-diagram")
 (declare-function canvas-diagram-nodes-shown "canvas-diagram")
 (declare-function canvas-diagram-mode "canvas-diagram")
 (declare-function shipit-issues-open-buffer "shipit-issues-buffer")
+(declare-function shipit-issue--insert-description-section "shipit-issues-buffer")
+(declare-function shipit-issue--insert-activity-section "shipit-issues-buffer")
+(declare-function shipit-issues--fetch-issue "shipit-issues")
 (declare-function shipit--get-repo-from-remote "shipit-core")
 (declare-function shipit-issue-jira--fetch-myself "shipit-issue-jira")
 (declare-function consult--read "consult")
@@ -77,6 +84,14 @@
 (declare-function canvas-cairo-text-size "canvas-cairo")
 (declare-function canvas-cairo-svg "canvas-cairo")
 (declare-function canvas-cairo-fill "canvas-cairo")
+(declare-function canvas-cairo-stroke "canvas-cairo")
+(declare-function canvas-cairo-new-path "canvas-cairo")
+(declare-function canvas-cairo-move-to "canvas-cairo")
+(declare-function canvas-cairo-line-to "canvas-cairo")
+(declare-function canvas-cairo-curve-to "canvas-cairo")
+(declare-function canvas-cairo-close-path "canvas-cairo")
+(declare-function canvas-cairo-set-line-width "canvas-cairo")
+(declare-function canvas-cairo-set-dash "canvas-cairo")
 (declare-function canvas-diagram-ink-on "canvas-diagram")
 (declare-function canvas-diagram-node-x "canvas-diagram")
 (declare-function canvas-diagram-node-w "canvas-diagram")
@@ -95,16 +110,19 @@
 ;; part of what the drawing shows, so they travel in the spec rather
 ;; than being read from a buffer-local behind the callback's back.
 
-(defun shipit-atlassian-kanban--spec (board pending &optional collapsed me filter tracker)
+(defun shipit-atlassian-kanban--spec (board pending &optional collapsed me filter timeline
+                                           tracker)
   "Return the drawing spec for BOARD.
 PENDING is the staged moves, COLLAPSED the names of the columns that
 are shut, ME the account id of the current user, and FILTER what the
-board is narrowed to.  TRACKER is the plist of the issue backend, whose
+board is narrowed to.  TIMELINE is nil when BOARD is the board now;
+see `shipit-atlassian-kanban--timeline-spec' for what it holds
+otherwise.  TRACKER is the plist of the issue backend, whose
 `:priority-color', `:issue-type-color' and `:issue-type-octicon' the
 cards are drawn with, or nil.  A plist, so this can grow another thing
 the drawing shows without every caller changing."
   (list :board board :pending pending :collapsed collapsed
-        :me me :filter filter :tracker tracker))
+        :me me :filter filter :timeline timeline :tracker tracker))
 
 (defun shipit-atlassian-kanban--spec-board (spec)
   "Return the board alist of SPEC."
@@ -126,6 +144,10 @@ the drawing shows without every caller changing."
   "Return what SPEC narrows the board to."
   (plist-get spec :filter))
 
+(defun shipit-atlassian-kanban--spec-timeline (spec)
+  "Return the timeline SPEC shows, or nil when it shows the board now."
+  (plist-get spec :timeline))
+
 (defun shipit-atlassian-kanban--spec-tracker (spec)
   "Return the plist of the issue backend SPEC draws the cards with, or nil."
   (plist-get spec :tracker))
@@ -135,7 +157,14 @@ the drawing shows without every caller changing."
 ;; A filter is a plist: `:mine' shows only what the current user is
 ;; assigned, `:type' only one issue type, `:priority' only one
 ;; priority, and `:text' only the cards whose key or summary carries
-;; it.  They combine, so a card has to pass every part that is set.
+;; it.  `:moved' shows only the cards that changed since the time the
+;; timeline shows: moved, or made.  They combine, so a card has to pass
+;; every part that is set.
+
+(defun shipit-atlassian-kanban--changed-since-p (issue)
+  "Return non-nil when ISSUE moved or was made since the time shown."
+  (or (assq 'timeline-moves issue)
+      (assq 'timeline-new issue)))
 
 (defun shipit-atlassian-kanban--mine-p (issue me)
   "Return non-nil when ISSUE is assigned to the account id ME."
@@ -165,6 +194,8 @@ the drawing shows without every caller changing."
            (let ((hit (shipit-atlassian-kanban--matches-text-p
                        issue (plist-get filter :text))))
              (if (plist-get filter :text-invert) (not hit) hit)))
+       (or (not (plist-get filter :moved))
+           (shipit-atlassian-kanban--changed-since-p issue))
        t))
 
 (defun shipit-atlassian-kanban--filtered-p (filter)
@@ -195,8 +226,13 @@ the column name maps to a plist of `:column', `:column-index' and
 shut the column from there.
 
 ME is the account id of the current user, which marks their own cards.
+TIMELINE is the spec\\='s timeline, which the header line shows.
+GHOST-PLAN says which column shows a ghost of which moved card: an
+alist of column name to issue keys.  GHOSTS is where the layout put
+them, a list of plists of `:key', `:column', `:x', `:y', `:w' and `:h'.
+A ghost is not a node: the keyboard cannot reach it.
 TRACKER is the plist of the issue backend, as in the spec, or nil."
-  name columns index frames headers me tracker)
+  name columns index frames headers me timeline ghost-plan ghosts tracker)
 
 (cl-defstruct (shipit-atlassian-kanban-column
                (:constructor shipit-atlassian-kanban--column-create))
@@ -265,18 +301,48 @@ account id, which `:mine\=' needs."
                                      index)))
     index))
 
+(defun shipit-atlassian-kanban--other-column (card raw-columns)
+  "Return the column of RAW-COLUMNS CARD sits in on the other side of the
+timeline, or nil when it did not move or no column takes its status."
+  (when-let* ((other (cdr (assq 'timeline-other card))))
+    (shipit-atlassian-board--column-name-for-status other raw-columns)))
+
+(defun shipit-atlassian-kanban--ghost-plan (columns raw-columns)
+  "Return which of COLUMNS shows a ghost of which card, as the model keeps it.
+A card that sits in another column on the other side of the timeline
+gets a ghost there.  Neither column may be shut: a card in a shut
+column is not drawn, and a shut column has no room for a ghost.
+RAW-COLUMNS route a status to its column."
+  (let ((open (mapcar #'shipit-atlassian-kanban-column-name
+                      (seq-remove #'shipit-atlassian-kanban-column-collapsed columns)))
+        (plan nil))
+    (dolist (column columns)
+      (let ((name (shipit-atlassian-kanban-column-name column)))
+        (dolist (card (and (member name open)
+                           (shipit-atlassian-kanban-column-cards column)))
+          (let ((other (shipit-atlassian-kanban--other-column card raw-columns)))
+            (when (and (member other open) (not (equal other name)))
+              (push (shipit-atlassian-board--issue-key card)
+                    (alist-get other plan nil nil #'equal)))))))
+    (mapcar (lambda (entry) (cons (car entry) (reverse (cdr entry)))) plan)))
+
 (defun shipit-atlassian-kanban--build (_diagram spec)
   "Build the model of SPEC: its columns, with the staged moves applied."
   (let* ((board (shipit-atlassian-kanban--spec-board spec))
+         (raw-columns (append (shipit-atlassian-board--columns board) nil))
+         (timeline (shipit-atlassian-kanban--spec-timeline spec))
          (columns (shipit-atlassian-kanban--columns
-                   (append (shipit-atlassian-board--columns board) nil)
+                   raw-columns
                    (shipit-atlassian-kanban--spec-pending spec)
                    (shipit-atlassian-kanban--spec-collapsed spec)
                    (shipit-atlassian-kanban--spec-filter spec)
                    (shipit-atlassian-kanban--spec-me spec))))
     (let ((model (shipit-atlassian-kanban--board-create
                   :me (shipit-atlassian-kanban--spec-me spec)
+                  :timeline timeline
                   :tracker (shipit-atlassian-kanban--spec-tracker spec)
+                  :ghost-plan (and (plist-get timeline :arrows)
+                                   (shipit-atlassian-kanban--ghost-plan columns raw-columns))
                   :name (or (cdr (assq 'name board)) "Board")
                   :columns columns
                   :index (shipit-atlassian-kanban--index columns)
@@ -435,8 +501,15 @@ canvas-diagram does not know."
 (defcustom shipit-atlassian-kanban-mine-mark "●"
   "What marks a card the current user is assigned.
 It goes after the issue key.  The fill already says whether a move is
-staged for a card, and the outline already says its type, so the mark
-is text."
+staged for a card or it changed on the timeline, and the outline
+already says its type, so the mark is text."
+  :type 'string
+  :group 'shipit-atlassian)
+
+(defcustom shipit-atlassian-kanban-new-mark "new"
+  "What marks a card made since the time the timeline shows.
+It goes after the issue key.  The board of then shows such a card
+where it is now, and the mark says it was not there then."
   :type 'string
   :group 'shipit-atlassian)
 
@@ -452,6 +525,13 @@ card the keyboard is on, and one colour cannot mean two things."
   '("dark orange" "gold" "medium purple" "deep pink" "cyan")
   "The colours the menu cycles `shipit-atlassian-kanban-staged-color' through."
   :type '(repeat string)
+  :group 'shipit-atlassian)
+
+(defcustom shipit-atlassian-kanban-timeline-color "orchid"
+  "Colour a card is drawn in on the timeline when it moved since then.
+Those cards are the ones not where they are now, so the colour shows
+what changed between the time shown and now."
+  :type 'string
   :group 'shipit-atlassian)
 
 (defun shipit-atlassian-kanban--issue-type (issue)
@@ -513,6 +593,34 @@ legend still lists the types in use."
               (when-let* ((v (cdr (assq 'state issue))))
                 (format "Status: %s" v)))))
 
+(defun shipit-atlassian-kanban--move-time (move)
+  "Return when MOVE, a status change, was made."
+  (format-time-string "%Y-%m-%d %H:%M" (plist-get move :time)))
+
+(defun shipit-atlassian-kanban--move-author (move)
+  "Return who made MOVE."
+  (or (plist-get move :by) "someone"))
+
+(defun shipit-atlassian-kanban--move-statuses (move)
+  "Return the statuses MOVE went between."
+  (format "%s → %s" (plist-get move :from) (plist-get move :to)))
+
+(defun shipit-atlassian-kanban--made-since (issue)
+  "Return the line telling when ISSUE was made, if after the timeline\\='s time."
+  (when-let* ((made (cdr (assq 'timeline-new issue))))
+    (list (format "Made since then: %s" (format-time-string "%Y-%m-%d %H:%M" made)))))
+
+(defun shipit-atlassian-kanban--moves-since (issue)
+  "Return the lines telling the moves of ISSUE since the timeline\\='s time."
+  (when-let* ((moves (cdr (assq 'timeline-moves issue))))
+    (cons "Moved since then:"
+          (mapcar (lambda (move)
+                    (format "  %s  %s: %s"
+                            (shipit-atlassian-kanban--move-time move)
+                            (shipit-atlassian-kanban--move-author move)
+                            (shipit-atlassian-kanban--move-statuses move)))
+                  moves))))
+
 (defun shipit-atlassian-kanban--note (model key)
   "Return the hover note for issue KEY in MODEL."
   (let* ((card (shipit-atlassian-kanban--card model key))
@@ -520,7 +628,9 @@ legend still lists the types in use."
          (staged (plist-get card :staged)))
     (string-join
      (append (shipit-atlassian-kanban--fields issue)
-             (when staged (list (format "Staged for: %s" staged))))
+             (when staged (list (format "Staged for: %s" staged)))
+             (shipit-atlassian-kanban--made-since issue)
+             (shipit-atlassian-kanban--moves-since issue))
      "\n")))
 
 ;;; The layout
@@ -564,11 +674,16 @@ keeps this exact rather than nearly right."
   (+ card-width (* 2 shipit-atlassian-kanban--frame-pad)))
 
 (defun shipit-atlassian-kanban--key-line (model key issue)
-  "Return the first line of a card: its KEY, marked when ISSUE is mine."
-  (if (shipit-atlassian-kanban--mine-p
-       issue (shipit-atlassian-kanban-board-me model))
-      (concat key " " shipit-atlassian-kanban-mine-mark)
-    key))
+  "Return the first line of a card: its KEY, marked when ISSUE is mine,
+and when ISSUE was made since the time the timeline shows."
+  (string-join
+   (delq nil (list key
+                   (and (shipit-atlassian-kanban--mine-p
+                         issue (shipit-atlassian-kanban-board-me model))
+                        shipit-atlassian-kanban-mine-mark)
+                   (and (assq 'timeline-new issue)
+                        shipit-atlassian-kanban-new-mark)))
+   " "))
 
 (defun shipit-atlassian-kanban--card-text (model key ctx)
   "Return what the card for KEY says: its key, then its wrapped summary.
@@ -674,10 +789,23 @@ makes the columns after it move left."
       (setq y (+ y (canvas-diagram-node-h node)
                  shipit-atlassian-kanban--card-gap)))))
 
+(defun shipit-atlassian-kanban--place-ghosts (model column x top width ctx)
+  "Place the ghosts MODEL plans for COLUMN at X from TOP, each WIDTH wide.
+Records each in MODEL and returns the y below the last of them."
+  (let ((name (shipit-atlassian-kanban-column-name column))
+        (height (shipit-atlassian-kanban--line-height ctx))
+        (y top))
+    (dolist (key (cdr (assoc name (shipit-atlassian-kanban-board-ghost-plan model))))
+      (push (list :key key :column name :x x :y y :w width :h height)
+            (shipit-atlassian-kanban-board-ghosts model))
+      (setq y (+ y height shipit-atlassian-kanban--card-gap)))
+    y))
+
 (defun shipit-atlassian-kanban--lay-out-column (diagram model column index ctx measure x)
   "Lay COLUMN out at INDEX with its frame starting at X; return its nodes.
 The header comes first, then the cards, so reading order runs down a
-column before it starts the next."
+column before it starts the next.  The ghosts of cards that moved into
+or out of the column on the timeline go between the two."
   (let* ((header (shipit-atlassian-kanban--make-header
                   diagram model column index measure))
          (cards (shipit-atlassian-kanban--column-nodes
@@ -689,8 +817,11 @@ column before it starts the next."
                                            shipit-atlassian-kanban--frame-pad width)
     (shipit-atlassian-kanban--place-column
      cards inner
-     (+ (canvas-diagram-node-y header) (canvas-diagram-node-h header)
-        shipit-atlassian-kanban--card-gap)
+     (shipit-atlassian-kanban--place-ghosts
+      model column inner
+      (+ (canvas-diagram-node-y header) (canvas-diagram-node-h header)
+         shipit-atlassian-kanban--card-gap)
+      width ctx)
      width)
     (cons (cons header cards) width)))
 
@@ -707,6 +838,8 @@ Records each column frame in the model for the drawing to use."
     ;; in canvas-diagram, which is loaded only where a board is drawn.
     (shipit-atlassian-kanban--register-kinds
      (shipit-atlassian-kanban-board-columns model))
+    ;; A zoom or a resize lays the same model out again.
+    (setf (shipit-atlassian-kanban-board-ghosts model) nil)
     (dolist (column (shipit-atlassian-kanban-board-columns model))
       (pcase-let* ((`(,nodes . ,width)
                     (shipit-atlassian-kanban--lay-out-column
@@ -717,20 +850,43 @@ Records each column frame in the model for the drawing to use."
               index (1+ index)
               all (append all nodes))))
     (setf (shipit-atlassian-kanban-board-frames model) (nreverse frames))
+    (setf (shipit-atlassian-kanban-board-ghosts model)
+          (nreverse (shipit-atlassian-kanban-board-ghosts model)))
+    (shipit-atlassian-kanban--make-room-for-ghosts diagram all)
     all))
+
+(defun shipit-atlassian-kanban--box-bottom (box)
+  "Return the bottom edge of BOX, a ghost plist."
+  (+ (plist-get box :y) (plist-get box :h)))
+
+(defun shipit-atlassian-kanban--node-bottom (node)
+  "Return the bottom edge of NODE."
+  (+ (canvas-diagram-node-y node) (canvas-diagram-node-h node)))
+
+(defun shipit-atlassian-kanban--make-room-for-ghosts (diagram nodes)
+  "Let the drawing of DIAGRAM reach below NODES to its lowest ghost.
+canvas-diagram sizes a drawing by its nodes and its slack, and a ghost
+is no node, so a ghost in a column without cards could fall off the
+bottom.  The slack grows to take it, and shrinks back without it."
+  (let* ((pad shipit-atlassian-kanban--frame-pad)
+         (below (- (apply #'max 0 (mapcar #'shipit-atlassian-kanban--box-bottom
+                                          (shipit-atlassian-kanban-board-ghosts
+                                           (canvas-diagram-model diagram))))
+                   (apply #'max 0 (mapcar #'shipit-atlassian-kanban--node-bottom nodes)))))
+    (shipit-canvas-set-slot 'canvas-diagram 'slack diagram
+                                       (cons pad (+ pad (max 0 below))))))
 
 ;;; Drawing the columns
 ;;
 ;; canvas-diagram calls `:draw-edges' before it draws the boxes, so the
 ;; frames and headers drawn here sit behind the cards.
 
-(defun shipit-atlassian-kanban--frame-height (nodes ctx)
-  "Height every column frame takes, given the laid-out NODES on CTX."
+(defun shipit-atlassian-kanban--frame-height (nodes ghosts ctx)
+  "Height every column frame takes, given the laid-out NODES and GHOSTS on CTX."
   (+ (apply #'max
             (shipit-atlassian-kanban--line-height ctx)
-            (mapcar (lambda (n) (+ (canvas-diagram-node-y n)
-                                   (canvas-diagram-node-h n)))
-                    nodes))
+            (append (mapcar #'shipit-atlassian-kanban--node-bottom nodes)
+                    (mapcar #'shipit-atlassian-kanban--box-bottom ghosts)))
      shipit-atlassian-kanban--frame-pad))
 
 (defun shipit-atlassian-kanban--draw-frame (ctx frame height)
@@ -740,13 +896,15 @@ Records each column frame in the model for the drawing to use."
   (canvas-cairo-fill ctx))
 
 (defun shipit-atlassian-kanban--draw-columns (diagram ctx)
-  "Draw the frame behind every column of DIAGRAM on CTX.
+  "Draw the frame behind every column of DIAGRAM on CTX, and the ghosts.
 The header is a node, so canvas-diagram draws it with the cards."
   (let* ((model (canvas-diagram-model diagram))
          (height (shipit-atlassian-kanban--frame-height
-                  (canvas-diagram-nodes diagram) ctx)))
+                  (canvas-diagram-nodes diagram)
+                  (shipit-atlassian-kanban-board-ghosts model) ctx)))
     (dolist (frame (shipit-atlassian-kanban-board-frames model))
-      (shipit-atlassian-kanban--draw-frame ctx frame height))))
+      (shipit-atlassian-kanban--draw-frame ctx frame height))
+    (shipit-atlassian-kanban--draw-ghosts diagram ctx)))
 
 ;;; Drawing the priority of a card
 ;;
@@ -761,6 +919,7 @@ The header is a node, so canvas-diagram draws it with the cards."
 ;; over the card in the colour the tracker gives that type, in room the
 ;; text leaves for it.  A canvas-diagram icon is as tall as all the
 ;; lines of a card, which is why this one is drawn here too.
+
 (defconst shipit-atlassian-kanban--pill-pad 4
   "Room left and right of the text of a priority pill, in pixels.")
 
@@ -881,8 +1040,128 @@ priority, and for a column header."
 
 (defun shipit-atlassian-kanban--draw-over (diagram ctx)
   "Draw on CTX what goes over the cards of DIAGRAM.
-The `:draw-over' callback: the type icons and the priority marks."
-  (shipit-atlassian-kanban--draw-card-marks diagram ctx))
+The `:draw-over' callback: the type icons and priority marks, then the
+arrows of the timeline, which may cross a mark."
+  (shipit-atlassian-kanban--draw-card-marks diagram ctx)
+  (shipit-atlassian-kanban--draw-arrows diagram ctx))
+
+;;; Drawing where the moved cards went
+;;
+;; On the timeline a card that sits in another column on the other side
+;; gets a ghost there, a dashed box, and an arrow joins the two: from
+;; the card to where it is now on the board of then, and from where it
+;; was to the card on the board of now.  The ghosts are drawn with the
+;; column frames, under the cards, which they never cover.  The arrows
+;; are drawn over every card, with a halo, so an arrow that crosses a
+;; card stays one line rather than seeming to start from that card.
+
+(defun shipit-atlassian-kanban--timeline-rgb ()
+  "Return the colour of the timeline: moved cards, ghosts and arrows."
+  (or (canvas-diagram-rgb shipit-atlassian-kanban-timeline-color)
+      (canvas-diagram-color :selection)))
+
+(defun shipit-atlassian-kanban--ghost-node (model ghost)
+  "Return the node of the card GHOST stands for in MODEL, or nil."
+  (plist-get (shipit-atlassian-kanban--card model (plist-get ghost :key)) :node))
+
+(defun shipit-atlassian-kanban--each-ghost (diagram fn)
+  "Call FN with each ghost of DIAGRAM whose card is drawn, and that card\\='s node."
+  (let ((model (canvas-diagram-model diagram)))
+    (dolist (ghost (shipit-atlassian-kanban-board-ghosts model))
+      (when-let* ((node (shipit-atlassian-kanban--ghost-node model ghost)))
+        (funcall fn ghost node)))))
+
+(defun shipit-atlassian-kanban--now-side-p (diagram)
+  "Return non-nil when DIAGRAM shows the board of now beside the board of then."
+  (plist-get (shipit-atlassian-kanban-board-timeline (canvas-diagram-model diagram)) :now))
+
+(defun shipit-atlassian-kanban--node-box (node)
+  "Return the box of NODE as (X Y W H)."
+  (list (canvas-diagram-node-x node) (canvas-diagram-node-y node)
+        (canvas-diagram-node-w node) (canvas-diagram-node-h node)))
+
+(defun shipit-atlassian-kanban--ghost-box (ghost)
+  "Return the box of GHOST as (X Y W H)."
+  (list (plist-get ghost :x) (plist-get ghost :y)
+        (plist-get ghost :w) (plist-get ghost :h)))
+
+(defun shipit-atlassian-kanban--side-middle (box right)
+  "Return (X . Y), the middle of the RIGHT side of BOX, else of its left."
+  (pcase-let ((`(,x ,y ,w ,h) box))
+    (cons (if right (+ x w) x) (+ y (/ h 2.0)))))
+
+(defconst shipit-atlassian-kanban--arrow-head 10
+  "Length of an arrow head, in pixels at natural zoom.")
+
+(defun shipit-atlassian-kanban--arrow-path (ctx start end right)
+  "Make on CTX the path of an arrow from START to END, each (X . Y).
+The line bends into END level and the head points RIGHT, else left."
+  (let* ((head shipit-atlassian-kanban--arrow-head)
+         (base (- (car end) (if right head (- head))))
+         (bend (/ (- base (car start)) 2.0)))
+    (canvas-cairo-new-path ctx)
+    (canvas-cairo-move-to ctx (car start) (cdr start))
+    (canvas-cairo-curve-to ctx (+ (car start) bend) (cdr start)
+                           (- base bend) (cdr end) base (cdr end))
+    (canvas-cairo-line-to ctx base (- (cdr end) (/ head 2.0)))
+    (canvas-cairo-line-to ctx (car end) (cdr end))
+    (canvas-cairo-line-to ctx base (+ (cdr end) (/ head 2.0)))
+    (canvas-cairo-line-to ctx base (cdr end))))
+
+(defun shipit-atlassian-kanban--draw-arrow (ctx from to)
+  "Draw on CTX an arrow from the box FROM to the box TO, in other columns.
+It leaves FROM from the side facing TO.  A wide stroke in the
+background colour goes first, so the arrow reads over a card."
+  (let* ((right (> (car to) (car from)))
+         (start (shipit-atlassian-kanban--side-middle from right))
+         (end (shipit-atlassian-kanban--side-middle to (not right))))
+    (shipit-atlassian-kanban--arrow-path ctx start end right)
+    (canvas-diagram-set-rgb ctx (canvas-diagram-color :background) 0.85)
+    (canvas-cairo-set-line-width ctx 6)
+    (canvas-cairo-stroke ctx)
+    (shipit-atlassian-kanban--arrow-path ctx start end right)
+    (canvas-diagram-set-rgb ctx (shipit-atlassian-kanban--timeline-rgb) 0.95)
+    (canvas-cairo-set-line-width ctx 2)
+    (canvas-cairo-stroke ctx)))
+
+(defun shipit-atlassian-kanban--draw-ghost (ctx ghost label)
+  "Draw GHOST on CTX: a dashed box in the timeline colour, saying LABEL."
+  (pcase-let* ((`(,x ,y ,w ,h) (shipit-atlassian-kanban--ghost-box ghost))
+               (rgb (shipit-atlassian-kanban--timeline-rgb))
+               (font (canvas-diagram-font))
+               (size (canvas-cairo-text-size ctx label font)))
+    (canvas-diagram-rounded-rect ctx x y w h 6)
+    (canvas-diagram-set-rgb ctx rgb 0.15)
+    (canvas-cairo-fill ctx t)
+    (canvas-diagram-set-rgb ctx rgb 0.9)
+    (canvas-cairo-set-line-width ctx 1.5)
+    (canvas-cairo-set-dash ctx [6 4])
+    (canvas-cairo-stroke ctx)
+    (canvas-cairo-set-dash ctx [])
+    (canvas-diagram-set-rgb ctx (canvas-diagram-color :text) 0.8)
+    (canvas-cairo-text ctx (+ x 8) (+ y (/ (- h (cdr size)) 2.0)) label font)))
+
+(defun shipit-atlassian-kanban--draw-ghosts (diagram ctx)
+  "Draw on CTX the ghost of every moved card of DIAGRAM."
+  (let ((now (shipit-atlassian-kanban--now-side-p diagram)))
+    (shipit-atlassian-kanban--each-ghost
+     diagram
+     (lambda (ghost _node)
+       (shipit-atlassian-kanban--draw-ghost
+        ctx ghost (format (if now "%s (then)" "%s (now)") (plist-get ghost :key)))))))
+
+(defun shipit-atlassian-kanban--draw-arrows (diagram ctx)
+  "Draw on CTX the arrow between every moved card of DIAGRAM and its ghost.
+Drawn after every card."
+  (let ((now (shipit-atlassian-kanban--now-side-p diagram)))
+    (shipit-atlassian-kanban--each-ghost
+     diagram
+     (lambda (ghost node)
+       (let ((card (shipit-atlassian-kanban--node-box node))
+             (place (shipit-atlassian-kanban--ghost-box ghost)))
+         (if now
+             (shipit-atlassian-kanban--draw-arrow ctx place card)
+           (shipit-atlassian-kanban--draw-arrow ctx card place)))))))
 
 ;;; Moving between the cards
 
@@ -1042,7 +1321,28 @@ be staged and its effect seen without closing the menu."
          ("c" shipit-atlassian-kanban-cycle-card-width :transient t
           :description (lambda ()
                          (canvas-diagram-setting
-                          "card width" 'shipit-atlassian-kanban-card-width)))]))
+                          "card width" 'shipit-atlassian-kanban-card-width)))]
+        ["Timeline"
+         ("M-p" shipit-atlassian-kanban-timeline-earlier :transient t
+          :description "one step back in time")
+         ("M-n" shipit-atlassian-kanban-timeline-later :transient t
+          :description "one step later")
+         ("T" shipit-atlassian-kanban-timeline-cycle-step :transient t
+          :description (lambda ()
+                         (canvas-diagram-setting
+                          "step" 'shipit-atlassian-kanban--timeline-step)))
+         ("d" shipit-atlassian-kanban-timeline-changes
+          :description "the moves since then")
+         ("D" shipit-atlassian-kanban-timeline-side-by-side
+          :description "now beside then")
+         ("H" shipit-atlassian-kanban-timeline-toggle-unchanged :transient t
+          :description (lambda ()
+                         (canvas-diagram-setting
+                          "only moved" 'shipit-atlassian-kanban--only-moved)))
+         ("A" shipit-atlassian-kanban-timeline-toggle-arrows :transient t
+          :description (lambda ()
+                         (canvas-diagram-setting
+                          "arrows" 'shipit-atlassian-kanban--arrows)))]))
    t))
 
 ;;; How the board plugs into canvas-diagram
@@ -1057,9 +1357,10 @@ be staged and its effect seen without closing the menu."
 (defun shipit-atlassian-kanban--node-rgb (diagram node)
   "Return the fill of NODE\\='s card in DIAGRAM.
 A staged card takes the staged colour, so a move shows without
-opening anything.  Any other card takes the colour of the page: the
-column frame shows the column, so a colour of the column would only
-compete with the colours that mean something."
+opening anything.  On the timeline a card that moved or was made since
+then takes the timeline colour.  Any other card takes the colour of the
+page: the column frame shows the column, so a colour of the column
+would only compete with the colours that mean something."
   (let* ((model (canvas-diagram-model diagram))
          (card (shipit-atlassian-kanban--card-of model node)))
     (cond
@@ -1067,15 +1368,22 @@ compete with the colours that mean something."
      ((plist-get card :staged)
       (or (canvas-diagram-rgb shipit-atlassian-kanban-staged-color)
           (canvas-diagram-color :selection)))
+     ((shipit-atlassian-kanban--changed-since-p (plist-get card :issue))
+      (shipit-atlassian-kanban--timeline-rgb))
      (t (canvas-diagram-color :background)))))
 
 (defun shipit-atlassian-kanban--header (diagram node)
-  "Return the header line of NODE in DIAGRAM: its board and its column."
-  (let ((model (canvas-diagram-model diagram)))
-    (format "%s › %s"
-            (shipit-atlassian-kanban-board-name model)
-            (shipit-atlassian-kanban-column-name
-             (shipit-atlassian-kanban--column-of model node)))))
+  "Return the header line of NODE in DIAGRAM: its board and its column.
+On the timeline a banner comes first, which says so and how to leave."
+  (let* ((model (canvas-diagram-model diagram))
+         (place (format "%s › %s"
+                        (shipit-atlassian-kanban-board-name model)
+                        (shipit-atlassian-kanban-column-name
+                         (shipit-atlassian-kanban--column-of model node))))
+         (timeline (shipit-atlassian-kanban-board-timeline model)))
+    (if timeline
+        (concat (shipit-atlassian-kanban--timeline-banner timeline) "   " place)
+      place)))
 
 (defun shipit-atlassian-kanban--column-popup (model column)
   "Return (TITLE PATH BODY) for COLUMN\='s header."
@@ -1154,6 +1462,8 @@ node, and folding a column threw the keyboard to the leftmost one."
         :move #'shipit-atlassian-kanban--move
         :node-key #'shipit-atlassian-kanban--node-key
         :restore #'shipit-atlassian-kanban--restore
+        :go #'shipit-atlassian-kanban--follow
+        :zoom #'shipit-atlassian-kanban--zoom-along
         :draw-over #'shipit-atlassian-kanban--draw-over
         :menu 'shipit-atlassian-kanban-menu)
   "How the board plugs into canvas-diagram.")
@@ -1210,22 +1520,73 @@ and answers the `:mine' part of the filter.")
   "What this buffer narrows the board to, a plist, or nil for all of it.
 See `shipit-atlassian-kanban--passes-p'.")
 
+(defvar-local shipit-atlassian-kanban--timeline nil
+  "How far back in time the board is shown, in seconds, or nil for now.
+While it is set the board is read-only, since an old board cannot be
+moved.  Kept as a distance rather than a time, so that stepping later
+as often as earlier comes back to now.")
+
+(defvar-local shipit-atlassian-kanban--timeline-step 'day
+  "How far one step of the timeline goes.
+A key of `shipit-atlassian-kanban--timeline-steps'.")
+
+(defvar-local shipit-atlassian-kanban--histories nil
+  "The history of every issue on the board, or `reading\\=' while Jira has
+not answered, or nil before it is asked.  The history is an alist of
+issue key to history; see shipit-atlassian-history.el.")
+
+(defvar-local shipit-atlassian-kanban--only-moved nil
+  "Non-nil when the timeline shows only the cards that moved since then.")
+
+(defvar-local shipit-atlassian-kanban--arrows t
+  "Non-nil when the timeline draws where each moved card went.")
+
+(defvar-local shipit-atlassian-kanban--changes nil
+  "The buffer listing the moves since the time the timeline shows, or nil.")
+
+(defvar-local shipit-atlassian-kanban--beside nil
+  "The buffer showing the board now beside this board of then, or nil.")
+
+(defvar-local shipit-atlassian-kanban--compared-with nil
+  "The board of then this buffer shows the board now beside, or nil.
+Such a buffer is only there to compare, so it cannot change the board.")
+
+(defvar-local shipit-atlassian-kanban--board-filter nil
+  "The JQL of the board\\='s filter, `none\\=' when it has none, or nil
+before it is read.")
+
+(defvar-local shipit-atlassian-kanban--left nil
+  "The cards the board had at a time on the timeline and no longer has.
+An alist of the timeline\\='s distance back to an alist of issue key to
+history, each carrying its issue: the board does not have them, so
+they come from a search, one for each time, as the filter matched
+differently then.")
+
+(defvar-local shipit-atlassian-kanban--left-reading nil
+  "The distance back whose lost cards are being read, or nil.")
+
 (defvar-local shipit-atlassian-kanban--tracker nil
   "The plist of the issue backend whose issues this board shows.")
 
 (defvar-local shipit-atlassian-kanban--drawing nil
   "The `canvas-diagram' this buffer draws, kept so its spec can be replaced.")
 
-(defun shipit-atlassian-kanban--buffer-name (repo board)
-  "Return the buffer name for BOARD of REPO."
-  (format "*shipit-kanban: %s %s*" repo (or (cdr (assq 'name board)) "board")))
+(defun shipit-atlassian-kanban--buffer-name (repo board &optional side)
+  "Return the buffer name for BOARD of REPO.
+SIDE names the second buffer of a comparison."
+  (format "*shipit-kanban: %s %s%s*" repo (or (cdr (assq 'name board)) "board")
+          (if side (format " (%s)" side) "")))
 
 (defun shipit-atlassian-kanban--update-mode-line ()
   "Show how many moves are staged, or nothing when none are."
   (setq mode-line-process
         (string-join
          (delq nil
-               (list (when shipit-atlassian-kanban--pending
+               (list (when shipit-atlassian-kanban--timeline
+                       (propertize " TIMELINE" 'face 'shipit-atlassian-kanban-timeline))
+                     (when (buffer-live-p shipit-atlassian-kanban--compared-with)
+                       (propertize " NOW" 'face 'shipit-atlassian-kanban-timeline))
+                     (when shipit-atlassian-kanban--pending
                        (format " staged:%d"
                                (length shipit-atlassian-kanban--pending)))
                      (when (shipit-atlassian-kanban--filtered-p
@@ -1238,18 +1599,25 @@ See `shipit-atlassian-kanban--passes-p'.")
 (defun shipit-atlassian-kanban--redraw ()
   "Draw the board again from the current board data and staged moves.
 The keyboard stays on its card, which canvas-diagram restores by the
-issue key."
+issue key.  On the timeline the board is the one of then, and the
+staged moves are left out: they belong to the board now.  The board of
+now beside it follows."
   (shipit-canvas-set-slot
    'canvas-diagram 'spec shipit-atlassian-kanban--drawing
-   (shipit-atlassian-kanban--spec shipit-atlassian-kanban--board
-                                  shipit-atlassian-kanban--pending
+   (shipit-atlassian-kanban--spec (shipit-atlassian-kanban--shown-board)
+                                  (unless (shipit-atlassian-kanban--read-only-p)
+                                    shipit-atlassian-kanban--pending)
                                   shipit-atlassian-kanban--collapsed
                                   shipit-atlassian-kanban--me
-                                  shipit-atlassian-kanban--filter
+                                  (shipit-atlassian-kanban--shown-filter)
+                                  (shipit-atlassian-kanban--timeline-spec)
                                   shipit-atlassian-kanban--tracker))
   (canvas-diagram-rebuild)
   (canvas-diagram-redraw)
-  (shipit-atlassian-kanban--update-mode-line))
+  (shipit-atlassian-kanban--update-mode-line)
+  (when (buffer-live-p shipit-atlassian-kanban--beside)
+    (with-current-buffer shipit-atlassian-kanban--beside
+      (shipit-atlassian-kanban--redraw))))
 
 ;;; Staging a move
 
@@ -1285,6 +1653,7 @@ columns."
 
 (defun shipit-atlassian-kanban--stage (direction)
   "Stage a move one column DIRECTION for the card the keyboard is on."
+  (shipit-atlassian-kanban--refuse-on-the-timeline)
   (let* ((key (shipit-atlassian-kanban--selected-key))
          (boards (list shipit-atlassian-kanban--board))
          (effective (shipit-atlassian-kanban--effective-status key))
@@ -1312,6 +1681,7 @@ Nothing reaches Jira until \\[shipit-atlassian-kanban-commit]."
 (defun shipit-atlassian-kanban-discard ()
   "Drop every staged move and draw each card in its own column again."
   (interactive)
+  (shipit-atlassian-kanban--refuse-on-the-timeline)
   (let ((n (length shipit-atlassian-kanban--pending)))
     (when (zerop n)
       (user-error "No staged moves to discard"))
@@ -1327,6 +1697,7 @@ Nothing reaches Jira until \\[shipit-atlassian-kanban-commit]."
 A move Jira refuses stays staged, so it can be retried or discarded.
 This blocks while the transitions run."
   (interactive)
+  (shipit-atlassian-kanban--refuse-on-the-timeline)
   (unless shipit-atlassian-kanban--pending
     (user-error "No staged moves to commit"))
   (pcase-let ((`(,committed ,remaining ,failures)
@@ -1743,9 +2114,20 @@ columns after it."
 ;;; Reading the board again
 
 (defun shipit-atlassian-kanban-refresh ()
-  "Fetch this board again and draw it, keeping the staged moves."
+  "Fetch this board again and draw it, keeping the staged moves.
+On the timeline its history is read again as well.  Beside the board
+of then, the board of then is read, which this one follows."
   (interactive)
+  (shipit-atlassian-kanban--on-then #'shipit-atlassian-kanban--read-again))
+
+(defun shipit-atlassian-kanban--read-again ()
+  "Fetch this board and, on the timeline, its history again; then draw it."
   (let ((buffer (current-buffer)))
+    (setq shipit-atlassian-kanban--histories nil
+          shipit-atlassian-kanban--left nil)
+    (when shipit-atlassian-kanban--timeline
+      (shipit-atlassian-kanban--read-history)
+      (shipit-atlassian-kanban--read-left))
     (message "Reading the board...")
     (shipit-atlassian-board--fetch-all-async
      shipit-atlassian-kanban--config
@@ -1757,11 +2139,800 @@ columns after it."
            (shipit-atlassian-kanban--redraw)
            (message "Board read")))))))
 
+(defun shipit-atlassian-kanban--open-issue (key)
+  "Open issue KEY of this board\\='s repository in a shipit buffer."
+  (shipit-issues-open-buffer key shipit-atlassian-kanban--repo))
+
 (defun shipit-atlassian-kanban-visit-issue ()
   "Open the issue of the card the keyboard is on in a shipit buffer."
   (interactive)
-  (shipit-issues-open-buffer (shipit-atlassian-kanban--selected-key)
-                             shipit-atlassian-kanban--repo))
+  (shipit-atlassian-kanban--open-issue (shipit-atlassian-kanban--selected-key)))
+
+;;; The timeline
+;;
+;; M-p shows the board as it was one step earlier, and M-n one step
+;; later, until it is back at now.  The board of then is worked out
+;; from the history of its issues, which is read from Jira the first
+;; time.  Nothing can be moved on it: the moves would be made on the
+;; board of now, which is not the one shown.  The header line says so
+;; and names the keys, and the rest of the board keys work as before.
+
+(defface shipit-atlassian-kanban-timeline
+  '((t :inherit warning :inverse-video t :weight bold))
+  "Face of the banner that says the board is shown as it was."
+  :group 'shipit-atlassian)
+
+(defconst shipit-atlassian-kanban--timeline-steps
+  '((hour . 3600) (day . 86400) (week . 604800))
+  "The steps of the timeline, in the order they cycle, and their seconds.")
+
+(defun shipit-atlassian-kanban--step-seconds ()
+  "Return how many seconds one step of the timeline goes."
+  (or (alist-get shipit-atlassian-kanban--timeline-step
+                 shipit-atlassian-kanban--timeline-steps)
+      (error "Unknown timeline step: %S" shipit-atlassian-kanban--timeline-step)))
+
+(defun shipit-atlassian-kanban--count (n unit)
+  "Return N UNITs, with UNIT made plural unless N is one."
+  (format "%d %s%s" n unit (if (= n 1) "" "s")))
+
+(defun shipit-atlassian-kanban--distance (seconds)
+  "Return SECONDS as the two largest of weeks, days, hours and minutes."
+  (let ((parts nil)
+        (left (round seconds)))
+    (pcase-dolist (`(,unit . ,size) '(("week" . 604800) ("day" . 86400)
+                                      ("hour" . 3600) ("minute" . 60)))
+      (when (>= left size)
+        (push (shipit-atlassian-kanban--count (/ left size) unit) parts)
+        (setq left (% left size))))
+    (string-join (seq-take (nreverse parts) 2) " ")))
+
+(defun shipit-atlassian-kanban--then-buffer ()
+  "Return the buffer whose timeline this buffer shows.
+That is the board of then beside which this buffer shows now, or else
+this buffer itself."
+  (if (buffer-live-p shipit-atlassian-kanban--compared-with)
+      shipit-atlassian-kanban--compared-with
+    (current-buffer)))
+
+(defun shipit-atlassian-kanban--on-then (fn)
+  "Call FN in the buffer whose timeline this buffer shows, and return its value.
+So the timeline keys work on either side of a comparison."
+  (with-current-buffer (shipit-atlassian-kanban--then-buffer)
+    (funcall fn)))
+
+(defun shipit-atlassian-kanban--read-only-p ()
+  "Return non-nil when this buffer shows a board that cannot be changed.
+That is the board of then on the timeline, and the board of now shown
+beside it."
+  (or shipit-atlassian-kanban--timeline
+      (buffer-live-p shipit-atlassian-kanban--compared-with)))
+
+(defun shipit-atlassian-kanban--history-ready-p ()
+  "Return non-nil when the timeline is on and its history has arrived."
+  (and shipit-atlassian-kanban--timeline
+       (consp shipit-atlassian-kanban--histories)))
+
+(defun shipit-atlassian-kanban--timeline-time ()
+  "Return the time the timeline shows, in seconds since the epoch."
+  (- (float-time) shipit-atlassian-kanban--timeline))
+
+(defun shipit-atlassian-kanban--own-timeline-spec ()
+  "Return what the drawing shows of this buffer\\='s timeline, or nil at now."
+  (when shipit-atlassian-kanban--timeline
+    (list :time (shipit-atlassian-kanban--timeline-time)
+          :back shipit-atlassian-kanban--timeline
+          :step shipit-atlassian-kanban--timeline-step
+          :reading (or (not (consp shipit-atlassian-kanban--histories))
+                       shipit-atlassian-kanban--left-reading)
+          :only-moved shipit-atlassian-kanban--only-moved
+          :arrows shipit-atlassian-kanban--arrows)))
+
+(defun shipit-atlassian-kanban--timeline-spec ()
+  "Return what the drawing shows of the timeline, or nil at now.
+A plist: `:time\\=' is the time shown, `:back\\=' how long before now it
+is, `:step\\=' the step, and `:reading\\=' is non-nil while the history
+is still being read.  `:only-moved\\=' and `:arrows\\=' are the two
+toggles.  Beside the board of then, the board of now shows the same
+timeline with `:now\\=' set."
+  (if (buffer-live-p shipit-atlassian-kanban--compared-with)
+      (append (list :now t)
+              (shipit-atlassian-kanban--on-then
+               #'shipit-atlassian-kanban--own-timeline-spec))
+    (shipit-atlassian-kanban--own-timeline-spec)))
+
+(defun shipit-atlassian-kanban--all-histories ()
+  "Return the history of every card: those on the board, and those it had
+at the time shown and has lost since."
+  (append shipit-atlassian-kanban--histories
+          (cdr (assoc shipit-atlassian-kanban--timeline shipit-atlassian-kanban--left))))
+
+(defun shipit-atlassian-kanban--board-then ()
+  "Return the board as it was at the time the timeline shows."
+  (shipit-atlassian-history--board-at shipit-atlassian-kanban--board
+                                      (shipit-atlassian-kanban--all-histories)
+                                      (shipit-atlassian-kanban--timeline-time)))
+
+(defun shipit-atlassian-kanban--board-now-marked ()
+  "Return the board now, with the moves since the time the timeline shows."
+  (if (shipit-atlassian-kanban--history-ready-p)
+      (shipit-atlassian-history--mark-moves shipit-atlassian-kanban--board
+                                            (shipit-atlassian-kanban--all-histories)
+                                            (shipit-atlassian-kanban--timeline-time))
+    shipit-atlassian-kanban--board))
+
+(defun shipit-atlassian-kanban--shown-board ()
+  "Return the board to draw.
+On the timeline that is the board of then, and beside it the board of
+now with the moves since then.  Until the history arrives it is the
+board of now."
+  (cond
+   ((buffer-live-p shipit-atlassian-kanban--compared-with)
+    (shipit-atlassian-kanban--on-then #'shipit-atlassian-kanban--board-now-marked))
+   ((shipit-atlassian-kanban--history-ready-p)
+    (shipit-atlassian-kanban--board-then))
+   (t shipit-atlassian-kanban--board)))
+
+(defun shipit-atlassian-kanban--shown-filter ()
+  "Return the filter to draw with.
+That is this buffer\\='s own, and on the timeline with only the moved
+cards asked for, that as well."
+  (if (plist-get (shipit-atlassian-kanban--timeline-spec) :only-moved)
+      (append '(:moved t) shipit-atlassian-kanban--filter)
+    shipit-atlassian-kanban--filter))
+
+(defun shipit-atlassian-kanban--timeline-keys (timeline)
+  "Return the keys of TIMELINE, a timeline spec, for its banner.
+The key that leaves comes first, so it shows in a narrow window too."
+  (let ((now (plist-get timeline :now)))
+    (substitute-command-keys
+     (string-join
+      (delq nil
+            (list (if now
+                      "\\[shipit-atlassian-kanban-quit] closes"
+                    "\\[shipit-atlassian-kanban-quit] back to now")
+                  "\\[shipit-atlassian-kanban-timeline-earlier] earlier"
+                  "\\[shipit-atlassian-kanban-timeline-later] later"
+                  (format "\\[shipit-atlassian-kanban-timeline-cycle-step] step: %s"
+                          (plist-get timeline :step))
+                  "\\[shipit-atlassian-kanban-timeline-changes] changes"
+                  (unless now
+                    "\\[shipit-atlassian-kanban-timeline-side-by-side] side by side")
+                  "\\[shipit-atlassian-kanban-timeline-toggle-unchanged] only moved"
+                  "\\[shipit-atlassian-kanban-timeline-toggle-arrows] arrows"))
+      " · "))))
+
+(defun shipit-atlassian-kanban--timeline-when (timeline)
+  "Return when TIMELINE, a timeline spec, shows the board."
+  (if (plist-get timeline :reading)
+      "reading the history…"
+    (format "%s (%s ago)"
+            (format-time-string "%a %Y-%m-%d %H:%M" (plist-get timeline :time))
+            (shipit-atlassian-kanban--distance (plist-get timeline :back)))))
+
+(defun shipit-atlassian-kanban--timeline-banner (timeline)
+  "Return the header line banner for TIMELINE, a timeline spec."
+  (let ((now (plist-get timeline :now)))
+    (concat (propertize (if now " NOW " " TIMELINE ")
+                        'face 'shipit-atlassian-kanban-timeline)
+            " "
+            (propertize (concat (if now "beside " "")
+                                (shipit-atlassian-kanban--timeline-when timeline))
+                        'face 'bold)
+            "   "
+            (shipit-atlassian-kanban--timeline-keys timeline))))
+
+(defun shipit-atlassian-kanban--refuse-on-the-timeline ()
+  "Signal while this buffer shows a board that cannot be changed.
+The board of then cannot be changed, and the board of now beside it
+is there to compare, not to move cards on."
+  (when (shipit-atlassian-kanban--read-only-p)
+    (user-error "%s" (substitute-command-keys
+                      (if shipit-atlassian-kanban--timeline
+                          "The timeline is read-only: \\[shipit-atlassian-kanban-quit] goes back to now"
+                        "This side is only to compare: \\[shipit-atlassian-kanban-quit] closes it")))))
+
+(defun shipit-atlassian-kanban--history-read (histories)
+  "Keep HISTORIES, the board\\='s history, and draw the board again.
+Nothing back means the history could not be read.  The timeline then
+ends, rather than show the board of now under an old date."
+  (setq shipit-atlassian-kanban--histories histories)
+  (unless histories
+    (shipit-atlassian-kanban--end-timeline))
+  (shipit-atlassian-kanban--redraw)
+  (shipit-atlassian-kanban--follow-changes)
+  (message (if histories "History read" "Could not read the history of the board")))
+
+(defun shipit-atlassian-kanban--read-history ()
+  "Read the history of the board, unless it is read or being read."
+  (unless shipit-atlassian-kanban--histories
+    (let ((buffer (current-buffer)))
+      (setq shipit-atlassian-kanban--histories 'reading)
+      (message "Reading the history of the board...")
+      (shipit-atlassian-history--fetch-async
+       shipit-atlassian-kanban--config shipit-atlassian-kanban--board-id
+       (lambda (histories)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (shipit-atlassian-kanban--history-read histories))))))))
+
+(defun shipit-atlassian-kanban--with-board-filter (fn)
+  "Call FN with the JQL of the board\\='s filter, read first when not known.
+FN gets nil when the board has no filter."
+  (if shipit-atlassian-kanban--board-filter
+      (funcall fn (and (stringp shipit-atlassian-kanban--board-filter)
+                       shipit-atlassian-kanban--board-filter))
+    (let ((buffer (current-buffer)))
+      (shipit-atlassian-history--board-filter-async
+       shipit-atlassian-kanban--config shipit-atlassian-kanban--board-id
+       (lambda (filter)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (setq shipit-atlassian-kanban--board-filter (or filter 'none))
+             (funcall fn filter))))))))
+
+(defun shipit-atlassian-kanban--left-read (back left)
+  "Keep LEFT, the cards lost since the time BACK seconds ago; draw again.
+A step taken meanwhile may be to a time not read yet, so that is read
+next."
+  (push (cons back left) shipit-atlassian-kanban--left)
+  (setq shipit-atlassian-kanban--left-reading nil)
+  (shipit-atlassian-kanban--redraw)
+  (shipit-atlassian-kanban--follow-changes)
+  (shipit-atlassian-kanban--read-left))
+
+(defun shipit-atlassian-kanban--left-to-read-p ()
+  "Return non-nil when the cards lost since the time shown are not read yet."
+  (and shipit-atlassian-kanban--timeline
+       (not shipit-atlassian-kanban--left-reading)
+       (not (eq shipit-atlassian-kanban--board-filter 'none))
+       (not (assoc shipit-atlassian-kanban--timeline shipit-atlassian-kanban--left))))
+
+(defun shipit-atlassian-kanban--board-keys ()
+  "Return the keys of the issues the board has now."
+  (mapcar #'shipit-atlassian-board--issue-key
+          (shipit-atlassian-history--board-issues shipit-atlassian-kanban--board)))
+
+(defun shipit-atlassian-kanban--read-left ()
+  "Read the cards the board had at the time shown and has lost since.
+Once for each time: the search is the board\\='s filter as it matched
+then, less the cards the board has now."
+  (when (shipit-atlassian-kanban--left-to-read-p)
+    (let ((buffer (current-buffer))
+          (back shipit-atlassian-kanban--timeline))
+      (setq shipit-atlassian-kanban--left-reading back)
+      (shipit-atlassian-kanban--with-board-filter
+       (lambda (filter)
+         (if (null filter)
+             (setq shipit-atlassian-kanban--left-reading nil)
+           (shipit-atlassian-history--fetch-left-async
+            shipit-atlassian-kanban--config filter (- (float-time) back)
+            (shipit-atlassian-kanban--board-keys)
+            (lambda (left)
+              (when (buffer-live-p buffer)
+                (with-current-buffer buffer
+                  (shipit-atlassian-kanban--left-read back left)))))))))))
+
+(defun shipit-atlassian-kanban--end-timeline ()
+  "End the timeline, and close the board of now and the moves beside it."
+  (setq shipit-atlassian-kanban--timeline nil)
+  (shipit-atlassian-kanban--close-companions))
+
+(defun shipit-atlassian-kanban--show-back (seconds)
+  "Show the board as it was SECONDS ago, or as it is now when nil."
+  (if seconds
+      (progn (setq shipit-atlassian-kanban--timeline seconds)
+             (shipit-atlassian-kanban--read-history)
+             (shipit-atlassian-kanban--read-left))
+    (shipit-atlassian-kanban--end-timeline))
+  (shipit-atlassian-kanban--redraw)
+  (shipit-atlassian-kanban--follow-changes))
+
+(defun shipit-atlassian-kanban-timeline-earlier ()
+  "Show the board as it was one step earlier.
+At now this starts the timeline.  The board is read-only there, and
+\\[shipit-atlassian-kanban-quit] goes back to now."
+  (interactive)
+  (shipit-atlassian-kanban--on-then
+   (lambda ()
+     (shipit-atlassian-kanban--show-back
+      (+ (or shipit-atlassian-kanban--timeline 0)
+         (shipit-atlassian-kanban--step-seconds))))))
+
+(defun shipit-atlassian-kanban--step-later ()
+  "Show the board one step later; a step past now ends the timeline."
+  (unless shipit-atlassian-kanban--timeline
+    (user-error "%s" (substitute-command-keys
+                      "The board is at now: \\[shipit-atlassian-kanban-timeline-earlier] goes back in time")))
+  (let ((back (- shipit-atlassian-kanban--timeline
+                 (shipit-atlassian-kanban--step-seconds))))
+    (shipit-atlassian-kanban--show-back (and (> back 0) back))
+    (unless shipit-atlassian-kanban--timeline
+      (message "Back to now"))))
+
+(defun shipit-atlassian-kanban-timeline-later ()
+  "Show the board as it was one step later; a step past now ends the timeline."
+  (interactive)
+  (shipit-atlassian-kanban--on-then #'shipit-atlassian-kanban--step-later))
+
+(defun shipit-atlassian-kanban--next-step ()
+  "Make one step of the timeline the next of an hour, a day and a week."
+  (let ((steps (mapcar #'car shipit-atlassian-kanban--timeline-steps)))
+    (setq shipit-atlassian-kanban--timeline-step
+          (or (cadr (memq shipit-atlassian-kanban--timeline-step steps))
+              (car steps))))
+  (when shipit-atlassian-kanban--timeline
+    (shipit-atlassian-kanban--redraw))
+  (message "One step of the timeline is now a %s"
+           shipit-atlassian-kanban--timeline-step))
+
+(defun shipit-atlassian-kanban-timeline-cycle-step ()
+  "Make one step of the timeline the next of an hour, a day and a week."
+  (interactive)
+  (shipit-atlassian-kanban--on-then #'shipit-atlassian-kanban--next-step))
+
+(defun shipit-atlassian-kanban-quit ()
+  "Leave the timeline and show the board as it is now.
+Beside the board of then, close the board of now.  At now, quit the
+window as usual."
+  (interactive)
+  (cond
+   ((buffer-live-p shipit-atlassian-kanban--compared-with)
+    (shipit-atlassian-kanban--on-then #'shipit-atlassian-kanban--close-beside))
+   (shipit-atlassian-kanban--timeline
+    (shipit-atlassian-kanban--show-back nil)
+    (message "Back to now"))
+   (t (quit-window))))
+
+(defun shipit-atlassian-kanban--toggle (variable what)
+  "Flip VARIABLE, a toggle of the timeline, and draw again; WHAT names it."
+  (unless shipit-atlassian-kanban--timeline
+    (user-error "%s" (substitute-command-keys
+                      "Go back in time first with \\[shipit-atlassian-kanban-timeline-earlier]: at now nothing moved")))
+  (set variable (not (symbol-value variable)))
+  (shipit-atlassian-kanban--redraw)
+  (message "%s: %s" what (if (symbol-value variable) "on" "off")))
+
+(defun shipit-atlassian-kanban-timeline-toggle-unchanged ()
+  "Hide the cards that did not move since the time the timeline shows.
+Again, show them again.  The column headers count the hidden cards."
+  (interactive)
+  (shipit-atlassian-kanban--on-then
+   (lambda ()
+     (shipit-atlassian-kanban--toggle 'shipit-atlassian-kanban--only-moved
+                                      "Only the moved cards"))))
+
+(defun shipit-atlassian-kanban-timeline-toggle-arrows ()
+  "Turn off, or on again, the arrows to where each moved card went.
+A moved card gets a dashed ghost in the column it sits in on the other
+side of the timeline, and an arrow joins the two."
+  (interactive)
+  (shipit-atlassian-kanban--on-then
+   (lambda ()
+     (shipit-atlassian-kanban--toggle 'shipit-atlassian-kanban--arrows
+                                      "Arrows to where the cards went"))))
+
+;;; Then and now side by side
+;;
+;; The board of now opens in a second buffer beside the board of then.
+;; It reads the board, the history and the time from the buffer of
+;; then, so it follows every step, and the cards that moved in between
+;; take the timeline colour on both sides.  The keyboard goes to the
+;; same card on the other side, wherever that card sits there, and a
+;; zoom on one side zooms the other.
+
+(defvar shipit-atlassian-kanban--following nil
+  "Non-nil while one side of a comparison moves or zooms the other.
+It stops the other side from moving or zooming this one back in turn.")
+
+(defun shipit-atlassian-kanban--other-side ()
+  "Return the buffer on the other side of a comparison, or nil."
+  (seq-find #'buffer-live-p (list shipit-atlassian-kanban--beside
+                                  shipit-atlassian-kanban--compared-with)))
+
+(defun shipit-atlassian-kanban--in-board (buffer fn)
+  "Call FN in the board BUFFER, in the window showing it when there is one.
+So it is that view that scrolls or zooms.  Return what FN returns."
+  (let ((window (get-buffer-window buffer t)))
+    (with-current-buffer buffer
+      (if window
+          (with-selected-window window (funcall fn))
+        (funcall fn)))))
+
+(defun shipit-atlassian-kanban--go-to-in (buffer key)
+  "Put the keyboard of BUFFER on the node KEY names there, if it is drawn.
+Return non-nil when the node is drawn."
+  (shipit-atlassian-kanban--in-board
+   buffer
+   (lambda ()
+     (when-let* ((node (shipit-atlassian-kanban--restore
+                        shipit-atlassian-kanban--drawing key)))
+       (canvas-diagram-go node)
+       t))))
+
+(defun shipit-atlassian-kanban--zoom-in-board (buffer zoom)
+  "Draw the board BUFFER at ZOOM, without it zooming the other side back."
+  (let ((shipit-atlassian-kanban--following t))
+    (shipit-atlassian-kanban--in-board
+     buffer (lambda () (canvas-diagram-zoom-to zoom)))))
+
+(defun shipit-atlassian-kanban--zoom-along (_diagram zoom)
+  "Draw the other side of a comparison at ZOOM as well.
+The `:zoom\\=' callback of canvas-diagram, which runs on every zoom."
+  (when-let* ((other (and (not shipit-atlassian-kanban--following)
+                          (shipit-atlassian-kanban--other-side))))
+    (shipit-atlassian-kanban--zoom-in-board other zoom)))
+
+(defun shipit-atlassian-kanban--follow (diagram node)
+  "Put the keyboard of the other side on the node NODE of DIAGRAM draws there.
+The `:go\\=' callback of canvas-diagram, which runs on every move."
+  (when-let* ((other (and (not shipit-atlassian-kanban--following)
+                          (shipit-atlassian-kanban--other-side))))
+    (let ((shipit-atlassian-kanban--following t))
+      (shipit-atlassian-kanban--go-to-in
+       other (shipit-atlassian-kanban--node-key diagram node)))))
+
+(defun shipit-atlassian-kanban--close-buffer (buffer)
+  "Close BUFFER, if it is live, and the windows opened for it."
+  (when (buffer-live-p buffer)
+    (dolist (window (get-buffer-window-list buffer nil t))
+      (quit-restore-window window 'kill))
+    (when (buffer-live-p buffer)
+      (kill-buffer buffer))))
+
+(defun shipit-atlassian-kanban--close-beside ()
+  "Close the board of now shown beside this board, if there is one."
+  (let ((now shipit-atlassian-kanban--beside))
+    (setq shipit-atlassian-kanban--beside nil)
+    (shipit-atlassian-kanban--close-buffer now)))
+
+(defun shipit-atlassian-kanban--close-companions ()
+  "Close what shows this board\\='s timeline beside it: now, and the moves."
+  (shipit-atlassian-kanban--close-beside)
+  (let ((changes shipit-atlassian-kanban--changes))
+    (setq shipit-atlassian-kanban--changes nil)
+    (shipit-atlassian-kanban--close-buffer changes)))
+
+(defun shipit-atlassian-kanban--open-beside ()
+  "Open the board of now in a window beside this one, and return its buffer.
+The keyboard stays on the board of then.  Drawing the new board makes
+it the current buffer, so what belongs to the board of then is taken
+first or done in it by name."
+  (let* ((then (current-buffer))
+         (window (selected-window))
+         (collapsed shipit-atlassian-kanban--collapsed)
+         (filter shipit-atlassian-kanban--filter)
+         (me shipit-atlassian-kanban--me)
+         (zoom (canvas-diagram-current-zoom))
+         (now (let ((display-buffer-overriding-action
+                     '(display-buffer-in-direction (direction . right))))
+                (shipit-atlassian-kanban--draw-in
+                 (shipit-atlassian-kanban--buffer-name
+                  shipit-atlassian-kanban--repo shipit-atlassian-kanban--board "now")
+                 shipit-atlassian-kanban--board shipit-atlassian-kanban--repo
+                 shipit-atlassian-kanban--config shipit-atlassian-kanban--board-id
+                 shipit-atlassian-kanban--tracker))))
+    (with-current-buffer now
+      (setq shipit-atlassian-kanban--compared-with then
+            shipit-atlassian-kanban--collapsed collapsed
+            shipit-atlassian-kanban--filter filter
+            shipit-atlassian-kanban--me me)
+      (shipit-atlassian-kanban--redraw))
+    (shipit-atlassian-kanban--zoom-in-board now zoom)
+    (with-current-buffer then
+      (setq shipit-atlassian-kanban--beside now)
+      (add-hook 'kill-buffer-hook #'shipit-atlassian-kanban--close-companions nil t))
+    (select-window window)
+    now))
+
+(defun shipit-atlassian-kanban--side-by-side ()
+  "Show the board of now beside this board of then, and return its buffer."
+  (unless shipit-atlassian-kanban--timeline
+    (user-error "%s" (substitute-command-keys
+                      "Go back in time first with \\[shipit-atlassian-kanban-timeline-earlier]: now goes beside the board of then")))
+  (let ((now (if (buffer-live-p shipit-atlassian-kanban--beside)
+                 shipit-atlassian-kanban--beside
+               (shipit-atlassian-kanban--open-beside))))
+    (display-buffer now)
+    now))
+
+(defun shipit-atlassian-kanban-timeline-side-by-side ()
+  "Show the board as it is now beside the board of then.
+Cards that moved in between take the timeline colour on both sides,
+and the keyboard goes to the same card on the other side.  The timeline
+keys work on either side, and \\[shipit-atlassian-kanban-quit] on the side of now closes it."
+  (interactive)
+  (shipit-atlassian-kanban--on-then #'shipit-atlassian-kanban--side-by-side))
+
+;;; The changes since the time the timeline shows
+
+(defvar-local shipit-atlassian-kanban--changes-board nil
+  "The board buffer whose changes this buffer lists.")
+
+(defun shipit-atlassian-kanban--changes-buffer-name ()
+  "Return the name of the buffer listing the changes of this board."
+  (format "*shipit-kanban-changes: %s %s*" shipit-atlassian-kanban--repo
+          (or (cdr (assq 'name shipit-atlassian-kanban--board)) "board")))
+
+(defun shipit-atlassian-kanban--styled (text face)
+  "Return TEXT in FACE, whether font lock runs in its buffer or not."
+  (propertize text 'face face 'font-lock-face face))
+
+(defun shipit-atlassian-kanban--change-line (move)
+  "Return the line listing MOVE, with the summary of the card it moved.
+The time, the key and the person look as they do elsewhere in shipit."
+  (let ((key (plist-get move :key)))
+    (concat (shipit-atlassian-kanban--styled
+              (shipit-atlassian-kanban--move-time move) 'shipit-timestamp-face)
+             "  "
+             (shipit-atlassian-kanban--styled (format "%-12s" key) 'magit-hash)
+             " "
+             (shipit-atlassian-kanban--styled
+              (format "%-20s" (shipit-atlassian-kanban--move-author move))
+              'shipit-username-face)
+             " "
+             (shipit-atlassian-kanban--styled (plist-get move :from) 'shadow)
+             " → "
+             (plist-get move :to)
+             "  "
+             (shipit-atlassian-kanban--summary
+              (shipit-atlassian-board--issue-in-boards
+               (list shipit-atlassian-kanban--board) key))
+             "\n")))
+
+(put 'shipit-kanban-changes 'magit-section t)
+(put 'shipit-kanban-change 'magit-section t)
+
+(defvar-local shipit-atlassian-kanban--issues-read nil
+  "The issues this list of moves read, a hash of key to issue.
+So a move that stays open while the timeline steps is not read again.")
+
+(defun shipit-atlassian-kanban--read-issue (repo key)
+  "Return issue KEY of REPO, read once for this list of moves."
+  (unless shipit-atlassian-kanban--issues-read
+    (setq shipit-atlassian-kanban--issues-read (make-hash-table :test #'equal)))
+  (or (gethash key shipit-atlassian-kanban--issues-read)
+      (progn
+        (message "Reading %s..." key)
+        (prog1 (puthash key (shipit-issues--fetch-issue repo key)
+                        shipit-atlassian-kanban--issues-read)
+          (message nil)))))
+
+(defun shipit-atlassian-kanban--insert-issue-details (repo key)
+  "Insert the description and the activity of issue KEY of REPO.
+Read from the issue backend when the move is first expanded, and drawn
+by the issue buffer\\='s own sections, loaded then.
+
+The details start with a blank line.  Shutting the move hides them from
+their first character on, and Emacs still draws an overlay string and a
+display property found right at the start of hidden text.  A section
+starting there put its magit mark and its icon on the next move\\='s line."
+  (require 'shipit-issues)
+  (require 'shipit-issues-buffer)
+  (shipit-issue--use-backend-of repo)
+  (insert "\n")
+  (let ((issue (shipit-atlassian-kanban--read-issue repo key)))
+    (if (null issue)
+        (insert (propertize (format "   Could not read %s\n" key)
+                            'font-lock-face 'error))
+      (shipit-issue--insert-description-section repo issue key)
+      (shipit-issue--insert-activity-section repo issue))))
+
+(defun shipit-atlassian-kanban--insert-change (move line repo open)
+  "Insert MOVE as a section headed by LINE, its issue of REPO inside.
+The section starts shut unless OPEN, and nothing is read until it is
+opened.  The section\\='s value is MOVE, which tells one move of an issue
+from another."
+  (magit-insert-section (shipit-kanban-change move (not open))
+    (magit-insert-heading line)
+    (magit-insert-section-body
+      (shipit-atlassian-kanban--insert-issue-details repo (plist-get move :key)))))
+
+(defun shipit-atlassian-kanban--open-moves ()
+  "Return the moves this list shows open."
+  (and magit-root-section
+       (mapcar (lambda (section) (oref section value))
+               (seq-remove (lambda (section) (oref section hidden))
+                           (oref magit-root-section children)))))
+
+(defun shipit-atlassian-kanban--go-to-move (move)
+  "Put point on the line of MOVE, or on the first move when it is gone."
+  (goto-char (point-min))
+  (forward-line 2)
+  (when-let* ((section (and move
+                            (seq-find (lambda (section) (equal move (oref section value)))
+                                      (oref magit-root-section children)))))
+    (goto-char (oref section start))))
+
+(defun shipit-atlassian-kanban--insert-changes (board moves since)
+  "Insert MOVES, made on BOARD since the time SINCE, in the changes buffer.
+A move open before stays open, and point stays on its move."
+  (let ((inhibit-read-only t)
+        (repo (buffer-local-value 'shipit-atlassian-kanban--repo board))
+        (open (shipit-atlassian-kanban--open-moves))
+        (here (when-let* ((section (shipit-atlassian-kanban--move-section-at-point)))
+                (oref section value)))
+        (lines (with-current-buffer board
+                 (mapcar #'shipit-atlassian-kanban--change-line moves))))
+    (erase-buffer)
+    (magit-insert-section (shipit-kanban-changes)
+      (insert (shipit-atlassian-kanban--styled
+               (format "%d move%s since %s" (length moves)
+                       (if (= 1 (length moves)) "" "s")
+                       (format-time-string "%a %Y-%m-%d %H:%M" since))
+               'magit-section-heading)
+              "\n\n")
+      (cl-mapc (lambda (move line)
+                 (shipit-atlassian-kanban--insert-change
+                  move line repo (member move open)))
+               moves lines))
+    ;; The root is not shown by inserting it, and showing it is what
+    ;; gives every move magit's mark, shut or open.
+    (magit-section-show magit-root-section)
+    (shipit-atlassian-kanban--go-to-move here)))
+
+(defun shipit-atlassian-kanban--fit-changes (window)
+  "Make WINDOW as tall as the list of changes in it, at most a third of its frame."
+  (fit-window-to-buffer
+   window (max window-min-height (/ (frame-height (window-frame window)) 3))))
+
+(defun shipit-atlassian-kanban--show-changes (buffer)
+  "Show BUFFER, a list of changes, at the bottom across the frame, and select it.
+Across the frame, since the board of then and the board of now may
+share the width above it."
+  (pop-to-buffer buffer '((display-buffer-reuse-window display-buffer-at-bottom)
+                          (window-height . shipit-atlassian-kanban--fit-changes))))
+
+(defun shipit-atlassian-kanban-timeline-changes ()
+  "List the moves made on the board since the time the timeline shows.
+Newest first, each with who made it.
+\\<shipit-atlassian-kanban-changes-mode-map>\\[magit-section-toggle] on one opens it on its issue, \\[shipit-atlassian-kanban-changes-visit] opens the issue in shipit, and
+\\[shipit-atlassian-kanban-changes-show-card] shows its card on the board."
+  (interactive)
+  (shipit-atlassian-kanban--on-then #'shipit-atlassian-kanban--list-changes))
+
+(defun shipit-atlassian-kanban--list-changes ()
+  "List the moves since the time the timeline shows; return the list\\='s buffer."
+  (unless shipit-atlassian-kanban--timeline
+    (user-error "%s" (substitute-command-keys
+                      "Go back in time first with \\[shipit-atlassian-kanban-timeline-earlier]: the changes are those since then")))
+  (unless (consp shipit-atlassian-kanban--histories)
+    (user-error "The history of the board is still being read"))
+  (let ((board (current-buffer))
+        (list (get-buffer-create (shipit-atlassian-kanban--changes-buffer-name))))
+    (setq shipit-atlassian-kanban--changes list)
+    (add-hook 'kill-buffer-hook #'shipit-atlassian-kanban--close-companions nil t)
+    (with-current-buffer list
+      (unless (derived-mode-p 'shipit-atlassian-kanban-changes-mode)
+        (shipit-atlassian-kanban-changes-mode))
+      (setq shipit-atlassian-kanban--changes-board board))
+    (shipit-atlassian-kanban--fill-changes)
+    (shipit-atlassian-kanban--show-changes list)
+    list))
+
+(defun shipit-atlassian-kanban--fill-changes ()
+  "Fill this board\\='s list with the moves since the time the timeline shows."
+  (let ((board (current-buffer))
+        (since (shipit-atlassian-kanban--timeline-time)))
+    (let ((moves (shipit-atlassian-history--moves-between
+                  (shipit-atlassian-kanban--all-histories) since (float-time))))
+      (with-current-buffer shipit-atlassian-kanban--changes
+        (shipit-atlassian-kanban--insert-changes board moves since)))))
+
+(defun shipit-atlassian-kanban--follow-changes ()
+  "Fill this board\\='s list of moves again, when it is open and can be.
+It follows the timeline as it steps, and the history as it is read
+again.  The list closes when the timeline ends, elsewhere."
+  (when (and (buffer-live-p shipit-atlassian-kanban--changes)
+             (shipit-atlassian-kanban--history-ready-p))
+    (let* ((list shipit-atlassian-kanban--changes)
+           (window (get-buffer-window list)))
+      ;; The list is seldom the selected window while the board steps,
+      ;; and its window keeps a point of its own.
+      (when window
+        (with-current-buffer list (goto-char (window-point window))))
+      (shipit-atlassian-kanban--fill-changes)
+      (when window
+        (set-window-point window (with-current-buffer list (point)))
+        (shipit-atlassian-kanban--fit-changes window)))))
+
+(defun shipit-atlassian-kanban--move-section-at-point ()
+  "Return the section of the move point is in, its line or its details, or nil."
+  (cl-loop for section = (magit-current-section) then (oref section parent)
+           while section
+           when (eq (oref section type) 'shipit-kanban-change)
+           return section))
+
+(defun shipit-atlassian-kanban--change-key ()
+  "Return the key of the card whose move point is in, its line or its details."
+  (plist-get (oref (or (shipit-atlassian-kanban--move-section-at-point)
+                       (user-error "No move here"))
+                   value)
+             :key))
+
+(defun shipit-atlassian-kanban--changes-board-buffer ()
+  "Return the board this list of changes belongs to, while it is open."
+  (if (buffer-live-p shipit-atlassian-kanban--changes-board)
+      shipit-atlassian-kanban--changes-board
+    (user-error "The board of these changes is closed")))
+
+(defun shipit-atlassian-kanban--show-move (board key)
+  "Put the keyboard of BOARD, and of the board of now beside it, on card KEY.
+Each board goes on its own: a card made since the time shown is only on
+the board of now, and one gone from the board since only on the board
+of then.  Return the boards that show the card."
+  (let ((shipit-atlassian-kanban--following t))
+    (seq-filter (lambda (buffer) (shipit-atlassian-kanban--go-to-in buffer key))
+                (seq-filter #'buffer-live-p
+                            (list board (buffer-local-value
+                                         'shipit-atlassian-kanban--beside board))))))
+
+(defun shipit-atlassian-kanban--why-not-shown (key)
+  "Return why no board beside the list of changes shows the card KEY.
+A card made since the time shown is on the board of then too, and one
+in a shut column is reached through the column\\='s header, so a card
+missing from both is filtered out, or in a status no column takes."
+  (format "%s is not on the board shown: filtered out, or in a status no column takes"
+          key))
+
+(defvar-local shipit-atlassian-kanban--move-followed nil
+  "The move whose card the board went to last, so moving within it does nothing.")
+
+(defun shipit-atlassian-kanban--follow-point ()
+  "Put the keyboard of the board on the card of the move point is in.
+Run after every command in the list, so the board follows point, and
+the board of now beside it follows the board.  A card the board does
+not show is left alone.  An error is shown rather than raised, since a
+raised one would take this off the hook for good."
+  (with-demoted-errors "Following the list on the board: %S"
+    (let ((move (when-let* ((section (shipit-atlassian-kanban--move-section-at-point)))
+                  (oref section value))))
+      (when (and move
+                 (not (equal move shipit-atlassian-kanban--move-followed))
+                 (buffer-live-p shipit-atlassian-kanban--changes-board))
+        (setq shipit-atlassian-kanban--move-followed move)
+        (let ((board shipit-atlassian-kanban--changes-board)
+              (key (plist-get move :key)))
+          (unless (shipit-atlassian-kanban--show-move board key)
+            (message "%s" (shipit-atlassian-kanban--why-not-shown key))))))))
+
+(defun shipit-atlassian-kanban-changes-show-card ()
+  "Put the keyboard of the boards on the card moved on this line.
+The list keeps the focus, so the next change can be shown in turn."
+  (interactive)
+  (let ((key (shipit-atlassian-kanban--change-key))
+        (board (shipit-atlassian-kanban--changes-board-buffer)))
+    (unless (shipit-atlassian-kanban--show-move board key)
+      (user-error "%s" (shipit-atlassian-kanban--why-not-shown key)))))
+
+(defun shipit-atlassian-kanban-changes-visit ()
+  "Open in shipit the issue moved on this line.
+It opens in the window of the board rather than in the short list."
+  (interactive)
+  (let ((key (shipit-atlassian-kanban--change-key))
+        (board (shipit-atlassian-kanban--changes-board-buffer)))
+    (when-let* ((window (get-buffer-window board)))
+      (select-window window))
+    (with-current-buffer board
+      (shipit-atlassian-kanban--open-issue key))))
+
+(defvar shipit-atlassian-kanban-changes-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'shipit-atlassian-kanban-changes-visit)
+    (define-key map (kbd "SPC") #'shipit-atlassian-kanban-changes-show-card)
+    map)
+  "Keys of the list of changes to a board.")
+
+(define-derived-mode shipit-atlassian-kanban-changes-mode magit-section-mode "Kanban changes"
+  "Major mode listing the moves made on a board since a time.
+Each move is a section: \\[magit-section-toggle] opens it on the description and the
+activity of its issue.  \\[shipit-atlassian-kanban-changes-visit] opens the issue in shipit, and
+\\[shipit-atlassian-kanban-changes-show-card] shows its card on the board.
+The board follows point as well: moving onto a move puts the keyboard
+of the board on its card, and of the board of now beside it.
+
+\\{shipit-atlassian-kanban-changes-mode-map}"
+  (add-hook 'post-command-hook #'shipit-atlassian-kanban--follow-point nil t))
 
 ;;; The mode
 ;;
@@ -1775,6 +2946,14 @@ columns after it."
     (define-key map (kbd "M-<left>") #'shipit-atlassian-kanban-stage-backward)
     (define-key map (kbd "C-c C-c") #'shipit-atlassian-kanban-commit)
     (define-key map (kbd "C-c C-k") #'shipit-atlassian-kanban-discard)
+    (define-key map (kbd "M-p") #'shipit-atlassian-kanban-timeline-earlier)
+    (define-key map (kbd "M-n") #'shipit-atlassian-kanban-timeline-later)
+    (define-key map (kbd "T") #'shipit-atlassian-kanban-timeline-cycle-step)
+    (define-key map (kbd "d") #'shipit-atlassian-kanban-timeline-changes)
+    (define-key map (kbd "D") #'shipit-atlassian-kanban-timeline-side-by-side)
+    (define-key map (kbd "H") #'shipit-atlassian-kanban-timeline-toggle-unchanged)
+    (define-key map (kbd "A") #'shipit-atlassian-kanban-timeline-toggle-arrows)
+    (define-key map (kbd "q") #'shipit-atlassian-kanban-quit)
     (define-key map (kbd "g") #'shipit-atlassian-kanban-refresh)
     (define-key map (kbd "C-<return>") #'shipit-atlassian-kanban-visit-issue)
     (define-key map (kbd "TAB") #'shipit-atlassian-kanban-toggle-column)
@@ -1818,6 +2997,15 @@ bottom of the column; a second jump to the top reaches the header.
 keyboard is on and opens it again, from the header or from any card in
 it.  \\[shipit-atlassian-kanban-refresh] reads the board again.
 
+\\[shipit-atlassian-kanban-timeline-earlier] shows the board as it was one step earlier, and
+\\[shipit-atlassian-kanban-timeline-later] one step later, from the history of its cards.  The
+board is read-only there, and \\[shipit-atlassian-kanban-quit] goes back to now.
+\\[shipit-atlassian-kanban-timeline-cycle-step] makes a step an hour, a day or a week, and
+\\[shipit-atlassian-kanban-timeline-changes] lists the moves since the time shown, and
+\\[shipit-atlassian-kanban-timeline-side-by-side] shows the board now beside it.
+\\[shipit-atlassian-kanban-timeline-toggle-unchanged] hides the cards that did not move, and
+\\[shipit-atlassian-kanban-timeline-toggle-arrows] turns off the arrows to where each moved card went.
+
 \\{shipit-atlassian-kanban-mode-map}"
   (set-keymap-parent shipit-atlassian-kanban-mode-map canvas-diagram-mode-map)
   (shipit-canvas-keep-other-packages-away 'shipit-atlassian-kanban-mode))
@@ -1834,6 +3022,25 @@ second board costs nothing."
      (shipit--debug-log "kanban: could not tell who you are: %S" err)
      nil)))
 
+(defun shipit-atlassian-kanban--draw-in (name board repo config board-id tracker)
+  "Draw BOARD of REPO on a canvas in the buffer NAME and return the buffer.
+CONFIG is the Jira backend config plist and BOARD-ID the board's
+identifier, both kept for reading the board again.  TRACKER is the
+plist of the issue backend of REPO."
+  (shipit-atlassian-kanban--require-canvas)
+  (let* ((drawing (shipit-atlassian-kanban--diagram))
+         (buffer (canvas-diagram-show name #'shipit-atlassian-kanban-mode drawing
+                                      (shipit-atlassian-kanban--spec
+                                       board nil nil nil nil nil tracker))))
+    (with-current-buffer buffer
+      (setq shipit-atlassian-kanban--repo repo
+            shipit-atlassian-kanban--config config
+            shipit-atlassian-kanban--board board
+            shipit-atlassian-kanban--board-id board-id
+            shipit-atlassian-kanban--tracker tracker
+            shipit-atlassian-kanban--drawing drawing))
+    buffer))
+
 (defun shipit-atlassian-kanban--tracker-of (repo)
   "Return the plist of the issue backend of REPO."
   (car (shipit-issue--resolve-for-repo repo)))
@@ -1842,22 +3049,12 @@ second board costs nothing."
   "Draw BOARD of REPO on a canvas and return the buffer.
 CONFIG is the Jira backend config plist and BOARD-ID the board\='s
 identifier, both kept for reading the board again."
-  (shipit-atlassian-kanban--require-canvas)
-  (let* ((drawing (shipit-atlassian-kanban--diagram))
-         (tracker (shipit-atlassian-kanban--tracker-of repo))
-         (buffer (canvas-diagram-show
-                  (shipit-atlassian-kanban--buffer-name repo board)
-                  #'shipit-atlassian-kanban-mode
-                  drawing
-                  (shipit-atlassian-kanban--spec board nil nil nil nil tracker))))
+  (let ((buffer (shipit-atlassian-kanban--draw-in
+                 (shipit-atlassian-kanban--buffer-name repo board)
+                 board repo config board-id
+                 (shipit-atlassian-kanban--tracker-of repo))))
     (with-current-buffer buffer
-      (setq shipit-atlassian-kanban--repo repo
-            shipit-atlassian-kanban--config config
-            shipit-atlassian-kanban--board board
-            shipit-atlassian-kanban--board-id board-id
-            shipit-atlassian-kanban--tracker tracker
-            shipit-atlassian-kanban--drawing drawing
-            shipit-atlassian-kanban--me (shipit-atlassian-kanban--whoami config))
+      (setq shipit-atlassian-kanban--me (shipit-atlassian-kanban--whoami config))
       (when shipit-atlassian-kanban--me
         (shipit-atlassian-kanban--redraw))
       (shipit-atlassian-kanban--update-mode-line))

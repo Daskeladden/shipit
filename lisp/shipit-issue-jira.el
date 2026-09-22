@@ -1104,17 +1104,39 @@ at all.  ISSUE-KEY is a Jira issue key string."
        (funcall callback
                 (and raw (shipit-issue-jira--extract-last-activity raw)))))))
 
+(defun shipit-issue-jira--search-path (jql page-size fields next-page-token &optional expand)
+  "Return the path of one page of the search for JQL.
+PAGE-SIZE issues with FIELDS, starting at NEXT-PAGE-TOKEN, or at the
+first page when it is nil.  EXPAND, such as \"changelog\", goes to Jira
+as it is."
+  (format "/rest/api/3/search/jql?jql=%s&maxResults=%d&fields=%s%s%s"
+          (url-hexify-string jql) page-size fields
+          (if expand (format "&expand=%s" expand) "")
+          (if next-page-token
+              (format "&nextPageToken=%s" (url-hexify-string next-page-token))
+            "")))
+
 (defun shipit-issue-jira--search-page (config jql page-size fields next-page-token)
   "Fetch one page of Jira search results.
 Uses /rest/api/3/search/jql with cursor-based pagination.
 NEXT-PAGE-TOKEN is nil for the first page, or a token from the previous response.
 Returns the raw parsed JSON response."
-  (let ((path (format "/rest/api/3/search/jql?jql=%s&maxResults=%d&fields=%s%s"
-                      (url-hexify-string jql) page-size fields
-                      (if next-page-token
-                          (format "&nextPageToken=%s" (url-hexify-string next-page-token))
-                        ""))))
-    (shipit-issue-jira--api-request config path)))
+  (shipit-issue-jira--api-request
+   config (shipit-issue-jira--search-path jql page-size fields next-page-token)))
+
+(defun shipit-issue-jira--search-all-async (config jql fields expand callback &optional acc token)
+  "Read every page of the search for JQL through CONFIG, without blocking.
+FIELDS and EXPAND go to Jira as they are.  CALLBACK gets the raw issues
+of every page.  The issues read so far are in ACC, and the next page
+starts at TOKEN.  A page that fails ends the search with what was read."
+  (shipit-issue-jira--api-request-async
+   config (shipit-issue-jira--search-path jql 100 fields token expand)
+   (lambda (raw)
+     (let ((issues (append acc (append (cdr (assq 'issues raw)) nil)))
+           (next (cdr (assq 'nextPageToken raw))))
+       (if (and raw next (not (shipit-issue-jira--is-last-page-p raw)))
+           (shipit-issue-jira--search-all-async config jql fields expand callback issues next)
+         (funcall callback issues))))))
 
 (defun shipit-issue-jira--is-last-page-p (raw)
   "Return non-nil if RAW Jira response indicates the last page.

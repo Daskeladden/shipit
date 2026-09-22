@@ -116,6 +116,15 @@ alone, and one without priorities never gives an issue a priority."
             (propertize name 'font-lock-face
                         (if color `(:foreground ,color :weight bold) 'bold)))))
 
+(defun shipit-issue--use-backend-of (repo)
+  "Make this buffer read and draw issues through the issue backend of REPO.
+The issue sections ask their buffer for its backend.  A buffer other
+than an issue buffer that draws them needs this, as an issue buffer
+sets it when it opens."
+  (let ((resolved (shipit-issue--resolve-for-repo repo)))
+    (setq-local shipit-issue-backend (car (rassq (car resolved) shipit-issue-backends)))
+    (setq-local shipit-issue-backend-config (cdr resolved))))
+
 (defun shipit-issue--key-project (key)
   "The project prefix of issue KEY: PRJ for PRJ-123."
   (car (split-string key "-")))

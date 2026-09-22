@@ -944,6 +944,30 @@ THEN the request asks for the priority, and the issue carries its name."
         (should (string-match-p "fields=[^&]*priority" path))
         (should (equal "High" (cdr (assq 'priority issue))))))))
 
+(ert-deftest test-shipit-issue-jira-search-all-async-reads-every-page ()
+  "GIVEN a JQL search whose issues come in two pages
+WHEN every page is read asynchronously, with the changelog expanded
+THEN the second page is asked for with the first page's token, both ask
+for the changelog, and the issues of both pages come back in order."
+  (require 'shipit-issue-jira)
+  (let ((paths nil)
+        (got nil)
+        (pages (list '((issues . [((key . "PRJ-1"))]) (nextPageToken . "tok2") (isLast . :json-false))
+                     '((issues . [((key . "PRJ-2"))]) (isLast . t)))))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request-async)
+               (lambda (_config path callback)
+                 (push path paths)
+                 (funcall callback (pop pages)))))
+      (shipit-issue-jira--search-all-async
+       '(:base-url "https://jira.example.com") "project = PROJ" "key,status" "changelog"
+       (lambda (issues) (setq got issues))))
+    (should (equal '("PRJ-1" "PRJ-2") (mapcar (lambda (i) (cdr (assq 'key i))) got)))
+    (should (= 2 (length paths)))
+    (should (string-match-p "nextPageToken=tok2" (car paths)))
+    (dolist (path paths)
+      (should (string-match-p "/rest/api/3/search/jql\\?jql=project" path))
+      (should (string-match-p "expand=changelog" path)))))
+
 (ert-deftest test-shipit-issue-jira-search-paginates-with-next-page-token ()
   "GIVEN Jira v3 search/jql returns nextPageToken for cursor pagination
 WHEN searching with limit=150

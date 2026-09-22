@@ -105,6 +105,7 @@ test-unit: compile
 		-l test/test-shipit-issue-backends.el \
 		-l test/test-shipit-issue-github.el \
 		-l test/test-shipit-issue-jira.el \
+		-l test/test-shipit-jira-sandbox.el \
 		-l test/test-shipit-issue-render.el \
 		-l test/test-shipit-issue-eldoc.el \
 		-l test/test-shipit-issue-create.el \

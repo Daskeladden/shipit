@@ -8,6 +8,7 @@
 
 # Compiled files
 *.elc
+__pycache__/
 
 # Generated autoloads
 *-autoloads.el

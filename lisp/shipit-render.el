@@ -5975,6 +5975,7 @@ Returns (octicon . color) or nil."
     ("milestone" '("milestone" . "#0366d6"))                 ; Blue - Milestone
     ("comment" '("comment-discussion" . "#fd7e14"))          ; Orange - Comments
     ("type" '("issue-draft" . "#6f42c1"))                    ; Purple - Issue type
+    ("priority" '("zap" . "#fd7e14"))                        ; Orange - Priority
     ("parent" '("north-star" . "#6f42c1"))                   ; Purple - Parent/epic
     ("links" '("link" . "#0366d6"))                          ; Blue - Issue links
     ("children" '("tasklist" . "#6f42c1"))                    ; Purple - Child work items

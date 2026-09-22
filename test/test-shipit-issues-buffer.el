@@ -682,6 +682,42 @@ THEN a Labels line lists each label name."
           (should (string-match-p "backend" buf-text))
           (should (string-match-p "urgent" buf-text)))))))
 
+(defun test-shipit-issue--metadata-text (issue-data)
+  "Return the metadata section of ISSUE-DATA as text.
+Drawn for a stand-in tracker with no icons or colours of its own, so
+this is about the page, not about one tracker."
+  (with-temp-buffer
+    (setq-local shipit-issue-backend 'tracker)
+    (let ((magit-insert-section--parent nil)
+          (shipit-issue-backends '((tracker :name "Tracker")))
+          (shipit-issue-buffer-repo "test/repo"))
+      (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
+                 (lambda (_config) nil)))
+        (magit-insert-section (shipit-issue)
+          (shipit-issue--insert-metadata-section "test/repo" issue-data))
+        (buffer-string)))))
+
+(defconst test-shipit-issue--plain-issue
+  '((id . "PRJ-9") (number . "PRJ-9") (title . "Plain") (state . "Open")
+    (body . "Body") (user . ((login . "Alice"))) (assignees . nil) (labels . nil)
+    (comments . 0) (created_at . "2024-01-15T10:30:00Z"))
+  "An issue with no priority, as a tracker without priorities gives it.")
+
+(ert-deftest test-shipit-issue-metadata-section-shows-the-priority ()
+  "GIVEN an issue whose tracker gave it a priority
+WHEN rendering the metadata section
+THEN a Priority line names it."
+  (should (string-match-p "Priority: +High"
+                          (test-shipit-issue--metadata-text
+                           (cons '(priority . "High") test-shipit-issue--plain-issue)))))
+
+(ert-deftest test-shipit-issue-metadata-section-has-no-priority-without-one ()
+  "GIVEN an issue whose tracker has no priorities, as GitHub and GitLab
+WHEN rendering the metadata section
+THEN there is no Priority line."
+  (should-not (string-match-p "Priority:"
+                              (test-shipit-issue--metadata-text test-shipit-issue--plain-issue))))
+
 (ert-deftest test-shipit-issue-metadata-section-labels-line-always-shown ()
   "GIVEN an issue with no labels
 WHEN rendering the metadata section

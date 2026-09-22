@@ -102,6 +102,20 @@ Returns (BACKEND-PLIST . CONFIG-PLIST) with :repo injected into config."
                        (list :repo repo))))
         (cons backend-plist config)))))
 
+(defun shipit-issue--priority-display (name)
+  "Return NAME, an issue's priority, as this buffer's issue backend shows it.
+That is the icon of its `:priority-icon-render', then the name in the
+colour of its `:priority-color'.  A backend without them shows the name
+alone, and one without priorities never gives an issue a priority."
+  (let* ((backend (shipit-issue--get-backend))
+         (icon-fn (plist-get backend :priority-icon-render))
+         (color-fn (plist-get backend :priority-color))
+         (icon (and icon-fn (funcall icon-fn name)))
+         (color (and color-fn (funcall color-fn name))))
+    (concat (if (and icon (not (string-empty-p icon))) (concat icon " ") "")
+            (propertize name 'font-lock-face
+                        (if color `(:foreground ,color :weight bold) 'bold)))))
+
 (defun shipit-issue--key-project (key)
   "The project prefix of issue KEY: PRJ for PRJ-123."
   (car (split-string key "-")))

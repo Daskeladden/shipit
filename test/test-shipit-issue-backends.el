@@ -109,6 +109,48 @@ THEN an error is signaled."
         (shipit-issue-backend 'unknown))
     (should-error (shipit-issue--get-backend))))
 
+(defun test-shipit-issue--tracker (&rest extra)
+  "Register a stand-in tracker `tracker' with EXTRA added to its plist."
+  (shipit-issue-register-backend
+   'tracker
+   (append (list :name "Tracker"
+                 :fetch-issue #'ignore
+                 :fetch-comments #'ignore
+                 :fetch-comments-async #'ignore
+                 :search #'ignore
+                 :create-issue #'ignore
+                 :reference-patterns #'ignore
+                 :browse-url #'ignore
+                 :id-to-string #'ignore
+                 :string-to-id #'ignore)
+           extra)))
+
+(ert-deftest test-shipit-issue-priority-shows-as-the-backend-draws-it ()
+  "GIVEN a tracker that gives a priority an icon and a colour
+WHEN a priority is shown
+THEN it is the icon, then the name in that colour."
+  (let ((shipit-issue-backends nil))
+    (test-shipit-issue--tracker
+     :priority-icon-render (lambda (name) (and (equal name "High") "^"))
+     :priority-color (lambda (name) (and (equal name "High") "#123456")))
+    (with-temp-buffer
+      (setq-local shipit-issue-backend 'tracker)
+      (let ((shown (shipit-issue--priority-display "High")))
+        (should (equal "^ High" (substring-no-properties shown)))
+        (should (equal "#123456"
+                       (plist-get (get-text-property 2 'font-lock-face shown) :foreground)))))))
+
+(ert-deftest test-shipit-issue-priority-shows-plain-without-backend-help ()
+  "GIVEN a tracker that has no icon or colour for priorities
+WHEN a priority is shown
+THEN it is the name alone."
+  (let ((shipit-issue-backends nil))
+    (test-shipit-issue--tracker)
+    (with-temp-buffer
+      (setq-local shipit-issue-backend 'tracker)
+      (should (equal "High" (substring-no-properties
+                             (shipit-issue--priority-display "High")))))))
+
 (ert-deftest test-shipit-issue-get-config-returns-config ()
   "GIVEN shipit-issue-backend-config is set
 WHEN calling shipit-issue--get-config

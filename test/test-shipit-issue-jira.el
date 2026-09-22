@@ -926,6 +926,24 @@ THEN it includes nextPageToken query param."
        "project = PROJ" 100 "key,summary" "abc123token")
       (should (string-match-p "nextPageToken=abc123token" captured-path)))))
 
+(ert-deftest test-shipit-issue-jira-fetch-issue-asks-for-the-priority ()
+  "GIVEN a Jira issue with a priority
+WHEN it is fetched for its page
+THEN the request asks for the priority, and the issue carries its name."
+  (require 'shipit-issue-jira)
+  (let ((path nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config p)
+                 (setq path p)
+                 '((key . "PRJ-1")
+                   (fields . ((summary . "Prioritised")
+                              (status . ((name . "Open")))
+                              (priority . ((name . "High")))))))))
+      (let ((issue (shipit-issue-jira--fetch-issue
+                    '(:base-url "https://jira.example.com") "PRJ-1")))
+        (should (string-match-p "fields=[^&]*priority" path))
+        (should (equal "High" (cdr (assq 'priority issue))))))))
+
 (ert-deftest test-shipit-issue-jira-search-paginates-with-next-page-token ()
   "GIVEN Jira v3 search/jql returns nextPageToken for cursor pagination
 WHEN searching with limit=150

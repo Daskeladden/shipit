@@ -905,7 +905,7 @@ Returns normalized issue alist after re-fetching the created issue."
       (shipit-issue-jira--fetch-issue config created-key))))
 
 (defconst shipit-issue-jira--fields
-  "key,summary,status,description,reporter,assignee,labels,components,created,updated,comment,issuetype,issuelinks,parent,attachment"
+  "key,summary,status,description,reporter,assignee,labels,components,created,updated,comment,issuetype,issuelinks,parent,attachment,priority"
   "Jira issue fields to request.  Limits response size for faster API calls.")
 
 (defun shipit-issue-jira--enrich-link-assignees (config issue-data)

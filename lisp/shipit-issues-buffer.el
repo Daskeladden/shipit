@@ -508,6 +508,12 @@ buffer-local overrides so the issue fetches use the correct backend
           (insert (format "   %s Type:      %s\n"
                           (shipit--get-pr-field-icon "type" "📦")
                           (propertize issue-type 'font-lock-face 'font-lock-type-face)))))
+      ;; Priority, when the issue's tracker has priorities
+      (let ((priority (cdr (assq 'priority issue-data))))
+        (when priority
+          (insert (format "   %s Priority:  %s\n"
+                          (shipit--get-pr-field-icon "priority" "⚡")
+                          (shipit-issue--priority-display priority)))))
       ;; Parent (Jira epic/parent issue)
       (let ((parent (cdr (assq 'parent issue-data))))
         (when parent

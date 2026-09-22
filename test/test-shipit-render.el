@@ -1138,5 +1138,320 @@ under another: notification rows then mix icon sizes."
         (when (numberp old-height)
           (set-face-attribute 'default nil :height old-height))))))
 
+;;;; Videos
+
+(defconst test-shipit-render--tracker-video
+  "https://jira.example.com/rest/api/3/attachment/content/31733?redirect=false"
+  "A video attached on a tracker, whose URL does not name the file.")
+
+(defun test-shipit-render--tracker-login (url)
+  "Login headers for URL on the stand-in tracker, as a tracker's hook gives them."
+  (when (string-match-p "\\`https://jira\\.example\\.com/" url)
+    '(("Authorization" . "Basic x"))))
+
+(defun test-shipit-render--video-url-of (text)
+  "Return the video URL the first Play button of TEXT plays, or nil."
+  (when-let* ((at (string-match "Play" text)))
+    (get-text-property at 'shipit-video-url text)))
+
+(ert-deftest test-shipit-render-video-link-named-by-its-text-plays ()
+  "GIVEN a markdown link whose text names a video file, and whose URL does not
+WHEN the videos of a body are processed
+THEN the link becomes a Play button for its URL, named by the file."
+  (let ((out (shipit--process-inline-videos
+              (format "see [Screencast\\_1.webm](%s) here" test-shipit-render--tracker-video))))
+    (should (string-match-p "Play Screencast_1.webm" out))
+    (should-not (string-match-p "attachment/content" (substring-no-properties out)))
+    (should (equal test-shipit-render--tracker-video (test-shipit-render--video-url-of out)))))
+
+(ert-deftest test-shipit-render-media-step-shows-a-video ()
+  "GIVEN rendered text with a bare video URL
+WHEN its media are processed, as both the markdown and the org renderer do
+THEN it shows a Play button for that URL."
+  (let ((out (shipit--process-inline-media "Watch https://example.com/demo-media-step.mp4 now")))
+    (should (equal "https://example.com/demo-media-step.mp4"
+                   (test-shipit-render--video-url-of out)))))
+
+(ert-deftest test-shipit-render-markdown-shows-a-video ()
+  "GIVEN a markdown body with a bare video URL
+WHEN it is rendered
+THEN it shows a Play button for that URL, as an org body does.
+Runs where the real markdown-mode is installed; without it markdown is
+not rendered, and test-stubs provides a stand-in by its name."
+  (skip-unless (and (require 'markdown-mode nil t) (boundp 'markdown-mode-version)))
+  (let ((out (shipit--render-markdown "Watch https://example.com/demo-render-test.mp4 now")))
+    (should (equal "https://example.com/demo-render-test.mp4"
+                   (test-shipit-render--video-url-of out)))))
+
+(defun test-shipit-render--page-of (file-url)
+  "Return the text of the local page FILE-URL, and delete the page."
+  (let ((file (url-filename (url-generic-parse-url file-url))))
+    (prog1 (with-temp-buffer (insert-file-contents file) (buffer-string))
+      (delete-file file))))
+
+(defmacro test-shipit-render--playing (player &rest body)
+  "Run BODY where PLAYER is on the path, or none is when nil.
+In BODY, `opened' is what the browser was given and `ran' what a
+player was started with."
+  (declare (indent 1))
+  `(let ((shipit-video-embed-in-frame nil)
+         (opened nil)
+         (ran nil))
+     (cl-letf (((symbol-function 'browse-url) (lambda (url &rest _) (setq opened url)))
+               ((symbol-function 'executable-find) (lambda (&rest _) ,player))
+               ((symbol-function 'start-process) (lambda (&rest args) (setq ran args) nil))
+               ((symbol-function 'call-process) (lambda (&rest args) (setq ran args) 0)))
+       ,@body)))
+
+(ert-deftest test-shipit-render-video-behind-a-login-plays-in-a-browser-page ()
+  "GIVEN a video whose site needs a login, and no tracker hands out a URL
+without one
+WHEN it is played where mpv is on the path
+THEN no player is started, as it has no login, and the browser opens a
+page whose video element plays the URL."
+  (let ((shipit-image-auth-functions (list #'test-shipit-render--tracker-login))
+        (shipit-media-url-functions nil))
+    (test-shipit-render--playing "/usr/bin/mpv"
+      (shipit--play-video-url test-shipit-render--tracker-video)
+      (should-not ran)
+      (should (string-prefix-p "file://" opened))
+      (should (string-match-p (regexp-quote "<video src=\"https://jira.example.com/rest/api/3/attachment/content/31733?redirect=false\"")
+                              (test-shipit-render--page-of opened))))))
+
+(ert-deftest test-shipit-render-video-plays-the-url-the-tracker-hands-out ()
+  "GIVEN a video whose tracker hands out a URL that needs no login
+WHEN it is played where mpv is on the path
+THEN mpv plays the URL the tracker handed out."
+  (let ((shipit-image-auth-functions (list #'test-shipit-render--tracker-login))
+        (shipit-media-url-functions
+         (list (lambda (url)
+                 (and (equal url test-shipit-render--tracker-video)
+                      "https://media.example.com/file/1?token=t&dl=true")))))
+    (test-shipit-render--playing "/usr/bin/mpv"
+      (shipit--play-video-url test-shipit-render--tracker-video)
+      (should (equal "mpv" (car ran)))
+      (should (member "https://media.example.com/file/1?token=t&dl=true" ran)))))
+
+(ert-deftest test-shipit-render-video-button-shows-a-hand ()
+  "GIVEN a video's Play button
+THEN the mouse pointer over it is a hand, as over any link."
+  (let ((out (shipit--render-video-link "https://example.com/v.mp4" "v.mp4")))
+    (should (eq 'hand (get-text-property (string-match "Play" out) 'pointer out)))))
+
+(ert-deftest test-shipit-render-video-page-has-no-scrollbar ()
+  "GIVEN a page made to play a video
+THEN its video fills the window and nothing scrolls: a video laid out
+inline leaves room under it, which gave the page a scrollbar."
+  (let ((page (test-shipit-render--page-of (shipit--video-page "https://example.com/v.mp4"))))
+    (should (string-match-p "overflow:hidden" page))
+    (should (string-match-p "display:block" page))))
+
+(ert-deftest test-shipit-render-video-without-a-player-plays-in-a-browser-page ()
+  "GIVEN a video no login guards, and no player on the path
+WHEN it is played
+THEN the browser opens a page whose video element plays it, since a
+browser downloads a video served as an attachment instead of playing it."
+  (let ((shipit-image-auth-functions nil)
+        (shipit-media-url-functions nil))
+    (test-shipit-render--playing nil
+      (shipit--play-video-url "https://example.com/demo.mp4?a=1&b=2")
+      (should (string-match-p (regexp-quote "<video src=\"https://example.com/demo.mp4?a=1&amp;b=2\"")
+                              (test-shipit-render--page-of opened))))))
+
+(ert-deftest test-shipit-render-video-behind-a-login-has-no-thumbnail ()
+  "GIVEN a video whose site needs a login
+WHEN its Play button is made where images can show and ffmpeg exists
+THEN ffmpeg is not asked for a thumbnail, as it has no login to fetch with."
+  (let ((shipit-image-auth-functions (list #'test-shipit-render--tracker-login))
+        (ran nil))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t))
+              ((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/ffmpeg"))
+              ((symbol-function 'call-process) (lambda (&rest args) (setq ran args) 1)))
+      (shipit--render-video-link test-shipit-render--tracker-video "clip.webm"))
+    (should-not ran)))
+
+(ert-deftest test-shipit-render-public-video-plays-in-the-player ()
+  "GIVEN a video no login guards, and mpv as the player, not embedded
+WHEN it is played
+THEN mpv gets its URL."
+  (let ((shipit-image-auth-functions nil)
+        (shipit-video-embed-in-frame nil)
+        (ran nil))
+    (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) "/usr/bin/mpv"))
+              ((symbol-function 'call-process) (lambda (&rest args) (setq ran args) 0)))
+      (shipit--play-video-url "https://example.com/demo.mp4"))
+    (should (equal "mpv" (car ran)))
+    (should (member "https://example.com/demo.mp4" ran))))
+
+;;;; Videos played in the buffer
+
+(defmacro test-shipit-render--with-video-button (inline &rest body)
+  "Run BODY in a buffer holding the Play button of a public video.
+INLINE stands in for `shipit-video-inline-function'.  Point is on the
+button.  In BODY, `inlined' is the last call of INLINE, `opened' what
+the browser was given, and `ran' what a player was started with."
+  (declare (indent 1))
+  `(let ((shipit-image-auth-functions nil)
+         (shipit-media-url-functions nil)
+         (inlined nil))
+     (test-shipit-render--playing nil
+       (let ((shipit-video-inline-function
+              (lambda (&rest args) (setq inlined args) (funcall ,inline))))
+         (with-temp-buffer
+           (insert "Before\n" (shipit--render-video-link "https://example.com/v.mp4" "v.mp4") "After\n")
+           (goto-char (point-min))
+           (search-forward "Play")
+           ,@body)))))
+
+(defun test-shipit-render--press-play ()
+  "Press RET on the Play button at point, through its own keys."
+  (call-interactively (lookup-key (get-text-property (point) 'keymap) (kbd "RET"))))
+
+(defvar test-shipit-render--frame-pressed nil
+  "How often the stand-in video frame was pressed.")
+
+(defun test-shipit-render--video-frame ()
+  "A stand-in for the text of a video played in the buffer.
+RET on it counts a press, as a real one plays or pauses its video."
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET")
+                (lambda () (interactive) (cl-incf test-shipit-render--frame-pressed)))
+    (propertize "[VIDEO]" 'keymap map)))
+
+(defun test-shipit-render--line-after-button ()
+  "Return the text of the line after the Play button at point."
+  (save-excursion
+    (forward-line 1)
+    (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
+
+(ert-deftest test-shipit-render-video-plays-under-its-button ()
+  "GIVEN a video's Play button, where videos can play in the buffer
+WHEN RET is pressed on it
+THEN the video plays at once on the line under the button, from a page
+whose video element plays it, sized for the buffer, and nothing opens
+outside."
+  (test-shipit-render--with-video-button #'test-shipit-render--video-frame
+    (test-shipit-render--press-play)
+    (should (string-match-p "\\[VIDEO\\]" (test-shipit-render--line-after-button)))
+    (pcase-let ((`(,page ,width ,height ,host) inlined))
+      (should (string-match-p (regexp-quote "<video src=\"https://example.com/v.mp4\" controls autoplay")
+                              (test-shipit-render--page-of page)))
+      (should (= height (round (* width 9) 16)))
+      (should (eq host (current-buffer))))
+    (should-not opened)
+    (should-not ran)))
+
+(ert-deftest test-shipit-render-video-shown-plays-at-a-press-of-its-button ()
+  "GIVEN a video shown under its Play button
+WHEN RET is pressed on the button
+THEN the video's frame is pressed, which plays or pauses it, and no
+other video is put in or played."
+  (test-shipit-render--with-video-button #'test-shipit-render--video-frame
+    (let ((test-shipit-render--frame-pressed 0))
+      (test-shipit-render--press-play)
+      (test-shipit-render--page-of (car inlined))
+      (setq inlined nil)
+      (test-shipit-render--press-play)
+      (should (= 1 test-shipit-render--frame-pressed))
+      (should (= 1 (how-many "\\[VIDEO\\]" (point-min) (point-max))))
+      (should-not inlined)
+      (should-not opened))))
+
+(ert-deftest test-shipit-render-videos-show-paused-when-the-buffer-is-ready ()
+  "GIVEN a buffer drawn with a video's Play button
+WHEN its videos are shown, as the buffer's ready hook does, twice
+THEN the video is under its button once, from a page that shows its
+first frame and waits for a click to play."
+  (test-shipit-render--with-video-button #'test-shipit-render--video-frame
+    (shipit--show-inline-videos)
+    (let ((page (test-shipit-render--page-of (car inlined))))
+      (should (string-match-p "<video src=\"https://example.com/v.mp4\" controls preload" page))
+      (should-not (string-match-p "autoplay" page)))
+    (setq inlined nil)
+    (shipit--show-inline-videos)
+    (should-not inlined)
+    (should (string-match-p "\\[VIDEO\\]" (test-shipit-render--line-after-button)))
+    (should (= 1 (how-many "\\[VIDEO\\]" (point-min) (point-max))))))
+
+(ert-deftest test-shipit-render-videos-hidden-wait-for-their-button ()
+  "GIVEN a video whose Play button is hidden, as in a shut section
+WHEN the buffer's videos are shown
+THEN that video is left to its button."
+  (test-shipit-render--with-video-button #'test-shipit-render--video-frame
+    (put-text-property (point-min) (point-max) 'invisible t)
+    (shipit--show-inline-videos)
+    (should-not inlined)))
+
+(ert-deftest test-shipit-render-videos-show-only-when-asked ()
+  "GIVEN videos set not to show until their Play button is pressed
+WHEN the buffer's videos are shown
+THEN none is put in."
+  (test-shipit-render--with-video-button #'test-shipit-render--video-frame
+    (let ((shipit-video-inline-show nil))
+      (shipit--show-inline-videos))
+    (should-not inlined)))
+
+(ert-deftest test-shipit-render-videos-arriving-later-show-too ()
+  "GIVEN a buffer that watches for videos, drawn without one
+WHEN plain text arrives, and then two comments with a video each
+THEN the plain text asks for nothing, the comments ask once, and once
+Emacs is idle each video shows under its button."
+  (let ((shipit-image-auth-functions nil)
+        (shipit-media-url-functions nil)
+        (shipit-video-inline-function (lambda (&rest _) (test-shipit-render--video-frame))))
+    (with-temp-buffer
+      (shipit--watch-videos)
+      (insert "Plain text\n")
+      (should-not shipit--videos-timer)
+      (insert "A comment:" (shipit--render-video-link "https://example.com/a.mp4" "a.mp4"))
+      (let ((timer shipit--videos-timer))
+        (should (timerp timer))
+        (insert "Another:" (shipit--render-video-link "https://example.com/b.mp4" "b.mp4"))
+        (should (eq timer shipit--videos-timer))
+        (cancel-timer timer)
+        (apply (timer--function timer) (timer--args timer)))
+      (should (= 2 (how-many "\\[VIDEO\\]" (point-min) (point-max))))
+      (should-not shipit--videos-timer))))
+
+(ert-deftest test-shipit-render-videos-show-in-issue-and-pr-buffers ()
+  "GIVEN an issue buffer and a PR buffer
+THEN each watches for videos, whenever its text arrives."
+  (require 'shipit-issues-buffer)
+  (require 'shipit-buffer)
+  (dolist (mode '(shipit-issue-mode shipit-mode))
+    (with-temp-buffer
+      (funcall mode)
+      (should (memq #'shipit--video-buttons-inserted after-change-functions)))))
+
+(ert-deftest test-shipit-render-video-plays-outside-when-the-buffer-cannot ()
+  "GIVEN a video's Play button, where the buffer cannot play it, as in a
+terminal frame
+WHEN RET is pressed on it
+THEN it plays outside the buffer, as without inline videos."
+  (test-shipit-render--with-video-button #'ignore
+    (test-shipit-render--press-play)
+    (test-shipit-render--page-of (car inlined))
+    (should (string-prefix-p "file://" opened))
+    (test-shipit-render--page-of opened)))
+
+(ert-deftest test-shipit-render-video-plays-outside-without-canvas-browser ()
+  "GIVEN a video's Play button, where the inline function names a package
+that is not installed, as `canvas-browser-embed' does without canvas-browser
+WHEN the buffer shows its videos, and RET is pressed on the button
+THEN nothing is shown in the buffer, AND it plays outside the buffer."
+  (let ((shipit-image-auth-functions nil)
+        (shipit-media-url-functions nil)
+        (shipit-video-inline-function 'test-shipit-render--not-installed-embed))
+    (should-not (fboundp shipit-video-inline-function))
+    (test-shipit-render--playing nil
+      (with-temp-buffer
+        (insert "Before\n" (shipit--render-video-link "https://example.com/v.mp4" "v.mp4") "After\n")
+        (shipit--show-inline-videos)
+        (should-not (text-property-any (point-min) (point-max) 'shipit-video-inline t))
+        (goto-char (point-min))
+        (search-forward "Play")
+        (test-shipit-render--press-play)
+        (should (string-prefix-p "file://" opened))))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

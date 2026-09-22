@@ -43,6 +43,27 @@ key is worse than none."
 ;; locale-specific date formatting (e.g., "sø." for Sunday in Norwegian).
 (setq system-time-locale "C")
 
+(defvar shipit-image-auth-functions nil
+  "Functions that give a download the headers to log in with.
+Each is called with the URL of an image or a video.  It returns an
+alist of headers when the URL is on its own site, and nil otherwise;
+the first answer counts.  A tracker whose attachments need a login adds
+one, so no shared file holds code for any one tracker.")
+
+(defun shipit--login-headers (url)
+  "Return the headers to log in with to fetch URL, or nil when it needs none."
+  (run-hook-with-args-until-success 'shipit-image-auth-functions url))
+
+(defvar shipit-media-url-functions nil
+  "Functions that give the URL a player can fetch an attachment from.
+Each is called with the URL of an attachment.  It returns a URL that
+needs no login, such as a short-lived one its site hands out, or nil
+when the URL is not on its own site; the first answer counts.")
+
+(defun shipit--media-url (url)
+  "Return the URL a player can fetch the attachment at URL from, or nil."
+  (run-hook-with-args-until-success 'shipit-media-url-functions url))
+
 (defvar-local shipit--general-comments-fetched nil
   "Flag indicating whether general comments have been fetched.")
 

@@ -2008,5 +2008,40 @@ THEN the download sends Jira's login header."
                 (random 1000000000)))
        (should (string-prefix-p "Basic " (or (cdr (assoc "Authorization" captured)) "")))))))
 
+(ert-deftest test-shipit-issue-jira-media-url-follows-the-attachment-redirect ()
+  "GIVEN a configured Jira site, and a video attached on it
+WHEN the URL a player can fetch it from is asked for
+THEN the attachment is asked for with Jira's login and without following
+its redirect, and the media URL it redirects to comes back.  A URL on
+another site gets nothing, and Jira is not asked for it."
+  (test-shipit-issue-jira--with-site
+   (let ((asked nil))
+     (cl-letf (((symbol-function 'url-retrieve-synchronously)
+                (lambda (url &rest _)
+                  (push (list url url-max-redirections
+                              (assoc "Authorization" url-request-extra-headers))
+                        asked)
+                  (let ((buffer (generate-new-buffer " *jira-redirect*")))
+                    (with-current-buffer buffer
+                      (insert "HTTP/1.1 303 See Other\r\n"
+                              "Location: https://api.media.atlassian.com/file/f1/binary?token=t&dl=true\r\n"
+                              "\r\n"))
+                    buffer))))
+       (should (equal "https://api.media.atlassian.com/file/f1/binary?token=t&dl=true"
+                      (shipit-issue-jira--media-url
+                       "https://jira.example.com/rest/api/3/attachment/content/31733?redirect=false")))
+       (should (equal "https://jira.example.com/rest/api/3/attachment/content/31733"
+                      (car (car asked))))
+       (should (equal 0 (nth 1 (car asked))))
+       (should (nth 2 (car asked)))
+       (should-not (shipit-issue-jira--media-url
+                    "https://example.com/rest/api/3/attachment/content/1"))
+       (should (= 1 (length asked)))))))
+
+(ert-deftest test-shipit-issue-jira-hands-out-media-urls ()
+  "GIVEN the Jira backend loaded
+THEN it tells shipit how to turn its attachment URLs into media URLs."
+  (should (memq #'shipit-issue-jira--media-url shipit-media-url-functions)))
+
 (provide 'test-shipit-issue-jira)
 ;;; test-shipit-issue-jira.el ends here

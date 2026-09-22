@@ -543,6 +543,43 @@ site sees the login."
 
 (add-hook 'shipit-image-auth-functions #'shipit-issue-jira--image-auth-headers)
 
+(defconst shipit-issue-jira--attachment-content-re
+  "\\`/rest/api/[23]/attachment/content/\\([0-9]+\\)"
+  "Regexp matching the path of an attachment's content; group 1 is its id.")
+
+(defun shipit-issue-jira--redirect-location (config path)
+  "Return where Jira at CONFIG redirects a GET of PATH to, or nil."
+  (let* ((url-request-method "GET")
+         (url-max-redirections 0)
+         (url-request-extra-headers
+          `(("Authorization" . ,(shipit-issue-jira--auth-header config))))
+         (buffer (url-retrieve-synchronously
+                  (shipit-issue-jira--build-url config path) t t 15)))
+    (when buffer
+      (unwind-protect
+          (with-current-buffer buffer
+            (goto-char (point-min))
+            (let ((case-fold-search t)
+                  (end (save-excursion (or (search-forward "\n\n" nil t) (point-max)))))
+              (when (re-search-forward "^location: *\\([^\r\n]+\\)" end t)
+                (match-string 1))))
+        (kill-buffer buffer)))))
+
+(defun shipit-issue-jira--media-url (url)
+  "Return the media URL Jira hands out for the attachment at URL, or nil.
+Jira answers for an attachment's content with a redirect to its media
+service, whose URL holds a short-lived token for that one file, so a
+player needs no login to fetch it.  Nil unless URL is an attachment on
+a Jira site shipit is set up for."
+  (let* ((parsed (url-generic-parse-url url))
+         (config (shipit-issue-jira--config-for-host (url-host parsed)))
+         (path (url-filename parsed)))
+    (when (and config (string-match shipit-issue-jira--attachment-content-re path))
+      (shipit-issue-jira--redirect-location
+       config (format "/rest/api/3/attachment/content/%s" (match-string 1 path))))))
+
+(add-hook 'shipit-media-url-functions #'shipit-issue-jira--media-url)
+
 ;;; API Functions
 
 (defun shipit-issue-jira--build-url (config path)

@@ -633,6 +633,7 @@ with focused context and optimized performance.
   ;; Ensure keymap inherits from magit-section-mode
   (unless (keymap-parent shipit-mode-map)
     (set-keymap-parent shipit-mode-map magit-section-mode-map))
+  (shipit--watch-videos)
 
   ;; Re-bind keys to ensure they override parent bindings
   (define-key shipit-mode-map (kbd "RET") #'shipit--open-file-at-point)

@@ -1505,9 +1505,40 @@ entirely (e.g. on Wayland without XWayland)."
   :type '(cons integer integer)
   :group 'shipit)
 
+(defcustom shipit-video-inline-function 'canvas-browser-embed
+  "Function that plays a video in the buffer, under its Play button, or nil.
+It is called with the URL of a page that plays the video, a width and a
+height in pixels, and the buffer.  It returns the text to insert, or
+nil when it cannot play there, as in a terminal frame; the video then
+plays outside the buffer.  canvas-browser gives such a function."
+  :type '(choice (const :tag "Outside the buffer" nil) function)
+  :group 'shipit)
+
+(defcustom shipit-video-inline-show t
+  "Whether a video shows in the buffer as soon as the buffer is ready.
+It shows under its Play button, paused on its first frame, and a click
+on it plays it.  Nil leaves each video to its Play button."
+  :type 'boolean
+  :group 'shipit)
+
+(defcustom shipit-video-inline-width 640
+  "Width in pixels of a video played in the buffer, at most.
+A narrower window gets a narrower video.  The height is 9/16 of it."
+  :type 'integer
+  :group 'shipit)
+
+(defconst shipit--video-extension-regexp "\\.\\(?:mp4\\|webm\\|mov\\|avi\\)"
+  "Regexp matching the extension of a video file name.")
+
 (defconst shipit--video-url-regexp
-  "\\bhttps?://[^][ \t\n<>\"'`)]+\\.\\(?:mp4\\|webm\\|mov\\|avi\\)\\b"
+  (concat "\\bhttps?://[^][ \t\n<>\"'`)]+" shipit--video-extension-regexp "\\b")
   "Regexp matching bare video URLs in body text.")
+
+(defconst shipit--video-link-regexp
+  (concat "\\[\\([^]\n]*" shipit--video-extension-regexp "\\)\\](\\([^)\n]+\\))")
+  "Regexp matching a markdown link whose text names a video file.
+Group 1 is the name and group 2 the URL, which need not name the file:
+a tracker serves an attachment from a URL of its own.")
 
 (defun shipit--ffmpeg-thumbnail-for-url (url)
   "Extract a single-frame thumbnail for URL via ffmpeg.
@@ -1616,17 +1647,84 @@ before creating a new one so retries don't accumulate frames."
              (setq shipit--video-active-process nil)))
           t))))))
 
-(defun shipit--play-video-url (url)
-  "Play video URL in a child frame or external player.
-When `shipit-video-embed-in-frame' is non-nil, embed mpv in a child
-frame; otherwise launch `shipit-video-player-command' as its own
-window.  Falls back to `browse-url' if neither works."
+(defun shipit--play-video-url (url &optional place)
+  "Play video URL, under its Play button at PLACE when the buffer can.
+PLACE is a marker on the button.  A video playing there already stops.
+A video the buffer cannot play, or one with no PLACE, plays outside it;
+see `shipit--play-video-outside'.  A tracker's attachment plays from the
+URL the tracker hands out for it, which needs no login."
   (interactive
    (list (or (get-text-property (point) 'shipit-video-url)
              (read-string "Video URL: "))))
+  (if (and place (shipit--inline-video-at place))
+      (shipit--press-inline-video place)
+    (let ((url (or (shipit--media-url url) url)))
+      (unless (and place (shipit--play-video-inline url place t))
+        (shipit--play-video-outside url)))))
+
+(defun shipit--inline-video-start (place)
+  "Return where the video under the Play button at PLACE starts, or would.
+That is the end of the button's line."
+  (with-current-buffer (marker-buffer place)
+    (save-excursion (goto-char place) (line-end-position))))
+
+(defun shipit--inline-video-at (place)
+  "Return non-nil when a video plays under the Play button at PLACE."
+  (with-current-buffer (marker-buffer place)
+    (get-text-property (shipit--inline-video-start place) 'shipit-video-inline)))
+
+(defun shipit--press-inline-video (place)
+  "Press RET on the video under the Play button at PLACE: it plays or pauses.
+The video's own text says what RET does there."
+  (with-current-buffer (marker-buffer place)
+    (let* ((start (shipit--inline-video-start place))
+           (end (next-single-property-change start 'shipit-video-inline nil (point-max)))
+           (frame (text-property-not-all start end 'keymap nil))
+           (command (and frame (lookup-key (get-text-property frame 'keymap) (kbd "RET")))))
+      (when (commandp command)
+        (save-excursion
+          (goto-char frame)
+          (call-interactively command))))))
+
+(defun shipit--inline-video-size (buffer)
+  "Return (WIDTH . HEIGHT) for a video played in BUFFER, in pixels.
+At most `shipit-video-inline-width', less when a window of BUFFER is
+narrower, and 16 by 9."
+  (let* ((window (get-buffer-window buffer t))
+         (room (if window (- (window-body-width window t) 60) shipit-video-inline-width))
+         (width (max 400 (min shipit-video-inline-width room))))
+    (cons width (round (* width 9) 16))))
+
+(defun shipit--play-video-inline (url place &optional autoplay)
+  "Show URL on the line under the Play button at PLACE; nil when it cannot.
+With AUTOPLAY it plays at once; without, it waits on its first frame for
+a click."
+  (when (functionp shipit-video-inline-function)
+    (let* ((buffer (marker-buffer place))
+           (size (shipit--inline-video-size buffer))
+           (text (funcall shipit-video-inline-function
+                          (shipit--video-page url autoplay) (car size) (cdr size) buffer)))
+      (when text
+        (with-current-buffer buffer
+          (save-excursion
+            (goto-char (shipit--inline-video-start place))
+            (let ((inhibit-read-only t))
+              (insert (propertize (concat "\n   " text) 'shipit-video-inline t)))))
+        t))))
+
+(defun shipit--play-video-outside (url)
+  "Play URL outside the buffer: in mpv, or else in the browser.
+When `shipit-video-embed-in-frame' is non-nil, embed mpv in a child
+frame; otherwise launch `shipit-video-player-command' as its own
+window, and without a player play it in the browser.  One that still
+needs a login plays in the browser, which may hold that login."
   (let* ((cmd shipit-video-player-command)
          (program (car cmd)))
     (cond
+     ;; A player has no login, and one on its command line would be
+     ;; readable in the process list; the browser may hold its own.
+     ((shipit--login-headers url)
+      (shipit--play-video-in-browser url))
      ((and shipit-video-embed-in-frame
            (executable-find "mpv")
            (shipit--play-video-in-child-frame url))
@@ -1635,15 +1733,96 @@ window.  Falls back to `browse-url' if neither works."
       (apply #'call-process program nil 0 nil
              (append (cdr cmd) (list url)))
       (message "Playing: %s" url))
-     (t (browse-url url)))))
+     (t (shipit--play-video-in-browser url)))))
+
+(defun shipit--video-page (url &optional autoplay)
+  "Write a local page whose video element plays URL; return its file URL.
+With AUTOPLAY the video starts at once, muted, since a browser may
+refuse to start one with its sound.  Without, it loads and shows its
+first frame.  The page may hold a short-lived token in URL, so only its
+owner can read it."
+  (let ((file (with-file-modes #o600 (make-temp-file "shipit-video-" nil ".html"))))
+    ;; Written here, silently: with its text `make-temp-file' says "Wrote".
+    (write-region (format (concat "<!doctype html><meta charset=\"utf-8\"><title>Video</title>"
+                                  "<body style=\"margin:0;overflow:hidden;background:#000\">"
+                                  "<video src=\"%s\" controls %s"
+                                  " style=\"display:block;width:100%%;height:100vh\"></video>")
+                          (url-insert-entities-in-string url)
+                          (if autoplay "autoplay muted" "preload=\"auto\""))
+                  nil file nil 'silent)
+    (concat "file://" file)))
+
+(defun shipit--video-button-places ()
+  "Return a marker on each visible Play button of this buffer, in order."
+  (let ((places nil)
+        (position (point-min)))
+    (while (setq position (text-property-any position (point-max) 'shipit-video-button t))
+      (unless (invisible-p position)
+        (push (copy-marker position) places))
+      (setq position (or (next-single-property-change position 'shipit-video-button)
+                         (point-max))))
+    (nreverse places)))
+
+(defun shipit--show-inline-videos ()
+  "Show each video of this buffer under its Play button, paused.
+One shown already, or one whose button is hidden, as in a shut section,
+is left as it is."
+  (when (and shipit-video-inline-show (functionp shipit-video-inline-function))
+    (dolist (place (shipit--video-button-places))
+      (unless (shipit--inline-video-at place)
+        (let ((url (get-text-property place 'shipit-video-url)))
+          (shipit--play-video-inline (or (shipit--media-url url) url) place))))))
+
+(defvar-local shipit--videos-timer nil
+  "The timer that shows this buffer's videos, while one is pending.")
+
+(defun shipit--show-inline-videos-in (buffer)
+  "Show the videos of BUFFER, if it is still there."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq shipit--videos-timer nil)
+      (shipit--show-inline-videos))))
+
+(defun shipit--show-inline-videos-soon ()
+  "Show the videos of this buffer once Emacs is idle, once for many calls.
+A tracker's video asks the tracker for its URL first, so the buffer is
+shown before that."
+  (unless (timerp shipit--videos-timer)
+    (setq shipit--videos-timer
+          (run-with-idle-timer 0.2 nil #'shipit--show-inline-videos-in (current-buffer)))))
+
+(defun shipit--video-buttons-inserted (beg end _length)
+  "Show the videos soon when text inserted from BEG to END has a Play button.
+In `after-change-functions' of a buffer that shows videos.  Its text
+arrives in parts, and again: the description, then the comments, more
+comments, and a section drawn again; each brings its buttons."
+  (when (and (< beg end) (text-property-any beg end 'shipit-video-button t))
+    (shipit--show-inline-videos-soon)))
+
+(defun shipit--watch-videos ()
+  "Show this buffer's videos whenever text with a Play button arrives."
+  (add-hook 'after-change-functions #'shipit--video-buttons-inserted nil t))
+
+(defun shipit--play-video-in-browser (url)
+  "Play URL in the browser, in a page of its own with a video element.
+Opening URL itself would not do: a browser downloads a video served as
+an attachment, as a tracker serves one, instead of playing it."
+  (browse-url (shipit--video-page url)))
+
+(defun shipit--event-place (event)
+  "Return a marker on what EVENT, a click or a key, was pressed on."
+  (if (mouse-event-p event)
+      (let ((start (event-start event)))
+        (set-marker (make-marker) (posn-point start) (window-buffer (posn-window start))))
+    (point-marker)))
 
 (defun shipit--video-button-keymap (url)
   "Return a keymap for the `▶ Play Video' button, bound to play URL.
 Binds both \\`(kbd \"RET\")' (TTY/control-M) and `[return]' (GUI
 function key) — without the function-key form, hitting Enter in a
 GUI frame falls through to the major mode's `<return>' binding."
-  (let ((play (lambda (&rest _) (interactive)
-                (shipit--play-video-url url))))
+  (let ((play (lambda (event) (interactive (list last-nonmenu-event))
+                (shipit--play-video-url url (shipit--event-place event)))))
     (let ((map (make-sparse-keymap)))
       (define-key map (kbd "RET") play)
       (define-key map [return] play)
@@ -1652,17 +1831,21 @@ GUI frame falls through to the major mode's `<return>' binding."
       (define-key map [mouse-2] play)
       map)))
 
-(defun shipit--render-video-link (url)
+(defun shipit--render-video-link (url &optional name)
   "Return a string representation of video URL with a clickable play button.
 The label is propertized so that RET / mouse-1 invokes
-`shipit--play-video-url' on the URL.  When ffmpeg is available a
-still thumbnail is included beneath the button."
+`shipit--play-video-url' on the URL, and says NAME when given.  When
+ffmpeg is available a still thumbnail is included beneath the button,
+unless the URL needs a login, which ffmpeg does not have."
   (let* ((thumb (and shipit-render-videos
+                     (not (shipit--login-headers url))
                      (shipit--ffmpeg-thumbnail-for-url url)))
          (icon (shipit--get-pr-field-icon "video" ">"))
-         (label-text (format "[%s Play Video]" icon))
+         (label-text (format "[%s Play %s]" icon (or name "Video")))
          (label (propertize label-text
                             'face 'link
+                            'shipit-video-button t
+                            'pointer 'hand
                             'mouse-face 'highlight
                             'help-echo (format "RET / mouse-1 to play %s" url)
                             'shipit-video-url url
@@ -1680,6 +1863,7 @@ still thumbnail is included beneath the button."
                                          'rear-nonsticky '(display)
                                          'shipit-video-url url
                                          'keymap (shipit--video-button-keymap url)
+                                         'pointer 'hand
                                          'mouse-face 'highlight
                                          'help-echo (format "RET / mouse-1 to play %s" url))))
                      s)
@@ -1709,7 +1893,27 @@ URL, leaving the surrounding fragments visible in the buffer."
     (replace-regexp-in-string
      shipit--video-url-regexp
      (lambda (url) (save-match-data (shipit--render-video-link url)))
-     text nil t)))
+     (shipit--process-video-links text) nil t)))
+
+(defun shipit--unescape-markdown (text)
+  "Return TEXT without its markdown backslash escapes, as `\\_' for `_'."
+  (replace-regexp-in-string "\\\\\\(.\\)" "\\1" text))
+
+(defun shipit--process-video-links (text)
+  "Replace each markdown link in TEXT whose text names a video with a Play button.
+Done before the bare URLs, and it leaves no URL in the text for them."
+  (replace-regexp-in-string
+   shipit--video-link-regexp
+   (lambda (link)
+     (save-match-data
+       (string-match shipit--video-link-regexp link)
+       (shipit--render-video-link (match-string 2 link)
+                                  (shipit--unescape-markdown (match-string 1 link)))))
+   text nil t))
+
+(defun shipit--process-inline-media (text)
+  "Replace the images and then the videos of rendered TEXT with their displays."
+  (shipit--process-inline-videos (shipit--process-inline-images text)))
 
 (defun shipit--create-image-display (url alt-text &optional explicit-width)
   "Create an image display for URL with ALT-TEXT.
@@ -4693,8 +4897,7 @@ This is the actual rendering implementation; callers should use
               ;; because overlays don't transfer with buffer-string
               ;; Step 4: Process inline images AFTER markdown rendering
               ;; This preserves the display properties that would otherwise be lost
-              (let ((fontified (buffer-string)))
-                (shipit--process-inline-images fontified)))
+              (shipit--process-inline-media (buffer-string)))
           ;; Fallback if markdown-mode not available
           text))
     (error
@@ -4850,13 +5053,7 @@ active (e.g. a magit-section buffer)."
                   (erase-buffer)
                   (insert collapsed)))
               (shipit--face-to-font-lock-face (point-min) (point-max))
-              (let* ((fontified (buffer-string))
-                     (with-images (if (fboundp 'shipit--process-inline-images)
-                                      (shipit--process-inline-images fontified)
-                                    fontified)))
-                (if (fboundp 'shipit--process-inline-videos)
-                    (shipit--process-inline-videos with-images)
-                  with-images)))
+              (shipit--process-inline-media (buffer-string)))
           text))
     (error
      (when (fboundp 'shipit--debug-log)

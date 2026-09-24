@@ -21,40 +21,6 @@
 (require 'shipit-preview)
 (require 'shipit-sandbox)
 
-(defmacro test-flow--with-repo (&rest body)
-  "Run BODY in a sandbox repository, with the sandbox standing in for the
-remote.  The same repository the sandbox is tried by hand in, so what
-runs here and what a user does are the same thing."
-  (declare (indent 0))
-  `(let* ((root (make-temp-file "shipit-flow-test-" t))
-          (shipit-sandbox-prs nil)
-          (shipit-sandbox-created nil)
-          (shipit-sandbox-stack nil))
-     (unwind-protect
-         (let ((default-directory (file-name-as-directory
-                                   (shipit-sandbox-build root))))
-           (cl-letf (((symbol-function 'shipit--get-repo-from-remote)
-                      (lambda (&rest _) shipit-sandbox-repo))
-                     ((symbol-function 'shipit-pr--resolve-for-repo)
-                      (lambda (repo) (cons (shipit-sandbox-backend) (list :repo repo))))
-                     ((symbol-function 'shipit-pr--get-backend)
-                      (lambda (&rest _) (shipit-sandbox-backend)))
-                     ((symbol-function 'shipit--upstream-default-branch)
-                      (lambda (&rest _) "main"))
-                     ((symbol-function 'redisplay) (lambda (&rest _) t))
-                     ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
-                     ((symbol-function 'switch-to-buffer) (lambda (&rest _) nil))
-                     ((symbol-function 'y-or-n-p) (lambda (&rest _) nil))
-                     ((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
-                     ((symbol-function 'shipit-preview--get-default-assignees)
-                      (lambda (&rest _) nil))
-                     ((symbol-function 'shipit-preview--find-pr-for-branch)
-                      (lambda (&rest _) nil))
-                     ((symbol-function 'shipit-preview--check-existing-pr)
-                      (lambda (&rest _) nil)))
-             ,@body))
-       (delete-directory root t))))
-
 (defun test-flow--goto-layer (branch)
   "Put point on the row of BRANCH.
 Found by its section, not by searching the text: the header names
@@ -80,7 +46,7 @@ WHEN they are divided, given branches, pushed and submitted in turn
 THEN two pull requests are raised, the second based on the first, and
 the two are registered as one stack.  This is the whole flow, with the
 git half real and only the remote's API standing in."
-  (test-flow--with-repo
+  (shipit-sandbox-with-repo
     (shipit-stacked-preview)
     (with-current-buffer (format "*shipit-stacked-preview: %s*" "work")
       ;; divided by what the commit subjects have in common

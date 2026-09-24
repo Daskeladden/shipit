@@ -55,6 +55,7 @@
 (declare-function canvas-diagram-node-y "canvas-diagram")
 (declare-function canvas-diagram-font "canvas-diagram")
 (declare-function canvas-diagram-color "canvas-diagram")
+(declare-function canvas-diagram-palette-rgb "canvas-diagram")
 (declare-function canvas-diagram-rgb "canvas-diagram")
 (declare-function canvas-diagram-icon-data "canvas-diagram" (name))
 (declare-function canvas-diagram-set-rgb "canvas-diagram")
@@ -879,7 +880,9 @@ bottom.  The slack grows to take it, and shrinks back without it."
 ;;; Drawing the columns
 ;;
 ;; canvas-diagram calls `:draw-edges' before it draws the boxes, so the
-;; frames and headers drawn here sit behind the cards.
+;; frames and headers drawn here sit behind the cards.  A column takes
+;; the colour the palette gives its place: its header is filled with it
+;; and its frame faintly tinted, so the cards can stay plain.
 
 (defun shipit-atlassian-kanban--frame-height (nodes ghosts ctx)
   "Height every column frame takes, given the laid-out NODES and GHOSTS on CTX."
@@ -889,9 +892,9 @@ bottom.  The slack grows to take it, and shrinks back without it."
                     (mapcar #'shipit-atlassian-kanban--box-bottom ghosts)))
      shipit-atlassian-kanban--frame-pad))
 
-(defun shipit-atlassian-kanban--draw-frame (ctx frame height)
-  "Fill one column FRAME, an (X . WIDTH) pair, HEIGHT tall."
-  (canvas-diagram-set-rgb ctx (canvas-diagram-color :edge) 0.12)
+(defun shipit-atlassian-kanban--draw-frame (ctx frame height rgb)
+  "Fill one column FRAME, an (X . WIDTH) pair, HEIGHT tall, faintly in RGB."
+  (canvas-diagram-set-rgb ctx rgb 0.12)
   (canvas-diagram-rounded-rect ctx (car frame) 0 (cdr frame) height 8)
   (canvas-cairo-fill ctx))
 
@@ -902,8 +905,10 @@ The header is a node, so canvas-diagram draws it with the cards."
          (height (shipit-atlassian-kanban--frame-height
                   (canvas-diagram-nodes diagram)
                   (shipit-atlassian-kanban-board-ghosts model) ctx)))
-    (dolist (frame (shipit-atlassian-kanban-board-frames model))
-      (shipit-atlassian-kanban--draw-frame ctx frame height))
+    (seq-do-indexed (lambda (frame index)
+                      (shipit-atlassian-kanban--draw-frame
+                       ctx frame height (canvas-diagram-palette-rgb index)))
+                    (shipit-atlassian-kanban-board-frames model))
     (shipit-atlassian-kanban--draw-ghosts diagram ctx)))
 
 ;;; Drawing the priority of a card
@@ -1355,16 +1360,18 @@ be staged and its effect seen without closing the menu."
                :text)))
 
 (defun shipit-atlassian-kanban--node-rgb (diagram node)
-  "Return the fill of NODE\\='s card in DIAGRAM.
-A staged card takes the staged colour, so a move shows without
-opening anything.  On the timeline a card that moved or was made since
-then takes the timeline colour.  Any other card takes the colour of the
-page: the column frame shows the column, so a colour of the column
-would only compete with the colours that mean something."
+  "Return the fill of NODE in DIAGRAM, a card or a column header.
+A header takes the palette colour of its column.  A staged card takes
+the staged colour, so a move shows without opening anything.  On the
+timeline a card that moved or was made since then takes the timeline
+colour.  Any other card takes the colour of the page: the header and
+the frame show the column, so a colour of the column would only
+compete with the colours that mean something."
   (let* ((model (canvas-diagram-model diagram))
          (card (shipit-atlassian-kanban--card-of model node)))
     (cond
-     ((null card) (canvas-diagram-color :node))
+     ((null card) (canvas-diagram-palette-rgb
+                   (shipit-atlassian-kanban--column-index-of model node)))
      ((plist-get card :staged)
       (or (canvas-diagram-rgb shipit-atlassian-kanban-staged-color)
           (canvas-diagram-color :selection)))

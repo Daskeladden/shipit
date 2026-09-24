@@ -933,6 +933,46 @@ THEN both take the colour of the page, and not a colour of their column,
                      (shipit-atlassian-kanban--node-rgb
                       diagram (test-kanban--node nodes key)))))))
 
+(ert-deftest test-kanban-headers-take-the-palette ()
+  "GIVEN the vivid palette in use
+WHEN the headers of the first two columns are asked for their fill
+THEN each takes the palette colour of its column, so a change of
+palette shows on the board."
+  (test-kanban--with-layout nodes model nil nil
+    (let ((canvas-diagram-palette "vivid"))
+      (should (equal (mapcar #'canvas-diagram-rgb '("dodger blue" "dark orange"))
+                     (mapcar (lambda (header)
+                               (shipit-atlassian-kanban--node-rgb diagram header))
+                             (seq-take (test-kanban--headers model nodes) 2)))))))
+
+(defun test-kanban--frame-pixels (diagram model palette)
+  "The colours below the cards of the first two frames of DIAGRAM in PALETTE.
+MODEL is the board DIAGRAM draws.  Each is drawn on a canvas of its own,
+so one palette is not drawn over another."
+  (let ((canvas-diagram-palette palette)
+        (ctx (canvas-cairo-context (test-kanban--canvas))))
+    (unwind-protect
+        (let ((y (- (shipit-atlassian-kanban--frame-height
+                     (canvas-diagram-nodes diagram)
+                     (shipit-atlassian-kanban-board-ghosts model) ctx)
+                    (/ shipit-atlassian-kanban--frame-pad 2))))
+          (shipit-atlassian-kanban--draw-columns diagram ctx)
+          (mapcar (lambda (frame)
+                    (canvas-cairo-pixel ctx (+ (car frame) (/ (cdr frame) 2)) y))
+                  (seq-take (shipit-atlassian-kanban-board-frames model) 2)))
+      (canvas-cairo-destroy ctx))))
+
+(ert-deftest test-kanban-frames-take-the-palette ()
+  "GIVEN a board drawn in the vivid palette, and again in the mono one
+WHEN the frames of its first two columns are looked at below the cards
+THEN in vivid the two differ, each in the colour of its column, AND in
+mono they are alike, as that palette has one colour."
+  (test-kanban--with-layout _nodes model nil nil
+    (let ((vivid (test-kanban--frame-pixels diagram model "vivid"))
+          (mono (test-kanban--frame-pixels diagram model "mono")))
+      (should-not (equal (car vivid) (cadr vivid)))
+      (should (equal (car mono) (cadr mono))))))
+
 (ert-deftest test-kanban-staged-card-has-its-own-colour ()
   "GIVEN a staged card and a card that is where Jira has it
 WHEN each is asked for its fill

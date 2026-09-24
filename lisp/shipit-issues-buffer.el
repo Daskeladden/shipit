@@ -165,27 +165,22 @@ Each entry is (TYPE . VALUE).  Supported types:
 
 (defvar shipit-issue-mode-map
   (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map magit-section-mode-map)
-    (define-key map (kbd "$") #'shipit-process-buffer)
     (define-key map (kbd "g") #'shipit-issue-buffer-refresh)
     (define-key map (kbd "r") #'shipit-issue-buffer-refresh)
-    (define-key map (kbd "o") #'shipit-issue--open-in-browser)
-    (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "Q") #'shipit-issue-buffer-quit-and-kill)
-    (define-key map (kbd "M-;") #'shipit-dwim)
     (define-key map (kbd "RET") #'shipit-issue--ret-dwim)
     (define-key map (kbd "L") #'shipit-toggle-timestamp-format)
-    ;; Subscription
-    (define-key map (kbd "w") #'shipit-repo-subscription)
     (define-key map (kbd "f") #'shipit-issue-filter-comments)
     (define-key map (kbd "l") #'shipit-issue-jump-to-load-more)
     (define-key map (kbd "R") #'shipit-issue--toggle-load-direction)
     (define-key map (kbd "b") #'shipit-issue-branch-menu)
     map)
-  "Keymap for `shipit-issue-mode'.")
+  "Keymap for `shipit-issue-mode'.
+The keys it shares with a pull request buffer come from its parent,
+`shipit-page-mode-map'.")
 
 ;; Ensure bindings exist even when defvar didn't re-evaluate (reload case)
-(define-key shipit-issue-mode-map (kbd "M-;") #'shipit-dwim)
+(set-keymap-parent shipit-issue-mode-map shipit-page-mode-map)
 (define-key shipit-issue-mode-map (kbd "RET") #'shipit-issue--ret-dwim)
 (define-key shipit-issue-mode-map (kbd "L") #'shipit-toggle-timestamp-format)
 
@@ -202,6 +197,7 @@ Provides a read-only interface for viewing GitHub issues.
   (setq-local magit-root-section nil)
   (shipit--apply-section-defaults)
   (shipit--watch-videos)
+  (setq-local shipit-page-url-function #'shipit-issue--browse-url)
   (font-lock-mode 1)
   (shipit--enable-issue-ref-eldoc)
   (add-hook 'post-command-hook #'shipit-issue--update-comment-position nil t)
@@ -1988,14 +1984,6 @@ in place.  This is the reverse of the PR-buffer Linked Issue section."
          (browse-fn (plist-get backend :browse-url)))
     (when (and browse-fn number)
       (funcall browse-fn config number))))
-
-(defun shipit-issue--open-in-browser ()
-  "Open the current issue in the browser."
-  (interactive)
-  (let ((url (shipit-issue--browse-url)))
-    (if url
-        (browse-url url)
-      (message "No issue data available"))))
 
 (defun shipit-issue-copy-url ()
   "Copy the issue URL to the kill ring.

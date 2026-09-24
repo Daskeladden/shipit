@@ -334,6 +334,40 @@ Call from the body of each shipit mode derived from `magit-section-mode'."
     (setq-local magit-section-visibility-indicators
                 shipit-section-visibility-indicators)))
 
+;;; Keys every page of one item has
+;;
+;; A pull request buffer and an issue buffer each show one item.  A key
+;; that means the same in both is bound here once, and both keymaps take
+;; this one as their parent, so the two cannot drift apart.
+
+(declare-function shipit-dwim "shipit-pr-actions")
+(declare-function shipit-repo-subscription "shipit-repo-buffer")
+
+(defvar-local shipit-page-url-function nil
+  "Function of no arguments that returns the web address of this page.
+The mode of a page of one item sets it, as a pull request buffer and an
+issue buffer do.  It returns nil when the page has no address yet.")
+
+(defun shipit-open-in-browser ()
+  "Open the item this buffer shows in the browser."
+  (interactive)
+  (browse-url (or (and shipit-page-url-function (funcall shipit-page-url-function))
+                  (user-error "This buffer has no web address to open"))))
+
+(defvar shipit-page-mode-map (make-sparse-keymap)
+  "Keys shared by the buffers that show one item: a pull request or an issue.
+Each of their keymaps has this one as its parent, and keeps only the
+keys that mean something else in it.")
+
+;; Bound outside the `defvar', so that loading this file again binds a
+;; key added here in a running Emacs too.
+(set-keymap-parent shipit-page-mode-map magit-section-mode-map)
+(define-key shipit-page-mode-map (kbd "o") #'shipit-open-in-browser)
+(define-key shipit-page-mode-map (kbd "q") #'quit-window)
+(define-key shipit-page-mode-map (kbd "$") #'shipit-process-buffer)
+(define-key shipit-page-mode-map (kbd "M-;") #'shipit-dwim)
+(define-key shipit-page-mode-map (kbd "w") #'shipit-repo-subscription)
+
 (defvar shipit-current-repo nil
   "Current repository in the format \\='owner/repo\\='.")
 

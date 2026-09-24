@@ -582,12 +582,10 @@ section and search for the child by name."
     (define-key map (kbd "C-RET") #'shipit--open-file-from-worktree-at-point)
     (define-key map [C-return] #'shipit--open-file-from-worktree-at-point)
     (define-key map (kbd "SPC") #'shipit-dwim)
-    (define-key map (kbd "M-;") #'shipit-dwim)
     (define-key map (kbd "c") #'shipit-comment)
     (define-key map (kbd "r") #'shipit-buffer-refresh)
     (define-key map (kbd "g") #'shipit-buffer-refresh)
     (define-key map (kbd "s") #'shipit-buffer-select-pr)
-    (define-key map (kbd "$") #'shipit-process-buffer)
 
     ;; Quick actions
     (define-key map (kbd "a") #'shipit-suggestion-or-approve)
@@ -600,12 +598,9 @@ section and search for the child by name."
     ;; Worktree actions transient (`Z' to mirror magit\\='s
     ;; worktree-popup binding).
     (define-key map (kbd "Z") #'shipit-worktree)
-    ;; Subscription
-    (define-key map (kbd "w") #'shipit-repo-subscription)
     (define-key map (kbd "+") 'shipit-load-more-files)
 
     ;; Buffer management
-    (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "Q") #'shipit-buffer-quit-and-kill)
 
     ;; Copy
@@ -618,7 +613,13 @@ section and search for the child by name."
     (define-key map (kbd "?") #'shipit-buffer-help)
 
     map)
-  "Keymap for shipit-mode.")
+  "Keymap for shipit-mode.
+The keys it shares with an issue buffer come from its parent,
+`shipit-page-mode-map'.")
+
+;; Outside the `defvar', so that loading this file again gives a running
+;; Emacs the shared keys too.
+(set-keymap-parent shipit-mode-map shipit-page-mode-map)
 
 ;;; Major mode definition
 
@@ -630,10 +631,8 @@ with focused context and optimized performance.
 
 \\{shipit-mode-map}"
   :group 'shipit
-  ;; Ensure keymap inherits from magit-section-mode
-  (unless (keymap-parent shipit-mode-map)
-    (set-keymap-parent shipit-mode-map magit-section-mode-map))
   (shipit--watch-videos)
+  (setq-local shipit-page-url-function #'shipit-buffer--pr-url)
 
   ;; Re-bind keys to ensure they override parent bindings
   (define-key shipit-mode-map (kbd "RET") #'shipit--open-file-at-point)
@@ -643,7 +642,6 @@ with focused context and optimized performance.
   (define-key shipit-mode-map (kbd "e") #'shipit--ediff-file-at-point)
   (define-key shipit-mode-map (kbd "d") #'shipit-pr-diff-menu)
   (define-key shipit-mode-map (kbd "D") #'shipit--show-diff-with-comments-at-point)
-  (define-key shipit-mode-map (kbd "M-;") #'shipit-dwim)
   (define-key shipit-mode-map (kbd "g") #'shipit-buffer-refresh)
   (define-key shipit-mode-map (kbd "G") #'shipit-buffer-refresh-hard)
   (define-key shipit-mode-map (kbd "f") #'shipit-files-filter)
@@ -1590,6 +1588,11 @@ Returns non-nil if a URL was copied."
       (shipit-toggle-timestamp-format))))
 
 ;;; Utility functions
+
+(defun shipit-buffer--pr-url ()
+  "Return the web address of this buffer's pull request, or nil."
+  (and shipit-buffer-repo shipit-buffer-pr-number
+       (shipit-pr--browse-url shipit-buffer-repo shipit-buffer-pr-number)))
 
 (defun shipit-buffer-select-pr ()
   "Select a different PR for this buffer."

@@ -141,6 +141,7 @@ test-unit: compile
 		-l test/test-shipit-actions-timeline.el \
 		-l test/test-shipit-atlassian-dashboard.el \
 		-l test/test-shipit-issues-buffer.el \
+		-l test/test-shipit-page-keys.el \
 		-l test/test-shipit-issue-branch.el \
 		-l test/test-shipit-open-url.el \
 		-l test/test-shipit-suggestions.el \

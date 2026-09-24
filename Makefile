@@ -91,6 +91,7 @@ test-unit: compile
 		-l test/test-shipit-test-http.el \
 		-l test/test-shipit-requires.el \
 		-l test/test-files-filter.el \
+		-l test/test-shipit-files-hide.el \
 		-l test/test-shipit-review-mode-integration.el \
 		-l test/test-shipit-review-revision.el \
 		-l test/test-tab-collapse-fix.el \

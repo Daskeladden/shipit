@@ -1808,7 +1808,7 @@ that more files exist beyond the fetched limit."
                                           (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
                                         "-0"))))
                           (when has-filter
-                            (let ((display (shipit--get-files-filter-display)))
+                            (let ((display (shipit--get-files-filter-display files)))
                               (when display
                                 (insert
                                  (propertize
@@ -2365,7 +2365,7 @@ Returns the section object."
                               (propertize (format "-%d" total-dels) 'font-lock-face 'diff-removed)
                             "-0"))))
               ;; Add filter display if active
-              (let ((filter-display (shipit--get-files-filter-display)))
+              (let ((filter-display (shipit--get-files-filter-display files)))
                 (when filter-display
                   (insert (propertize (format "   Filter: %s\n"
                                               (propertize filter-display 'font-lock-face 'font-lock-string-face))
@@ -2762,7 +2762,7 @@ REPO and PR-NUMBER are used for context in file operations."
                                           "-0")))
           (setq heading-end (point))
           ;; Add filter display if active
-          (let ((filter-display (shipit--get-files-filter-display)))
+          (let ((filter-display (shipit--get-files-filter-display files)))
             (when filter-display
               (let ((filter-start (point)))
                 (insert (propertize (format "   Filter: %s\n"
@@ -3458,23 +3458,7 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
 Used for targeted refresh - preserves section structure."
   (shipit--debug-log "INSERT-FILES-CONTENT called: repo=%s pr-number=%s pr-is-nil=%s pr-has-head=%s"
                      repo pr-number (if pr "NO" "YES") (if (and pr (assq 'head pr)) "YES" "NO"))
-  ;; Add filter line if filter is active
-  (let ((filter-display (shipit--get-files-filter-display)))
-    (when filter-display
-      (let* ((filter-start (point))
-             (files (cdr (assq 'files pr)))
-             (filtered-count (if (sequencep files)
-                                 (length (seq-filter (lambda (file)
-                                                       (shipit--file-matches-filter-p file shipit--files-filter-text))
-                                                     files))
-                               0)))
-        (insert (propertize (format "   Filter: %s (%d)\n"
-                                    (propertize filter-display
-                                                'font-lock-face 'font-lock-string-face)
-                                    filtered-count)
-                            'font-lock-face 'italic))
-        ;; Mark filter line with shipit-pr-file property so it gets deleted on refresh
-        (add-text-properties filter-start (point) '(shipit-pr-file t)))))
+  (shipit--insert-files-filter-line (cdr (assq 'files pr)))
 
   (let ((files (progn
                  (shipit--debug-log "FILES-DATA-DEBUG: pr type=%s, has-files=%s"
@@ -3498,11 +3482,7 @@ Used for targeted refresh - preserves section structure."
                  (_debug-pr-head (shipit--debug-log "PR FILES: pr-head-sha extraction - pr has head=%s sha=%s"
                                                    (if (assq 'head pr) "YES" "NO")
                                                    pr-head-sha))
-                 (filtered-files (if (shipit--files-filter-active-p)
-                                     (seq-filter (lambda (file)
-                                                   (shipit--file-matches-filter-p file shipit--files-filter-text))
-                                                 files)
-                                   files)))
+                 (filtered-files (shipit--filtered-files files)))
             (if (and (sequencep filtered-files) (> (length filtered-files) 0))
                 (progn
                   (dolist (file filtered-files)
@@ -3686,7 +3666,7 @@ Per magit-section best practices, we must:
                                                                     "-0")))
                                                         (setq heading-end (point))
                                                         ;; Add filter field display after heading if filter is active (matches notifications pattern)
-                                                        (let ((filter-display (shipit--get-files-filter-display)))
+                                                        (let ((filter-display (shipit--get-files-filter-display files)))
                                                           (when filter-display
                                                             (let ((filter-start (point)))
                                                               (insert (propertize (format "   Filter: %s\n"

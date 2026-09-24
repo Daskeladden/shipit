@@ -18,12 +18,15 @@
 ;;; This file is part of shipit — code review integration for Magit.
 
 ;;; Commentary:
-;; File filtering for PR files sections: text-based filename filtering,
-;; comment-only filtering, and CODEOWNERS ownership filtering.
-;; Extracted from shipit-magit.el.
+;; File filtering for PR files sections.  The filter shows only some
+;; files: by a text in their name, with comments, owned by the user
+;; per CODEOWNERS, and so on.  Hiding takes chosen files out, and
+;; combines with the filter.  Extracted from shipit-magit.el.
 
 ;;; Code:
 (require 'cl-lib)
+(require 'seq)
+(require 'subr-x)
 (require 'transient)
 (require 'shipit-lib)
 (require 'shipit-core)
@@ -71,16 +74,50 @@ Possible values:
 - `viewed' / `unviewed': by viewed status
 - `drafts': files with pending review-queue drafts only.")
 
+(defvar-local shipit--files-hidden nil
+  "Names of the files hidden from Files Changed, one by one.")
+
+(defvar-local shipit--files-hidden-texts nil
+  "Texts that hide from Files Changed every file whose name contains one.
+Matched without regard to case.")
+
 ;;; Filter predicates
 
 (defun shipit--files-filter-active-p ()
-  "Return non-nil if any file filter is currently active."
+  "Return non-nil if any file filter is currently active, or files are hidden."
   (or shipit--files-filter-mode
-      (not (string-empty-p shipit--files-filter-text))))
+      (not (string-empty-p shipit--files-filter-text))
+      shipit--files-hidden
+      shipit--files-hidden-texts))
 
-(defun shipit--get-files-filter-display ()
-  "Get the display string for the current files filter.
-Returns nil if no filter is active."
+(defun shipit--name-contains-p (name text)
+  "Non-nil when NAME contains TEXT, without regard to case.
+TEXT is plain text, not a regexp: file names contain dots and brackets."
+  (string-search (downcase text) (downcase name)))
+
+(defun shipit--file-hidden-p (filename)
+  "Non-nil when FILENAME is hidden from Files Changed."
+  (and filename
+       (or (member filename shipit--files-hidden)
+           (seq-some (lambda (text) (shipit--name-contains-p filename text))
+                     shipit--files-hidden-texts))))
+
+(defun shipit--files-hidden-display (files)
+  "How many of FILES are hidden, as the filter line says it, or nil."
+  (when (or shipit--files-hidden shipit--files-hidden-texts)
+    (format "%d hidden"
+            (seq-count (lambda (file) (shipit--file-hidden-p (cdr (assq 'filename file))))
+                       files))))
+
+(defun shipit--get-files-filter-display (files)
+  "The text of the filter line for FILES, or nil when no filter is active.
+It says what the filter shows only, and how many of FILES are hidden."
+  (let ((parts (delq nil (list (shipit--files-show-only-display)
+                               (shipit--files-hidden-display files)))))
+    (and parts (string-join parts ", "))))
+
+(defun shipit--files-show-only-display ()
+  "What the filter shows only, as the filter line says it, or nil."
   (cond
    ((eq shipit--files-filter-mode 'comments)
     "files with comments")
@@ -218,32 +255,55 @@ Uses cached CODEOWNERS data for performance."
       owned)))
 
 (defun shipit--file-matches-filter-p (file filter-text)
-  "Return non-nil if FILE matches the current filter criteria.
-Checks `shipit--files-filter-mode' first:
-- nil: use FILTER-TEXT for filename matching
-- `comments': show only files with inline comments
-- `owned': show only files the current user owns per CODEOWNERS
-FILTER-TEXT is used for case-insensitive filename matching when mode is nil."
+  "Return non-nil if FILE shows under the current filter, and is not hidden.
+FILTER-TEXT is as for `shipit--file-matches-show-only-p'."
   (let ((filename (cdr (assq 'filename file))))
-    (pcase shipit--files-filter-mode
-      ('comments
-       ;; Filter to files with comments only
-       (shipit--file-has-comments-p filename))
-      ('owned
-       ;; Filter to files the user owns
-       (shipit--file-owned-by-user-p filename))
-      ('viewed
-       (shipit--file-viewed-p filename))
-      ('unviewed
-       (not (shipit--file-viewed-p filename)))
-      ('drafts
-       (shipit--file-has-draft-p filename))
-      (_
-       ;; Default: text-based filename filter
-       (if (or (null filter-text) (string-empty-p filter-text))
-           t  ; Empty or nil filter matches everything
-         (let ((filter-lower (downcase filter-text)))
-           (and filename (string-match-p filter-lower (downcase filename)))))))))
+    (and (not (shipit--file-hidden-p filename))
+         (shipit--file-matches-show-only-p filename filter-text))))
+
+(defun shipit--filtered-files (files)
+  "The FILES that Files Changed shows under the current filter."
+  (if (shipit--files-filter-active-p)
+      (seq-filter (lambda (file) (shipit--file-matches-filter-p file shipit--files-filter-text))
+                  files)
+    files))
+
+(defun shipit--insert-files-filter-line (files)
+  "Insert the line that says how FILES are filtered, when they are.
+The line is marked as part of the files, so a refresh deletes it."
+  (let ((display (shipit--get-files-filter-display files)))
+    (when display
+      (let ((start (point)))
+        (insert (propertize (format "   Filter: %s (%d)\n"
+                                    (propertize display 'font-lock-face 'font-lock-string-face)
+                                    (length (shipit--filtered-files files)))
+                            'font-lock-face 'italic))
+        (add-text-properties start (point) '(shipit-pr-file t))))))
+
+(defun shipit--file-matches-show-only-p (filename filter-text)
+  "Return non-nil if FILENAME matches what the filter shows only.
+Checks `shipit--files-filter-mode' first:
+- nil: show only names that contain FILTER-TEXT, without regard to case
+- `comments': show only files with inline comments
+- `owned': show only files the current user owns per CODEOWNERS"
+  (pcase shipit--files-filter-mode
+    ('comments
+     ;; Filter to files with comments only
+     (shipit--file-has-comments-p filename))
+    ('owned
+     ;; Filter to files the user owns
+     (shipit--file-owned-by-user-p filename))
+    ('viewed
+     (shipit--file-viewed-p filename))
+    ('unviewed
+     (not (shipit--file-viewed-p filename)))
+    ('drafts
+     (shipit--file-has-draft-p filename))
+    (_
+     ;; Default: text-based filename filter
+     (if (or (null filter-text) (string-empty-p filter-text))
+         t  ; Empty or nil filter matches everything
+       (and filename (shipit--name-contains-p filename filter-text))))))
 
 ;;; Interactive filter commands
 
@@ -276,7 +336,7 @@ FILTER-TEXT is used for case-insensitive filename matching when mode is nil."
                                                      (error
                                                       (message "Filter refresh error: %s" (error-message-string err))))))))
                     nil t))
-      (let ((new-filter (read-string "Filter files (filename): "
+      (let ((new-filter (read-string "Show only files whose name contains: "
                                      shipit--files-filter-text)))
         ;; Apply the final filter value
         (setq shipit--files-filter-text new-filter)
@@ -329,25 +389,69 @@ Matches both direct user ownership (@username) and team membership (@org/team)."
   (shipit--refresh-files-section-only)
   (message "Showing files with draft comments only"))
 
+(defun shipit--files-section ()
+  "The Files Changed section of this buffer, or nil."
+  (let ((pos (text-property-any (point-min) (point-max) 'shipit-pr-files t)))
+    (and pos (save-excursion (goto-char pos) (magit-current-section)))))
+
+(defun shipit--shown-file-names ()
+  "The names of the files Files Changed shows now, in order."
+  (let ((section (or (shipit--files-section)
+                     (user-error "No Files Changed section in this buffer"))))
+    (delq nil (mapcar (lambda (child) (and (eq 'pr-file (oref child type)) (oref child value)))
+                      (oref section children)))))
+
+(defun shipit--file-to-hide ()
+  "The file at point, or else one picked by name from the files shown."
+  (or (get-text-property (point) 'shipit-file-path)
+      (completing-read "Hide file: "
+                       (or (shipit--shown-file-names)
+                           (user-error "No file to hide: open Files Changed first"))
+                       nil t)))
+
+(defun shipit--hide-file (filename)
+  "Hide FILENAME from Files Changed.
+Interactively, the file at point, or else one picked by name."
+  (interactive (list (shipit--file-to-hide)))
+  (cl-pushnew filename shipit--files-hidden :test #'equal)
+  (shipit--refresh-files-section-only)
+  (message "Hid %s" filename))
+
+(defun shipit--hide-files-matching (text)
+  "Hide from Files Changed every file whose name contains TEXT, in any case."
+  (interactive (list (read-string "Hide files whose name contains: ")))
+  (when (string-empty-p text)
+    (user-error "No text to hide files by"))
+  (cl-pushnew text shipit--files-hidden-texts :test #'equal)
+  (shipit--refresh-files-section-only)
+  (message "Hid the files whose name contains \"%s\"" text))
+
 (defun shipit--clear-files-filter ()
-  "Clear all file filters."
+  "Clear all file filters, and show the hidden files again."
   (interactive)
   (setq shipit--files-filter-mode nil)
   (setq shipit--files-filter-text "")
+  (setq shipit--files-hidden nil)
+  (setq shipit--files-hidden-texts nil)
   (setq shipit--codeowners-filter-cache nil)  ; Clear cache
   (shipit--refresh-files-section-only)
   (message "File filters cleared"))
 
 (transient-define-prefix shipit-files-filter-transient ()
-  "Filter files in the PR."
-  ["Filter Files"
-   [("f" "By filename" shipit--set-files-filter)
+  "Show only some files of the PR, or hide some."
+  [["Show only"
+    ("f" "By name" shipit--set-files-filter)
     ("c" "With comments" shipit--filter-files-with-comments)
-    ("o" "I own (CODEOWNERS)" shipit--filter-files-owned)]
-   [("v" "Viewed" shipit--filter-files-viewed)
+    ("o" "I own (CODEOWNERS)" shipit--filter-files-owned)
+    ("v" "Viewed" shipit--filter-files-viewed)]
+   [""
     ("u" "Unviewed" shipit--filter-files-unviewed)
-    ("d" "With drafts" shipit--filter-files-with-drafts)
-    ("x" "Clear filter" shipit--clear-files-filter)
+    ("d" "With drafts" shipit--filter-files-with-drafts)]
+   ["Hide"
+    ("h" "This file" shipit--hide-file)
+    ("H" "By name" shipit--hide-files-matching)]
+   [""
+    ("x" "Clear filter and hidden" shipit--clear-files-filter)
     ("q" "Quit" transient-quit-one)]])
 
 (defun shipit-files-filter ()

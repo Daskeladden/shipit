@@ -791,16 +791,12 @@ Open diff for files."
                   (shipit-preview--setup-comment-cache)
                   ;; Apply filter and render files
                   (let* ((all-files shipit-preview--cached-files)
-                         (filtered-files (if (and (boundp 'shipit--files-filter-text)
-                                                  (not (string-empty-p shipit--files-filter-text)))
-                                             (seq-filter (lambda (file)
-                                                           (shipit--file-matches-filter-p file shipit--files-filter-text))
-                                                         all-files)
-                                           all-files)))
+                         (filtered-files (shipit--filtered-files all-files)))
+                    (shipit--insert-files-filter-line all-files)
                     (if (> (length filtered-files) 0)
                         (dolist (file filtered-files)
                           (shipit--insert-pr-file-section file shipit-preview--repo nil nil nil))
-                      (if (not (string-empty-p (or shipit--files-filter-text "")))
+                      (if (shipit--files-filter-active-p)
                           (insert "   No files match filter\n")
                         (insert "   No files changed\n")))))
                 ;; Update section end
@@ -1080,14 +1076,8 @@ COMMENT-ID is the comment to update, CONTENT is the new text."
 
 (defun shipit-preview--get-visible-file-paths ()
   "Get list of visible file path strings (respecting filter)."
-  (let ((files shipit-preview--cached-files))
-    (when (and (boundp 'shipit--files-filter-text)
-               (not (string-empty-p shipit--files-filter-text)))
-      ;; Filter is active - get only matching files
-      (setq files (seq-filter (lambda (file)
-                                (shipit--file-matches-filter-p file shipit--files-filter-text))
-                              files)))
-    (mapcar (lambda (f) (cdr (assq 'filename f))) files)))
+  (mapcar (lambda (f) (cdr (assq 'filename f)))
+          (shipit--filtered-files shipit-preview--cached-files)))
 
 (defun shipit-preview--make-file-set (file-paths)
   "Create a hash table set from FILE-PATHS for O(1) lookup."
@@ -1122,8 +1112,7 @@ If FILE-LEVEL-ONLY is non-nil, delete only file-level comments."
   (interactive)
   (let* ((visible-file-paths (shipit-preview--get-visible-file-paths))
          (file-set (shipit-preview--make-file-set visible-file-paths))
-         (filter-active (and (boundp 'shipit--files-filter-text)
-                             (not (string-empty-p shipit--files-filter-text))))
+         (filter-active (shipit--files-filter-active-p))
          (scope-label (if filter-active "filtered files" "all files"))
          (all-count (shipit-preview--count-comments-for-files file-set))
          (file-level-count (shipit-preview--count-comments-for-files file-set t))

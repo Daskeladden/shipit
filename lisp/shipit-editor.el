@@ -2292,7 +2292,7 @@ Inserts literal @ if cancelled or no users found."
                                (shipit-issue-buffer-refresh))))))
        (message "Comment added"))
       ('issue-comment-edit
-       (shipit-issues--edit-comment repo comment-id content)
+       (shipit-issues--edit-comment repo comment-id content pr-number)
        (let ((buf source-buffer))
          (run-with-timer 0 nil
                          (lambda ()

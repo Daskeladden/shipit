@@ -16,12 +16,16 @@
 ;;; Code:
 
 (require 'ert)
+;; The editor is a `gfm-mode', which the suite stands in for, as the
+;; editor tests do.
+(load-file (expand-file-name "test-stubs.el" (file-name-directory (or load-file-name buffer-file-name))))
 (require 'shipit-http)
 (require 'shipit-issue-jira)
 (require 'shipit-jira-sandbox)
 (require 'shipit-issues)
 (require 'shipit-issues-buffer)
 (require 'shipit-pr-github)
+(require 'shipit-editor)
 (require 'shipit-test-offline)
 
 (defconst test-jira-sandbox--root
@@ -172,6 +176,31 @@ THEN it gets the picture, a PNG."
                                  (set-buffer-multibyte nil)
                                  (insert-file-contents-literally file)
                                  (buffer-string)))))))
+
+(defun test-jira-sandbox--comment-body (config)
+  "The body of the newest comment of the sandbox's first issue, as shown."
+  (cdr (assq 'body (car (last (shipit-issue-jira--fetch-comments config "PRJ-1"))))))
+
+(defun test-jira-sandbox--edit-from-page (comment)
+  "Open the editor on COMMENT of the sandbox's first issue, as its page does."
+  (with-temp-buffer
+    (setq-local shipit-issue-buffer-number "PRJ-1")
+    (shipit-issue--edit-comment-interactive
+     shipit-jira-sandbox-repo (cdr (assq 'id comment)) (cdr (assq 'body comment)))))
+
+(ert-deftest test-jira-sandbox-comment-edited-from-its-page ()
+  "GIVEN a comment of the sandbox's first issue
+WHEN it is edited from the issue's page and saved
+THEN the comment says the new text.  The page knows a comment by its
+own id, and Jira finds a comment only under its issue."
+  (test-jira-sandbox--with config
+    (test-jira-sandbox--edit-from-page
+     (shipit-issue-jira--add-comment config "PRJ-1" "Before"))
+    (with-current-buffer shipit-editor--buffer-name
+      (erase-buffer)
+      (insert "After")
+      (shipit-editor-save))
+    (should (equal "After" (test-jira-sandbox--comment-body config)))))
 
 (defun test-jira-sandbox--raw-status (config path)
   "The status the sandbox of CONFIG answers a GET of PATH with, sent bare.

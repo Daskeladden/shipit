@@ -421,10 +421,11 @@ Uses `shipit-issue-buffer-number' which is set in issue buffers."
   (or (and (boundp 'shipit-issue-buffer-number) shipit-issue-buffer-number)
       (error "GitLab issue comment operation requires an active issue context")))
 
-(defun shipit-issue-gitlab--edit-comment (config comment-id body)
+(defun shipit-issue-gitlab--edit-comment (config comment-id body &optional _issue-id)
   "Edit comment COMMENT-ID on a GitLab issue using CONFIG.
 BODY is the new comment text.  Returns normalized comment alist.
-Requires an active issue buffer context for the issue IID."
+Requires an active issue buffer context for the issue IID, which it
+takes the issue from."
   (let* ((issue-iid (shipit-issue-gitlab--current-issue-iid))
          (path (format "%s/notes/%s"
                        (shipit-issue-gitlab--build-issue-path config issue-iid)

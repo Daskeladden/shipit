@@ -2298,6 +2298,7 @@ COMMENT-BODY is the current body to pre-populate."
   (shipit-editor-open
    (list :type 'issue-comment-edit
          :source-buffer (current-buffer)
+         :pr-number shipit-issue-buffer-number
          :comment-id comment-id
          :repo repo
          :initial-content (or (shipit--clean-text comment-body) ""))))

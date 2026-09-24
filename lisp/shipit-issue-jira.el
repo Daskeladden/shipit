@@ -770,17 +770,16 @@ BODY is the comment text.  Returns the normalized comment alist."
              (lambda (aid dn) (shipit-issue-jira--resolve-mention config aid dn))))
         (shipit-issue-jira--normalize-comment raw)))))
 
-(defun shipit-issue-jira--edit-comment (config comment-id body)
-  "Edit Jira comment COMMENT-ID using CONFIG.
-COMMENT-ID should be \"ISSUE-KEY:COMMENT-ID\" (e.g. \"PRJ-42:10001\").
-BODY is the new comment text.  Returns the normalized comment alist."
-  (let* ((parts (split-string (format "%s" comment-id) ":"))
-         (issue-key (car parts))
-         (jira-comment-id (cadr parts))
-         (path (format "/rest/api/2/issue/%s/comment/%s" issue-key jira-comment-id))
+(defun shipit-issue-jira--edit-comment (config comment-id body &optional issue-key)
+  "Edit Jira comment COMMENT-ID of issue ISSUE-KEY using CONFIG.
+Jira finds a comment only under its issue.  BODY is the new comment
+text.  Returns the normalized comment alist."
+  (unless issue-key
+    (error "shipit: editing Jira comment %s needs the issue it is on" comment-id))
+  (let* ((path (format "/rest/api/2/issue/%s/comment/%s" issue-key comment-id))
          (data `((body . ,body)))
          (raw (shipit-issue-jira--api-request-put config path data)))
-    (shipit--debug-log "Jira backend: edited comment %s on %s" jira-comment-id issue-key)
+    (shipit--debug-log "Jira backend: edited comment %s on %s" comment-id issue-key)
     (when raw
       (let ((shipit-issue-jira--mention-resolver
              (lambda (aid dn) (shipit-issue-jira--resolve-mention config aid dn))))

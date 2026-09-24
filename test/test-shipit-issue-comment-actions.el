@@ -105,7 +105,7 @@ THEN it dispatches to the backend's :edit-comment function."
                  (cons (cdr (assq 'github shipit-issue-backends))
                        '(:repo "owner/repo"))))
               ((symbol-function 'shipit-issue-github--edit-comment)
-               (lambda (_config comment-id body)
+               (lambda (_config comment-id body &optional _issue-id)
                  (setq called (list comment-id body))
                  '((id . 100)))))
       (shipit-issues--edit-comment "owner/repo" 100 "updated")
@@ -193,12 +193,13 @@ THEN it calls shipit-issues--add-comment with repo, pr-number, content."
 (ert-deftest test-shipit-editor-save-issue-comment-edit ()
   "GIVEN the editor type is issue-comment-edit
 WHEN saving
-THEN it calls shipit-issues--edit-comment with repo, comment-id, content."
+THEN it calls shipit-issues--edit-comment with repo, comment-id, content
+     and the issue the comment is on."
   (require 'shipit-editor)
   (let ((called nil))
     (cl-letf (((symbol-function 'shipit-issues--edit-comment)
-               (lambda (repo comment-id body)
-                 (setq called (list repo comment-id body))
+               (lambda (repo comment-id body issue-id)
+                 (setq called (list repo comment-id body issue-id))
                  '((id . 100))))
               ((symbol-function 'shipit-editor--close)
                (lambda (&rest _) nil))
@@ -208,10 +209,11 @@ THEN it calls shipit-issues--edit-comment with repo, comment-id, content."
         (setq shipit-editor--type 'issue-comment-edit
               shipit-editor--repo "owner/repo"
               shipit-editor--comment-id 100
+              shipit-editor--pr-number 7
               shipit-editor--source-buffer nil)
         (insert "updated comment")
         (shipit-editor-save)
-        (should (equal '("owner/repo" 100 "updated comment") called))))))
+        (should (equal '("owner/repo" 100 "updated comment" 7) called))))))
 
 ;;; Jira Backend — toggle-reaction is a no-op
 

@@ -70,16 +70,17 @@ BODY is the comment text.  Returns the created comment alist."
       (error "Backend does not support :add-comment"))
     (funcall fn config issue-id body)))
 
-(defun shipit-issues--edit-comment (repo comment-id body)
+(defun shipit-issues--edit-comment (repo comment-id body &optional issue-id)
   "Edit comment COMMENT-ID in REPO via the active backend.
-BODY is the new comment text.  Returns the updated comment alist."
+BODY is the new comment text, and ISSUE-ID the issue the comment is on.
+Returns the updated comment alist."
   (let* ((resolved (shipit-issue--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
          (fn (plist-get backend :edit-comment)))
     (unless fn
       (error "Backend does not support :edit-comment"))
-    (funcall fn config comment-id body)))
+    (funcall fn config comment-id body issue-id)))
 
 (defun shipit-issues--toggle-reaction (repo comment-id reaction)
   "Toggle REACTION on comment COMMENT-ID in REPO via the active backend.

@@ -33,7 +33,10 @@
 ;;
 ;; Optional plist keys (for comment interactions):
 ;;   :add-comment       — (config issue-id body) → comment alist
-;;   :edit-comment      — (config comment-id body) → updated comment alist
+;;   :edit-comment      — (config comment-id body &optional issue-id)
+;;                        → updated comment alist.  ISSUE-ID is the issue
+;;                        the comment is on, for a tracker that finds a
+;;                        comment only under its issue.
 ;;   :toggle-reaction   — (config comment-id reaction) → reaction alist or nil
 ;;
 ;; Optional plist keys (for description reactions):

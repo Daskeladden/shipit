@@ -212,9 +212,10 @@ Returns the created comment alist."
     (shipit--debug-log "GitHub backend: adding comment to issue #%s in %s" issue-id repo)
     (shipit--api-request-post endpoint data)))
 
-(defun shipit-issue-github--edit-comment (config comment-id body)
+(defun shipit-issue-github--edit-comment (config comment-id body &optional _issue-id)
   "Edit comment COMMENT-ID using CONFIG.
-CONFIG must contain :repo.  BODY is the new comment text.
+CONFIG must contain :repo.  BODY is the new comment text.  GitHub
+finds a comment by its id alone, so the issue is not needed.
 Returns the updated comment alist."
   (let* ((repo (plist-get config :repo))
          (endpoint (format "/repos/%s/issues/comments/%s" repo comment-id))

@@ -14,7 +14,11 @@
 ;; `shipit-jira-sandbox-close' stops it and takes everything back.  The
 ;; login is a throwaway one in a netrc file of its own, first in
 ;; `auth-sources' while the sandbox runs, so none of yours reaches it.
-;; This is safe to load in the Emacs you work in.
+;; The issue page also asks the pull request backend about the
+;; repository, whether it is watched or starred and which pull requests
+;; name the issue.  The repository exists nowhere else, so while the
+;; sandbox runs those questions get no answer rather than go to GitHub
+;; with your token.  This is safe to load in the Emacs you work in.
 ;;
 ;; The tests in test-shipit-jira-sandbox.el start the same server, so
 ;; what is tried by hand here and what runs in the suite are the same.
@@ -24,6 +28,13 @@
 (require 'cl-lib)
 (require 'auth-source)
 (require 'shipit-core)
+;; Beside this file, which is loaded by hand from outside the load path.
+;; Loaded rather than required: `shipit-reload' unbinds every shipit
+;; function but loads only the sources again, and a `require' would then
+;; find the helper loaded already and skip it.
+(load (expand-file-name "shipit-quiet-backend"
+                        (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
 
 (defvar shipit-issue-repo-backends)
 (declare-function shipit-issues-open-buffer "shipit-issues-buffer"
@@ -76,6 +87,13 @@ An error with what it printed when it stops or says nothing in time."
                       shipit-jira-sandbox--host)))
     file))
 
+(defun shipit-jira-sandbox--stand-in (original repo &rest args)
+  "Answer for the sandbox repository with nothing; call ORIGINAL for others.
+REPO and ARGS are those of `shipit-pr--resolve-for-repo'."
+  (if (equal repo shipit-jira-sandbox-repo)
+      (cons (shipit-quiet-backend) (list :repo repo))
+    (apply original repo args)))
+
 (defun shipit-jira-sandbox-start ()
   "Start the fake Jira and point `shipit-jira-sandbox-repo' at it.
 A sandbox that runs is stopped first.  Return shipit's config of it."
@@ -96,10 +114,12 @@ A sandbox that runs is stopped first.  Return shipit's config of it."
     (auth-source-forget-all-cached)
     (push (cons (concat (regexp-quote shipit-jira-sandbox-repo) "\\'") config)
           shipit-issue-repo-backends)
+    (advice-add 'shipit-pr--resolve-for-repo :around #'shipit-jira-sandbox--stand-in)
     config))
 
 (defun shipit-jira-sandbox-stop ()
   "Stop the fake Jira, and take back its login and its repository."
+  (advice-remove 'shipit-pr--resolve-for-repo #'shipit-jira-sandbox--stand-in)
   (when shipit-jira-sandbox--process
     (when (process-live-p shipit-jira-sandbox--process)
       (delete-process shipit-jira-sandbox--process))

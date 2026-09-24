@@ -21,6 +21,13 @@
 
 (require 'cl-lib)
 (require 'shipit-core)
+;; Beside this file, which is loaded by hand from outside the load path.
+;; Loaded rather than required: `shipit-reload' unbinds every shipit
+;; function but loads only the sources again, and a `require' would then
+;; find the helper loaded already and skip it.
+(load (expand-file-name "shipit-quiet-backend"
+                        (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
 
 (defvar shipit-sandbox-repo "sandbox/demo"
   "Repository name the sandbox answers to.")
@@ -93,26 +100,6 @@ Returns the working directory."
         shipit-sandbox-created nil
         shipit-sandbox-stack nil))
 
-(defun shipit-sandbox--quiet-copy ()
-  "Return the real backend with every operation answering nothing.
-The pull request buffer asks for far more than a stack does, and an
-operation a backend does not carry is reached as nil and called.
-Answering nothing gives an empty pull request to look at; leaving the
-key out gives `void-function nil\='.  The keys that are not operations --
-icons, labels -- are kept as they are, since that is what the buffer
-draws itself with."
-  (require 'shipit-pr-github)
-  (let ((real (cdr (assq 'github shipit-pr-backends)))
-        (copy nil))
-    (while real
-      (let ((key (car real))
-            (value (cadr real)))
-        (setq copy (append copy (list key (if (functionp value)
-                                              (lambda (&rest _) nil)
-                                            value))))
-        (setq real (cddr real))))
-    copy))
-
 (defun shipit-sandbox--pull-request (number branch)
   "Return a pull request NUMBER for BRANCH, as the stand-in tells it."
   (list (cons 'number number)
@@ -141,7 +128,7 @@ that asks for more than this has to offer draws an empty one rather
 than failing."
   (append
    (shipit-sandbox--operations)
-   (shipit-sandbox--quiet-copy)))
+   (shipit-quiet-backend)))
 
 (defun shipit-sandbox--operations ()
   "Return the operations the stand-in answers for itself."

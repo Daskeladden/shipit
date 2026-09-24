@@ -59,11 +59,15 @@ clean:
 TEST_HOME = -eval "(setq user-emacs-directory (file-name-as-directory (make-temp-file \"shipit-test-home-\" t)))" \
 	-eval "(setq auth-sources nil)"
 
+# Nor does any test reach another machine: see test/shipit-test-offline.el.
+TEST_OFFLINE = -l test/shipit-test-offline.el
+
 # Run unit tests
 test-unit: compile
 	$(EMACS) -batch -Q \
 		-eval "(setq package-user-dir \"$(PWD)/.packages\")" \
 		$(TEST_HOME) \
+		$(TEST_OFFLINE) \
 		-eval "(package-initialize)" \
 		-eval "(unless (package-installed-p 'dash) (package-install 'dash))" \
 		-eval "(unless (package-installed-p 'transient) (package-install 'transient))" \
@@ -83,6 +87,8 @@ test-unit: compile
 		-l test/test-shipit-gh-etag-exit.el \
 		-l test/test-shipit-duplicate-defuns.el \
 		-l test/test-shipit-file-registration.el \
+		-l test/test-shipit-test-offline.el \
+		-l test/test-shipit-test-http.el \
 		-l test/test-shipit-requires.el \
 		-l test/test-files-filter.el \
 		-l test/test-shipit-review-mode-integration.el \
@@ -163,6 +169,7 @@ test-integration: compile
 	$(EMACS) -batch -Q \
 		-eval "(setq package-user-dir \"$(PWD)/.packages\")" \
 		$(TEST_HOME) \
+		$(TEST_OFFLINE) \
 		-eval "(package-initialize)" \
 		-eval "(unless (package-installed-p 'dash) (package-install 'dash))" \
 		-eval "(unless (package-installed-p 'transient) (package-install 'transient))" \

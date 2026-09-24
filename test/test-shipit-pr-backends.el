@@ -14,6 +14,7 @@
 (require 'shipit-pr-sections)
 (require 'shipit-diff)
 (require 'shipit-pr-gitlab)
+(require 'shipit-test-http)
 
 ;;; Test helpers
 
@@ -429,11 +430,16 @@ THEN backend :add-reaction is called with correct args
       (cl-letf (((symbol-function 'shipit--ensure-repository) (lambda () t))
                 ((symbol-function 'shipit--update-pr-reactions-display) #'ignore))
         (let ((shipit--reaction-cache (make-hash-table :test 'equal)))
-          (let ((result (shipit--add-reaction-to-pr 42 "+1")))
+          (let ((result (shipit-test-http-answering
+                            '(("/repos/owner/repo/issues/42/reactions\\'" 200
+                               [((id . 1) (content . "+1"))]))
+                          (shipit--add-reaction-to-pr 42 "+1"))))
             (should result)
             (should (string= "owner/repo" (plist-get captured-args :repo)))
             (should (= 42 (plist-get captured-args :number)))
-            (should (string= "+1" (plist-get captured-args :reaction)))))))))
+            (should (string= "+1" (plist-get captured-args :reaction)))
+            (should (equal '(((id . 1) (content . "+1")))
+                           (gethash "pr-42" shipit--reaction-cache)))))))))
 
 (ert-deftest test-shipit-remove-pr-reaction-dispatches-to-backend ()
   "GIVEN a mock PR backend with :fetch-reactions and :delete-reaction
@@ -453,7 +459,9 @@ THEN backend :fetch-reactions is called to find the user's reaction
                 ((symbol-function 'shipit--get-current-user) (lambda () "testuser"))
                 ((symbol-function 'shipit--update-pr-reactions-display) #'ignore))
         (let ((shipit--reaction-cache (make-hash-table :test 'equal)))
-          (let ((result (shipit--remove-reaction-from-pr 42 "+1")))
+          (let ((result (shipit-test-http-answering
+                            '(("/repos/owner/repo/issues/42/reactions\\'" 200 []))
+                          (shipit--remove-reaction-from-pr 42 "+1"))))
             (should result)
             (should (= 42 (plist-get captured-delete-args :number)))
             (should (= 99 (plist-get captured-delete-args :reaction-id)))))))))

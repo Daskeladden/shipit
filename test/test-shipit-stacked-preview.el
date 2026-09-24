@@ -10,6 +10,7 @@
 (require 'ert)
 (require 'shipit-stacked-preview)
 (require 'shipit-pr-github)
+(require 'shipit-test-http)
 ;; Loaded here so the require inside `shipit-stacked-preview-visit-layer'
 ;; is a no-op and cannot replace the stub this file puts in its place.
 (require 'shipit-preview)
@@ -131,6 +132,10 @@ moment one does."
                           (list (cons 'commits (make-list 7 nil)))))))
   (should (equal 1 (shipit-stacked-preview--count-width
                     (list (list (cons 'commits (make-list 7 nil))))))))
+
+(defconst test-stacked--no-pull-requests
+  '(("/repos/owner/repo/pulls\\?" 200 []))
+  "GitHub's answer when no branch of owner/repo has a pull request.")
 
 (defun test-stacked--layers (&rest branches)
   "Return layers named BRANCHES, bottom first, each holding one commit."
@@ -371,7 +376,9 @@ would be refused at creation, after the description had been written."
                  (lambda (ref) (unless (string-prefix-p "origin/" ref) "abc1234")))
                 ((symbol-function 'shipit-preview-branch)
                  (lambda (&rest _) (setq handed-over t))))
-        (should-error (shipit-stacked-preview-visit-layer) :type 'user-error)
+        (should-error (shipit-test-http-answering test-stacked--no-pull-requests
+                        (shipit-stacked-preview-visit-layer))
+                      :type 'user-error)
         (should-not handed-over)))))
 
 (ert-deftest test-shipit-stacked-preview-bottom-layer-needs-nothing-below ()
@@ -394,7 +401,8 @@ whole stack sits on, which is already there."
                  (lambda (ref) (unless (string-prefix-p "origin/" ref) "abc1234")))
                 ((symbol-function 'shipit-preview-branch)
                  (lambda (&rest _) (setq handed-over t))))
-        (shipit-stacked-preview-visit-layer)
+        (shipit-test-http-answering test-stacked--no-pull-requests
+          (shipit-stacked-preview-visit-layer))
         (should handed-over)))))
 
 (defun test-stacked--status-face (layer)

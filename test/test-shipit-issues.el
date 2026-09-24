@@ -11,6 +11,11 @@
 (require 'shipit-issue-github)
 (require 'shipit-issues)
 (require 'shipit-issues-buffer)
+(require 'shipit-test-http)
+
+(defconst test-shipit-issues--watching-nothing
+  '(("/user/subscriptions" 200 []))
+  "GitHub's answer when the user watches no repository.")
 
 ;;; Query Building Tests
 
@@ -203,7 +208,8 @@ THEN a buffer with the correct name is created in shipit-issue-mode."
       (when buf (kill-buffer buf)))
     (unwind-protect
         (progn
-          (shipit-issues-open-buffer 42 "owner/repo")
+          (shipit-test-http-answering (list shipit-test-http-not-starred)
+            (shipit-issues-open-buffer 42 "owner/repo"))
           (let ((buf (get-buffer "*shipit-issue: owner/repo#42*")))
             (should buf)
             (with-current-buffer buf
@@ -744,7 +750,8 @@ THEN all sources are combined and deduplicated."
                (lambda (_prompt candidates &rest _args)
                  (setq selected candidates)
                  "org/current")))
-      (shipit-issues--read-repo "Repo: " nil nil)
+      (shipit-test-http-answering test-shipit-issues--watching-nothing
+        (shipit-issues--read-repo "Repo: " nil nil))
       ;; All four unique repos should be present
       (should (member "org/current" selected))
       (should (member "org/frontend" selected))
@@ -816,7 +823,8 @@ THEN regexp keys are excluded from candidates."
                (lambda (_prompt candidates &rest _args)
                  (setq selected candidates)
                  "org/literal")))
-      (shipit-issues--read-repo "Repo: " nil nil)
+      (shipit-test-http-answering test-shipit-issues--watching-nothing
+        (shipit-issues--read-repo "Repo: " nil nil))
       (should (member "org/literal" selected))
       (should-not (member "org/.*" selected))
       (should (= 1 (length selected))))))
@@ -836,7 +844,8 @@ THEN only subscribed repos and repo-backends are offered."
                (lambda (_prompt candidates &rest _args)
                  (setq selected candidates)
                  "org/frontend")))
-      (shipit-issues--read-repo "Repo: " nil nil)
+      (shipit-test-http-answering test-shipit-issues--watching-nothing
+        (shipit-issues--read-repo "Repo: " nil nil))
       (should (member "org/frontend" selected))
       (should (member "org/infra" selected))
       (should (= 2 (length selected))))))

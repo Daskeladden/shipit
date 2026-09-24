@@ -3,6 +3,28 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'shipit-notifications-buffer)
+(require 'shipit-test-http)
+
+(defun test-notifications-buffer--thread (number title reason)
+  "GitHub's unread thread for pull request NUMBER of owner/repo.
+TITLE is the pull request's, and REASON why it is a notification."
+  `((id . ,(format "thread-%d" number))
+    (unread . t)
+    (reason . ,reason)
+    (updated_at . "2025-01-29T10:00:00Z")
+    (subject (title . ,title)
+             (url . ,(format "https://api.github.com/repos/owner/repo/pulls/%d" number))
+             (type . "PullRequest"))
+    (repository (full_name . "owner/repo"))))
+
+(defmacro test-notifications-buffer--listing (threads &rest body)
+  "Run BODY with GitHub listing THREADS as the notifications.
+The count the header shows comes from the same listing."
+  (declare (indent 1))
+  `(shipit-test-http-answering
+       (list (list "/notifications\\?" 200 (vconcat ,threads))
+             shipit-test-http-graphql-empty)
+     ,@body))
 
 (ert-deftest test-shipit-notifications-buffer-creation ()
   "Test that notifications buffer is created with correct mode."
@@ -36,7 +58,9 @@
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (progn
-            (shipit-notifications-buffer-refresh)
+            (test-notifications-buffer--listing
+                (list (test-notifications-buffer--thread 123 "Fix the bug" "review_requested"))
+              (shipit-notifications-buffer-refresh))
             (with-current-buffer buf
               (should (string-match-p "owner/repo" (buffer-string)))
               (should (string-match-p "#123" (buffer-string)))
@@ -55,7 +79,9 @@
     (let ((buf (shipit-notifications-buffer-create)))
       (unwind-protect
           (progn
-            (shipit-notifications-buffer-refresh)
+            (test-notifications-buffer--listing
+                (list (test-notifications-buffer--thread 123 "Test PR" "mention"))
+              (shipit-notifications-buffer-refresh))
             (with-current-buffer buf
               (goto-char (point-min))
               (search-forward "#123")
@@ -69,7 +95,8 @@
   "Test that view command opens the notifications buffer."
   (unwind-protect
       (progn
-        (shipit--view-notifications)
+        (test-notifications-buffer--listing nil
+          (shipit--view-notifications))
         (should (string= (buffer-name) "*shipit-notifications*"))
         (should (eq major-mode 'shipit-notifications-buffer-mode)))
     (when (get-buffer "*shipit-notifications*")

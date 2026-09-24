@@ -30,6 +30,7 @@
 ;; Load backend modules so they register themselves
 (require 'shipit-pr-github)
 (require 'shipit-comment-github)
+(require 'shipit-test-http)
 (require 'shipit-issue-github)
 (require 'shipit-issue-jira)
 (require 'shipit-issues)
@@ -133,18 +134,20 @@ consult and embark, which are optional by design."
                (lambda (_pr-number &optional _repo)
                  '((number . 1) (head . ((sha . "abc123")))))))
 
-    ;; Test that all comment functions can be called without error
-    (should (shipit--add-comment-to-pr 1 "test.el" 10 "test comment" "RIGHT"))
-    (should (shipit--edit-comment 12345 "updated comment" t nil))
-    (should (shipit--delete-comment 12345))
-    (should (shipit--reply-to-inline-comment 1 12345 "reply"))
-    (should (shipit--add-general-comment-to-pr 1 "general comment"))
+      ;; A comment just made has no reactions yet
+      (shipit-test-http-answering '(("/comments/12345/reactions" 200 []))
+        ;; Test that all comment functions can be called without error
+        (should (shipit--add-comment-to-pr 1 "test.el" 10 "test comment" "RIGHT"))
+        (should (shipit--edit-comment 12345 "updated comment" t nil))
+        (should (shipit--delete-comment 12345))
+        (should (shipit--reply-to-inline-comment 1 12345 "reply"))
+        (should (shipit--add-general-comment-to-pr 1 "general comment")))
 
-    ;; Test refresh function
-    (should (functionp 'shipit--refresh-after-comment-operation))
-    (shipit--refresh-after-comment-operation t)   ; inline comment
-    (shipit--refresh-after-comment-operation nil) ; general comment
-    )))
+      ;; Test refresh function
+      (should (functionp 'shipit--refresh-after-comment-operation))
+      (shipit--refresh-after-comment-operation t)   ; inline comment
+      (shipit--refresh-after-comment-operation nil) ; general comment
+      )))
 
 (ert-deftest test-pr-data-integration ()
   "Integration test for PR data fetching and processing."

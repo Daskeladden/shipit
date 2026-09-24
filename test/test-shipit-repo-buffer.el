@@ -10,6 +10,7 @@
 (require 'shipit-core)
 (require 'shipit-pr-backends)
 (require 'shipit-pr-github)
+(require 'shipit-test-http)
 
 ;;; Test helpers
 
@@ -143,7 +144,8 @@ THEN the buffer contains the owner name and description."
     (with-temp-buffer
       (let ((inhibit-read-only t))
         (magit-insert-section (repo-root)
-          (shipit-repo-buffer--insert-header-section repo-data))
+          (shipit-test-http-answering (list shipit-test-http-not-starred)
+            (shipit-repo-buffer--insert-header-section repo-data)))
         (let ((content (buffer-string)))
           (should (string-match-p "octocat/hello-world" content))
           (should (string-match-p "octocat" content))
@@ -895,7 +897,8 @@ THEN no issues or discussions sections are present."
       (with-temp-buffer
         (shipit-repo-mode)
         (setq shipit-repo-buffer-repo "test/repo")
-        (shipit-repo-buffer-refresh)
+        (shipit-test-http-answering (list shipit-test-http-not-starred)
+          (shipit-repo-buffer-refresh))
         (let ((content (buffer-string)))
           (should-not (string-match-p "Issues" content))
           (should-not (string-match-p "Discussions" content)))))))

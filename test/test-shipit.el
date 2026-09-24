@@ -20,6 +20,12 @@
 ;; Load GitHub backends — required because read operations dispatch through backends
 (require 'shipit-pr-github)
 (require 'shipit-comment-github)
+(require 'shipit-test-http)
+
+(defconst test-shipit--no-reactions
+  (list '("/reactions\\?" 200 []) shipit-test-http-graphql-empty)
+  "Answers that give every comment and review no reactions.")
+
 ;; Load lazy-load tests
 (load-file (expand-file-name "test-commit-files-lazy-load.el" (file-name-directory (or load-file-name buffer-file-name))))
 ;; Load worktree tests
@@ -1647,14 +1653,16 @@ THEN backend :edit-comment is called with is-inline=t."
         (should (eq (gethash comment-id shipit--comment-type-cache) t)))
 
       ;; Test general comment type caching by simulating the general comments fetch
-      (shipit--fetch-general-comments "example-org/awesome-project" 42)
+      (shipit-test-http-answering test-shipit--no-reactions
+        (shipit--fetch-general-comments "example-org/awesome-project" 42))
       ;; Should have cached general comments as nil
       (let* ((general-comment (car (seq-filter (lambda (c) (null (cdr (assq 'path c)))) test-recorded-comments-data)))
              (comment-id (cdr (assq 'id general-comment))))
         (should (eq (gethash comment-id shipit--comment-type-cache) nil)))
 
       ;; Test bulk inline comment caching via shipit--fetch-inline-comments
-      (shipit--fetch-inline-comments "example-org/awesome-project" 42)
+      (shipit-test-http-answering test-shipit--no-reactions
+        (shipit--fetch-inline-comments "example-org/awesome-project" 42))
       ;; Should have cached all inline comments from the bulk fetch as t
       (let* ((inline-comments (seq-filter (lambda (c) (cdr (assq 'path c))) test-recorded-comments-data))
              (first-id (cdr (assq 'id (car inline-comments))))
@@ -1788,11 +1796,20 @@ THEN backend :edit-comment is called with is-inline=t."
         (expected "Use `foo_bar` and `baz_qux` but not plain\\_text"))
     (should (string= (shipit--escape-mid-word-underscores input) expected))))
 
+(defmacro test-shipit--without-images (&rest body)
+  "Run BODY with every image on example.com answering 404.
+The label shows whether or not the download worked, and a failed one
+leaves nothing in the image cache."
+  (declare (indent 0))
+  `(shipit-test-http-answering '(("\\`https://example\\.com/" 404 ""))
+     ,@body))
+
 (ert-deftest test-shipit--process-inline-images-html ()
   "Test processing HTML <img> tags when shipit-render-images is enabled."
   (let ((shipit-render-images t)
         (input "<img width=\"1286\" height=\"60\" alt=\"image\" src=\"https://example.com/image.png\" />"))
-    (let ((result (shipit--process-inline-images input)))
+    (let ((result (test-shipit--without-images
+                    (shipit--process-inline-images input))))
       ;; Should contain the image label (may show Download failed in tests)
       (should (string-match-p "\\[Image: image" result))
       ;; Original HTML tag should be replaced
@@ -1802,7 +1819,8 @@ THEN backend :edit-comment is called with is-inline=t."
   "Test processing markdown images ![alt](url)."
   (let ((shipit-render-images t)
         (input "![screenshot](https://example.com/screenshot.png)"))
-    (let ((result (shipit--process-inline-images input)))
+    (let ((result (test-shipit--without-images
+                    (shipit--process-inline-images input))))
       ;; Should contain the image label (may show Download failed in tests)
       (should (string-match-p "\\[Image: screenshot" result))
       ;; Original markdown syntax should be replaced
@@ -1818,7 +1836,8 @@ THEN backend :edit-comment is called with is-inline=t."
   "Test processing both HTML and markdown images in same text."
   (let ((shipit-render-images t)
         (input "Here is ![markdown](https://example.com/md.png) and <img src=\"https://example.com/html.png\" alt=\"html\" />"))
-    (let ((result (shipit--process-inline-images input)))
+    (let ((result (test-shipit--without-images
+                    (shipit--process-inline-images input))))
       (should (string-match-p "\\[Image: markdown" result))
       (should (string-match-p "\\[Image: html" result))
       ;; Original syntax should be replaced
@@ -2529,7 +2548,8 @@ This verifies that per-file filtering handles different comment states independe
                  '((head . ((sha . "abc123")))))))
 
       ;; Call the function (will be implemented)
-      (let ((result (shipit--get-file-inline-comments test-pr-number test-repo test-file-path)))
+      (let ((result (shipit-test-http-answering test-shipit--no-reactions
+                      (shipit--get-file-inline-comments test-pr-number test-repo test-file-path))))
 
         ;; Verify API was called with correct endpoint
         (should api-called)
@@ -2639,8 +2659,11 @@ This verifies that per-file filtering handles different comment states independe
                  '((head . ((sha . "abc123")))))))
 
       ;; Call twice - should use cache on second call
-      (let ((result1 (shipit--get-file-inline-comments test-pr-number test-repo test-file-path))
-            (result2 (shipit--get-file-inline-comments test-pr-number test-repo test-file-path)))
+      (let* ((results (shipit-test-http-answering test-shipit--no-reactions
+                        (list (shipit--get-file-inline-comments test-pr-number test-repo test-file-path)
+                              (shipit--get-file-inline-comments test-pr-number test-repo test-file-path))))
+             (result1 (car results))
+             (result2 (cadr results)))
 
         ;; Verify both calls returned data
         (should (= (length result1) 1))

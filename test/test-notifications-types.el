@@ -8,6 +8,7 @@
 
 (require 'ert)
 (require 'shipit-notifications)
+(require 'shipit-test-http)
 
 ;;; Key Helper Tests
 
@@ -366,7 +367,8 @@ not the repo-wide /actions page."
             (repository . ((full_name . "acme/acme-project")
                            (html_url . "https://github.com/acme/acme-project")))
             (updated_at . "2026-04-22T11:28:00Z")))))
-    (shipit--process-notifications notifications)
+    (shipit-test-http-answering '(("/actions/runs\\?" 404 ""))
+      (shipit--process-notifications notifications))
     (let ((activity (gethash "acme/acme-project:workflow:24770889847"
                              shipit--notification-pr-activities)))
       (should activity)
@@ -665,7 +667,8 @@ THEN both are stored with distinct keys."
             (repository . ((full_name . "owner/repo")))
             (updated_at . "2025-01-29T11:00:00Z")))))
 
-    (shipit--process-notifications notifications)
+    (shipit-test-http-answering (list shipit-test-http-graphql-empty)
+      (shipit--process-notifications notifications))
 
     ;; THEN both entries exist with distinct keys
     (should (= 2 (hash-table-count shipit--notification-pr-activities)))

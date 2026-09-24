@@ -12,6 +12,7 @@
 (require 'shipit-pr-github)
 (require 'shipit-http)
 (require 'shipit-repo-buffer)
+(require 'shipit-test-http)
 
 ;;; Test helpers
 
@@ -213,7 +214,8 @@ and reuse between tests would mask the mocked `--api-request'."
   ;; THEN the Watching line shows Participating and @mentions.
   (with-temp-buffer
     (let ((shipit-repo-buffer-subscription nil))
-      (shipit-repo-buffer--insert-subscription-line)
+      (shipit-test-http-answering (list shipit-test-http-not-starred)
+        (shipit-repo-buffer--insert-subscription-line))
       (goto-char (point-min))
       (should (search-forward "Participating" nil t)))))
 

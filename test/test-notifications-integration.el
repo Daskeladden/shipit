@@ -19,6 +19,7 @@
 ;; machine where it would succeed.
 (require 'shipit-notifications)
 (require 'shipit-notifications-buffer)
+(require 'shipit-test-http)
 
 (setq shipit-github-token "test-token")
 
@@ -307,6 +308,12 @@ THEN the PR backend's :mark-notification-read is called (not routed through the 
       ;; THEN notification-id is tracked for local filtering
       (should (gethash "22959180290" shipit--locally-marked-read-notifications)))))
 
+(defun test-notifications--requests ()
+  "The requests answered so far, as (METHOD PATH) without the host."
+  (mapcar (lambda (request)
+            (list (car request) (url-filename (url-generic-parse-url (cadr request)))))
+          shipit-test-http-requests))
+
 (ert-deftest test-shipit-notifications-buffer-mark-read-keybinding ()
   "GIVEN a notification in the buffer with the GitHub PR backend registered
 WHEN pressing 'm' on the notification line
@@ -347,14 +354,17 @@ THEN the notification is removed and mention count updated."
               (should (= 1 (hash-table-count shipit--notification-pr-activities)))
               (should (= 1 shipit--mention-count))
 
-              ;; Mock the PR backend's mark-notification-read
-              (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)
-                         (lambda (_config _id) nil)))
+              ;; GitHub answers the PATCH that marks the thread read
+              (shipit-test-http-answering '(("/notifications/threads/" 205 ""))
                 ;; Call the mark-read function (simulates pressing 'm')
                 (shipit-notifications-buffer-mark-read)
                 ;; Marking is deferred behind an undo window; force-commit
                 ;; in the test so we can assert the post-commit hash state.
                 (shipit-notifications-buffer--commit-all-pending-marks)
+
+                ;; Verify the thread was marked read on GitHub
+                (should (equal '(("PATCH" "/notifications/threads/notif-123"))
+                               (test-notifications--requests)))
 
                 ;; Verify notification was removed from hash table
                 (should (= 0 (hash-table-count shipit--notification-pr-activities)))
@@ -418,10 +428,15 @@ THEN only those 2 are marked as read and the 3rd remains."
                 (end-of-line)
                 (activate-mark)
 
-                (cl-letf (((symbol-function 'shipit-pr-github--mark-notification-read)
-                           (lambda (_config _id) nil)))
+                (shipit-test-http-answering '(("/notifications/threads/" 205 ""))
                   (shipit-notifications-buffer-mark-read)
                   (shipit-notifications-buffer--commit-all-pending-marks)
+
+                  ;; THEN: those 2 threads are marked read on GitHub
+                  (should (equal '(("PATCH" "/notifications/threads/notif-2")
+                                   ("PATCH" "/notifications/threads/notif-3"))
+                                 (sort (test-notifications--requests)
+                                       (lambda (a b) (string< (cadr a) (cadr b))))))
 
                   ;; THEN: only 1 notification remains
                   ;; (notifications render newest-first, so first 2 lines
@@ -452,7 +467,8 @@ THEN notification count resets to 0 and modeline clears."
     (puthash "repo/a:pr:2" '((repo . "repo/a") (number . 2) (type . "pr") (reason . "comment")) shipit--notification-pr-activities)
 
     ;; WHEN: process empty notification list (GitHub returned 0 unread)
-    (shipit--process-pr-notifications nil)
+    (shipit-test-http-answering (list shipit-test-http-graphql-empty)
+      (shipit--process-pr-notifications nil))
 
     ;; THEN: with the 1-poll grace period the first empty response keeps
     ;; the entries (now tagged missed-polls=1) so a single flaky GitHub
@@ -491,8 +507,9 @@ THEN the callback should still process and clear the count."
     (cl-letf (((symbol-function 'shipit--fetch-all-notifications-async)
                (lambda (_params _since _force callback)
                  (funcall callback nil))))
-      (shipit--check-notifications-background-async t)
-      (shipit--check-notifications-background-async t))
+      (shipit-test-http-answering (list shipit-test-http-graphql-empty)
+        (shipit--check-notifications-background-async t)
+        (shipit--check-notifications-background-async t)))
 
     ;; THEN: notifications should be cleared
     (should (= 0 (hash-table-count shipit--notification-pr-activities)))

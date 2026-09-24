@@ -235,6 +235,17 @@ any other file a link.  A file with no such attachment shows its name."
       (format "![%s](%s)" name (shipit-issue-jira--attachment-url attachment)))
      (t (format "[%s](%s)" name (shipit-issue-jira--attachment-url attachment))))))
 
+(defun shipit-issue-jira--adf-card-url (attrs)
+  "The address of a link Jira shows as a card, from its ATTRS, or nil.
+Jira\='s format gives it as the card\='s url, or in its data."
+  (or (cdr (assq 'url attrs))
+      (cdr (assq 'url (cdr (assq 'data attrs))))))
+
+(defun shipit-issue-jira--adf-block-card (attrs)
+  "A link shown as a card of its own, from its ATTRS, as a line of text."
+  (let ((url (shipit-issue-jira--adf-card-url attrs)))
+    (if url (concat url "\n") "")))
+
 (defun shipit-issue-jira--adf-apply-marks (text node)
   "Apply ADF marks from NODE to TEXT.
 Handles link marks by formatting as [text](url)."
@@ -264,7 +275,9 @@ DEPTH tracks nesting level for list indentation (default 0)."
         (cond
          ((equal type "hardBreak") "\n")
          ((equal type "inlineCard")
-          (or (cdr (assq 'url attrs)) ""))
+          (or (shipit-issue-jira--adf-card-url attrs) ""))
+         ((member type '("blockCard" "embedCard"))
+          (shipit-issue-jira--adf-block-card attrs))
          ((member type '("media" "mediaInline"))
           (shipit-issue-jira--adf-media attrs))
          ((equal type "mention")

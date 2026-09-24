@@ -89,6 +89,40 @@ THEN outputs the URL."
     (let ((result (shipit-issue-jira--adf-to-text node)))
       (should (string-match-p "https://example.com/docs" result)))))
 
+(defun test-adf--doc-of (node)
+  "A document of Jira's format that holds NODE alone."
+  `((type . "doc") (content . [,node])))
+
+(ert-deftest test-adf-block-card-link ()
+  "GIVEN a document that holds a link shown as a card, as Jira shows a
+pasted address on a line of its own
+WHEN converting to text
+THEN the address shows, on its own line."
+  (should (equal "https://github.com/o/r/pull/7\n"
+                 (shipit-issue-jira--adf-to-text
+                  (test-adf--doc-of '((type . "blockCard")
+                                      (attrs (url . "https://github.com/o/r/pull/7"))))))))
+
+(ert-deftest test-adf-embed-card-link ()
+  "GIVEN a document that holds a link shown as an embedded page
+WHEN converting to text
+THEN the address shows, on its own line."
+  (should (equal "https://example.com/page\n"
+                 (shipit-issue-jira--adf-to-text
+                  (test-adf--doc-of '((type . "embedCard")
+                                      (attrs (url . "https://example.com/page")
+                                             (layout . "center"))))))))
+
+(ert-deftest test-adf-block-card-of-data ()
+  "GIVEN a card that gives its address in its data, not as its url
+WHEN converting to text
+THEN the address shows.  Jira's format allows either."
+  (should (equal "https://github.com/o/r/pull/7\n"
+                 (shipit-issue-jira--adf-to-text
+                  (test-adf--doc-of '((type . "blockCard")
+                                      (attrs (data (@type . "Document")
+                                                   (url . "https://github.com/o/r/pull/7")))))))))
+
 (ert-deftest test-adf-text-with-link-mark ()
   "GIVEN an ADF text node with a link mark
 WHEN converting to text

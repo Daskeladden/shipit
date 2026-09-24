@@ -722,15 +722,22 @@ carrying Jira\\='s messages when the status is 400 or above."
 DATA, when given, is an alist sent JSON-encoded as the body.  Returns
 the parsed JSON response as an alist, nil for an empty body or no
 response, and signals an error on a 4xx/5xx status."
+  (shipit-issue-jira--send method config path
+                           '(("Content-Type" . "application/json"))
+                           (when data (encode-coding-string (json-encode data) 'utf-8))))
+
+(defun shipit-issue-jira--send (method config path headers bytes)
+  "Send a METHOD request to the Jira REST API at PATH using CONFIG.
+HEADERS come before the login, and BYTES, when given, are the body.
+Returns as `shipit-issue-jira--api-request-send' does."
   (let* ((url (shipit-issue-jira--build-url config path))
          (auth (shipit-issue-jira--auth-header config))
          (url-request-method method)
          (url-request-extra-headers
-          `(("Content-Type" . "application/json")
+          `(,@headers
             ,@(when auth
                 `(("Authorization" . ,auth)))))
-         (url-request-data
-          (when data (encode-coding-string (json-encode data) 'utf-8)))
+         (url-request-data bytes)
          (buffer (url-retrieve-synchronously url t)))
     (shipit--debug-log "Jira API: %s %s" method url)
     (if (not buffer)
@@ -758,11 +765,83 @@ Returns parsed JSON response as alist."
 Returns the parsed JSON response, or nil for the usual empty 204."
   (shipit-issue-jira--api-request-send "DELETE" config path))
 
+;;; Attachments, and the images of written text
+
+(defconst shipit-issue-jira--markdown-image-re
+  "!\\[\\([^]\n]*\\)\\](\\([^)\n]+\\))"
+  "Regexp matching a markdown image; group 1 is its name, 2 its URL.")
+
+(defun shipit-issue-jira--attachment-of-p (config url)
+  "Non-nil when URL is the content of an attachment on the site of CONFIG."
+  (let ((site (url-generic-parse-url (plist-get config :base-url)))
+        (image (url-generic-parse-url url)))
+    (and (equal (url-host site) (url-host image))
+         (equal (url-port site) (url-port image))
+         (string-match-p shipit-issue-jira--attachment-content-re
+                         (url-filename image)))))
+
+(defun shipit-issue-jira--wiki-images (config text)
+  "TEXT, with each image attached on the site of CONFIG as Jira wiki.
+shipit shows an attached image as a markdown image of the attachment\='s
+content, named by its file.  Jira reads written text as wiki markup,
+where `!NAME!' shows the attachment NAME, and would keep the markdown
+as text.  Images from anywhere else stay as they are."
+  (and text
+       (replace-regexp-in-string
+        shipit-issue-jira--markdown-image-re
+        (lambda (image)
+          ;; The match data places the replacement, and parsing the
+          ;; URL matches again.
+          (save-match-data
+            (let ((name (match-string 1 image))
+                  (url (match-string 2 image)))
+              (if (shipit-issue-jira--attachment-of-p config url)
+                  (format "!%s!" name)
+                image))))
+        text t t)))
+
+(defun shipit-issue-jira--form-data (boundary filename mime-type bytes)
+  "A multipart form holding BYTES as the file FILENAME of MIME-TYPE.
+BOUNDARY separates the parts.  Jira takes the file from the part
+named \"file\"."
+  (concat (encode-coding-string
+           (format (concat "--%s\r\n"
+                           "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+                           "Content-Type: %s\r\n\r\n")
+                   boundary filename mime-type)
+           'utf-8)
+          bytes
+          (encode-coding-string (format "\r\n--%s--\r\n" boundary) 'utf-8)))
+
+(defun shipit-issue-jira--attachment-link (attachment)
+  "ATTACHMENT, as Jira answers an upload, as shipit links to it.
+An alist of its `filename' and the `url' its content is shown from."
+  `((filename . ,(cdr (assq 'filename attachment)))
+    (url . ,(shipit-issue-jira--attachment-url attachment))))
+
+(defun shipit-issue-jira--upload-attachment (config issue-key filename mime-type bytes)
+  "Attach BYTES to Jira issue ISSUE-KEY as the file FILENAME of MIME-TYPE.
+CONFIG is the site's.  Returns the attachment as
+`shipit-issue-jira--attachment-link' gives it."
+  (when (multibyte-string-p bytes)
+    (error "shipit: an attachment is sent as bytes, not as text"))
+  (let* ((boundary (concat "shipit-" (md5 bytes)))
+         (answer (shipit-issue-jira--send
+                  "POST" config (format "/rest/api/3/issue/%s/attachments" issue-key)
+                  `(("Content-Type" . ,(concat "multipart/form-data; boundary=" boundary))
+                    ;; Jira refuses an upload without it, as a guard
+                    ;; against forms posted from other sites.
+                    ("X-Atlassian-Token" . "no-check"))
+                  (shipit-issue-jira--form-data boundary filename mime-type bytes))))
+    (shipit-issue-jira--attachment-link
+     (or (car (append answer nil))
+         (error "shipit: Jira kept no attachment of %s on %s" filename issue-key)))))
+
 (defun shipit-issue-jira--add-comment (config issue-id body)
   "Add a comment to Jira issue ISSUE-ID using CONFIG.
 BODY is the comment text.  Returns the normalized comment alist."
   (let* ((path (format "/rest/api/2/issue/%s/comment" issue-id))
-         (data `((body . ,body)))
+         (data `((body . ,(shipit-issue-jira--wiki-images config body))))
          (raw (shipit-issue-jira--api-request-post config path data)))
     (shipit--debug-log "Jira backend: added comment to %s" issue-id)
     (when raw
@@ -777,7 +856,7 @@ text.  Returns the normalized comment alist."
   (unless issue-key
     (error "shipit: editing Jira comment %s needs the issue it is on" comment-id))
   (let* ((path (format "/rest/api/2/issue/%s/comment/%s" issue-key comment-id))
-         (data `((body . ,body)))
+         (data `((body . ,(shipit-issue-jira--wiki-images config body))))
          (raw (shipit-issue-jira--api-request-put config path data)))
     (shipit--debug-log "Jira backend: edited comment %s on %s" comment-id issue-key)
     (when raw
@@ -790,7 +869,7 @@ text.  Returns the normalized comment alist."
 BODY is the new description text.
 Returns the API response."
   (let* ((path (format "/rest/api/2/issue/%s" issue-key))
-         (data `((fields . ((description . ,body))))))
+         (data `((fields . ((description . ,(shipit-issue-jira--wiki-images config body)))))))
     (shipit--debug-log "Jira backend: updating description for %s" issue-key)
     (shipit-issue-jira--api-request-put config path data)))
 
@@ -2106,6 +2185,7 @@ Call `shipit-issue-jira--clear-icon-memo' after a theme switch.")
        :toggle-reaction #'shipit-issue-jira--toggle-reaction
        :fetch-comment-reactions-batch #'shipit-issue-jira--fetch-comment-reactions-batch
        :update-description #'shipit-issue-jira--update-description
+       :upload-attachment #'shipit-issue-jira--upload-attachment
        :get-transitions #'shipit-issue-jira--get-transitions
        :transition-status #'shipit-issue-jira--transition-status
        :notifications #'shipit-issue-jira--fetch-notifications

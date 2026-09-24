@@ -26,6 +26,7 @@
 (require 'shipit-issues-buffer)
 (require 'shipit-pr-github)
 (require 'shipit-editor)
+(require 'shipit-test-clipboard)
 (require 'shipit-test-offline)
 
 (defconst test-jira-sandbox--root
@@ -163,19 +164,28 @@ image, as Jira turns wiki markup into its document format."
       (should (string-match-p "New text" body))
       (should (test-jira-sandbox--image-url body)))))
 
+(defun test-jira-sandbox--file-bytes (file)
+  "The bytes FILE holds."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (insert-file-contents-literally file)
+    (buffer-string)))
+
+(defun test-jira-sandbox--download (url)
+  "The bytes shipit downloads from URL, as it downloads an image."
+  (let ((file (shipit--download-and-cache-image url)))
+    (should file)
+    (test-jira-sandbox--file-bytes file)))
+
 (ert-deftest test-jira-sandbox-image-downloads-with-the-login ()
   "GIVEN the sandbox, which answers only a request that logs in
 WHEN shipit downloads the image of an issue
 THEN it gets the picture, a PNG."
   (test-jira-sandbox--with config
-    (let* ((body (cdr (assq 'body (shipit-issue-jira--fetch-issue config "PRJ-1"))))
-           (file (shipit--download-and-cache-image (test-jira-sandbox--image-url body))))
-      (should file)
+    (let ((body (cdr (assq 'body (shipit-issue-jira--fetch-issue config "PRJ-1")))))
       (should (string-prefix-p "\x89PNG"
-                               (with-temp-buffer
-                                 (set-buffer-multibyte nil)
-                                 (insert-file-contents-literally file)
-                                 (buffer-string)))))))
+                               (test-jira-sandbox--download
+                                (test-jira-sandbox--image-url body)))))))
 
 (defun test-jira-sandbox--comment-body (config)
   "The body of the newest comment of the sandbox's first issue, as shown."
@@ -201,6 +211,173 @@ own id, and Jira finds a comment only under its issue."
       (insert "After")
       (shipit-editor-save))
     (should (equal "After" (test-jira-sandbox--comment-body config)))))
+
+;;; Pasting a picture
+
+(defconst test-jira-sandbox--png
+  (base64-decode-string
+   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+  "A PNG of one pixel, as a paste gives it: bytes, not text.")
+
+(defun test-jira-sandbox--images (body)
+  "The images of BODY, markdown as shipit shows it, as (NAME . URL) pairs."
+  (let ((images nil)
+        (start 0))
+    (while (string-match "!\\[\\([^]]*\\)\\](\\([^)]+\\))" body start)
+      (push (cons (match-string 1 body) (match-string 2 body)) images)
+      (setq start (match-end 0)))
+    (nreverse images)))
+
+(defun test-jira-sandbox--pasted-image (body)
+  "The (NAME . URL) of the image pasted into BODY, or nil."
+  (cl-find-if (lambda (image) (string-prefix-p "pasted-" (car image)))
+              (test-jira-sandbox--images body)))
+
+(defun test-jira-sandbox--embedded (node)
+  "The names of the attachments NODE embeds, a document as Jira keeps it.
+Read from what Jira keeps rather than from what shipit shows: markdown
+sent as text comes back as the same text, which shows as an image too."
+  (append (and (equal "media" (cdr (assq 'type node)))
+               (list (cdr (assq 'alt (cdr (assq 'attrs node))))))
+          (mapcan #'test-jira-sandbox--embedded
+                  (append (cdr (assq 'content node)) nil))))
+
+(defun test-jira-sandbox--kept-description (config)
+  "The description of the sandbox's first issue, as Jira keeps it."
+  (cdr (assq 'description
+             (cdr (assq 'fields (shipit-issue-jira--api-request
+                                 config "/rest/api/3/issue/PRJ-1"))))))
+
+(defun test-jira-sandbox--kept-comment (config)
+  "The newest comment of the sandbox's first issue, as Jira keeps it."
+  (cdr (assq 'body (car (last (append (cdr (assq 'comments (shipit-issue-jira--api-request
+                                                            config "/rest/api/3/issue/PRJ-1/comment")))
+                                      nil))))))
+
+(defun test-jira-sandbox--pasted-p (names)
+  "Non-nil when NAMES, of embedded attachments, has a pasted picture."
+  (cl-some (lambda (name) (string-prefix-p "pasted-" name)) names))
+
+(defun test-jira-sandbox--paste-and-save ()
+  "In the open editor, write a line, paste the PNG, and save."
+  (with-current-buffer shipit-editor--buffer-name
+    (goto-char (point-max))
+    (insert "Look at this: ")
+    (shipit-test-clipboard-holding (list (cons 'image/png test-jira-sandbox--png))
+      (yank-media))
+    (shipit-editor-save)))
+
+(defun test-jira-sandbox--description (config)
+  "The description of the sandbox's first issue, as shipit shows it."
+  (cdr (assq 'body (shipit-issue-jira--fetch-issue config "PRJ-1"))))
+
+(ert-deftest test-jira-sandbox-upload-keeps-the-picture ()
+  "GIVEN the sandbox
+WHEN shipit attaches a picture to an issue under a name
+THEN the attachment has that name, AND what it holds is the picture."
+  (test-jira-sandbox--with config
+    (let ((attachment (shipit-issue-jira--upload-attachment
+                       config "PRJ-2" "shot.png" "image/png" test-jira-sandbox--png)))
+      (should (equal "shot.png" (cdr (assq 'filename attachment))))
+      (should (equal test-jira-sandbox--png
+                     (test-jira-sandbox--download (cdr (assq 'url attachment))))))))
+
+(ert-deftest test-jira-sandbox-description-keeps-its-image-when-saved ()
+  "GIVEN the sandbox's first issue, whose description embeds an image
+WHEN the description is saved as shipit shows it, unchanged
+THEN Jira still embeds that image, rather than keeping text that looks
+like markdown."
+  (test-jira-sandbox--with config
+    (shipit-issue-jira--update-description
+     config "PRJ-1" (test-jira-sandbox--description config))
+    (should (equal '("fake.png")
+                   (test-jira-sandbox--embedded (test-jira-sandbox--kept-description config))))))
+
+(ert-deftest test-jira-sandbox-paste-into-a-new-comment ()
+  "GIVEN a new comment on the sandbox's first issue, and a picture on the
+clipboard
+WHEN it is pasted, and the comment saved
+THEN Jira embeds the picture in the comment, after the text written
+before it, AND the picture is what was pasted."
+  (skip-unless (fboundp 'yank-media))
+  (test-jira-sandbox--with config
+    (shipit-editor-open
+     (list :type 'issue-comment :repo shipit-jira-sandbox-repo :pr-number "PRJ-1"))
+    (test-jira-sandbox--paste-and-save)
+    (should (test-jira-sandbox--pasted-p
+             (test-jira-sandbox--embedded (test-jira-sandbox--kept-comment config))))
+    (let ((shown (test-jira-sandbox--comment-body config)))
+      (should (string-match-p "Look at this" shown))
+      (should (equal test-jira-sandbox--png
+                     (test-jira-sandbox--download
+                      (cdr (test-jira-sandbox--pasted-image shown))))))))
+
+(ert-deftest test-jira-sandbox-paste-into-an-edited-comment ()
+  "GIVEN a comment of the sandbox's first issue, edited from its page
+AND a picture on the clipboard
+WHEN it is pasted, and the comment saved
+THEN Jira embeds the picture: editing a comment knows its issue."
+  (skip-unless (fboundp 'yank-media))
+  (test-jira-sandbox--with config
+    (test-jira-sandbox--edit-from-page
+     (shipit-issue-jira--add-comment config "PRJ-1" "Before"))
+    (test-jira-sandbox--paste-and-save)
+    (should (test-jira-sandbox--pasted-p
+             (test-jira-sandbox--embedded (test-jira-sandbox--kept-comment config))))))
+
+(ert-deftest test-jira-sandbox-paste-into-the-description ()
+  "GIVEN the description of the sandbox's first issue in the editor
+AND a picture on the clipboard
+WHEN it is pasted, and the description saved
+THEN Jira embeds the picture, AND the image the description had."
+  (skip-unless (fboundp 'yank-media))
+  (test-jira-sandbox--with config
+    (shipit-editor-open
+     (list :type 'issue-description :repo shipit-jira-sandbox-repo :pr-number "PRJ-1"
+           :initial-content (test-jira-sandbox--description config)))
+    (test-jira-sandbox--paste-and-save)
+    (let ((names (test-jira-sandbox--embedded (test-jira-sandbox--kept-description config))))
+      (should (member "fake.png" names))
+      (should (test-jira-sandbox--pasted-p names)))))
+
+(defun test-jira-sandbox--shown-images (buffer)
+  "The images BUFFER shows, as the display properties hold them."
+  (with-current-buffer buffer
+    (let ((images nil)
+          (pos (point-min)))
+      (while (< pos (point-max))
+        (let ((display (get-text-property pos 'display)))
+          (when (eq 'image (car-safe display))
+            (push display images)))
+        (setq pos (or (next-single-property-change pos 'display) (point-max))))
+      images)))
+
+(ert-deftest test-jira-sandbox-paste-shows-in-the-preview ()
+  "GIVEN the page of the sandbox's first issue, a comment being written on
+it, a picture on the clipboard, and a display that shows images
+WHEN the picture is pasted, and the preview on the page updates
+THEN the preview shows the picture itself, not the markdown for it."
+  (skip-unless (and (fboundp 'yank-media) (executable-find "python3")))
+  (let ((auth-sources nil))
+    (test-jira-sandbox--with-page page
+      (with-current-buffer page
+        (shipit-editor-open (list :type 'issue-comment :source-buffer page
+                                  :repo shipit-jira-sandbox-repo :pr-number "PRJ-1")))
+      (unwind-protect
+          (with-current-buffer shipit-editor--buffer-name
+            (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t)))
+              (shipit-test-clipboard-holding (list (cons 'image/png test-jira-sandbox--png))
+                (yank-media))
+              (shipit-editor--update-preview (current-buffer)))
+            (should (member test-jira-sandbox--png
+                            (mapcar (lambda (image)
+                                      (test-jira-sandbox--file-bytes (plist-get (cdr image) :file)))
+                                    (test-jira-sandbox--shown-images page))))
+            (should-not (with-current-buffer page
+                          (string-match-p "!\\[pasted-" (buffer-string)))))
+        (when (get-buffer shipit-editor--buffer-name)
+          (with-current-buffer shipit-editor--buffer-name
+            (shipit-editor-cancel)))))))
 
 (defun test-jira-sandbox--raw-status (config path)
   "The status the sandbox of CONFIG answers a GET of PATH with, sent bare.

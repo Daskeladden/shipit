@@ -3317,17 +3317,27 @@ Uses ETag caching for efficiency:
                                             (browse-url ,fallback-url)))
                              map))))))
 
+(defun shipit--image-cache-file (url)
+  "The file the image at URL is cached in, whether it is there or not."
+  (expand-file-name (concat (secure-hash 'md5 url)
+                            (if (string-match "\\.[a-zA-Z0-9]+$" url)
+                                (match-string 0 url)
+                              ".png"))
+                    (expand-file-name "shipit-images" temporary-file-directory)))
+
+(defun shipit--cache-image (url bytes)
+  "Keep BYTES as the image at URL, so showing it downloads nothing."
+  (let ((file (shipit--image-cache-file url)))
+    (make-directory (file-name-directory file) t)
+    (with-temp-file file
+      (set-buffer-multibyte nil)
+      (insert bytes))
+    file))
+
 (defun shipit--download-and-cache-image (url)
   "Download image from URL and return cached file path."
-  (let* ((cache-dir (expand-file-name "shipit-images" temporary-file-directory))
-         (url-hash (secure-hash 'md5 url))
-         (file-ext (if (string-match "\\.[a-zA-Z0-9]+$" url)
-                       (match-string 0 url)
-                     ".png"))
-         (cache-file (expand-file-name (concat url-hash file-ext) cache-dir)))
-    ;; Create cache directory if it doesn't exist
-    (unless (file-directory-p cache-dir)
-      (make-directory cache-dir t))
+  (let ((cache-file (shipit--image-cache-file url)))
+    (make-directory (file-name-directory cache-file) t)
     ;; Download if not cached
     (unless (file-exists-p cache-file)
       (condition-case err

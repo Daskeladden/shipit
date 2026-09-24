@@ -38,6 +38,10 @@
 ;;                        the comment is on, for a tracker that finds a
 ;;                        comment only under its issue.
 ;;   :toggle-reaction   — (config comment-id reaction) → reaction alist or nil
+;;   :upload-attachment — (config issue-id filename mime-type bytes)
+;;                        → alist of the attachment's `filename' and the
+;;                        `url' its content shows from; what is written
+;;                        shows it as a markdown image of that url
 ;;
 ;; Optional plist keys (for description reactions):
 ;;   :fetch-reactions   — (config issue-number) → list of reaction alists

@@ -19,6 +19,9 @@
 
 ;; Load shipit-editor (will be created)
 (require 'shipit-editor nil t)
+(require 'shipit-test-clipboard)
+(require 'shipit-pr-github)
+(require 'shipit-issues)
 
 ;;; Test Utilities
 
@@ -123,6 +126,63 @@
       ;; Cleanup
       (when (get-buffer "*shipit-editor*")
         (kill-buffer "*shipit-editor*")))))
+
+;;; Pasting a picture
+
+(defmacro test-shipit-editor--pasting (context &rest body)
+  "Open the editor with CONTEXT, with a picture on the clipboard; run BODY.
+The issue tracker of CONTEXT's repository takes no attachments."
+  (declare (indent 1))
+  `(let ((shipit-issue-backends (copy-alist shipit-issue-backends))
+         (shipit-issue-repo-backends '(("owner/repo" :backend no-attachments))))
+     (shipit-issue-register-backend
+      'no-attachments
+      (list :name "Plain" :fetch-issue #'ignore :fetch-comments #'ignore
+            :fetch-comments-async #'ignore :search #'ignore
+            :create-issue #'ignore :reference-patterns #'ignore
+            :id-to-string #'ignore :string-to-id #'ignore :browse-url #'ignore))
+     (unwind-protect
+         (progn
+           (shipit-editor-open ,context)
+           (with-current-buffer "*shipit-editor*"
+             (insert "Before")
+             (shipit-test-clipboard-holding '((image/png . "\x89PNG"))
+               ,@body)))
+       (when (get-buffer "*shipit-editor*")
+         (kill-buffer "*shipit-editor*")))))
+
+(ert-deftest test-shipit-editor-paste-where-the-tracker-takes-no-picture ()
+  "GIVEN a comment on an issue whose tracker takes no attachments
+AND a picture on the clipboard
+WHEN it is pasted
+THEN it says the tracker cannot take it, AND the text stays as it was."
+  (skip-unless (fboundp 'yank-media))
+  (test-shipit-editor--pasting
+      (list :type 'issue-comment :repo "owner/repo" :pr-number "7")
+    (should (string-match-p "Plain" (cadr (should-error (yank-media) :type 'user-error))))
+    (should (equal "Before" (buffer-string)))))
+
+(ert-deftest test-shipit-editor-paste-into-a-pull-request-comment ()
+  "GIVEN a comment on a pull request, and a picture on the clipboard
+WHEN it is pasted
+THEN it says only issue comments and descriptions take one, AND the
+text stays as it was."
+  (skip-unless (fboundp 'yank-media))
+  (test-shipit-editor--pasting
+      (list :type 'general-comment :repo "owner/repo" :pr-number 7)
+    (should (string-match-p "issue" (cadr (should-error (yank-media) :type 'user-error))))
+    (should (equal "Before" (buffer-string)))))
+
+(ert-deftest test-shipit-editor-preview-leaves-an-image-it-has-not ()
+  "GIVEN a comment that shows an image this machine does not have
+WHEN the preview renders it
+THEN the image stays as written, AND nothing is downloaded: the preview
+updates while typing, and a half-typed address would be fetched at
+every pause."
+  (let ((image "![shot](https://example.com/not-here.png)"))
+    (should (string-match-p (regexp-quote image)
+                            (shipit-editor--render-preview-content
+                             (concat "Look " image) 'issue-comment)))))
 
 ;;; Commit Message Insertion Tests
 

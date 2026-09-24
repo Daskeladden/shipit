@@ -82,6 +82,17 @@ Returns the updated comment alist."
       (error "Backend does not support :edit-comment"))
     (funcall fn config comment-id body issue-id)))
 
+(defun shipit-issues--upload-attachment (repo issue-id filename mime-type bytes)
+  "Attach BYTES to issue ISSUE-ID in REPO as the file FILENAME of MIME-TYPE.
+Returns an alist of the attachment\='s `filename' and `url'.  Says so
+when the tracker of REPO takes no attachments."
+  (let* ((resolved (shipit-issue--resolve-for-repo repo))
+         (backend (car resolved))
+         (fn (plist-get backend :upload-attachment)))
+    (unless fn
+      (user-error "%s issues take no attachments" (plist-get backend :name)))
+    (funcall fn (cdr resolved) issue-id filename mime-type bytes)))
+
 (defun shipit-issues--toggle-reaction (repo comment-id reaction)
   "Toggle REACTION on comment COMMENT-ID in REPO via the active backend.
 Returns the reaction alist or nil."

@@ -54,6 +54,10 @@
 (declare-function shipit-issues--create-issue "shipit-issues")
 (declare-function shipit-issues--add-comment "shipit-issues")
 (declare-function shipit-issues--edit-comment "shipit-issues")
+(declare-function shipit-issues--upload-attachment "shipit-issues")
+(declare-function shipit--image-cache-file "shipit-http")
+(declare-function shipit--cache-image "shipit-http")
+(declare-function shipit--create-image-display "shipit-render")
 (declare-function shipit-issues--update-description "shipit-issues")
 (declare-function shipit-issues-open-buffer "shipit-issues-buffer")
 (declare-function shipit-issue--resolve-for-repo "shipit-issue-backends")
@@ -198,6 +202,10 @@ Captured from the source buffer in `shipit-editor-open'.")
     map)
   "Keymap for `shipit-editor-mode'.")
 
+;; Here rather than in the map's `defvar', so a reload binds it too.
+(when (fboundp 'yank-media)
+  (define-key shipit-editor-mode-map (kbd "C-c C-y") #'yank-media))
+
 (define-derived-mode shipit-editor-mode gfm-mode "Shipit-Editor"
   "Major mode for editing shipit comments and descriptions.
 
@@ -216,10 +224,71 @@ Captured from the source buffer in `shipit-editor-open'.")
   (setq-local header-line-format
               (propertize " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel "
                           'font-lock-face 'mode-line-highlight))
+  ;; A picture pasted with `yank-media', which is in Emacs 29 and
+  ;; later, is attached to the issue being written about.
+  (when (fboundp 'yank-media-handler)
+    (yank-media-handler "image/.*" #'shipit-editor--paste-picture))
   ;; Set up live preview updates
   (add-hook 'after-change-functions #'shipit-editor--schedule-preview-update nil t)
   ;; Set up completion cancellation on next keypress
   (add-hook 'post-command-hook #'shipit-editor--maybe-cancel-completion nil t))
+
+;;; Pasting a picture
+
+(defconst shipit-editor--picture-types
+  '(issue-comment issue-comment-edit issue-description)
+  "The kinds of text a pasted picture can go into: those of an issue.")
+
+(defun shipit-editor--picture-hint ()
+  "The header line\='s mention of pasting a picture, where Emacs can."
+  (if (fboundp 'yank-media) ", C-c C-y: Paste picture" ""))
+
+(defun shipit-editor--picture-name (mime-type)
+  "A file name for a picture of MIME-TYPE pasted now.
+Jira shows an attachment by its name, so two pastes must not share one."
+  (let ((subtype (cadr (split-string mime-type "/"))))
+    (format "pasted-%s.%s"
+            (format-time-string "%Y%m%d-%H%M%S-%3N")
+            (if (equal subtype "jpeg") "jpg" subtype))))
+
+(defun shipit-editor--paste-picture (type data)
+  "Attach DATA, a picture of TYPE, to the issue written about; show it here.
+`yank-media' calls this with TYPE a MIME type symbol.  The picture goes
+in as a markdown image, as shipit shows the images an issue has."
+  (unless (memq shipit-editor--type shipit-editor--picture-types)
+    (user-error "Only an issue comment or description can take a pasted picture"))
+  (let* ((mime-type (symbol-name type))
+         (attachment (shipit-issues--upload-attachment
+                      shipit-editor--repo
+                      (or shipit-editor--pr-number
+                          (error "shipit: this editor does not know its issue"))
+                      (shipit-editor--picture-name mime-type) mime-type data))
+         (url (cdr (assq 'url attachment))))
+    ;; Kept as the image of its address, so the preview and the page
+    ;; show it without downloading what is already here.
+    (shipit--cache-image url data)
+    (insert (format "![%s](%s)" (cdr (assq 'filename attachment)) url))))
+
+(defconst shipit-editor--image-re "!\\[\\([^]\n]*\\)\\](\\([^)\n]+\\))"
+  "Regexp matching a markdown image; group 1 is its name, 2 its URL.")
+
+(defun shipit-editor--render-preview-images (text)
+  "TEXT with each markdown image this machine has shown as the image.
+The preview updates while typing, so it downloads nothing: a pasted
+image, or one the page showed already, is in the image cache.  Any
+other stays as written, as a half-typed address would otherwise be
+fetched at every pause."
+  (replace-regexp-in-string
+   shipit-editor--image-re
+   (lambda (image)
+     (save-match-data
+       (string-match shipit-editor--image-re image)
+       (let ((name (match-string 1 image))
+             (url (match-string 2 image)))
+         (if (file-exists-p (shipit--image-cache-file url))
+             (shipit--create-image-display url name)
+           image))))
+   text t t))
 
 ;;; Editor open
 
@@ -310,11 +379,13 @@ CONTEXT is a plist with:
                                   'font-lock-face 'mode-line-highlight)))
          ((memq (plist-get context :type) '(issue-comment issue-comment-edit))
           (setq-local header-line-format
-                      (propertize " Issue Comment - C-c C-c: Save, C-c C-k: Cancel "
+                      (propertize (format " Issue Comment - C-c C-c: Save, C-c C-k: Cancel%s "
+                                          (shipit-editor--picture-hint))
                                   'font-lock-face 'mode-line-highlight)))
          ((eq (plist-get context :type) 'issue-description)
           (setq-local header-line-format
-                      (propertize " Issue Description - C-c C-c: Save, C-c C-k: Cancel "
+                      (propertize (format " Issue Description - C-c C-c: Save, C-c C-k: Cancel%s "
+                                          (shipit-editor--picture-hint))
                                   'font-lock-face 'mode-line-highlight)))
          ((eq (plist-get context :type) 'create-discussion)
           (setq-local header-line-format
@@ -496,7 +567,8 @@ Adds appropriate indentation based on type."
       ;; Instead, just return the content as-is and let code block backgrounds
       ;; handle syntax highlighting.
       ;; Render emoji shortcodes to Unicode emoji for preview.
-      (let ((rendered (shipit-editor--render-emoji-shortcodes clean-content)))
+      (let ((rendered (shipit-editor--render-preview-images
+                       (shipit-editor--render-emoji-shortcodes clean-content))))
         (cond
          ;; Reply type: render with nested child structure
          (indent-reply

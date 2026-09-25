@@ -237,5 +237,29 @@ scan sends."
                                 (shipit-preview--find-pr-for-branch
                                  "feature" "o/r")))))))
 
+;;; Opening a preview again
+
+(ert-deftest test-shipit-preview-keeps-a-description-edited-since-it-was-saved ()
+  "GIVEN a preview whose state was saved, and whose description was
+edited after that, its buffer still there
+WHEN the preview is opened again
+THEN it shows the description as edited, not as it was saved."
+  (require 'shipit-sandbox)
+  (shipit-sandbox-with-repo
+    (let ((shipit-preview--saved-state (make-hash-table :test 'equal))
+          (buffer-name (shipit-preview--buffer-name shipit-sandbox-repo "work")))
+      (unwind-protect
+          (progn
+            (shipit-preview-branch shipit-sandbox-repo "work" "main")
+            (with-current-buffer buffer-name
+              (setq shipit-preview--description "As saved")
+              (shipit-preview--save-state)
+              (shipit-preview--on-description-saved "As edited" (current-buffer)))
+            (shipit-preview-branch shipit-sandbox-repo "work" "main")
+            (with-current-buffer buffer-name
+              (should (equal "As edited" shipit-preview--description))))
+        (when (get-buffer buffer-name)
+          (kill-buffer buffer-name))))))
+
 (provide 'test-shipit-preview)
 ;;; test-shipit-preview.el ends here

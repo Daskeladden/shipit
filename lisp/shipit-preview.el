@@ -1622,6 +1622,11 @@ with the new pull request\='s number or nil.  STACKED marks the pull
 request as one layer of a stack."
   (let ((buf-name (shipit-preview--buffer-name repo branch)))
     (with-current-buffer (get-buffer-create buf-name)
+      ;; A preview still open holds its newest state, which an edit of
+      ;; its description does not save.  Keep it before the mode starts
+      ;; again and wipes the buffer's variables.
+      (when (derived-mode-p 'shipit-preview-mode)
+        (shipit-preview--save-state))
       (shipit-preview-mode)
       (setq shipit-preview--repo repo
             shipit-preview--branch branch

@@ -25,6 +25,7 @@
 
 ;;; Code:
 
+(require 'seq)
 (require 'shipit-core)
 (require 'magit-section)
 
@@ -207,8 +208,7 @@ Captured from the source buffer in `shipit-editor-open'.")
   "Keymap for `shipit-editor-mode'.")
 
 ;; Here rather than in the map's `defvar', so a reload binds it too.
-(when (fboundp 'yank-media)
-  (define-key shipit-editor-mode-map (kbd "C-c C-y") #'yank-media))
+(define-key shipit-editor-mode-map [remap yank] #'shipit-editor-yank)
 
 (define-derived-mode shipit-editor-mode gfm-mode "Shipit-Editor"
   "Major mode for editing shipit comments and descriptions.
@@ -229,7 +229,8 @@ Captured from the source buffer in `shipit-editor-open'.")
               (propertize " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel "
                           'font-lock-face 'mode-line-highlight))
   ;; A picture pasted with `yank-media', which is in Emacs 29 and
-  ;; later, is attached to the issue being written about.
+  ;; later, is attached to the issue being written about.  A yank of a
+  ;; picture kept on the kill ring goes through this handler too.
   (when (fboundp 'yank-media-handler)
     (yank-media-handler "image/.*" #'shipit-editor--paste-picture))
   ;; Set up live preview updates
@@ -243,9 +244,36 @@ Captured from the source buffer in `shipit-editor-open'.")
   '(issue-comment issue-comment-edit issue-description)
   "The kinds of text a pasted picture can go into: those of an issue.")
 
-(defun shipit-editor--picture-hint ()
-  "The header line\\='s mention of pasting a picture, where Emacs can."
-  (if (fboundp 'yank-media) ", C-c C-y: Paste picture" ""))
+(defconst shipit-editor--text-targets
+  '(STRING UTF8_STRING TEXT COMPOUND_TEXT text/plain text/plain\;charset=utf-8)
+  "The clipboard targets that hold text.")
+
+(defun shipit-editor--clipboard-targets ()
+  "The types the clipboard holds, as symbols; none without a display."
+  (append (ignore-errors (gui-get-selection 'CLIPBOARD 'TARGETS)) nil))
+
+(defun shipit-editor--clipboard-picture-p ()
+  "Non-nil when another program\='s clipboard holds a picture and no text.
+`yank\=' takes text only, and would yank an older kill instead."
+  (and (fboundp 'yank-media)
+       (not (ignore-errors (gui-backend-selection-owner-p 'CLIPBOARD)))
+       (let ((targets (shipit-editor--clipboard-targets)))
+         (and (seq-some (lambda (target) (string-prefix-p "image/" (symbol-name target)))
+                        targets)
+              (not (seq-some (lambda (target) (memq target shipit-editor--text-targets))
+                             targets))))))
+
+(defun shipit-editor-yank (&optional arg)
+  "Yank, or paste the picture another program put on the clipboard.
+A picture copied in another program is no text, so `yank\=' cannot take
+it.  Otherwise this is `yank\=', with ARG as for it, and `M-y\=' follows
+it as it follows `yank\='."
+  (interactive "*P")
+  (if (shipit-editor--clipboard-picture-p)
+      (yank-media)
+    (yank arg)))
+
+(put 'shipit-editor-yank 'delete-selection 'yank)
 
 (defun shipit-editor--picture-name (mime-type)
   "A file name for a picture of MIME-TYPE pasted now.
@@ -360,11 +388,8 @@ CONTEXT is a plist with:
         (let ((ref-hints (or (plist-get (shipit-pr--get-backend) :editor-reference-hints)
                              "#: PR")))
           (setq-local header-line-format
-                      (propertize (format " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel, %s, @: User, :: Emoji%s "
-                                          ref-hints
-                                          (if (plist-get context :keep-picture)
-                                              (shipit-editor--picture-hint)
-                                            ""))
+                      (propertize (format " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel, %s, @: User, :: Emoji "
+                                          ref-hints)
                                   'font-lock-face 'mode-line-highlight)))
         ;; Update header line based on context (overrides default)
         (cond
@@ -379,13 +404,11 @@ CONTEXT is a plist with:
                                   'font-lock-face 'mode-line-highlight)))
          ((memq (plist-get context :type) '(issue-comment issue-comment-edit))
           (setq-local header-line-format
-                      (propertize (format " Issue Comment - C-c C-c: Save, C-c C-k: Cancel%s "
-                                          (shipit-editor--picture-hint))
+                      (propertize " Issue Comment - C-c C-c: Save, C-c C-k: Cancel "
                                   'font-lock-face 'mode-line-highlight)))
          ((eq (plist-get context :type) 'issue-description)
           (setq-local header-line-format
-                      (propertize (format " Issue Description - C-c C-c: Save, C-c C-k: Cancel%s "
-                                          (shipit-editor--picture-hint))
+                      (propertize " Issue Description - C-c C-c: Save, C-c C-k: Cancel "
                                   'font-lock-face 'mode-line-highlight)))
          ((eq (plist-get context :type) 'create-discussion)
           (setq-local header-line-format

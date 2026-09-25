@@ -24,12 +24,14 @@
   "Run BODY with the clipboard holding CONTENTS, an alist of (TYPE . DATA).
 TYPE is a MIME type symbol such as `image/png'.  `yank-media' asks
 `gui-get-selection' what the clipboard holds, and Emacs 29 reads the
-data itself through `gui-backend-get-selection', so both answer."
+data itself through `gui-backend-get-selection', so both answer.
+Another program owns the clipboard, as when something is copied there."
   (declare (indent 1))
   (let ((reader (make-symbol "reader")))
     `(let ((,reader (shipit-test-clipboard--reader ,contents)))
        (cl-letf (((symbol-function 'gui-get-selection) ,reader)
-                 ((symbol-function 'gui-backend-get-selection) ,reader))
+                 ((symbol-function 'gui-backend-get-selection) ,reader)
+                 ((symbol-function 'gui-backend-selection-owner-p) #'ignore))
          ,@body))))
 
 (provide 'shipit-test-clipboard)

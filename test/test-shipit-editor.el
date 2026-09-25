@@ -193,6 +193,69 @@ it shows without being downloaded."
                               (buffer-string)))
       (should (file-exists-p (shipit--image-cache-file (concat "kept:" (car kept))))))))
 
+(defun test-shipit-editor--keeping (kept)
+  "A picture keeper for the editor, which sets the car of KEPT to the name."
+  (lambda (name _mime-type _bytes)
+    (setcar kept name)
+    `((filename . ,name) (url . ,(concat "kept:" name)))))
+
+(ert-deftest test-shipit-editor-yank-pastes-a-picture-copied-elsewhere ()
+  "GIVEN a picture copied in another program, and no text on the clipboard
+WHEN it is yanked
+THEN it goes in as a picture: `yank' takes text only, and would yank an
+older kill instead."
+  (skip-unless (fboundp 'yank-media))
+  (let ((kept (list nil)))
+    (test-shipit-editor--pasting
+        (list :type 'preview-description :repo "owner/repo"
+              :keep-picture (test-shipit-editor--keeping kept))
+      (shipit-editor-yank)
+      (should (car kept))
+      (should (string-match-p "!\\[pasted-" (buffer-string))))))
+
+(ert-deftest test-shipit-editor-yank-takes-text-as-yank-does ()
+  "GIVEN a clipboard that holds text beside a picture
+WHEN it is yanked
+THEN it is yanked as `yank' does, and no picture is pasted."
+  (let ((kept (list nil))
+        (kill-ring (list "killed text"))
+        (kill-ring-yank-pointer nil)
+        (interprogram-paste-function #'ignore))
+    (setq kill-ring-yank-pointer kill-ring)
+    (test-shipit-editor--pasting
+        (list :type 'preview-description :repo "owner/repo"
+              :keep-picture (test-shipit-editor--keeping kept))
+      (shipit-test-clipboard-holding '((image/png . "\x89PNG") (text/plain . "t"))
+        (shipit-editor-yank))
+      (should-not (car kept))
+      (should (equal "Beforekilled text" (buffer-string))))))
+
+(ert-deftest test-shipit-editor-yank-leaves-a-clipboard-emacs-owns ()
+  "GIVEN a clipboard that Emacs owns, as after a kill in Emacs
+WHEN it is yanked
+THEN it is yanked as `yank' does: the kill ring has what Emacs put there,
+pictures included."
+  (let ((kept (list nil))
+        (kill-ring (list "killed text"))
+        (kill-ring-yank-pointer nil)
+        (interprogram-paste-function #'ignore))
+    (setq kill-ring-yank-pointer kill-ring)
+    (test-shipit-editor--pasting
+        (list :type 'preview-description :repo "owner/repo"
+              :keep-picture (test-shipit-editor--keeping kept))
+      (cl-letf (((symbol-function 'gui-backend-selection-owner-p) (lambda (&rest _) t)))
+        (shipit-editor-yank))
+      (should-not (car kept))
+      (should (equal "Beforekilled text" (buffer-string))))))
+
+(ert-deftest test-shipit-editor-yank-is-the-yank-of-the-editor ()
+  "GIVEN the editor
+WHEN C-y is looked up in it
+THEN it is the yank that takes pictures too."
+  (with-temp-buffer
+    (shipit-editor-mode)
+    (should (eq 'shipit-editor-yank (key-binding (kbd "C-y"))))))
+
 (ert-deftest test-shipit-editor-preview-leaves-an-image-it-has-not ()
   "GIVEN a comment that shows an image this machine does not have
 WHEN the preview renders it

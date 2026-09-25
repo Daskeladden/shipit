@@ -580,6 +580,24 @@ constant reads would bury the commands worth seeing."
       (shipit-process-log default-directory (cons "git" args) exit output)
       (cons exit output))))
 
+(defun shipit--git-output (&rest args)
+  "The output of git with ARGS in `default-directory', for reading.
+An error when git fails, with what it said."
+  (with-temp-buffer
+    (let ((exit (apply #'process-file "git" nil t nil args)))
+      (unless (zerop exit)
+        (error "shipit: git %s failed: %s" (string-join args " ") (buffer-string)))
+      (buffer-string))))
+
+(defun shipit--git-change (&rest args)
+  "Run git with ARGS, a command that changes something; its output.
+Logged to the process buffer, as by `shipit--run-git'.  An error when
+git fails, with what it said."
+  (pcase-let ((`(,exit . ,output) (apply #'shipit--run-git args)))
+    (unless (zerop exit)
+      (error "shipit: git %s failed: %s" (string-join args " ") output))
+    output))
+
 (defun shipit--push-branches (branches &optional args)
   "Push BRANCHES to origin atomically with ARGS, tracking set.
 Return t when every branch landed, nil otherwise.  Success is

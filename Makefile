@@ -123,6 +123,7 @@ test-unit: compile
 		-l test/test-shipit-discussions-graphql.el \
 		-l test/test-shipit-discussions-buffer.el \
 		-l test/test-shipit-magit-worktrees.el \
+		-l test/test-shipit-worktree-move.el \
 		-l test/test-shipit-discussions.el \
 		-l test/test-shipit-pr-backends.el \
 		-l test/test-shipit-pr-github.el \

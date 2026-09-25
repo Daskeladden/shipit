@@ -176,8 +176,15 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 ;;; Git data extraction
 
 (defun shipit-preview--range ()
-  "Return the git range this preview describes."
+  "Return the git range of the commits this preview describes."
   (format "%s..%s" shipit-preview--base-ref (or shipit-preview--tip "HEAD")))
+
+(defun shipit-preview--diff-range ()
+  "Return the git range of the changes this preview describes.
+Three dots: from where the branch left the base, as a pull request shows
+its changes.  Two dots would compare with the base as it is now, and
+show what the base gained since as changes of the branch."
+  (format "%s...%s" shipit-preview--base-ref (or shipit-preview--tip "HEAD")))
 
 (defun shipit-preview--get-commits (&optional range)
   "Return this preview's commits, or those in RANGE."
@@ -185,14 +192,14 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 
 (defun shipit-preview--get-file-patch (filename)
   "Get the diff patch for FILENAME between base ref and HEAD."
-  (let ((range (shipit-preview--range)))
+  (let ((range (shipit-preview--diff-range)))
     (shell-command-to-string
      (format "git diff %s -- %s 2>/dev/null" range (shell-quote-argument filename)))))
 
 (defun shipit-preview--get-files ()
   "Get files changed between base ref and HEAD as alists.
 Returns list compatible with `shipit--render-files-section'."
-  (let* ((range (shipit-preview--range))
+  (let* ((range (shipit-preview--diff-range))
          (output (shell-command-to-string
                   (format "git diff --numstat %s 2>/dev/null" range)))
          (lines (split-string output "\n" t))
@@ -463,7 +470,7 @@ CURRENT-DESC is the current description text."
   (interactive)
   (let ((file-path (get-text-property (point) 'shipit-file-path)))
     (if file-path
-        (let ((range (shipit-preview--range)))
+        (let ((range (shipit-preview--diff-range)))
           (message "Opening diff for %s..." file-path)
           (magit-diff-range range nil (list file-path)))
       (message "No file at point"))))

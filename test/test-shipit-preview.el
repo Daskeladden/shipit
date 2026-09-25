@@ -261,5 +261,32 @@ THEN it shows the description as edited, not as it was saved."
         (when (get-buffer buffer-name)
           (kill-buffer buffer-name))))))
 
+(ert-deftest test-shipit-preview-files-leave-out-what-the-base-gained-since ()
+  "GIVEN a branch, and a commit the base branch gained after the branch
+was cut
+WHEN its preview lists the changed files
+THEN they are the branch's own, not the base's newer commit read
+backwards, as a pull request shows them."
+  (require 'shipit-sandbox)
+  (shipit-sandbox-with-repo
+    (shipit--git-output "checkout" "-q" "main")
+    (with-temp-file "later.txt" (insert "later"))
+    (shipit--git-output "add" "later.txt")
+    (shipit--git-output "commit" "-q" "-m" "later on main")
+    (shipit--git-output "push" "-q" "origin" "main")
+    (shipit--git-output "checkout" "-q" "work")
+    (let ((shipit-preview--saved-state (make-hash-table :test 'equal))
+          (buffer-name (shipit-preview--buffer-name shipit-sandbox-repo "work")))
+      (unwind-protect
+          (progn
+            (shipit-preview-branch shipit-sandbox-repo "work" "origin/main")
+            (with-current-buffer buffer-name
+              (let ((files (mapcar (lambda (file) (cdr (assq 'filename file)))
+                                   (shipit-preview--get-files))))
+                (should (= 4 (length files)))
+                (should-not (member "later.txt" files)))))
+        (when (get-buffer buffer-name)
+          (kill-buffer buffer-name))))))
+
 (provide 'test-shipit-preview)
 ;;; test-shipit-preview.el ends here

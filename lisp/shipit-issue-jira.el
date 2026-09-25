@@ -212,6 +212,58 @@ can share a filename, and then the first one is taken."
                 :key (lambda (attachment) (cdr (assq 'filename attachment)))
                 :test #'equal)))
 
+(defconst shipit-issue-jira--rendered-attachment-re
+  "/\\(?:attachment/content\\|secure/attachment\\)/\\([0-9]+\\)"
+  "Regexp matching a link to an attachment in rendered HTML; group 1 is its id.")
+
+(defun shipit-issue-jira--rendered-attachment-ids (html)
+  "The ids of the attachments HTML shows or links to, in order."
+  (let ((ids nil)
+        (start 0))
+    (while (and html (string-match shipit-issue-jira--rendered-attachment-re html start))
+      (push (match-string 1 html) ids)
+      (setq start (match-end 0)))
+    (nreverse ids)))
+
+(defun shipit-issue-jira--attachment-with-id (id)
+  "Return the attachment with ID in `shipit-issue-jira--attachments', or nil."
+  (and id
+       (cl-find id shipit-issue-jira--attachments
+                :key (lambda (attachment) (format "%s" (cdr (assq 'id attachment))))
+                :test #'equal)))
+
+(defun shipit-issue-jira--file-media-p (node)
+  "Non-nil when NODE of a document is an attached file, an image or other."
+  (and (member (cdr (assq 'type node)) '("media" "mediaInline"))
+       (equal "file" (cdr (assq 'type (cdr (assq 'attrs node)))))))
+
+(defun shipit-issue-jira--named-media (node id)
+  "NODE, an attached file, named as the attachment ID is when it has no name."
+  (let* ((attrs (cdr (assq 'attrs node)))
+         (attachment (and (not (cdr (assq 'alt attrs)))
+                          (shipit-issue-jira--attachment-with-id id))))
+    (if attachment
+        (cons (cons 'attrs (cons (cons 'alt (cdr (assq 'filename attachment))) attrs))
+              (assq-delete-all 'attrs (copy-alist node)))
+      node)))
+
+(defun shipit-issue-jira--name-media (adf html)
+  "ADF with each attached file that has no name named as HTML shows it.
+Jira keeps an image pasted into a description or a comment by its media
+id, which no REST answer ties to an attachment.  HTML, the text as Jira
+renders it, shows the attached files in the same order, each by the id
+of its attachment."
+  (let ((ids (shipit-issue-jira--rendered-attachment-ids html)))
+    (cl-labels ((walk (node)
+                  (cond ((not (consp node)) node)
+                        ((shipit-issue-jira--file-media-p node)
+                         (shipit-issue-jira--named-media node (pop ids)))
+                        ((assq 'content node)
+                         (cons (cons 'content (mapcar #'walk (append (cdr (assq 'content node)) nil)))
+                               (assq-delete-all 'content (copy-alist node))))
+                        (t node))))
+      (if ids (walk adf) adf))))
+
 (defun shipit-issue-jira--attachment-url (attachment)
   "Return the URL that downloads the content of ATTACHMENT.
 Jira answers the content URL with a redirect to its media host unless
@@ -400,7 +452,9 @@ Maps Jira fields to the keys expected by shipit UI:
                                        components-raw)))
          (comments-data (cdr (assq 'comment fields)))
          (comments-list (append (cdr (assq 'comments comments-data)) nil))
-         (raw-desc (cdr (assq 'description fields)))
+         (raw-desc (shipit-issue-jira--name-media
+                    (cdr (assq 'description fields))
+                    (cdr (assq 'description (cdr (assq 'renderedFields jira-data))))))
          (description (cond
                        ((stringp raw-desc) raw-desc)
                        ((and raw-desc (listp raw-desc))
@@ -495,7 +549,8 @@ Each link has: type, direction, key, summary, status, assignee."
 (defun shipit-issue-jira--normalize-comment (jira-comment)
   "Normalize a single Jira JIRA-COMMENT to shipit alist format."
   (let* ((author (cdr (assq 'author jira-comment)))
-         (raw-body (cdr (assq 'body jira-comment)))
+         (raw-body (shipit-issue-jira--name-media (cdr (assq 'body jira-comment))
+                                                  (cdr (assq 'renderedBody jira-comment))))
          (body (cond
                 ((stringp raw-body) raw-body)
                 ((and raw-body (listp raw-body))
@@ -1033,7 +1088,7 @@ do a single batch JQL query to fill them in."
 (defun shipit-issue-jira--fetch-issue (config id)
   "Fetch Jira issue ID using CONFIG and normalize to shipit format.
 Expands changelog to include activity history."
-  (let* ((path (format "/rest/api/3/issue/%s?fields=%s&expand=changelog"
+  (let* ((path (format "/rest/api/3/issue/%s?fields=%s&expand=changelog,renderedFields"
                        id shipit-issue-jira--fields))
          (raw (shipit-issue-jira--api-request config path)))
     (shipit--debug-log "Jira backend: fetched issue %s" id)
@@ -1065,10 +1120,16 @@ images the comments hold."
     (mapcar #'shipit-issue-jira--normalize-comment
             (append (cdr (assq 'comments raw)) nil))))
 
+(defun shipit-issue-jira--comments-path (id)
+  "Return the API path of the comments of issue ID, rendered too.
+The rendered comment is what names a pasted image; see
+`shipit-issue-jira--name-media'."
+  (format "/rest/api/3/issue/%s/comment?expand=renderedBody" id))
+
 (defun shipit-issue-jira--fetch-comments (config id)
   "Fetch comments for Jira issue ID using CONFIG."
   (let* ((raw (shipit-issue-jira--api-request
-               config (format "/rest/api/3/issue/%s/comment" id)))
+               config (shipit-issue-jira--comments-path id)))
          (attachments (shipit-issue-jira--raw-attachments
                        (shipit-issue-jira--api-request
                         config (shipit-issue-jira--attachments-path id))))
@@ -1085,7 +1146,7 @@ attachments are fetched first, for the images the comments hold."
    config (shipit-issue-jira--attachments-path id)
    (lambda (raw-attachments)
      (shipit-issue-jira--api-request-async
-      config (format "/rest/api/3/issue/%s/comment" id)
+      config (shipit-issue-jira--comments-path id)
       (lambda (raw)
         (let ((comments (shipit-issue-jira--normalize-comments
                          config raw

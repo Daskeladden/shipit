@@ -1914,6 +1914,79 @@ file, a mediaInline, sits in a paragraph."
   (test-shipit-issue-jira--media-doc
    "media" '((id . "a1b2c3") (type . "file") (collection . "jira-1") (alt . "image-1.png"))))
 
+(defconst test-shipit-issue-jira--unnamed-image-attrs
+  '((type . "file") (id . "7bcdcc6e-943e-4f1b-9c62-aed8408d4c3b") (collection . "")
+    (height . 183) (width . 200))
+  "An image pasted in Jira, as Jira keeps it: by its media id, with no name.")
+
+(defconst test-shipit-issue-jira--rendered-image
+  "<p><span class=\"image-wrap\"><img src=\"https://jira.example.com/rest/api/3/attachment/content/10001\" /></span></p>"
+  "The HTML Jira renders for the pasted image, which shows its attachment.")
+
+(ert-deftest test-shipit-issue-jira-fetch-issue-shows-an-image-known-by-its-media-id ()
+  "GIVEN an issue whose description holds an image Jira keeps by its media
+id alone, as it keeps one pasted into it
+WHEN the issue is fetched
+THEN it asks for the description rendered too, and the description holds
+the image of the attachment the rendered one shows in its place."
+  (let ((asked nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (push path asked)
+                 `((key . "PRJ-7")
+                   (renderedFields . ((description . ,test-shipit-issue-jira--rendered-image)))
+                   (fields . ((summary . "With a screenshot")
+                              (status . ((name . "Open")))
+                              (description . ,(test-shipit-issue-jira--media-doc
+                                               "media" test-shipit-issue-jira--unnamed-image-attrs))
+                              (attachment . ,(vconcat test-shipit-issue-jira--attachments))))))))
+      (let ((issue (shipit-issue-jira--fetch-issue '(:base-url "https://jira.example.com") "PRJ-7")))
+        (should (string-match-p "renderedFields" (car (last asked))))
+        (should (equal test-shipit-issue-jira--image-markdown (cdr (assq 'body issue))))))))
+
+(ert-deftest test-shipit-issue-jira-fetch-comments-shows-an-image-known-by-its-media-id ()
+  "GIVEN a comment holding an image Jira keeps by its media id alone
+WHEN the comments are fetched
+THEN they are asked for rendered too, and the comment holds the image of
+the attachment the rendered one shows in its place."
+  (let ((asked nil))
+    (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+               (lambda (_config path)
+                 (push path asked)
+                 (if (string-match-p "fields=attachment" path)
+                     `((fields . ((attachment . ,(vconcat test-shipit-issue-jira--attachments)))))
+                   `((comments . [((id . "501")
+                                   (author . ((displayName . "Alice")))
+                                   (body . ,(test-shipit-issue-jira--media-doc
+                                             "media" test-shipit-issue-jira--unnamed-image-attrs))
+                                   (renderedBody . ,test-shipit-issue-jira--rendered-image)
+                                   (created . "2026-09-16T10:00:00.000+0000")
+                                   (updated . "2026-09-16T10:00:00.000+0000"))]))))))
+      (let ((comments (shipit-issue-jira--fetch-comments
+                       '(:base-url "https://jira.example.com") "PRJ-7")))
+        (should (seq-some (lambda (path) (string-match-p "/comment\\?expand=renderedBody" path)) asked))
+        (should (equal test-shipit-issue-jira--image-markdown
+                       (cdr (assq 'body (car comments)))))))))
+
+(ert-deftest test-shipit-issue-jira-unnamed-images-take-the-names-in-their-order ()
+  "GIVEN a text with a named image and then an unnamed attached file, and
+the rendered text showing both attachments in that order
+WHEN the images are named from it
+THEN the unnamed one takes the second attachment's name, not the first."
+  (let* ((shipit-issue-jira--attachments test-shipit-issue-jira--attachments)
+         (doc `((type . "doc")
+                (content . [((type . "mediaSingle")
+                             (content . [((type . "media")
+                                          (attrs . ((type . "file") (alt . "image-1.png"))))]))
+                            ((type . "paragraph")
+                             (content . [((type . "mediaInline")
+                                          (attrs . ((type . "file") (id . "d4e5"))))]))])))
+         (html (concat "<img src=\"https://jira.example.com/rest/api/3/attachment/content/10001\" />"
+                       "<a href=\"https://jira.example.com/secure/attachment/10002/report.pdf\">x</a>")))
+    (should (string-match-p "\\[report\\.pdf\\]"
+                            (shipit-issue-jira--adf-to-text
+                             (shipit-issue-jira--name-media doc html))))))
+
 (ert-deftest test-shipit-issue-jira-adf-image-attached-to-the-issue ()
   "GIVEN a description holding an image that names an attachment of the issue
 WHEN it is converted to text

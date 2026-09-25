@@ -1987,6 +1987,28 @@ THEN the unnamed one takes the second attachment's name, not the first."
                             (shipit-issue-jira--adf-to-text
                              (shipit-issue-jira--name-media doc html))))))
 
+(ert-deftest test-shipit-issue-jira-an-issue-lists-its-attachments ()
+  "GIVEN an issue with an attachment
+WHEN it is normalized
+THEN it lists the attachment: its name, type and size, when and by whom
+it was added, and where its content downloads from."
+  (let* ((issue (shipit-issue-jira--normalize-issue
+                 '((key . "PRJ-7")
+                   (fields . ((summary . "S") (status . ((name . "Open")))
+                              (attachment . [((id . "10001") (filename . "image-1.png")
+                                              (mimeType . "image/png") (size . 223373)
+                                              (created . "2026-09-25T04:06:31.341-0500")
+                                              (author . ((displayName . "Alice")))
+                                              (content . "https://jira.example.com/rest/api/3/attachment/content/10001"))]))))))
+         (attachment (car (alist-get 'attachments issue))))
+    (should (equal "image-1.png" (alist-get 'filename attachment)))
+    (should (equal "image/png" (alist-get 'mime-type attachment)))
+    (should (equal 223373 (alist-get 'size attachment)))
+    (should (equal "Alice" (alist-get 'author attachment)))
+    (should (equal "2026-09-25T04:06:31.341-0500" (alist-get 'created attachment)))
+    (should (equal "https://jira.example.com/rest/api/3/attachment/content/10001?redirect=false"
+                   (alist-get 'url attachment)))))
+
 (ert-deftest test-shipit-issue-jira-adf-image-attached-to-the-issue ()
   "GIVEN a description holding an image that names an attachment of the issue
 WHEN it is converted to text

@@ -11,6 +11,7 @@
 (require 'shipit-issues)
 (require 'shipit-sections)
 (require 'shipit-pr-github)
+(require 'shipit-test-http)
 
 ;;; Work Item Column Renderer Tests
 
@@ -1407,6 +1408,64 @@ THEN an issue-activity-header handler exists in the dispatch list."
   (let ((handler (assq 'issue-activity-header shipit--dwim-handlers)))
     (should handler)
     (should (functionp (cdr (assq 'action (cdr handler)))))))
+
+;;; Attachments
+
+(defconst test-issue-attachments
+  '(((filename . "shot.png") (mime-type . "image/png") (size . 223373) (author . "Alice")
+     (created . "2026-09-25T04:06:31.341-0500")
+     (url . "https://jira.example.com/rest/api/3/attachment/content/10001?redirect=false"))
+    ((filename . "notes.txt") (mime-type . "text/plain") (size . 12) (author . "Bob")
+     (created . "2026-09-24T10:00:00.000-0500")
+     (url . "https://jira.example.com/rest/api/3/attachment/content/10002?redirect=false")))
+  "Two attachments of an issue, as a backend gives them.")
+
+(defmacro test-issue-attachments--shown (attachments &rest body)
+  "Run BODY in an issue buffer that shows ATTACHMENTS, point at the start."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (shipit-issue-mode)
+     (let ((inhibit-read-only t))
+       (magit-insert-section (shipit-issue)
+         (shipit-issue--insert-attachments-section (list (cons 'attachments ,attachments)))))
+     (goto-char (point-min))
+     ,@body))
+
+(ert-deftest test-shipit-issue-attachments-are-listed ()
+  "GIVEN an issue with two attachments
+WHEN its buffer shows them
+THEN a section lists each, with its name, size and who added it."
+  (test-issue-attachments--shown test-issue-attachments
+    (let ((text (buffer-string)))
+      (should (string-match-p "Attachments (2)" text))
+      (dolist (part '("shot.png" "218k" "Alice" "notes.txt" "Bob"))
+        (should (string-match-p (regexp-quote part) text))))))
+
+(ert-deftest test-shipit-issue-without-attachments-has-no-section ()
+  "GIVEN an issue with no attachment
+WHEN its buffer is drawn
+THEN it has no Attachments section."
+  (test-issue-attachments--shown nil
+    (should-not (string-match-p "Attachments" (buffer-string)))))
+
+(ert-deftest test-shipit-issue-ret-opens-an-attachment ()
+  "GIVEN an attachment listed in an issue buffer
+WHEN RET is pressed on it
+THEN its content is downloaded, and opened as a file of its name."
+  (test-issue-attachments--shown test-issue-attachments
+    (re-search-forward "notes\\.txt")
+    (let ((opened nil))
+      (unwind-protect
+          (progn
+            (shipit-test-http-answering '(("/attachment/content/10002" 200 "Some notes."))
+              (shipit-issue--ret-dwim))
+            (setq opened (seq-find (lambda (buffer)
+                                     (equal "notes.txt" (file-name-nondirectory
+                                                         (or (buffer-file-name buffer) ""))))
+                                   (buffer-list)))
+            (should opened)
+            (should (equal "Some notes." (with-current-buffer opened (buffer-string)))))
+        (when opened (kill-buffer opened))))))
 
 (provide 'test-shipit-issues-buffer)
 ;;; test-shipit-issues-buffer.el ends here

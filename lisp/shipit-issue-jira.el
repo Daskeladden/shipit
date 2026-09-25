@@ -427,6 +427,16 @@ Concatenates child paragraphs and nested lists."
 
 ;;; Normalization — Jira → shipit alist format
 
+(defun shipit-issue-jira--normalize-attachment (attachment)
+  "ATTACHMENT, as the API gives it, as shipit lists an attachment of an issue.
+Its `url' downloads the content, with the login going to Jira only."
+  `((filename . ,(cdr (assq 'filename attachment)))
+    (mime-type . ,(cdr (assq 'mimeType attachment)))
+    (size . ,(cdr (assq 'size attachment)))
+    (created . ,(cdr (assq 'created attachment)))
+    (author . ,(cdr (assq 'displayName (cdr (assq 'author attachment)))))
+    (url . ,(shipit-issue-jira--attachment-url attachment))))
+
 (defun shipit-issue-jira--normalize-issue (jira-data)
   "Normalize Jira issue JIRA-DATA to shipit alist format.
 Maps Jira fields to the keys expected by shipit UI:
@@ -469,6 +479,8 @@ Maps Jira fields to the keys expected by shipit UI:
         (state . ,(cdr (assq 'name (cdr (assq 'status fields)))))
         (state-id . ,(cdr (assq 'id (cdr (assq 'status fields)))))
         (body . ,description)
+        (attachments . ,(mapcar #'shipit-issue-jira--normalize-attachment
+                                (append (cdr (assq 'attachment fields)) nil)))
         (user . ((login . ,(cdr (assq 'displayName reporter)))
                  (avatar_url . nil)))
         (issue-type . ,(cdr (assq 'name issue-type-obj)))

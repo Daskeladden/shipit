@@ -3334,42 +3334,46 @@ Uses ETag caching for efficiency:
       (insert bytes))
     file))
 
+(defun shipit--download-to-file (url file accept)
+  "Download URL into FILE, unless FILE is there already; FILE, or nil.
+ACCEPT is the Accept header, the kinds of content asked for.  The login
+of the forge or the tracker goes only to its own host."
+  (make-directory (file-name-directory file) t)
+  (unless (file-exists-p file)
+    (condition-case nil
+        ;; Bind system-time-locale to "C" for ASCII HTTP date headers
+        (let* ((system-time-locale "C")
+               (backend-host (url-host (url-generic-parse-url
+                                        (or (plist-get shipit-pr-backend-config :api-url)
+                                            "https://github.com"))))
+               (file-host (url-host (url-generic-parse-url url)))
+               (same-host-p (string-suffix-p backend-host file-host))
+               (url-request-extra-headers
+                `(,@(let ((token (shipit--github-token)))
+                      (when (and same-host-p token)
+                        `(("Authorization" . ,(concat "token " token)))))
+                  ,@(shipit--login-headers url)
+                  ("User-Agent" . "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+                  ("Accept" . ,accept)))
+               (buffer (url-retrieve-synchronously url t nil 10)))
+          (when buffer
+            (with-current-buffer buffer
+              (goto-char (point-min))
+              (let* ((status-line (buffer-substring (point-min) (line-end-position)))
+                     (status-code (when (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
+                                    (string-to-number (match-string 1 status-line))))
+                     (headers-end (search-forward "\n\n" nil t)))
+                (when (and headers-end (equal status-code 200))
+                  (with-temp-file file
+                    (set-buffer-multibyte nil)
+                    (insert-buffer-substring buffer headers-end)))
+                (kill-buffer buffer)))))
+      (error nil)))
+  (and (file-exists-p file) file))
+
 (defun shipit--download-and-cache-image (url)
   "Download image from URL and return cached file path."
-  (let ((cache-file (shipit--image-cache-file url)))
-    (make-directory (file-name-directory cache-file) t)
-    ;; Download if not cached
-    (unless (file-exists-p cache-file)
-      (condition-case err
-          ;; Bind system-time-locale to "C" for ASCII HTTP date headers
-          (let* ((system-time-locale "C")
-                 (backend-host (url-host (url-generic-parse-url
-                                          (or (plist-get shipit-pr-backend-config :api-url)
-                                              "https://github.com"))))
-                 (image-host (url-host (url-generic-parse-url url)))
-                 (same-host-p (string-suffix-p backend-host image-host))
-                 (url-request-extra-headers
-                  `(,@(let ((token (shipit--github-token)))
-                        (when (and same-host-p token)
-                          `(("Authorization" . ,(concat "token " token)))))
-                    ,@(shipit--login-headers url)
-                    ("User-Agent" . "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
-                    ("Accept" . "image/*,*/*")))
-                 (buffer (url-retrieve-synchronously url t nil 10)))
-            (when buffer
-              (with-current-buffer buffer
-                (goto-char (point-min))
-                (let* ((status-line (buffer-substring (point-min) (line-end-position)))
-                       (status-code (when (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
-                                     (string-to-number (match-string 1 status-line))))
-                       (headers-end (search-forward "\n\n" nil t)))
-                  (when (and headers-end (= status-code 200))
-                    (with-temp-file cache-file
-                      (set-buffer-multibyte nil)
-                      (insert-buffer-substring buffer headers-end)))
-                  (kill-buffer buffer)))))
-        (error nil)))
-    (if (file-exists-p cache-file) cache-file nil)))
+  (shipit--download-to-file url (shipit--image-cache-file url) "image/*,*/*"))
 
 (defun shipit--get-issue-comments (repo pr-number &optional force-fresh)
   "Get issue comments for PR-NUMBER in REPO using ETag caching.

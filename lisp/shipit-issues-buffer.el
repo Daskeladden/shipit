@@ -105,6 +105,8 @@
 
 (put 'shipit-issue-description 'magit-section t)
 
+(put 'issue-attachments 'magit-section t)
+
 (put 'shipit-issue-metadata 'magit-section t)
 
 (put 'issue-activity 'magit-section t)
@@ -296,6 +298,7 @@ buffer-local overrides so the issue fetches use the correct backend
             (shipit-issue--insert-header-section repo issue-data issue-number)
             (shipit-issue--insert-metadata-section repo issue-data)
             (shipit-issue--insert-description-section repo issue-data issue-number)
+            (shipit-issue--insert-attachments-section issue-data)
             ;; Child work items -- placeholder, loaded async
             (shipit-issue--insert-child-items-section repo issue-data)
             ;; Linked work items -- collapsible section
@@ -1289,6 +1292,49 @@ get the current value) or a list used directly."
 
 ;;; Child Work Items section
 
+(defun shipit-issue--attachment-line (attachment)
+  "The line of the issue buffer that shows ATTACHMENT."
+  (format "   %s %s  %s  %s  %s\n"
+          (if (string-prefix-p "image/" (or (cdr (assq 'mime-type attachment)) ""))
+              (shipit--get-pr-field-icon "image" "🖼")
+            (shipit--get-pr-field-icon "file" "📄"))
+          (propertize (cdr (assq 'filename attachment)) 'font-lock-face 'link)
+          (file-size-human-readable (or (cdr (assq 'size attachment)) 0))
+          (propertize (shipit--format-timestamp (cdr (assq 'created attachment)))
+                      'font-lock-face 'shipit-timestamp-face)
+          (or (cdr (assq 'author attachment)) "")))
+
+(defun shipit-issue--insert-attachments-section (issue-data)
+  "Insert the attachments of ISSUE-DATA, when it has any.
+RET on one opens it."
+  (let ((attachments (cdr (assq 'attachments issue-data))))
+    (when attachments
+      (magit-insert-section (issue-attachments nil nil)
+        (magit-insert-heading
+          (format "%s %s" (shipit--get-pr-field-icon "attachments" "📎")
+                  (propertize (format "Attachments (%d)" (length attachments))
+                              'font-lock-face 'magit-section-heading)))
+        (magit-insert-section-body
+          (dolist (attachment attachments)
+            (let ((start (point)))
+              (insert (shipit-issue--attachment-line attachment))
+              (add-text-properties start (point) `(shipit-issue-attachment ,attachment))))
+          (insert "\n"))))))
+
+(defun shipit-issue--attachment-file (attachment)
+  "The file ATTACHMENT is downloaded to: its own name, in a directory of its own."
+  (expand-file-name (cdr (assq 'filename attachment))
+                    (expand-file-name (md5 (cdr (assq 'url attachment)))
+                                      (expand-file-name "shipit-attachments"
+                                                        temporary-file-directory))))
+
+(defun shipit-issue--open-attachment (attachment)
+  "Download ATTACHMENT, and open it as a file of its name."
+  (find-file (or (shipit--download-to-file (cdr (assq 'url attachment))
+                                           (shipit-issue--attachment-file attachment)
+                                           "*/*")
+                 (user-error "Could not download %s" (cdr (assq 'filename attachment))))))
+
 (defun shipit-issue--insert-child-items-section (_repo issue-data)
   "Insert Child Work Items section if ISSUE-DATA is an Epic.
 Shows placeholder; content loaded asynchronously."
@@ -2216,6 +2262,8 @@ how many comments to load."
         (shipit-issue-load-more-menu))
        ((and section (eq (oref section type) 'linked-pr))
         (shipit-issue--open-linked-pr))
+       ((get-text-property (point) 'shipit-issue-attachment)
+        (shipit-issue--open-attachment (get-text-property (point) 'shipit-issue-attachment)))
        ((shipit-issue--comment-id-at-point)
         (shipit-dwim))
        (t

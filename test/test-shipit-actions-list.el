@@ -1044,6 +1044,51 @@
                            "https://github.com/owner/repo/actions/runs/100/job/200")))
       (kill-buffer buf))))
 
+(defun test-actions-list--at-a-step ()
+  "Show a run of CI with its job and steps here, point on the step \"Run tests\"."
+  (shipit-actions-list-mode)
+  (setq shipit-actions-list--repo "owner/repo")
+  (setq shipit-actions-list--workflows
+        '(((id . 1) (name . "CI") (state . "active"))))
+  (setq shipit-actions-list--all-runs
+        '(((id . 100) (workflow_id . 1) (run_number . 5)
+           (status . "completed") (conclusion . "success")
+           (head_branch . "main")
+           (html_url . "https://github.com/owner/repo/actions/runs/100")
+           (created_at . "2026-01-01T00:00:00Z")
+           (updated_at . "2026-01-01T00:01:00Z"))))
+  (setq shipit-actions-list--runners nil)
+  ;; Pre-populate jobs
+  (puthash 100
+           '(((id . 200) (name . "build")
+              (status . "completed") (conclusion . "success")
+              (html_url . "https://github.com/owner/repo/actions/runs/100/job/200")
+              (steps . (((number . 1) (name . "Set up job")
+                          (status . "completed") (conclusion . "success")
+                          (started_at . "2026-01-01T00:00:00Z")
+                          (completed_at . "2026-01-01T00:00:05Z"))
+                         ((number . 2) (name . "Run tests")
+                          (status . "completed") (conclusion . "success")
+                          (started_at . "2026-01-01T00:00:05Z")
+                          (completed_at . "2026-01-01T00:00:10Z"))))))
+           shipit-actions-list--run-jobs)
+  (shipit-actions-list--render)
+  ;; Expand the run to show jobs
+  (goto-char (point-min))
+  (search-forward "#5")
+  (beginning-of-line)
+  (let ((section (magit-current-section)))
+    ;; Manually show the run section
+    (magit-section-show section))
+  ;; Expand the job to show steps
+  (search-forward "build")
+  (beginning-of-line)
+  (let ((section (magit-current-section)))
+    (shipit-actions-list--render-steps-in-section section))
+  ;; Navigate to step "Run tests" (step number 2)
+  (search-forward "Run tests")
+  (beginning-of-line))
+
 (ert-deftest test-actions-list-copy-url-on-step ()
   "GIVEN point on a step section
    WHEN shipit-actions-list-copy-url is called
@@ -1051,52 +1096,58 @@
   (let ((buf (generate-new-buffer "*test-copy-url-step*")))
     (unwind-protect
         (with-current-buffer buf
-          (shipit-actions-list-mode)
-          (setq shipit-actions-list--repo "owner/repo")
-          (setq shipit-actions-list--workflows
-                '(((id . 1) (name . "CI") (state . "active"))))
-          (setq shipit-actions-list--all-runs
-                '(((id . 100) (workflow_id . 1) (run_number . 5)
-                   (status . "completed") (conclusion . "success")
-                   (head_branch . "main")
-                   (html_url . "https://github.com/owner/repo/actions/runs/100")
-                   (created_at . "2026-01-01T00:00:00Z")
-                   (updated_at . "2026-01-01T00:01:00Z"))))
-          (setq shipit-actions-list--runners nil)
-          ;; Pre-populate jobs
-          (puthash 100
-                   '(((id . 200) (name . "build")
-                      (status . "completed") (conclusion . "success")
-                      (html_url . "https://github.com/owner/repo/actions/runs/100/job/200")
-                      (steps . (((number . 1) (name . "Set up job")
-                                  (status . "completed") (conclusion . "success")
-                                  (started_at . "2026-01-01T00:00:00Z")
-                                  (completed_at . "2026-01-01T00:00:05Z"))
-                                 ((number . 2) (name . "Run tests")
-                                  (status . "completed") (conclusion . "success")
-                                  (started_at . "2026-01-01T00:00:05Z")
-                                  (completed_at . "2026-01-01T00:00:10Z"))))))
-                   shipit-actions-list--run-jobs)
-          (shipit-actions-list--render)
-          ;; Expand the run to show jobs
-          (goto-char (point-min))
-          (search-forward "#5")
-          (beginning-of-line)
-          (let ((section (magit-current-section)))
-            ;; Manually show the run section
-            (magit-section-show section))
-          ;; Expand the job to show steps
-          (search-forward "build")
-          (beginning-of-line)
-          (let ((section (magit-current-section)))
-            (shipit-actions-list--render-steps-in-section section))
-          ;; Navigate to step "Run tests" (step number 2)
-          (search-forward "Run tests")
-          (beginning-of-line)
+          (test-actions-list--at-a-step)
           (shipit-actions-list-copy-url)
           (should (string= (current-kill 0)
                            "https://github.com/owner/repo/actions/runs/100/job/200#step:2:1")))
       (kill-buffer buf))))
+
+(defmacro test-actions--opening (opened &rest body)
+  "Run BODY with the browser recording the address it opens in OPENED."
+  (declare (indent 1))
+  `(let ((,opened nil))
+     (cl-letf (((symbol-function 'browse-url) (lambda (url &rest _) (setq ,opened url))))
+       ,@body)))
+
+(ert-deftest test-actions-list-o-opens-the-item-at-point ()
+  "GIVEN point on a step, whose URL M-w copies
+WHEN o is pressed
+THEN the browser opens that URL."
+  (let ((buf (generate-new-buffer "*test-open-step*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (test-actions-list--at-a-step)
+          (test-actions--opening opened
+            (call-interactively (key-binding (kbd "o")))
+            (should (equal "https://github.com/owner/repo/actions/runs/100/job/200#step:2:1"
+                           opened))))
+      (kill-buffer buf))))
+
+(ert-deftest test-actions-list-o-elsewhere-opens-the-actions-page ()
+  "GIVEN point on a line of no run, job, step or workflow
+WHEN o is pressed
+THEN the browser opens the actions page of the repository, as b does."
+  (let ((buf (generate-new-buffer "*test-open-page*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (test-actions-list--at-a-step)
+          (goto-char (point-min))
+          (test-actions--opening opened
+            (call-interactively (key-binding (kbd "o")))
+            (should (equal "https://github.com/owner/repo/actions" opened))))
+      (kill-buffer buf))))
+
+(ert-deftest test-actions-run-o-elsewhere-opens-the-run ()
+  "GIVEN the buffer of one run, point on no item
+WHEN o is pressed
+THEN the browser opens the run, as b does."
+  (with-temp-buffer
+    (shipit-actions-mode)
+    (setq shipit-actions--repo "owner/repo"
+          shipit-actions--run-data '((html_url . "https://github.com/owner/repo/actions/runs/100")))
+    (test-actions--opening opened
+      (call-interactively (key-binding (kbd "o")))
+      (should (equal "https://github.com/owner/repo/actions/runs/100" opened)))))
 
 (ert-deftest test-actions-list-copy-url-on-workflow ()
   "GIVEN point on a workflow section

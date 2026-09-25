@@ -151,6 +151,9 @@ Case-insensitive substring match.  Nil or empty FILTER-TEXT matches all."
     map)
   "Keymap for `shipit-actions-list-mode'.")
 
+;; Here rather than in the map's `defvar', so a reload binds it too.
+(define-key shipit-actions-list-mode-map (kbd "o") #'shipit-actions-list-open-at-point)
+
 ;;; Major mode
 
 (define-derived-mode shipit-actions-list-mode magit-section-mode "Shipit-Actions-List"
@@ -1478,6 +1481,13 @@ Otherwise: toggle the section."
              (format "https://github.com/%s/actions/workflows/%s"
                      shipit-actions-list--repo
                      (file-name-nondirectory (cdr (assq 'path wf)))))))))))
+
+(defun shipit-actions-list-open-at-point ()
+  "Open the item at point in the browser: a workflow, a run, a job or a step.
+It opens what `M-w' copies.  Elsewhere it opens the actions page of the
+repository, as `b' does."
+  (interactive)
+  (shipit-actions-open-url (shipit-actions-list--url-at-point) #'shipit-actions-list-browse))
 
 (defun shipit-actions-list-copy-url ()
   "Copy the URL of the item at point, or visible region text.

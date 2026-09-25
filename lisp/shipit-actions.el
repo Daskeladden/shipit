@@ -124,6 +124,9 @@ Each job's logs are fetched lazily on first expand.")
     map)
   "Keymap for `shipit-actions-mode'.")
 
+;; Here rather than in the map's `defvar', so a reload binds it too.
+(define-key shipit-actions-mode-map (kbd "o") #'shipit-actions-open-at-point)
+
 ;;; Major mode
 
 (define-derived-mode shipit-actions-mode magit-section-mode "Shipit-Actions"
@@ -1432,6 +1435,19 @@ Builds the URL from the parent section's html_url and step number."
         ('actions-run-summary
          (when run-id
            (format "https://github.com/%s/actions/runs/%s" repo run-id)))))))
+
+(defun shipit-actions-open-url (url fallback)
+  "Open URL in the browser, or call FALLBACK when there is none.
+FALLBACK opens the page of the buffer."
+  (if url
+      (browse-url url)
+    (funcall fallback)))
+
+(defun shipit-actions-open-at-point ()
+  "Open the item at point in the browser: the run, a job or a step.
+It opens what `M-w' copies.  Elsewhere it opens the run, as `b' does."
+  (interactive)
+  (shipit-actions-open-url (shipit-actions--url-at-point) #'shipit-actions-browse))
 
 (defun shipit-actions-copy-url-at-point (url)
   "Copy URL to the kill ring and show a message.

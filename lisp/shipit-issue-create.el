@@ -48,6 +48,10 @@ failing handler does not abort the normal post-create flow.")
 (defvar-local shipit-issue-create--config nil "Backend config plist.")
 (defvar-local shipit-issue-create--title nil "Draft issue title.")
 (defvar-local shipit-issue-create--body nil "Draft issue description.")
+(defvar-local shipit-issue-create--pictures nil
+  "Pictures pasted into the description, kept until the issue is made.
+Each is a plist of `:url\=', the address the description shows it under
+meanwhile, `:name\=', `:mime-type\=' and `:bytes\='.")
 (defvar-local shipit-issue-create--labels nil "List of selected label names.")
 (defvar-local shipit-issue-create--assignees nil "List of selected assignee names.")
 (defvar-local shipit-issue-create--issue-type nil "Selected issue type (Jira).")
@@ -73,6 +77,7 @@ failing handler does not abort the normal post-create flow.")
     (let ((key (shipit-issue-create--draft-key))
           (state (list :title shipit-issue-create--title
                        :body shipit-issue-create--body
+                       :pictures shipit-issue-create--pictures
                        :labels shipit-issue-create--labels
                        :assignees shipit-issue-create--assignees
                        :issue-type shipit-issue-create--issue-type
@@ -88,6 +93,7 @@ Returns non-nil if state was restored."
     (when state
       (setq shipit-issue-create--title (plist-get state :title)
             shipit-issue-create--body (plist-get state :body)
+            shipit-issue-create--pictures (plist-get state :pictures)
             shipit-issue-create--labels (plist-get state :labels)
             shipit-issue-create--assignees (plist-get state :assignees)
             shipit-issue-create--issue-type (plist-get state :issue-type)
@@ -225,7 +231,7 @@ field names: `title\=', `body\=', `issue-type\=', `labels\=',
       (if (and shipit-issue-create--body
                (not (string-empty-p shipit-issue-create--body)))
           (dolist (line (split-string shipit-issue-create--body "\n"))
-            (insert (format "   %s\n" line)))
+            (insert (format "   %s\n" (shipit--render-cached-images line))))
         (let ((start (point)))
           (insert (propertize "   Click here or press RET to add a description\n"
                               'font-lock-face 'font-lock-comment-face))
@@ -355,9 +361,60 @@ Dispatches to edit-title, edit-description, or edit-field based on text properti
            :source-buffer source-buffer
            :initial-content (or shipit-issue-create--body "")
            :repo shipit-issue-create--repo
+           :keep-picture (lambda (name mime-type bytes)
+                           (with-current-buffer source-buffer
+                             (shipit-issue-create--keep-picture name mime-type bytes)))
            :on-save (lambda (content)
                       (setq shipit-issue-create--body content)
                       (shipit-issue-create--refresh))))))
+
+;;; Pictures of the description
+
+(defconst shipit-issue-create--picture-scheme "shipit-new-issue-picture:"
+  "What the address of a picture kept for the issue begins with.")
+
+(defun shipit-issue-create--keep-picture (name mime-type bytes)
+  "Keep BYTES, a picture NAME of MIME-TYPE, until the issue is made.
+No issue is there to attach it to yet.  The tracker must take
+attachments.  Returns its `filename\=' and the `url\=' the description
+shows it under meanwhile."
+  (shipit-issues--attachment-uploader shipit-issue-create--repo)
+  (let ((url (concat shipit-issue-create--picture-scheme name)))
+    (push (list :url url :name name :mime-type mime-type :bytes bytes)
+          shipit-issue-create--pictures)
+    `((filename . ,name) (url . ,url))))
+
+(defun shipit-issue-create--without-pictures (body)
+  "BODY without the pictures kept for the issue, which it cannot show yet."
+  (replace-regexp-in-string
+   (concat "!\\[[^]\n]*\\](" (regexp-quote shipit-issue-create--picture-scheme) "[^)\n]*)")
+   "" body t t))
+
+(defun shipit-issue-create--pictures-in (body)
+  "The kept pictures BODY shows."
+  (seq-filter (lambda (picture) (string-search (plist-get picture :url) body))
+              shipit-issue-create--pictures))
+
+(declare-function shipit--cache-image "shipit-http" (url bytes))
+
+(defun shipit-issue-create--attach-picture (repo number picture body)
+  "Attach PICTURE to issue NUMBER of REPO, and return BODY showing it from there."
+  (let* ((bytes (plist-get picture :bytes))
+         (attachment (shipit-issues--upload-attachment
+                      repo number (plist-get picture :name) (plist-get picture :mime-type) bytes))
+         (url (cdr (assq 'url attachment))))
+    (shipit--cache-image url bytes)
+    (string-replace (plist-get picture :url) url body)))
+
+(defun shipit-issue-create--attach-pictures (repo number)
+  "Attach the pictures the description shows to issue NUMBER of REPO.
+The description of the issue then shows them where they were pasted."
+  (let* ((body shipit-issue-create--body)
+         (pictures (shipit-issue-create--pictures-in body)))
+    (when pictures
+      (dolist (picture pictures)
+        (setq body (shipit-issue-create--attach-picture repo number picture body)))
+      (shipit-issues--update-description repo number body))))
 
 (defun shipit-issue-create--edit-field (field-name)
   "Edit the dynamic field FIELD-NAME."
@@ -473,7 +530,8 @@ Includes only fields that have values set."
     (when shipit-issue-create--title
       (push (cons 'title shipit-issue-create--title) alist))
     (when shipit-issue-create--body
-      (push (cons 'body shipit-issue-create--body) alist))
+      (push (cons 'body (shipit-issue-create--without-pictures shipit-issue-create--body))
+            alist))
     (when shipit-issue-create--labels
       (push (cons 'labels shipit-issue-create--labels) alist))
     (when shipit-issue-create--assignees
@@ -499,6 +557,11 @@ Includes only fields that have values set."
                  (number (cdr (assq 'number result))))
             (unless number
               (error "No issue number returned — creation may have failed"))
+            (condition-case err
+                (shipit-issue-create--attach-pictures repo number)
+              (error
+               (message "Issue %s is made, but its pictures are not attached: %s"
+                        number (error-message-string err))))
             (shipit-issue-create--clear-draft)
             ;; Remove save-draft hook before killing to avoid re-saving
             (remove-hook 'kill-buffer-hook #'shipit-issue-create--save-draft t)

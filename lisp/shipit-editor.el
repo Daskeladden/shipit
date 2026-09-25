@@ -55,9 +55,8 @@
 (declare-function shipit-issues--add-comment "shipit-issues")
 (declare-function shipit-issues--edit-comment "shipit-issues")
 (declare-function shipit-issues--upload-attachment "shipit-issues")
-(declare-function shipit--image-cache-file "shipit-http")
 (declare-function shipit--cache-image "shipit-http")
-(declare-function shipit--create-image-display "shipit-render")
+(declare-function shipit--render-cached-images "shipit-render" (text))
 (declare-function shipit-issues--update-description "shipit-issues")
 (declare-function shipit-issues-open-buffer "shipit-issues-buffer")
 (declare-function shipit-issue--resolve-for-repo "shipit-issue-backends")
@@ -140,6 +139,11 @@ posting a new comment or queueing a new draft.")
 
 (defvar-local shipit-editor--original-preview-content nil
   "Original content of the preview region before editing.")
+
+(defvar-local shipit-editor--keep-picture nil
+  "Function that keeps a picture pasted into text no issue has yet, or nil.
+It is called with the picture\='s file name, MIME type and bytes, and
+returns an alist of its `filename\=' and the `url\=' to show it under.")
 
 (defvar-local shipit-editor--on-save nil
   "Callback function to call on save.
@@ -240,7 +244,7 @@ Captured from the source buffer in `shipit-editor-open'.")
   "The kinds of text a pasted picture can go into: those of an issue.")
 
 (defun shipit-editor--picture-hint ()
-  "The header line\='s mention of pasting a picture, where Emacs can."
+  "The header line\\='s mention of pasting a picture, where Emacs can."
   (if (fboundp 'yank-media) ", C-c C-y: Paste picture" ""))
 
 (defun shipit-editor--picture-name (mime-type)
@@ -251,44 +255,36 @@ Jira shows an attachment by its name, so two pastes must not share one."
             (format-time-string "%Y%m%d-%H%M%S-%3N")
             (if (equal subtype "jpeg") "jpg" subtype))))
 
+(defun shipit-editor--upload-picture (name mime-type data)
+  "Attach DATA, a picture NAME of MIME-TYPE, to the issue written about."
+  (shipit-issues--upload-attachment
+   shipit-editor--repo
+   (or shipit-editor--pr-number (error "shipit: this editor does not know its issue"))
+   name mime-type data))
+
+(defun shipit-editor--picture-home (name mime-type data)
+  "Put DATA, a picture NAME of MIME-TYPE, where the text it goes in can show it.
+It is attached to the issue written about, or kept by whoever opened
+the editor, for an issue not made yet.  Returns an alist of the
+picture\='s `filename\=' and `url\='."
+  (cond ((memq shipit-editor--type shipit-editor--picture-types)
+         (shipit-editor--upload-picture name mime-type data))
+        (shipit-editor--keep-picture
+         (funcall shipit-editor--keep-picture name mime-type data))
+        (t (user-error "Only an issue comment or description can take a pasted picture"))))
+
 (defun shipit-editor--paste-picture (type data)
-  "Attach DATA, a picture of TYPE, to the issue written about; show it here.
+  "Put DATA, a picture of TYPE, where the text written can show it; show it here.
 `yank-media' calls this with TYPE a MIME type symbol.  The picture goes
 in as a markdown image, as shipit shows the images an issue has."
-  (unless (memq shipit-editor--type shipit-editor--picture-types)
-    (user-error "Only an issue comment or description can take a pasted picture"))
   (let* ((mime-type (symbol-name type))
-         (attachment (shipit-issues--upload-attachment
-                      shipit-editor--repo
-                      (or shipit-editor--pr-number
-                          (error "shipit: this editor does not know its issue"))
+         (attachment (shipit-editor--picture-home
                       (shipit-editor--picture-name mime-type) mime-type data))
          (url (cdr (assq 'url attachment))))
     ;; Kept as the image of its address, so the preview and the page
     ;; show it without downloading what is already here.
     (shipit--cache-image url data)
     (insert (format "![%s](%s)" (cdr (assq 'filename attachment)) url))))
-
-(defconst shipit-editor--image-re "!\\[\\([^]\n]*\\)\\](\\([^)\n]+\\))"
-  "Regexp matching a markdown image; group 1 is its name, 2 its URL.")
-
-(defun shipit-editor--render-preview-images (text)
-  "TEXT with each markdown image this machine has shown as the image.
-The preview updates while typing, so it downloads nothing: a pasted
-image, or one the page showed already, is in the image cache.  Any
-other stays as written, as a half-typed address would otherwise be
-fetched at every pause."
-  (replace-regexp-in-string
-   shipit-editor--image-re
-   (lambda (image)
-     (save-match-data
-       (string-match shipit-editor--image-re image)
-       (let ((name (match-string 1 image))
-             (url (match-string 2 image)))
-         (if (file-exists-p (shipit--image-cache-file url))
-             (shipit--create-image-display url name)
-           image))))
-   text t t))
 
 ;;; Editor open
 
@@ -349,6 +345,7 @@ CONTEXT is a plist with:
               shipit-editor--section-marker (plist-get context :section-marker)
               shipit-editor--review-event (plist-get context :review-event)
               shipit-editor--on-save (plist-get context :on-save)
+              shipit-editor--keep-picture (plist-get context :keep-picture)
               shipit-editor--initial-content initial-content
               shipit-editor--commit-messages commit-messages
               shipit-editor--commit-index -1
@@ -363,8 +360,11 @@ CONTEXT is a plist with:
         (let ((ref-hints (or (plist-get (shipit-pr--get-backend) :editor-reference-hints)
                              "#: PR")))
           (setq-local header-line-format
-                      (propertize (format " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel, %s, @: User, :: Emoji "
-                                          ref-hints)
+                      (propertize (format " Shipit Editor - C-c C-c: Save, C-c C-k: Cancel, %s, @: User, :: Emoji%s "
+                                          ref-hints
+                                          (if (plist-get context :keep-picture)
+                                              (shipit-editor--picture-hint)
+                                            ""))
                                   'font-lock-face 'mode-line-highlight)))
         ;; Update header line based on context (overrides default)
         (cond
@@ -567,7 +567,7 @@ Adds appropriate indentation based on type."
       ;; Instead, just return the content as-is and let code block backgrounds
       ;; handle syntax highlighting.
       ;; Render emoji shortcodes to Unicode emoji for preview.
-      (let ((rendered (shipit-editor--render-preview-images
+      (let ((rendered (shipit--render-cached-images
                        (shipit-editor--render-emoji-shortcodes clean-content))))
         (cond
          ;; Reply type: render with nested child structure

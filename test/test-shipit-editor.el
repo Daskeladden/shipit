@@ -173,6 +173,26 @@ text stays as it was."
     (should (string-match-p "issue" (cadr (should-error (yank-media) :type 'user-error))))
     (should (equal "Before" (buffer-string)))))
 
+(ert-deftest test-shipit-editor-paste-kept-until-it-has-a-home ()
+  "GIVEN the description of an issue not made yet, whose editor is told
+where to keep pictures, and a picture on the clipboard
+WHEN it is pasted
+THEN the picture is handed over to keep, goes in as a markdown image of
+the address it is kept under, AND is in the image cache under it, so
+it shows without being downloaded."
+  (skip-unless (fboundp 'yank-media))
+  (let ((kept nil))
+    (test-shipit-editor--pasting
+        (list :type 'preview-description :repo "owner/repo"
+              :keep-picture (lambda (name mime-type bytes)
+                              (setq kept (list name mime-type bytes))
+                              `((filename . ,name) (url . ,(concat "kept:" name)))))
+      (yank-media)
+      (should (equal '("image/png" "\x89PNG") (cdr kept)))
+      (should (string-match-p (regexp-quote (format "![%s](kept:%s)" (car kept) (car kept)))
+                              (buffer-string)))
+      (should (file-exists-p (shipit--image-cache-file (concat "kept:" (car kept))))))))
+
 (ert-deftest test-shipit-editor-preview-leaves-an-image-it-has-not ()
   "GIVEN a comment that shows an image this machine does not have
 WHEN the preview renders it

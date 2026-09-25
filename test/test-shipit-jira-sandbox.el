@@ -26,6 +26,7 @@
 (require 'shipit-issues-buffer)
 (require 'shipit-pr-github)
 (require 'shipit-editor)
+(require 'shipit-issue-create)
 (require 'shipit-test-clipboard)
 (require 'shipit-test-offline)
 
@@ -242,11 +243,12 @@ sent as text comes back as the same text, which shows as an image too."
           (mapcan #'test-jira-sandbox--embedded
                   (append (cdr (assq 'content node)) nil))))
 
-(defun test-jira-sandbox--kept-description (config)
-  "The description of the sandbox's first issue, as Jira keeps it."
+(defun test-jira-sandbox--kept-description (config &optional key)
+  "The description of the issue KEY, the sandbox's first by default, as
+Jira keeps it."
   (cdr (assq 'description
              (cdr (assq 'fields (shipit-issue-jira--api-request
-                                 config "/rest/api/3/issue/PRJ-1"))))))
+                                 config (concat "/rest/api/3/issue/" (or key "PRJ-1"))))))))
 
 (defun test-jira-sandbox--kept-comment (config)
   "The newest comment of the sandbox's first issue, as Jira keeps it."
@@ -339,6 +341,58 @@ THEN Jira embeds the picture, AND the image the description had."
     (let ((names (test-jira-sandbox--embedded (test-jira-sandbox--kept-description config))))
       (should (member "fake.png" names))
       (should (test-jira-sandbox--pasted-p names)))))
+
+(defmacro test-jira-sandbox--writing-new-issue (&rest body)
+  "Run BODY in a buffer that writes a new issue of the sandbox, titled.
+Its draft is not kept for a later test."
+  (declare (indent 0))
+  `(let ((shipit-issue-create--drafts (make-hash-table :test 'equal)))
+     (with-current-buffer (shipit-issue-create-buffer shipit-jira-sandbox-repo
+                                                      '(:title "A picture"))
+       (unwind-protect
+           (progn ,@body)
+         (when (buffer-live-p (current-buffer))
+           (remove-hook 'kill-buffer-hook #'shipit-issue-create--save-draft t)
+           (kill-buffer))))))
+
+(ert-deftest test-jira-sandbox-paste-into-a-new-issue ()
+  "GIVEN a new issue being written, and a picture on the clipboard
+WHEN it is pasted into the description, and the issue made
+THEN the new issue embeds the picture after the text written before
+it, AND the picture is what was pasted."
+  (skip-unless (fboundp 'yank-media))
+  (test-jira-sandbox--with config
+    (let ((opened nil))
+      (cl-letf (((symbol-function 'shipit-issues-open-buffer) (lambda (key &rest _) (setq opened key)))
+                ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+        (test-jira-sandbox--writing-new-issue
+          (shipit-issue-create--edit-description)
+          (test-jira-sandbox--paste-and-save)
+          (shipit-issue-create--submit)))
+      (should opened)
+      (should (test-jira-sandbox--pasted-p
+               (test-jira-sandbox--embedded (test-jira-sandbox--kept-description config opened))))
+      (let ((shown (cdr (assq 'body (shipit-issue-jira--fetch-issue config opened)))))
+        (should (string-match-p "Look at this" shown))
+        (should (equal test-jira-sandbox--png
+                       (test-jira-sandbox--download
+                        (cdr (test-jira-sandbox--pasted-image shown)))))))))
+
+(ert-deftest test-jira-sandbox-a-picture-for-a-new-issue-shows-before-it-is-made ()
+  "GIVEN a new issue being written, a picture on the clipboard, and a
+display that shows images
+WHEN it is pasted into the description, and the description saved
+THEN the buffer of the new issue shows the picture itself."
+  (skip-unless (fboundp 'yank-media))
+  (test-jira-sandbox--with _config
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t)))
+      (test-jira-sandbox--writing-new-issue
+        (shipit-issue-create--edit-description)
+        (test-jira-sandbox--paste-and-save)
+        (should (member test-jira-sandbox--png
+                        (mapcar (lambda (image)
+                                  (test-jira-sandbox--file-bytes (plist-get (cdr image) :file)))
+                                (test-jira-sandbox--shown-images (current-buffer)))))))))
 
 (defun test-jira-sandbox--shown-images (buffer)
   "The images BUFFER shows, as the display properties hold them."

@@ -1915,6 +1915,28 @@ Done before the bare URLs, and it leaves no URL in the text for them."
   "Replace the images and then the videos of rendered TEXT with their displays."
   (shipit--process-inline-videos (shipit--process-inline-images text)))
 
+(defconst shipit--markdown-image-re "!\\[\\([^]\n]*\\)\\](\\([^)\n]+\\))"
+  "Regexp matching a markdown image; group 1 is its name, 2 its URL.")
+
+(declare-function shipit--image-cache-file "shipit-http" (url))
+
+(defun shipit--render-cached-images (text)
+  "TEXT with each markdown image this machine has in its image cache shown.
+Any other image stays as written: this downloads nothing, so it can run
+while text is typed, where a half-typed address would be fetched at
+every pause."
+  (replace-regexp-in-string
+   shipit--markdown-image-re
+   (lambda (image)
+     (save-match-data
+       (string-match shipit--markdown-image-re image)
+       (let ((name (match-string 1 image))
+             (url (match-string 2 image)))
+         (if (file-exists-p (shipit--image-cache-file url))
+             (shipit--create-image-display url name)
+           image))))
+   text t t))
+
 (defun shipit--create-image-display (url alt-text &optional explicit-width)
   "Create an image display for URL with ALT-TEXT.
 When EXPLICIT-WIDTH is a positive integer (e.g. parsed from an

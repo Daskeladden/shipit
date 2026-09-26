@@ -15,6 +15,7 @@
 (require 'shipit-issue-backends)
 (require 'shipit-issue-gitbug)
 (require 'shipit-issue-github)
+(require 'shipit-test-http)
 
 (defun test-gitbug--call (program &rest args)
   "Run PROGRAM with ARGS here, and fail when it fails."
@@ -256,6 +257,37 @@ THEN it is not git-bug: the bugs here are o/r's."
     (let ((shipit-issue-repo-backends nil)
           (shipit-issue-backend 'github))
       (should (equal "GitHub" (test-gitbug--backend-name "x/y"))))))
+
+(defun test-gitbug--wait-for-processes ()
+  "Wait until no process runs, such as a fetch of comments in the background."
+  (let ((deadline (+ (float-time) 10)))
+    (while (and (seq-some #'process-live-p (process-list)) (< (float-time) deadline))
+      (accept-process-output nil 0.05))))
+
+(ert-deftest test-gitbug-a-bug-opens-in-its-buffer ()
+  "GIVEN a checkout of o/r that keeps a bug of git-bug
+WHEN the bug is opened
+THEN the heading names it by its id alone, and no Watching line shows,
+as notifications of the forge do not cover a bug of git-bug."
+  ;; As `shipit-init' loads them.
+  (require 'shipit-issues)
+  (require 'shipit-issues-buffer)
+  (require 'shipit-worktree)
+  (require 'shipit-pr-github)
+  (test-gitbug--in-repo config
+    (let ((id (test-gitbug--new config "Crash on start"))
+          (shipit-issue-repo-backends nil))
+      ;; The pull requests that mention the bug are searched for on the
+      ;; forge, as they are for any issue.
+      (shipit-test-http-answering '(("/search/issues" 200 ((total_count . 0) (items . []))))
+        (shipit-issues-open-buffer id "o/r")
+        (test-gitbug--wait-for-processes))
+      (with-current-buffer (shipit-issue-buffer-name "o/r" id)
+        (unwind-protect
+            (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+              (should (string-match-p (format "Open %s: Crash on start" id) text))
+              (should-not (string-match-p "Watching:" text)))
+          (kill-buffer))))))
 
 (provide 'test-shipit-issue-gitbug)
 ;;; test-shipit-issue-gitbug.el ends here

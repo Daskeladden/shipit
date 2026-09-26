@@ -73,6 +73,7 @@
 (declare-function shipit--remove-reaction-from-pr "shipit-http")
 (declare-function shipit--get-current-user "shipit-pr-actions")
 (declare-function shipit-pr--resolve-for-repo "shipit-pr-backends")
+(declare-function shipit-pr--backend-id "shipit-pr-backends")
 (declare-function shipit-issues--get-transitions "shipit-issues")
 (declare-function shipit-issues--transition-status "shipit-issues")
 (declare-function shipit-issue--backend-has-transitions-p "shipit-issue-backends")
@@ -280,7 +281,7 @@ buffer-local overrides so the issue fetches use the correct backend
   (let ((repo shipit-issue-buffer-repo)
         (issue-number shipit-issue-buffer-number))
     (shipit--debug-log "Refreshing issue buffer for #%s in %s" issue-number repo)
-    (message "Loading issue #%s..." issue-number)
+    (message "Loading issue %s..." (shipit-issue--id-text issue-number))
     ;; Invalidate ETag cache so we get fresh data
     (when (fboundp 'shipit-gh-etag-invalidate-endpoint)
       (shipit-gh-etag-invalidate-endpoint
@@ -442,7 +443,7 @@ buffer-local overrides so the issue fetches use the correct backend
                              (with-current-buffer target-buffer
                                (shipit-issue--replace-child-items-with-error
                                 (error-message-string err))))))))))))))))
-    (message "Issue #%s loaded" shipit-issue-buffer-number)))
+    (message "Issue %s loaded" (shipit-issue--id-text shipit-issue-buffer-number))))
 
 (defun shipit-issue-buffer-quit-and-kill ()
   "Quit issue buffer and kill it."
@@ -455,6 +456,10 @@ buffer-local overrides so the issue fetches use the correct backend
 
 ;;; Section rendering
 
+(defun shipit-issue--id-text (issue-number)
+  "ISSUE-NUMBER as the backend of this buffer writes it, such as #42 or PRJ-42."
+  (funcall (plist-get (shipit-issue--get-backend) :id-to-string) issue-number))
+
 (defun shipit-issue--insert-header-section (repo issue-data issue-number)
   "Insert issue header section for ISSUE-NUMBER from REPO with ISSUE-DATA."
   (let* ((title (or (cdr (assq 'title issue-data)) "No title"))
@@ -464,11 +469,11 @@ buffer-local overrides so the issue fetches use the correct backend
          (state-face (shipit-issue--state-face state))
          (header-start (point)))
     (magit-insert-heading
-      (format "%s %s %s #%s: %s"
+      (format "%s %s %s %s: %s"
               (shipit--get-notification-source-icon shipit-issue-backend)
               (shipit--get-pr-field-icon icon-key emoji-fallback)
               (propertize (capitalize state) 'font-lock-face state-face)
-              issue-number
+              (shipit-issue--id-text issue-number)
               (string-trim (shipit--clean-text title))))
     (add-text-properties header-start (point)
                          `(shipit-issue-header t
@@ -606,24 +611,34 @@ buffer-local overrides so the issue fetches use the correct backend
               (insert (format "   %s Milestone: %s\n"
                               (shipit--get-pr-field-icon "milestone" "🎯")
                               (propertize title 'font-lock-face 'font-lock-constant-face)))))))
-      ;; Subscription status
-      (let* ((resolved (shipit-pr--resolve-for-repo repo))
-             (backend (car resolved))
-             (fn (plist-get backend :get-repo-subscription)))
-        (when fn
-          (require 'shipit-repo-buffer)
-          (let* ((sub-data (funcall fn (cdr resolved)))
-                 (state (shipit--subscription-state-from-api sub-data))
-                 (label (shipit--subscription-state-label state))
-                 (star-fn (plist-get backend :get-repo-starred))
-                 (starred (when star-fn (funcall star-fn (cdr resolved)))))
-            (insert (propertize
-                     (format "   %s Watching:  %s%s\n"
-                             (shipit--get-pr-field-icon "notification" "\U0001f514")
-                             label
-                             (shipit--star-indicator starred))
-                     'shipit-repo-subscription t)))))
+      (when (shipit-issue--on-forge-p)
+        (shipit-issue--insert-watching-line repo))
       (insert "\n"))))
+
+(defun shipit-issue--on-forge-p ()
+  "Non-nil when the issues of this buffer live on the forge of the repository.
+That is, their backend is the one of the pull requests.  Only then do
+the forge's notifications of the repository cover them."
+  (eq shipit-issue-backend (shipit-pr--backend-id)))
+
+(defun shipit-issue--insert-watching-line (repo)
+  "Insert how REPO is watched on its forge, when the forge can say."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (backend (car resolved))
+         (fn (plist-get backend :get-repo-subscription)))
+    (when fn
+      (require 'shipit-repo-buffer)
+      (let* ((sub-data (funcall fn (cdr resolved)))
+             (state (shipit--subscription-state-from-api sub-data))
+             (label (shipit--subscription-state-label state))
+             (star-fn (plist-get backend :get-repo-starred))
+             (starred (when star-fn (funcall star-fn (cdr resolved)))))
+        (insert (propertize
+                 (format "   %s Watching:  %s%s\n"
+                         (shipit--get-pr-field-icon "notification" "\U0001f514")
+                         label
+                         (shipit--star-indicator starred))
+                 'shipit-repo-subscription t))))))
 
 (defun shipit-issue--insert-description-section (repo issue-data issue-number)
   "Insert description section for issue ISSUE-DATA from REPO."

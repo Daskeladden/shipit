@@ -102,6 +102,9 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   (when shipit-issues-enabled
     (require 'shipit-issue-backends)   ; Pluggable backend registry
     (require 'shipit-issue-github)     ; GitHub backend (always available)
+    ;; Always loaded, so a repository keeping its bugs in git-bug is
+    ;; found without a setting.
+    (require 'shipit-issue-gitbug)
     ;; Load non-default issue backends on demand
     (let ((needed-ids (delete-dups
                        (delq nil

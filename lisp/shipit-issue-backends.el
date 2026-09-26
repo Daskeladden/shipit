@@ -48,6 +48,12 @@
 ;;   :add-reaction      — (config issue-number reaction) → reaction alist
 ;;   :remove-reaction   — (config issue-number reaction-id) → t
 ;;
+;; Optional plist key (for finding a repository that uses the tracker):
+;;   :detect            — (repo) → config plist, or nil.  Asked when no
+;;                        entry of `shipit-issue-repo-backends' is for
+;;                        REPO: a backend that finds, in the checkout of
+;;                        the buffer, that REPO uses it gives its config.
+;;
 ;; Optional plist key (for what a tracker has no such thing for):
 ;;   :lacks             — list of the parity operations the tracker has
 ;;                        nothing for, as git-bug has no reactions.  Such
@@ -92,10 +98,19 @@ Uses buffer-local `shipit-issue-backend' with global fallback."
   "Return the active backend config plist."
   shipit-issue-backend-config)
 
+(defun shipit-issue--detected-backend (repo)
+  "(BACKEND-PLIST . CONFIG-PLIST) of a backend that finds REPO uses it, or nil.
+Each backend with `:detect' is asked, in the checkout of the buffer."
+  (cl-loop for (_id . plist) in shipit-issue-backends
+           for detect = (plist-get plist :detect)
+           for config = (and detect (funcall detect repo))
+           when config return (cons plist (plist-put (copy-sequence config) :repo repo))))
+
 (defun shipit-issue--resolve-for-repo (repo)
   "Resolve backend and config for REPO.
-Checks `shipit-issue-repo-backends' first, then falls back to
-`shipit-issue-backend' / `shipit-issue-backend-config'.
+Checks `shipit-issue-repo-backends' first, then a backend that detects
+that REPO uses it, then falls back to `shipit-issue-backend' /
+`shipit-issue-backend-config'.
 Returns (BACKEND-PLIST . CONFIG-PLIST) with :repo injected into config."
   (let ((match (cl-find-if
                 (lambda (entry)
@@ -108,12 +123,17 @@ Returns (BACKEND-PLIST . CONFIG-PLIST) with :repo injected into config."
                                   (error "No issue backend registered for `%s'" backend-id)))
                (config (plist-put (copy-sequence config-plist) :repo repo)))
           (cons backend-plist config))
-      (let* ((backend-plist (shipit-issue--get-backend))
-             (base-config (shipit-issue--get-config))
-             (config (if base-config
-                         (plist-put (copy-sequence base-config) :repo repo)
-                       (list :repo repo))))
-        (cons backend-plist config)))))
+      (or (shipit-issue--detected-backend repo)
+          (shipit-issue--default-backend-for repo)))))
+
+(defun shipit-issue--default-backend-for (repo)
+  "(BACKEND-PLIST . CONFIG-PLIST) of the default issue backend, for REPO."
+  (let* ((backend-plist (shipit-issue--get-backend))
+         (base-config (shipit-issue--get-config))
+         (config (if base-config
+                     (plist-put (copy-sequence base-config) :repo repo)
+                   (list :repo repo))))
+    (cons backend-plist config)))
 
 (defun shipit-issue--priority-display (name)
   "Return NAME, an issue's priority, as this buffer's issue backend shows it.

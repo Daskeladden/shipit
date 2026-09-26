@@ -17,7 +17,9 @@
 ;; A bug is known by its short id, such as 5ad82e0.  Its first comment
 ;; is its description, and it has no web page.
 ;;
-;; The backend is set for a repository:
+;; A repository whose checkout keeps bugs of git-bug uses this backend
+;; without any setting.  A setting names another backend for it, or a
+;; checkout elsewhere:
 ;;
 ;;   (setq shipit-issue-repo-backends
 ;;         '(("owner/repo" :backend git-bug :dir "~/src/repo")))
@@ -262,6 +264,36 @@ The description is the first comment of the bug."
     (error "shipit: git-bug has no transition %S" transition-id))
   (shipit-issue-gitbug--run config "bug" "status" transition-id (format "%s" issue-id)))
 
+;;;; Finding a repository that keeps its bugs in git-bug
+
+(defvar shipit-issue-gitbug--checkouts (make-hash-table :test 'equal)
+  "For each directory, the top of its checkout when that keeps bugs, else nil.")
+
+(defun shipit-issue-gitbug--find-checkout-with-bugs (dir)
+  "The top directory of the checkout DIR is in when it keeps bugs, else nil.
+git-bug keeps the bugs of a repository under refs/bugs."
+  (let ((default-directory dir))
+    (with-temp-buffer
+      (and (zerop (process-file "git" nil t nil "for-each-ref" "--count=1" "refs/bugs/"))
+           (not (string-empty-p (string-trim (buffer-string))))
+           (file-name-as-directory
+            (string-trim (shipit--git-output "rev-parse" "--show-toplevel")))))))
+
+(defun shipit-issue-gitbug--checkout-with-bugs (dir)
+  "As `shipit-issue-gitbug--find-checkout-with-bugs' for DIR, remembered.
+Backends are resolved often, and each check runs git."
+  (let ((known (gethash dir shipit-issue-gitbug--checkouts 'unknown)))
+    (if (eq known 'unknown)
+        (puthash dir (shipit-issue-gitbug--find-checkout-with-bugs dir)
+                 shipit-issue-gitbug--checkouts)
+      known)))
+
+(defun shipit-issue-gitbug--detect (repo)
+  "The config of git-bug for REPO, when the checkout here is REPO's and keeps bugs."
+  (let ((dir (and (equal repo (shipit--get-repo-from-remote))
+                  (shipit-issue-gitbug--checkout-with-bugs default-directory))))
+    (and dir (list :backend 'git-bug :dir dir))))
+
 ;;;; Naming bugs
 
 (defun shipit-issue-gitbug--reference-patterns (_config)
@@ -300,6 +332,7 @@ The description is the first comment of the bug."
        :creation-fields #'shipit-issue-gitbug--creation-fields
        :create-issue-extended #'shipit-issue-gitbug--create-issue-extended
        :lacks '(:toggle-reaction)
+       :detect #'shipit-issue-gitbug--detect
        :icon-spec '("bug" "octicons" . "#888888")
        :icon-fallback-text "GB"))
 

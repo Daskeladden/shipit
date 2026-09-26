@@ -35,6 +35,7 @@ CONFIG is bound to the backend's config of it."
              (test-gitbug--call "git" "init" "-q")
              (test-gitbug--call "git" "config" "user.name" "Tester")
              (test-gitbug--call "git" "config" "user.email" "tester@example.invalid")
+             (test-gitbug--call "git" "remote" "add" "origin" "https://github.com/o/r.git")
              (test-gitbug--call shipit-issue-gitbug-executable "user" "new" "--name" "Tester"
                                 "--email" "tester@example.invalid" "--non-interactive")
              ,@body)
@@ -210,6 +211,51 @@ id, and whose bugs have no web page."
   (should (eq 'shipit-issue-gitbug (cdr (assq 'git-bug shipit-issue-backend-features))))
   (should-not (shipit-issue-gitbug--browse-url nil "5ad82e0"))
   (should (equal "5ad82e0" (shipit-issue-gitbug--id-to-string "5ad82e0"))))
+
+;;; Finding a repository that keeps its bugs in git-bug
+
+(defun test-gitbug--backend-name (repo)
+  "The name of the issue backend REPO resolves to, here."
+  (plist-get (car (shipit-issue--resolve-for-repo repo)) :name))
+
+(ert-deftest test-gitbug-a-repository-that-keeps-bugs-is-detected ()
+  "GIVEN a checkout of o/r with a bug of git-bug, and no backend set for o/r
+WHEN the issue backend of o/r is resolved there
+THEN it is git-bug, working in that checkout."
+  (test-gitbug--in-repo config
+    (test-gitbug--new config "Title")
+    (let* ((shipit-issue-repo-backends nil)
+           (resolved (shipit-issue--resolve-for-repo "o/r")))
+      (should (equal "git-bug" (plist-get (car resolved) :name)))
+      (should (equal (plist-get config :dir) (plist-get (cdr resolved) :dir))))))
+
+(ert-deftest test-gitbug-a-repository-without-bugs-keeps-its-backend ()
+  "GIVEN a checkout of o/r with no bug of git-bug
+WHEN the issue backend of o/r is resolved there
+THEN it is the backend shipit uses by default."
+  (test-gitbug--in-repo _config
+    (let ((shipit-issue-repo-backends nil)
+          (shipit-issue-backend 'github))
+      (should (equal "GitHub" (test-gitbug--backend-name "o/r"))))))
+
+(ert-deftest test-gitbug-a-backend-set-for-the-repository-wins ()
+  "GIVEN a checkout of o/r with a bug of git-bug, and GitHub set for o/r
+WHEN the issue backend of o/r is resolved there
+THEN it is GitHub, as set."
+  (test-gitbug--in-repo config
+    (test-gitbug--new config "Title")
+    (let ((shipit-issue-repo-backends '(("o/r" :backend github))))
+      (should (equal "GitHub" (test-gitbug--backend-name "o/r"))))))
+
+(ert-deftest test-gitbug-another-repository-is-not-detected-here ()
+  "GIVEN a checkout of o/r with a bug of git-bug
+WHEN the issue backend of another repository is resolved there
+THEN it is not git-bug: the bugs here are o/r's."
+  (test-gitbug--in-repo config
+    (test-gitbug--new config "Title")
+    (let ((shipit-issue-repo-backends nil)
+          (shipit-issue-backend 'github))
+      (should (equal "GitHub" (test-gitbug--backend-name "x/y"))))))
 
 (provide 'test-shipit-issue-gitbug)
 ;;; test-shipit-issue-gitbug.el ends here

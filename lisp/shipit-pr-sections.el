@@ -66,7 +66,6 @@
 (declare-function shipit--add-suggestion-text-properties "shipit-render")
 (declare-function shipit--fontify-diff-hunk-lines "shipit-render")
 (declare-function shipit--refine-diff-hunk "shipit-render")
-(declare-function shipit--create-jira-mention-overlays "shipit-issue-jira")
 
 ;; Forward declarations for variables
 (defvar shipit-inline-comment-faces)
@@ -542,17 +541,7 @@ Returns: nil"
       ;; indented-body already includes proper indentation from shipit--render-comment-body
       (insert indented-body)
       (insert "\n")
-      ;; Create overlays for PR references, commit SHAs, and user mentions in the comment body
-      (when (and repo pr-number)
-        (shipit--create-pr-reference-overlays repo pr-number body-start (point))
-        (shipit--create-commit-sha-overlays repo body-start (point))
-        (shipit--create-user-mention-overlays repo body-start (point)))
-      ;; Jira mention overlays (doesn't need repo/pr context)
-      (shipit--create-jira-mention-overlays body-start (point))
-      ;; Custom URL patterns (doesn't need repo/pr context)
-      (shipit--create-custom-url-overlays body-start (point))
-      ;; Generic URL overlays (catch-all for any remaining URLs)
-      (shipit--create-generic-url-overlays body-start (point))
+      (shipit--create-comment-body-overlays body-start (point) repo pr-number)
       (let ((props (list 'shipit-comment t
                         'shipit-comment-id comment-id
                         'shipit-comment-body raw-body

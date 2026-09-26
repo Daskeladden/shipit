@@ -1453,5 +1453,40 @@ THEN nothing is shown in the buffer, AND it plays outside the buffer."
         (test-shipit-render--press-play)
         (should (string-prefix-p "file://" opened))))))
 
+;;; Comments where Jira is not in use
+
+(defmacro test-shipit-render--without-jira (&rest body)
+  "Run BODY as in an Emacs where the Jira backend is not loaded.
+It is loaded only when Jira is configured."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'shipit--create-jira-mention-overlays) nil))
+     ,@body))
+
+(defconst test-shipit-render--comment
+  '((id . 1) (body . "It breaks when the file is empty.")
+    (user (login . "someone")) (created_at . "2026-01-01T10:00:00Z"))
+  "A comment of an issue or a pull request.")
+
+(ert-deftest test-shipit-render-a-comment-body-without-jira ()
+  "GIVEN an Emacs where the Jira backend is not loaded
+WHEN the body of a comment is drawn, as the issue buffer draws it
+THEN the body shows."
+  (require 'shipit-http)
+  (with-temp-buffer
+    (test-shipit-render--without-jira
+      (shipit--insert-comment-body-only test-shipit-render--comment 6 nil nil "o/r" 7 nil t))
+    (should (string-match-p "It breaks when the file is empty" (buffer-string)))))
+
+(ert-deftest test-shipit-render-a-comment-without-jira ()
+  "GIVEN an Emacs where the Jira backend is not loaded
+WHEN a comment is drawn, as a pull request draws it
+THEN the comment shows."
+  (require 'shipit-pr-sections)
+  (with-temp-buffer
+    (test-shipit-render--without-jira
+      (shipit--insert-comment test-shipit-render--comment
+                              :base-indent 6 :repo "o/r" :pr-number 7 :include-header t))
+    (should (string-match-p "It breaks when the file is empty" (buffer-string)))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

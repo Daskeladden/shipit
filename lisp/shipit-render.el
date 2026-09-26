@@ -592,18 +592,26 @@ comments without copy-pasting the list of post-processing steps."
     (shipit--apply-strikethrough-faces body-start body-end)
     (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
       (shipit--apply-code-block-backgrounds-in-region body-start body-end))
-    (when (and repo pr-number (fboundp 'shipit--create-pr-reference-overlays))
-      (shipit--create-pr-reference-overlays repo pr-number body-start body-end))
-    (when (and repo (fboundp 'shipit--create-commit-sha-overlays))
-      (shipit--create-commit-sha-overlays repo body-start body-end))
-    (when (and repo (fboundp 'shipit--create-user-mention-overlays))
-      (shipit--create-user-mention-overlays repo body-start body-end))
-    (when (fboundp 'shipit--create-jira-mention-overlays)
-      (shipit--create-jira-mention-overlays body-start body-end))
-    (when (fboundp 'shipit--create-custom-url-overlays)
-      (shipit--create-custom-url-overlays body-start body-end))
-    (when (fboundp 'shipit--create-generic-url-overlays)
-      (shipit--create-generic-url-overlays body-start body-end))))
+    (shipit--create-comment-body-overlays body-start body-end repo pr-number)))
+
+(defun shipit--create-comment-body-overlays (body-start body-end &optional repo pr-number)
+  "Make the links of a comment body between BODY-START and BODY-END.
+PR/commit/user-mention overlays when REPO is provided (PR-NUMBER
+additionally enables `#NN' references), Jira mention overlays when
+the Jira backend is loaded, custom URL patterns, and generic URL
+overlays.  The Jira backend is loaded only when Jira is configured."
+  (when (and repo pr-number (fboundp 'shipit--create-pr-reference-overlays))
+    (shipit--create-pr-reference-overlays repo pr-number body-start body-end))
+  (when (and repo (fboundp 'shipit--create-commit-sha-overlays))
+    (shipit--create-commit-sha-overlays repo body-start body-end))
+  (when (and repo (fboundp 'shipit--create-user-mention-overlays))
+    (shipit--create-user-mention-overlays repo body-start body-end))
+  (when (fboundp 'shipit--create-jira-mention-overlays)
+    (shipit--create-jira-mention-overlays body-start body-end))
+  (when (fboundp 'shipit--create-custom-url-overlays)
+    (shipit--create-custom-url-overlays body-start body-end))
+  (when (fboundp 'shipit--create-generic-url-overlays)
+    (shipit--create-generic-url-overlays body-start body-end)))
 
 (defconst shipit--suggestion-placeholder-prefix "SHIPITSUGGESTBLOCK"
   "Prefix for suggestion placeholders in comment body processing.")
@@ -862,23 +870,7 @@ If SKIP-REACTIONS is non-nil, reactions are not rendered (caller will handle the
         ;; For normal comments without details, insert the indented body directly
         ;; indented-body already includes proper indentation from shipit--render-comment-body
         (insert (concat indented-body "\n")))
-      ;; Apply blockquote faces to preserve markdown styling in diff buffers
-      (shipit--apply-blockquote-faces body-start (point))
-      ;; Apply strikethrough faces for ~text~ patterns
-      (shipit--apply-strikethrough-faces body-start (point))
-      ;; Apply code block background overlays (must be done after insertion)
-      (shipit--apply-code-block-backgrounds-in-region body-start (point))
-      ;; Create overlays for PR references, commit SHAs, and user mentions in the comment body
-      (when (and repo pr-number)
-        (shipit--create-pr-reference-overlays repo pr-number body-start (point))
-        (shipit--create-commit-sha-overlays repo body-start (point))
-        (shipit--create-user-mention-overlays repo body-start (point)))
-      ;; Jira mention overlays (doesn't need repo/pr context)
-      (shipit--create-jira-mention-overlays body-start (point))
-      ;; Custom URL patterns (doesn't need repo/pr context)
-      (shipit--create-custom-url-overlays body-start (point))
-      ;; Generic URL overlays (catch-all for any remaining URLs)
-      (shipit--create-generic-url-overlays body-start (point))
+      (shipit--apply-comment-body-decorations body-start (point) repo pr-number)
       ;; Add shipit properties to the entire comment body
       (add-text-properties body-start (point)
                            `(shipit-comment t

@@ -429,13 +429,16 @@ Concatenates child paragraphs and nested lists."
 
 (defun shipit-issue-jira--normalize-attachment (attachment)
   "ATTACHMENT, as the API gives it, as shipit lists an attachment of an issue.
-Its `url' downloads the content, with the login going to Jira only."
+Its `url' downloads the content, and its `thumbnail', when it has one,
+a small picture of it, each with the login going to Jira only."
   `((filename . ,(cdr (assq 'filename attachment)))
     (mime-type . ,(cdr (assq 'mimeType attachment)))
     (size . ,(cdr (assq 'size attachment)))
     (created . ,(cdr (assq 'created attachment)))
     (author . ,(cdr (assq 'displayName (cdr (assq 'author attachment)))))
-    (url . ,(shipit-issue-jira--attachment-url attachment))))
+    (url . ,(shipit-issue-jira--attachment-url attachment))
+    (thumbnail . ,(let ((thumbnail (cdr (assq 'thumbnail attachment))))
+                    (and thumbnail (concat thumbnail "?redirect=false"))))))
 
 (defun shipit-issue-jira--normalize-issue (jira-data)
   "Normalize Jira issue JIRA-DATA to shipit alist format.

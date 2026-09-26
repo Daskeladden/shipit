@@ -1448,6 +1448,63 @@ THEN it has no Attachments section."
   (test-issue-attachments--shown nil
     (should-not (string-match-p "Attachments" (buffer-string)))))
 
+(defconst test-issue-attachment-png
+  (base64-decode-string
+   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+  "A PNG of one pixel.")
+
+(defconst test-issue-attachment-thumbnail
+  "https://jira.example.com/rest/api/3/attachment/thumbnail/10009?redirect=false"
+  "Where the thumbnail of the attached picture downloads from.")
+
+(defconst test-issue-attachment-with-thumbnail
+  `((filename . "picture.png") (mime-type . "image/png") (size . 2048) (author . "Alice")
+    (created . "2026-09-25T04:06:31.341-0500")
+    (url . "https://jira.example.com/rest/api/3/attachment/content/10009?redirect=false")
+    (thumbnail . ,test-issue-attachment-thumbnail))
+  "An attached picture with a thumbnail.")
+
+(defun test-issue-attachments--images ()
+  "The images this buffer shows, as its display properties hold them."
+  (let ((images nil)
+        (pos (point-min)))
+    (while (< pos (point-max))
+      (let ((display (get-text-property pos 'display)))
+        (when (eq 'image (car-safe display))
+          (push display images)))
+      (setq pos (next-single-property-change pos 'display nil (point-max))))
+    images))
+
+(defmacro test-issue-attachments--fetching-thumbnail (status &rest body)
+  "Run BODY with the thumbnail answering STATUS, and none of it cached."
+  (declare (indent 1))
+  `(let ((cached (shipit--image-cache-file test-issue-attachment-thumbnail)))
+     (when (file-exists-p cached)
+       (delete-file cached))
+     (shipit-test-http-answering (list (list "/attachment/thumbnail/10009" ,status
+                                             test-issue-attachment-png))
+       ,@body)))
+
+(ert-deftest test-shipit-issue-attachment-shows-its-thumbnail ()
+  "GIVEN a picture attached to an issue, with a thumbnail
+WHEN the issue buffer shows it
+THEN the thumbnail is fetched in the background, and shown in the row
+of the picture."
+  (test-issue-attachments--fetching-thumbnail 200
+    (test-issue-attachments--shown (list test-issue-attachment-with-thumbnail)
+      (let ((images (test-issue-attachments--images)))
+        (should (= 1 (length images)))
+        (should (file-exists-p (plist-get (cdr (car images)) :file)))))))
+
+(ert-deftest test-shipit-issue-attachment-keeps-its-icon-without-a-thumbnail ()
+  "GIVEN a picture whose thumbnail does not download
+WHEN the issue buffer shows it
+THEN its row keeps its icon, and nothing fails."
+  (test-issue-attachments--fetching-thumbnail 404
+    (test-issue-attachments--shown (list test-issue-attachment-with-thumbnail)
+      (should-not (test-issue-attachments--images))
+      (should (string-match-p "picture\\.png" (buffer-string))))))
+
 (ert-deftest test-shipit-issue-ret-opens-an-attachment ()
   "GIVEN an attachment listed in an issue buffer
 WHEN RET is pressed on it

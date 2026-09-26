@@ -1991,7 +1991,7 @@ THEN the unnamed one takes the second attachment's name, not the first."
   "GIVEN an issue with an attachment
 WHEN it is normalized
 THEN it lists the attachment: its name, type and size, when and by whom
-it was added, and where its content downloads from."
+it was added, and where its content and its thumbnail download from."
   (let* ((issue (shipit-issue-jira--normalize-issue
                  '((key . "PRJ-7")
                    (fields . ((summary . "S") (status . ((name . "Open")))
@@ -1999,7 +1999,8 @@ it was added, and where its content downloads from."
                                               (mimeType . "image/png") (size . 223373)
                                               (created . "2026-09-25T04:06:31.341-0500")
                                               (author . ((displayName . "Alice")))
-                                              (content . "https://jira.example.com/rest/api/3/attachment/content/10001"))]))))))
+                                              (content . "https://jira.example.com/rest/api/3/attachment/content/10001")
+                                              (thumbnail . "https://jira.example.com/rest/api/3/attachment/thumbnail/10001"))]))))))
          (attachment (car (alist-get 'attachments issue))))
     (should (equal "image-1.png" (alist-get 'filename attachment)))
     (should (equal "image/png" (alist-get 'mime-type attachment)))
@@ -2007,7 +2008,9 @@ it was added, and where its content downloads from."
     (should (equal "Alice" (alist-get 'author attachment)))
     (should (equal "2026-09-25T04:06:31.341-0500" (alist-get 'created attachment)))
     (should (equal "https://jira.example.com/rest/api/3/attachment/content/10001?redirect=false"
-                   (alist-get 'url attachment)))))
+                   (alist-get 'url attachment)))
+    (should (equal "https://jira.example.com/rest/api/3/attachment/thumbnail/10001?redirect=false"
+                   (alist-get 'thumbnail attachment)))))
 
 (ert-deftest test-shipit-issue-jira-adf-image-attached-to-the-issue ()
   "GIVEN a description holding an image that names an attachment of the issue

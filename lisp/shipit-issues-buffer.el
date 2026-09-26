@@ -1295,9 +1295,10 @@ get the current value) or a list used directly."
 (defun shipit-issue--attachment-line (attachment)
   "The line of the issue buffer that shows ATTACHMENT."
   (format "   %s %s  %s  %s  %s\n"
-          (if (string-prefix-p "image/" (or (cdr (assq 'mime-type attachment)) ""))
-              (shipit--get-pr-field-icon "image" "🖼")
-            (shipit--get-pr-field-icon "file" "📄"))
+          (propertize (if (string-prefix-p "image/" (or (cdr (assq 'mime-type attachment)) ""))
+                          (shipit--get-pr-field-icon "image" "🖼")
+                        (shipit--get-pr-field-icon "file" "📄"))
+                      'shipit-issue-attachment-thumbnail (cdr (assq 'thumbnail attachment)))
           (propertize (cdr (assq 'filename attachment)) 'font-lock-face 'link)
           (file-size-human-readable (or (cdr (assq 'size attachment)) 0))
           (propertize (shipit--format-timestamp (cdr (assq 'created attachment)))
@@ -1319,7 +1320,43 @@ RET on one opens it."
             (let ((start (point)))
               (insert (shipit-issue--attachment-line attachment))
               (add-text-properties start (point) `(shipit-issue-attachment ,attachment))))
-          (insert "\n"))))))
+          (insert "\n"))
+        (shipit-issue--load-thumbnails (current-buffer) attachments)))))
+
+(defun shipit-issue--thumbnail-place (url)
+  "The start and end of the icon that the thumbnail URL shows in, or nil."
+  (let ((pos (point-min))
+        (found nil))
+    (while (and (not found) (< pos (point-max)))
+      (let ((next (next-single-property-change pos 'shipit-issue-attachment-thumbnail
+                                               nil (point-max))))
+        (when (equal url (get-text-property pos 'shipit-issue-attachment-thumbnail))
+          (setq found (cons pos next)))
+        (setq pos next)))
+    found))
+
+(defun shipit-issue--show-thumbnail (buffer url file)
+  "Show FILE, the thumbnail from URL, in place of its icon in BUFFER.
+Two lines high: a glance at the picture, as in the tracker\='s own list."
+  (when (and file (buffer-live-p buffer))
+    (with-current-buffer buffer
+      (let ((place (shipit-issue--thumbnail-place url))
+            (inhibit-read-only t))
+        (when place
+          (put-text-property (car place) (cdr place) 'display
+                             (create-image file nil nil
+                                           :max-height (* 2 (default-line-height))
+                                           :ascent 'center)))))))
+
+(defun shipit-issue--load-thumbnails (buffer attachments)
+  "Fetch the thumbnails of ATTACHMENTS in the background, and show them in BUFFER.
+A thumbnail fetched before shows at once, from the image cache."
+  (dolist (attachment attachments)
+    (let ((url (cdr (assq 'thumbnail attachment))))
+      (when url
+        (shipit--download-to-file-async
+         url (shipit--image-cache-file url) "image/*"
+         (lambda (file) (shipit-issue--show-thumbnail buffer url file)))))))
 
 (defun shipit-issue--attachment-file (attachment)
   "The file ATTACHMENT is downloaded to: its own name, in a directory of its own."

@@ -3334,42 +3334,65 @@ Uses ETag caching for efficiency:
       (insert bytes))
     file))
 
+(defun shipit--download-headers (url accept)
+  "The headers of a download of URL, which asks for ACCEPT.
+The login of the forge or the tracker goes only to its own host."
+  (let* ((backend-host (url-host (url-generic-parse-url
+                                  (or (plist-get shipit-pr-backend-config :api-url)
+                                      "https://github.com"))))
+         (same-host-p (string-suffix-p backend-host (url-host (url-generic-parse-url url)))))
+    `(,@(let ((token (shipit--github-token)))
+          (when (and same-host-p token)
+            `(("Authorization" . ,(concat "token " token)))))
+      ,@(shipit--login-headers url)
+      ("User-Agent" . "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+      ("Accept" . ,accept))))
+
+(defun shipit--save-response (file)
+  "Write the body of the response in this buffer to FILE, when it is a 200.
+Kills the buffer.  Returns FILE when it holds the body, else nil."
+  (let ((response (current-buffer)))
+    (goto-char (point-min))
+    (let* ((status-line (buffer-substring (point-min) (line-end-position)))
+           (status-code (when (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
+                          (string-to-number (match-string 1 status-line))))
+           (headers-end (search-forward "\n\n" nil t)))
+      (when (and headers-end (equal status-code 200))
+        (with-temp-file file
+          (set-buffer-multibyte nil)
+          (insert-buffer-substring response headers-end)))
+      (kill-buffer response)
+      (and headers-end (equal status-code 200) file))))
+
 (defun shipit--download-to-file (url file accept)
   "Download URL into FILE, unless FILE is there already; FILE, or nil.
-ACCEPT is the Accept header, the kinds of content asked for.  The login
-of the forge or the tracker goes only to its own host."
+ACCEPT is the Accept header, the kinds of content asked for."
   (make-directory (file-name-directory file) t)
   (unless (file-exists-p file)
     (condition-case nil
         ;; Bind system-time-locale to "C" for ASCII HTTP date headers
         (let* ((system-time-locale "C")
-               (backend-host (url-host (url-generic-parse-url
-                                        (or (plist-get shipit-pr-backend-config :api-url)
-                                            "https://github.com"))))
-               (file-host (url-host (url-generic-parse-url url)))
-               (same-host-p (string-suffix-p backend-host file-host))
-               (url-request-extra-headers
-                `(,@(let ((token (shipit--github-token)))
-                      (when (and same-host-p token)
-                        `(("Authorization" . ,(concat "token " token)))))
-                  ,@(shipit--login-headers url)
-                  ("User-Agent" . "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
-                  ("Accept" . ,accept)))
+               (url-request-extra-headers (shipit--download-headers url accept))
                (buffer (url-retrieve-synchronously url t nil 10)))
           (when buffer
             (with-current-buffer buffer
-              (goto-char (point-min))
-              (let* ((status-line (buffer-substring (point-min) (line-end-position)))
-                     (status-code (when (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
-                                    (string-to-number (match-string 1 status-line))))
-                     (headers-end (search-forward "\n\n" nil t)))
-                (when (and headers-end (equal status-code 200))
-                  (with-temp-file file
-                    (set-buffer-multibyte nil)
-                    (insert-buffer-substring buffer headers-end)))
-                (kill-buffer buffer)))))
+              (shipit--save-response file))))
       (error nil)))
   (and (file-exists-p file) file))
+
+(defun shipit--download-to-file-async (url file accept callback)
+  "Download URL into FILE in the background, then call CALLBACK with FILE.
+CALLBACK gets nil when the download fails.  A FILE there already is
+used at once.  ACCEPT is as for `shipit--download-to-file'."
+  (if (file-exists-p file)
+      (funcall callback file)
+    (make-directory (file-name-directory file) t)
+    (condition-case nil
+        (let ((system-time-locale "C")
+              (url-request-extra-headers (shipit--download-headers url accept)))
+          (url-retrieve url (lambda (_status) (funcall callback (shipit--save-response file)))
+                        nil t))
+      (error (funcall callback nil)))))
 
 (defun shipit--download-and-cache-image (url)
   "Download image from URL and return cached file path."

@@ -79,31 +79,20 @@
   (should (string= (shipit--clean-text "hello\r\n\rworld\r") "hello\nworld"))
   (should (null (shipit--clean-text nil))))
 
+(defun test-shipit--repo-from-remote-url (url)
+  "The repository `shipit--get-repo-from-remote' names for a remote URL.
+The cache is fresh, as the answer is kept for each directory."
+  (let ((shipit--repo-from-remote-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'shell-command-to-string)
+               (lambda (cmd)
+                 (if (string-match "git config" cmd) (concat url "\n") ""))))
+      (shipit--get-repo-from-remote))))
+
 (ert-deftest test-shipit--get-repo-from-remote ()
   "Test repository extraction from git remote URLs."
-  ;; Mock git command output - SSH format
-  (cl-letf (((symbol-function 'shell-command-to-string)
-             (lambda (cmd)
-               (if (string-match "git config" cmd)
-                   "git@github.com:owner/repo.git\n"
-                 ""))))
-    (should (string= (shipit--get-repo-from-remote) "owner/repo")))
-
-  ;; Test HTTPS URL
-  (cl-letf (((symbol-function 'shell-command-to-string)
-             (lambda (cmd)
-               (if (string-match "git config" cmd)
-                   "https://github.com/owner/repo.git\n"
-                 ""))))
-    (should (string= (shipit--get-repo-from-remote) "owner/repo")))
-
-  ;; Test without .git suffix
-  (cl-letf (((symbol-function 'shell-command-to-string)
-             (lambda (cmd)
-               (if (string-match "git config" cmd)
-                   "https://github.com/owner/repo\n"
-                 ""))))
-    (should (string= (shipit--get-repo-from-remote) "owner/repo"))))
+  (should (string= (test-shipit--repo-from-remote-url "git@github.com:owner/repo.git") "owner/repo"))
+  (should (string= (test-shipit--repo-from-remote-url "https://github.com/owner/repo.git") "owner/repo"))
+  (should (string= (test-shipit--repo-from-remote-url "https://github.com/owner/repo") "owner/repo")))
 
 (ert-deftest test-shipit-get-pr-for-branch-remembers-that-there-is-none ()
   "GIVEN a branch with no pull request

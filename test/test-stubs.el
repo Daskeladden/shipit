@@ -128,10 +128,13 @@
 
   (provide 'magit-section))
 
-;; Mock additional functions that tests might need
-(defun shipit--get-repo-from-remote ()
-  "Mock repo detection."
-  "owner/repo")
+;; Mock additional functions that tests might need.  Only when the real
+;; one is not loaded: each test file loads this file again, and would
+;; otherwise replace the real function for every test file after it.
+(unless (fboundp 'shipit--get-repo-from-remote)
+  (defun shipit--get-repo-from-remote ()
+    "Mock repo detection."
+    "owner/repo"))
 
 (defun shipit--debug-log (format-string &rest args)
   "Mock debug logging.

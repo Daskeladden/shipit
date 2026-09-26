@@ -131,6 +131,7 @@ test-unit: compile
 		-l test/test-shipit-gitlab-http.el \
 		-l test/test-shipit-pr-gitlab.el \
 		-l test/test-shipit-issue-gitlab.el \
+		-l test/test-shipit-issue-gitbug.el \
 		-l test/test-shipit-comment-gitlab.el \
 		-l test/test-shipit-render.el \
 		-l test/test-shipit-pr-actions.el \

@@ -51,7 +51,9 @@
                         (mapconcat #'identity (nreverse gaps) "\n  "))))))
 
 (ert-deftest test/issue-backend-parity ()
-  "All issue backends must support parity operations."
+  "All issue backends must support parity operations.
+An operation a backend's tracker has no such thing for, which it names
+in `:lacks', is no gap: it could only be a stub."
   ;; GIVEN all registered issue backends and the parity operation list
   ;; WHEN checking each backend for every parity operation
   ;; THEN no gaps should exist
@@ -61,7 +63,8 @@
             (plist (cdr entry)))
         (unless (plist-get plist :notification-only)
           (dolist (op shipit-issue--parity-operations)
-            (unless (plist-get plist op)
+            (unless (or (plist-get plist op)
+                        (memq op (plist-get plist :lacks)))
               (push (format "%s missing %s" id op) gaps))))))
     (when gaps
       (ert-fail (format "Issue parity gaps:\n  %s"

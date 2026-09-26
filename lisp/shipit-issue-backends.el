@@ -48,6 +48,12 @@
 ;;   :add-reaction      — (config issue-number reaction) → reaction alist
 ;;   :remove-reaction   — (config issue-number reaction-id) → t
 ;;
+;; Optional plist key (for what a tracker has no such thing for):
+;;   :lacks             — list of the parity operations the tracker has
+;;                        nothing for, as git-bug has no reactions.  Such
+;;                        an operation is not a gap, since it could only
+;;                        be a stub.
+;;
 ;; Optional plist keys (for notifications):
 ;;   :notifications     — (config since) → list of notification activities
 ;;   :mark-notification-read — (config activity) → marks notification as read

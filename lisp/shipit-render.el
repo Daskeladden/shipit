@@ -5124,6 +5124,28 @@ Returns the propertized rendered string."
         (shipit--render-org text)
       (shipit--render-markdown text))))
 
+(defun shipit--wrap-body-width (indent)
+  "The width `shipit--wrap-body' wraps text to after INDENT."
+  (max 20 (- (max 40 (or fill-column 80)) (length indent))))
+
+(defun shipit--wrap-body (body indent)
+  "Render BODY and wrap it, with INDENT before each line.
+Each line is INDENT and at most `shipit--wrap-body-width' of text.
+The wrap keeps the faces of the rendered markdown, as the one of pull
+request comments does."
+  (let* ((rendered (if shipit-render-markdown
+                       (shipit--render-body (or body ""))
+                     (or body "")))
+         (wrapped (shipit--wrap-text rendered (shipit--wrap-body-width indent))))
+    (with-temp-buffer
+      (insert wrapped)
+      (goto-char (point-min))
+      (insert indent)
+      (while (re-search-forward "\n" nil t)
+        (unless (eobp)
+          (insert indent)))
+      (buffer-string))))
+
 (defun shipit--format-for-readme-filename (filename)
   "Return `org' if FILENAME has a `.org' extension, else `markdown'.
 Used when fetching repository READMEs to choose the renderer."
@@ -6579,30 +6601,6 @@ ROWS is a list of lists where each inner list is a row of cells."
 
       ;; Join lines
       (mapconcat 'identity (reverse table-lines) "\n"))))
-
-(defun shipit--wrap-body (body indent)
-  "Word-wrap BODY so every output line is INDENT + content + <= fill-column.
-Delegates to `shipit--wrap-text' (the same wrapper PR comments use)
-so face/overlay properties from `shipit--render-body' survive: a
-`fill-region' pass dropped the inline code face on every backtick.
-INDENT is prepended to every line of the wrapped output."
-  (let* ((width (max 40 (or fill-column 80)))
-         (effective-width (max 20 (- width (length indent))))
-         (rendered (if (and (fboundp 'shipit--render-body)
-                            (bound-and-true-p shipit-render-markdown))
-                       (shipit--render-body (or body ""))
-                     (or body "")))
-         (wrapped (if (fboundp 'shipit--wrap-text)
-                      (shipit--wrap-text rendered effective-width)
-                    rendered)))
-    (with-temp-buffer
-      (insert wrapped)
-      (goto-char (point-min))
-      (insert indent)
-      (while (re-search-forward "\n" nil t)
-        (unless (eobp)
-          (insert indent)))
-      (buffer-string))))
 
 (provide 'shipit-render)
 ;;; shipit-render.el ends here

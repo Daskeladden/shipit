@@ -737,6 +737,17 @@ section -- the renderer recomputes column widths so layout
 stays aligned.  Add a whole new section by appending another
 top-level (HEADING ...) entry.")
 
+(defvar shipit-review-actions-legend-extra-sections nil
+  "Sections other packages add to the full legend, after its own.
+Each is (HEADING (KEY DESC) ...), as in
+`shipit-review--actions-legend-sections'.  A `defvar', unlike that
+table, so a reload of this file keeps what the packages added.")
+
+(defun shipit-review--actions-legend-all-sections ()
+  "The sections of the full legend: its own, then those added to it."
+  (append shipit-review--actions-legend-sections
+          shipit-review-actions-legend-extra-sections))
+
 (defun shipit-review--actions-legend-expanded-height ()
   "Window height needed for the expanded legend.
 2 chrome rows (heading + `===' rule) plus the longest
@@ -746,7 +757,7 @@ sections data so growing a column doesn\\='t need a hardcoded
 height bump."
   (+ (apply #'max
             (mapcar (lambda (s) (length (cdr s)))
-                    shipit-review--actions-legend-sections))
+                    (shipit-review--actions-legend-all-sections)))
      4))
 
 (defun shipit-review--actions-legend-section-width (section)
@@ -818,7 +829,7 @@ panel layout.  Layout is data-driven from the sections
 variable so adding actions or columns doesn't require
 touching the renderer."
   (let* ((key-face '(:weight bold :inherit font-lock-keyword-face))
-         (sections shipit-review--actions-legend-sections)
+         (sections (shipit-review--actions-legend-all-sections))
          (col-widths (mapcar #'shipit-review--actions-legend-section-width
                              sections))
          (formatted (mapcar (lambda (s)
@@ -1691,8 +1702,8 @@ rendering had no equivalent before this)."
   "Wrap LINES with rounded SVG edges + filled background.
 LINES is a list of strings without trailing newlines.  BG-COLOR
 defaults to `shipit-rounded-section-bg-color\\=' so existing
-inline-comment callers keep their look; another caller can pass a
-color of its own.
+inline-comment callers keep their look; another kind of overlay
+can pass its own color.
 
 Mirrors the magit-section rounded-pill treatment from
 `shipit-rounded--apply-bg\\=' but for the `after-string\\=' overlay

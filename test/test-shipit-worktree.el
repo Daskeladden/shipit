@@ -403,6 +403,24 @@ directory\"."
         (should pr-file-opened)
         (should-not commit-file-opened)))))
 
+(ert-deftest test-shipit-ret-tries-the-functions-others-add-first ()
+  "GIVEN a function for RET that handles the text at point, which also
+names a file
+WHEN RET is pressed there
+THEN the function handles it, and the file is not opened."
+  (with-temp-buffer
+    (insert (propertize "a note about a file" 'shipit-file-path "src/main.el"
+                        'test-note t))
+    (goto-char (point-min))
+    (let* ((handled nil)
+           (shipit-open-at-point-functions
+            (list (lambda ()
+                    (when (get-text-property (point) 'test-note)
+                      (setq handled t))))))
+      (shipit--open-file-at-point)
+      (should handled)
+      (should-not (get-file-buffer "src/main.el")))))
+
 (ert-deftest test-shipit--worktree--commit-present-p-true-when-cat-file-zero ()
   "GIVEN a REPO-ROOT directory and a SHA
 WHEN `git cat-file -e SHA^{commit}\=' exits 0 (commit is local)

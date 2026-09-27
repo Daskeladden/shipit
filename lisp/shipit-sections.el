@@ -23,6 +23,7 @@
 
 ;;; Code:
 (require 'cl-lib)
+(require 'seq)
 (require 'shipit-lib)
 
 ;; Require magit-section at compile time for macros
@@ -174,6 +175,101 @@ Returns the section."
       (oset section end (copy-marker (point)))
       section)))
 
+;;; Files Changed
+
+(defun shipit--find-files-section ()
+  "Return the Files Changed section of this buffer, without showing it.
+Only the top level is searched, where the pull request buffer and the
+preview put it.  Text property scans work on a hidden section too, so
+a caller that only reads it does not need to open it."
+  (and (bound-and-true-p magit-root-section)
+       (seq-find (lambda (child) (eq (oref child type) 'pr-files))
+                 (oref magit-root-section children))))
+
+(defun shipit--show-files-section ()
+  "Show the Files Changed section, without showing each file in it.
+Return the section, or nil when the buffer has none.  For navigation
+that a user asked for; a scan that only reads the section uses
+`shipit--find-files-section', which leaves it as it is."
+  (let ((section (shipit--find-files-section)))
+    (when section
+      (magit-section-show section)
+      section)))
+
+(defun shipit--call-with-section-shown (section thunk)
+  "Call THUNK with SECTION shown, then hide SECTION again if it was hidden.
+A scan of the lines of a file needs them in the buffer, but must not
+leave the file open: a freshly opened pull request would otherwise
+show every file that a draft or a finding was looked up in."
+  (let ((was-hidden (and section
+                         (slot-boundp section 'hidden)
+                         (oref section hidden))))
+    (when was-hidden
+      (magit-section-show section))
+    (unwind-protect
+        (funcall thunk)
+      (when (and was-hidden (buffer-live-p (current-buffer)))
+        (magit-section-hide section)))))
+
+(defun shipit--find-diff-line-in-file-section (file line section)
+  "Return the position of the diff line of FILE at LINE in file SECTION.
+Return nil when it is not there.  An inline comment on a line carries
+the same file and line, but is inserted after the diff line, so the
+first position without `shipit-comment' is the diff line itself."
+  (when section
+    (let ((end (oref section end))
+          (found nil))
+      (save-excursion
+        (goto-char (oref section start))
+        (while (and (not found) (< (point) end))
+          (when (and (equal (get-text-property (point) 'shipit-file-path) file)
+                     (equal (get-text-property (point) 'shipit-line-number) line)
+                     (not (get-text-property (point) 'shipit-comment)))
+            (setq found (point)))
+          (goto-char (or (next-single-property-change
+                          (point) 'shipit-line-number nil end)
+                         end))))
+      found)))
+
+(defun shipit--find-file-in-files-section (file files-section &optional base-names)
+  "Find FILE in FILES-SECTION; return (POSITION . MATCHED-PATH) or nil.
+The search stays inside the section, so other rows that carry
+`shipit-file-path' do not match.  Without an exact match, the first
+file whose base name is one of BASE-NAMES matches."
+  (when files-section
+    (let ((end (oref files-section end))
+          (exact nil)
+          (base-name-match nil))
+      (save-excursion
+        (goto-char (oref files-section start))
+        (while (and (not exact) (< (point) end))
+          (let ((path (get-text-property (point) 'shipit-file-path)))
+            (cond
+             ((and path (string= path file))
+              (setq exact (cons (point) path)))
+             ((and path (not base-name-match)
+                   (member (file-name-nondirectory path) base-names))
+              (setq base-name-match (cons (point) path)))))
+          (goto-char (or (next-single-property-change
+                          (point) 'shipit-file-path nil end)
+                         end))))
+      (or exact base-name-match))))
+
+(defvar shipit-files-section-shown-hook nil
+  "Hook run in a buffer each time its Files Changed section is shown.
+A mark on a file heading, such as a badge, is painted only while the
+section is open: in a closed section, all of them would show on its
+one line.  The functions here paint theirs again.")
+
+(defun shipit--run-files-section-shown-hook (section)
+  "Run `shipit-files-section-shown-hook' when SECTION is Files Changed.
+For `:after' advice on `magit-section-show', since magit has no hook
+for a section being shown."
+  (when (eq (oref section type) 'pr-files)
+    (run-hooks 'shipit-files-section-shown-hook)))
+
+(advice-add 'magit-section-show :after #'shipit--run-files-section-shown-hook)
+
 ;;; Section State
 
 (defvar-local shipit--section-expansion-state (make-hash-table :test 'equal)
@@ -276,95 +372,6 @@ Used for preserving expansion state across refreshes."
 (put 'diff-hunk 'magit-section t)
 
 (put 'inline-comment 'magit-section t)
-
-(defun shipit--find-files-section ()
-  "Return the pr-files magit section without expanding it.
-Text-property scans work on collapsed sections too, so a lookup that
-walks it leaves Files Changed as it was."
-  (when (and (boundp 'magit-root-section) magit-root-section)
-    (catch 'found
-      (dolist (child (oref magit-root-section children))
-        (when (eq (oref child type) 'pr-files)
-          (throw 'found child))))))
-
-(defun shipit--find-file-in-files-section (file pr-files-section)
-  "Find FILE within PR-FILES-SECTION; return (POS . MATCHED-PATH) or nil.
-Search is constrained to the section\\='s range, so it never falls
-through into another section whose rows also carry `shipit-file-path'.
-Falls back to a basename match when FILE is only a file name."
-  (when pr-files-section
-    (let* ((start (oref pr-files-section start))
-           (end (oref pr-files-section end))
-           ;; Candidate basenames to try, in order:
-           ;;   1. The raw basename ("smoke script").
-           ;;   2. The first whitespace-separated token ("smoke") --
-           ;;      catches a name with a descriptor appended, like
-           ;;      "auth handler" or "smoke script".
-           (raw-basename (file-name-nondirectory (or file "")))
-           (first-token (and raw-basename
-                             (car (split-string raw-basename "[[:space:]]+" t))))
-           (candidates (delete-dups
-                        (delq nil (list raw-basename first-token))))
-           (exact nil)
-           (basename-match nil))
-      (save-excursion
-        (goto-char start)
-        (while (and (not exact) (< (point) end))
-          (let* ((prop (get-text-property (point) 'shipit-file-path))
-                 (prop-base (and prop (file-name-nondirectory prop))))
-            (cond
-             ((and prop (string= prop file))
-              (setq exact (cons (point) prop)))
-             ((and prop-base (not basename-match)
-                   (member prop-base candidates))
-              (setq basename-match (cons (point) prop)))))
-          (goto-char (or (next-single-property-change
-                          (point) 'shipit-file-path nil end)
-                         end))))
-      (or exact basename-match))))
-
-(defun shipit--find-diff-line-in-file-section (file line section)
-  "Find diff line for FILE/LINE within file SECTION.
-Walks the section\\='s range and returns the first position
-whose `shipit-file-path' and `shipit-line-number' match without
-carrying `shipit-comment' -- diff lines are inserted before any
-inline comment that anchors to them, so the first non-comment
-hit is the diff line itself."
-  (when section
-    (let ((start (oref section start))
-          (end (oref section end))
-          (found nil))
-      (save-excursion
-        (goto-char start)
-        (while (and (not found) (< (point) end))
-          (when (and (equal (get-text-property (point) 'shipit-file-path) file)
-                     (equal (get-text-property (point) 'shipit-line-number) line)
-                     (not (get-text-property (point) 'shipit-comment)))
-            (setq found (point)))
-          (goto-char (or (next-single-property-change
-                          (point) 'shipit-line-number nil end)
-                         end))))
-      found)))
-
-(defun shipit--call-with-section-shown (section thunk)
-  "Run THUNK with SECTION expanded, restoring its prior collapsed state.
-Used by render paths that need to walk a `pr-file' section's
-content (for line lookup or buffer-substring) but shouldn't
-leave the file expanded.
-
-`unwind-protect' guarantees we collapse back even if THUNK
-errors out."
-  (let ((was-hidden (and section
-                         (slot-boundp section 'hidden)
-                         (oref section hidden))))
-    (when (and section was-hidden (fboundp 'magit-section-show))
-      (magit-section-show section))
-    (unwind-protect
-        (funcall thunk)
-      (when (and section was-hidden
-                 (buffer-live-p (current-buffer))
-                 (fboundp 'magit-section-hide))
-        (ignore-errors (magit-section-hide section))))))
 
 ;;; Stack rendering
 

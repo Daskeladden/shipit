@@ -65,6 +65,10 @@
   (require 'shipit-review-queue))
 
 ;; MODERN INITIALIZATION API
+(defvar shipit-init-hook nil
+  "Hook run at the end of `shipit-init', once shipit has loaded its parts.
+A package that adds to shipit loads itself here.")
+
 ;;;###autoload
 (defun shipit-init ()
   "Modern shipit initialization - call once in your config.
@@ -140,6 +144,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   (when shipit-code-refs-auto-enable
     (global-shipit-code-refs-mode 1))
 
+  (run-hooks 'shipit-init-hook)
   (message "Shipit initialized successfully"))
 
 ;; SELECTIVE AUTOLOADS - Only for heavy features that benefit from deferred loading

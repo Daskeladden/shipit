@@ -92,6 +92,7 @@ test-unit: compile
 		-l test/test-shipit-requires.el \
 		-l test/test-files-filter.el \
 		-l test/test-shipit-files-hide.el \
+		-l test/test-shipit-review-queue.el \
 		-l test/test-shipit-review-mode-integration.el \
 		-l test/test-shipit-review-revision.el \
 		-l test/test-tab-collapse-fix.el \
@@ -150,6 +151,7 @@ test-unit: compile
 		-l test/test-shipit-suggestions.el \
 		-l test/test-shipit-notifications-rss.el \
 		-l test/test-shipit-actions-timestamps.el \
+		-l test/test-shipit-run-steps.el \
 		-l test/test-shipit-merge.el \
 		-l test/test-shipit-repo-subscription.el \
 		-l test/test-shipit-subscriptions.el \

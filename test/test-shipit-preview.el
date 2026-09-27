@@ -288,5 +288,30 @@ backwards, as a pull request shows them."
         (when (get-buffer buffer-name)
           (kill-buffer buffer-name))))))
 
+;;; What other packages add to the preview
+
+(ert-deftest test-shipit-preview-runs-its-ready-hook-once-drawn ()
+  "GIVEN a function on the ready hook of the preview
+WHEN a preview is opened
+THEN the function runs in the preview, once the files are drawn."
+  (require 'shipit-sandbox)
+  (shipit-sandbox-with-repo
+    (let* ((shipit-preview--saved-state (make-hash-table :test 'equal))
+           (buffer-name (shipit-preview--buffer-name shipit-sandbox-repo "work"))
+           (runs nil)
+           (shipit-preview-ready-hook
+            (list (lambda ()
+                    (push (list (buffer-name)
+                                (and (text-property-any (point-min) (point-max)
+                                                        'shipit-pr-files t)
+                                     t))
+                          runs)))))
+      (unwind-protect
+          (progn
+            (shipit-preview-branch shipit-sandbox-repo "work" "main")
+            (should (equal (list (list buffer-name t)) runs)))
+        (when (get-buffer buffer-name)
+          (kill-buffer buffer-name))))))
+
 (provide 'test-shipit-preview)
 ;;; test-shipit-preview.el ends here

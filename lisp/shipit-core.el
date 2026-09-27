@@ -29,6 +29,12 @@
 
 (defvar shipit-mode-map)
 
+(defun shipit--file-safe (text)
+  "TEXT with every character but letters, digits and `-' made `_'.
+For a file name made from a repository or a branch: a branch name can
+hold a slash, which would make a directory."
+  (replace-regexp-in-string "[^a-zA-Z0-9-]" "_" (or text "x")))
+
 (defun shipit--key-hint (command)
   "Return how to reach COMMAND from a shipit buffer, for a message.
 Read from the keymap rather than written out, because a message that
@@ -597,6 +603,20 @@ git fails, with what it said."
     (unless (zerop exit)
       (error "shipit: git %s failed: %s" (string-join args " ") output))
     output))
+
+(defvar shipit-branch-name-suggester nil
+  "A function that suggests a name for a new branch, or nil for none.
+It is called in the buffer of the work with DESCRIPTION, text that
+describes the work, such as its commit messages, and CALLBACK.  It
+calls CALLBACK with the name, or with nil when it has none.  Another
+package can set it.")
+
+(defvar shipit-run-steps-drawn-functions nil
+  "Functions called once the jobs and steps of a workflow run are drawn.
+Each is called with the section they are drawn under, the repository,
+the pull request number and the id of the run, to add sections under
+the log lines.  The actions buffer calls them under its root, and the
+Checks section under a check item, only for a run of a pull request.")
 
 (defun shipit--push-branches (branches &optional args)
   "Push BRANCHES to origin atomically with ARGS, tracking set.
@@ -2296,13 +2316,6 @@ Returns t on success, nil if section not found."
         (when (fboundp 'magit-section-update-highlight)
           (magit-section-update-highlight))
         t))))
-
-(defvar shipit-branch-name-suggester nil
-  "A function that suggests a name for a new branch, or nil for none.
-It is called in the buffer of the work with DESCRIPTION, text that
-describes the work, such as its commit messages, and CALLBACK.  It
-calls CALLBACK with the name, or with nil when it has none.  Another
-package can set it.")
 
 (provide 'shipit-core)
 ;;; shipit-core.el ends here

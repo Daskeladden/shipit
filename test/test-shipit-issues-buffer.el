@@ -235,9 +235,8 @@ THEN it links a work item."
 ;;; Similar Work Items Tests
 
 (defmacro test-shipit-issue--with-similar-finder (finder &rest body)
-  "Run BODY with FINDER as `shipit-issue-similar-finder'.
-FINDER is called with (SOURCE-BUFFER ISSUE CALLBACK); nil means no
-finder."
+  "Run BODY with FINDER as the finder of similar work items.
+FINDER is called with (SOURCE-BUFFER ISSUE CALLBACK); nil is none."
   (declare (indent 1))
   `(let ((shipit-issue-similar-finder ,finder))
      ,@body))

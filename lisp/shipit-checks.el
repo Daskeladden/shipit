@@ -306,6 +306,12 @@ Fetches job data and logs on first expand, uses cache thereafter."
         (oset section end new-end)
         (oset section hidden nil)
         (shipit--update-ancestor-ends section new-end))
+      (let ((repo (bound-and-true-p shipit-buffer-repo))
+            (pr-number (bound-and-true-p shipit-buffer-pr-number))
+            (run-id (shipit--find-enclosing-run-id section)))
+        (when (and repo pr-number run-id)
+          (run-hook-with-args 'shipit-run-steps-drawn-functions
+                              section repo pr-number run-id)))
       ;; Restore step visibility and point position
       (shipit--restore-check-step-visibility section expanded)
       (goto-char (point-min))

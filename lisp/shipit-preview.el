@@ -160,6 +160,10 @@ Key format: \"repo:branch\", value is a plist of saved state.")
 (define-key shipit-preview-mode-map (kbd "M-;") #'shipit-dwim)
 (define-key shipit-preview-mode-map (kbd "q") #'shipit-preview--quit)
 
+(defvar shipit-preview-ready-hook nil
+  "Hook run in a preview once it is drawn, before point goes back.
+Its functions may add sections at the end of the buffer.")
+
 (define-derived-mode shipit-preview-mode magit-section-mode "Shipit-Preview"
   "Major mode for previewing a PR before creation.
 
@@ -767,6 +771,10 @@ Open diff for files."
       (setq shipit-preview--cached-files (shipit-preview--get-files))
       (shipit--render-files-section shipit-preview--cached-files
                                     shipit-preview--repo nil nil nil))
+    ;; Before point goes back: a function of the hook may add sections
+    ;; at the end, which would otherwise bury point or land in the wrong
+    ;; place.
+    (run-hooks 'shipit-preview-ready-hook)
     ;; Restore position after refresh
     (if saved-file-path
         (shipit-preview--goto-file-line saved-file-path saved-line-number)

@@ -58,5 +58,12 @@ legend buffer."
       (shipit-review-mode 1)
       (should (eq buffer (current-buffer))))))
 
+(ert-deftest test-shipit-review-legend-shows-a-section-added-to-it ()
+  "GIVEN a section another package adds to the legend
+WHEN the full legend is built
+THEN the section is in it."
+  (let ((shipit-review-actions-legend-extra-sections '(("Extra" ("x" "do the extra")))))
+    (should (string-match-p "do the extra" (shipit-review--actions-legend-full)))))
+
 (provide 'test-shipit-review-mode)
 ;;; test-shipit-review-mode.el ends here

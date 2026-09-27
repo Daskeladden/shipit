@@ -149,7 +149,7 @@ Each job's logs are fetched lazily on first expand.")
   "Open a shipit buffer for Actions run RUN-ID in REPO.
 When JOB-ID is non-nil, auto-expand that job after loading.
 PR-NUMBER, when supplied, records which PR opened this actions
-buffer."
+buffer, so what is asked about its logs is kept with that PR."
   (let* ((buf-name (format "*shipit-actions-run: %s #%s*" repo run-id))
          (existing (get-buffer buf-name)))
     (if existing
@@ -367,6 +367,15 @@ If SAVED-VISIBILITY is non-nil, restore section states from it."
       (shipit-actions--insert-jobs-section jobs)
       (insert "\n")
       (shipit-actions--insert-summary-section run))
+    ;; Not for an actions buffer opened on its own, without a PR.
+    (when (and shipit-actions--repo
+               shipit-actions--pr-number
+               shipit-actions--run-id)
+      (run-hook-with-args 'shipit-run-steps-drawn-functions
+                          magit-root-section
+                          shipit-actions--repo
+                          shipit-actions--pr-number
+                          shipit-actions--run-id))
     (when saved-visibility
       (shipit-actions--restore-section-visibility saved-visibility))
     (unless saved-visibility
@@ -1359,6 +1368,64 @@ the Checks section of the PR buffer."
   "Set navigation threshold to level 4 (extreme)."
   (interactive)
   (shipit-actions-nav-set-threshold 3))
+
+;;; Where a log line is
+
+(defun shipit-actions--enclosing-sections ()
+  "The sections around point that locate a log line, as a plist.
+Keys :step, :job, :check-item and :workflow-run, each the innermost
+section of its type, or nil."
+  (let ((walk (and (fboundp 'magit-current-section) (magit-current-section)))
+        (found nil))
+    (while walk
+      (let ((key (pcase (oref walk type)
+                   ('actions-step :step)
+                   ('actions-job :job)
+                   ('check-item :check-item)
+                   ('workflow-run :workflow-run))))
+        (when (and key (not (plist-get found key)))
+          (setq found (plist-put found key walk))))
+      (setq walk (oref walk parent)))
+    found))
+
+(defun shipit-actions--line-in-step (step-section)
+  "The line of point in the log of STEP-SECTION, counted from 0."
+  (let ((start (or (oref step-section content) (oref step-section start))))
+    (count-lines (if (markerp start) (marker-position start) start) (point))))
+
+(defun shipit-actions-log-location-at-point ()
+  "Where the log line at point is, as a plist, or nil outside a run.
+The plist has :repo and :pr-number, the pull request the run is for,
+or nil, and :run-id, :job-id, :step and :line, the line of the step's
+log counted from 0.  :step and :line are nil on a job's heading.  The
+location is the same in the actions buffer of a run and under a check
+item of a pull request."
+  (let* ((sections (shipit-actions--enclosing-sections))
+         (step-section (plist-get sections :step))
+         (job-section (or (plist-get sections :job) (plist-get sections :check-item)))
+         (run-section (plist-get sections :workflow-run))
+         (run-id (or (and run-section (cdr (assq 'run-id (oref run-section value))))
+                     shipit-actions--run-id))
+         (job-id (and job-section (cdr (assq 'id (oref job-section value))))))
+    (when (and run-id job-id)
+      (list :repo (or (bound-and-true-p shipit-buffer-repo) shipit-actions--repo)
+            :pr-number (or (bound-and-true-p shipit-buffer-pr-number) shipit-actions--pr-number)
+            :run-id run-id
+            :job-id job-id
+            :step (and step-section (cdr (assq 'number (oref step-section value))))
+            :line (and step-section (shipit-actions--line-in-step step-section))))))
+
+(defun shipit-actions-redraw-for-pr (repo pr-number)
+  "Draw again every actions buffer opened from PR-NUMBER of REPO.
+Sections open and closed stay so."
+  (dolist (buf (buffer-list))
+    (when (and (buffer-live-p buf)
+               (with-current-buffer buf
+                 (and (derived-mode-p 'shipit-actions-mode)
+                      (equal shipit-actions--repo repo)
+                      (equal shipit-actions--pr-number pr-number))))
+      (with-current-buffer buf
+        (shipit-actions--render (shipit-actions--save-section-visibility))))))
 
 (transient-define-prefix shipit-actions-nav-menu ()
   "Gap navigation menu for GitHub Actions log timestamps."

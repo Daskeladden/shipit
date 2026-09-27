@@ -686,5 +686,44 @@ THEN the Activity transient menu opens."
       (shipit--activity-section-header-actions)
       (should opened))))
 
+;;; The menu of a diff line
+
+(defmacro test-pr-actions--on-diff-line (&rest body)
+  "Run BODY with point on line 2 of src/parser.el in a diff, with no comment."
+  (declare (indent 0))
+  `(with-temp-buffer
+     (insert (propertize "+  (read-header)\n"
+                         'shipit-file-path "src/parser.el" 'shipit-line-number 2))
+     (goto-char (point-min))
+     ,@body))
+
+(ert-deftest test-pr-actions-a-diff-line-offers-the-actions-added-to-it ()
+  "GIVEN an action added to the menu of a diff line, and no pull request
+to comment on
+WHEN the menu of a diff line is opened, and the action chosen
+THEN it is the one action offered, and it runs on the line."
+  (test-pr-actions--on-diff-line
+    (let* ((offered nil)
+           (ran-on nil)
+           (explain (lambda () (interactive)
+                      (setq ran-on (get-text-property (point) 'shipit-line-number))))
+           (shipit-diff-line-actions (list (cons "Explain" explain))))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (setq offered collection)
+                   "Explain")))
+        (shipit--diff-line-actions))
+      (should (equal '("Explain") offered))
+      (should (equal 2 ran-on)))))
+
+(ert-deftest test-pr-actions-a-diff-line-with-no-action-says-so ()
+  "GIVEN no action added to the menu of a diff line, and no pull request
+to comment on
+WHEN the menu of a diff line is opened
+THEN that is refused: there is nothing to offer."
+  (test-pr-actions--on-diff-line
+    (let ((shipit-diff-line-actions nil))
+      (should-error (shipit--diff-line-actions) :type 'user-error))))
+
 (provide 'test-shipit-pr-actions)
 ;;; test-shipit-pr-actions.el ends here

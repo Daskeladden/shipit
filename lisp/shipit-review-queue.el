@@ -17,9 +17,9 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'shipit-sections)
-(require 'shipit-render)    ; `shipit--wrap-body'
 (require 'magit-section)
+(require 'shipit-sections)  ; Finding a file or a diff line in Files Changed
+(require 'shipit-render)    ; `shipit--wrap-body'
 
 (declare-function shipit-post-review "shipit-http"
                   (pr-number event &optional body comments repo))
@@ -613,8 +613,7 @@ The rounded-pill background is applied separately by
 (defun shipit-review-queue--render ()
   "Insert pending-comment magit sections under matching diff lines.
 Clears any previously-inserted sections first so re-renders
-don\\='t accumulate duplicates.  Falls through quietly when the
-helpers that find the Files section aren\\='t loaded."
+don\\='t accumulate duplicates."
   (shipit-review-queue--clear-sections)
   ;; Old overlays from a previous version of this file might still be
   ;; in the buffer -- sweep them so the new section path doesn\\='t end
@@ -622,16 +621,10 @@ helpers that find the Files section aren\\='t loaded."
   (shipit-review-queue--clear-overlays)
   (when (fboundp 'shipit--debug-log)
     (shipit--debug-log
-     "QUEUE-RENDER: buf=%s queue=%d helpers=%S"
+     "QUEUE-RENDER: buf=%s queue=%d"
      (buffer-name)
-     (length shipit-review-queue)
-     (list (fboundp 'shipit--find-files-section)
-           (fboundp 'shipit--find-file-in-files-section)
-           (fboundp 'shipit--find-diff-line-in-file-section))))
-  (when (and shipit-review-queue
-             (fboundp 'shipit--find-files-section)
-             (fboundp 'shipit--find-file-in-files-section)
-             (fboundp 'shipit--find-diff-line-in-file-section))
+     (length shipit-review-queue)))
+  (when shipit-review-queue
     ;; Insertion path: temporarily expand each file we need so its
     ;; lazy diff body materializes (text-property scan needs the
     ;; lines to exist), drop the pill, then restore the file's prior
@@ -966,6 +959,8 @@ worktree files happen to be open."
     (when (overlayp ov) (delete-overlay ov)))
   (setq-local shipit-review-queue--badge-overlays nil))
 
+(add-hook 'shipit-files-section-shown-hook #'shipit-review-queue--render-badges)
+
 (defun shipit-review-queue--render-badges ()
   "Attach a `Draft (N)' badge to each pr-file heading whose file is queued."
   (shipit-review-queue--clear-badges)
@@ -1111,71 +1106,68 @@ pending-comment sections (the ones the queue itself inserted just
 under the target line) so the captured snippet shows the diff
 only, not a replay of the draft."
   (let ((radius (or radius 2)))
-    (when (and (fboundp 'shipit--find-files-section)
-               (fboundp 'shipit--find-file-in-files-section)
-               (fboundp 'shipit--find-diff-line-in-file-section))
-      (let ((pr-files (shipit--find-files-section)))
-        (when pr-files
-          (let* ((hit (shipit--find-file-in-files-section file pr-files))
-                 (file-pos (car-safe hit))
-                 (matched-path (cdr-safe hit)))
-            (when file-pos
-              (let ((file-section
-                     (save-excursion
-                       (goto-char file-pos)
-                       (magit-current-section))))
-                (when (and file-section
-                           (eq (oref file-section type) 'pr-file))
-                  (shipit--call-with-section-shown
-                   file-section
-                   (lambda ()
-                     (let ((target (shipit--find-diff-line-in-file-section
-                                    matched-path line file-section)))
-                       (when target
-                         (let (before after target-line)
-                           (save-excursion
-                             (goto-char target)
-                             (setq target-line
-                                   (buffer-substring
-                                    (line-beginning-position)
-                                    (line-end-position))))
-                           ;; Collect RADIUS lines BEFORE target, skipping pending sections.
-                           (save-excursion
-                             (goto-char target)
-                             (let ((collected 0))
-                               (while (< collected radius)
-                                 (forward-line -1)
-                                 (when (bobp) (setq collected radius))
-                                 (unless (shipit-review-queue--at-pending-section-p)
-                                   (setq before
-                                         (shipit-review-queue--collect-context-line
-                                          before))
-                                   (setq collected (1+ collected))))))
-                           ;; Collect RADIUS lines AFTER target, skipping
-                           ;; inline pending-comment sections by jumping
-                           ;; past their end markers when we land on one.
-                           (save-excursion
-                             (goto-char target)
-                             (let ((collected 0))
-                               (while (< collected radius)
-                                 (forward-line 1)
-                                 (when (eobp) (setq collected radius))
-                                 (cond
-                                  ((shipit-review-queue--at-pending-section-p)
-                                   (let ((sec (magit-current-section)))
-                                     (when (and sec (slot-boundp sec 'end))
-                                       (goto-char (oref sec end)))))
-                                  (t
-                                   (push (buffer-substring
-                                          (line-beginning-position)
-                                          (line-end-position))
-                                         after)
-                                   (setq collected (1+ collected)))))))
-                           (mapconcat #'identity
-                                      (append (nreverse before)
-                                              (list target-line)
-                                              (nreverse after))
-                                      "\n")))))))))))))))
+    (let ((pr-files (shipit--find-files-section)))
+      (when pr-files
+        (let* ((hit (shipit--find-file-in-files-section file pr-files))
+               (file-pos (car-safe hit))
+               (matched-path (cdr-safe hit)))
+          (when file-pos
+            (let ((file-section
+                   (save-excursion
+                     (goto-char file-pos)
+                     (magit-current-section))))
+              (when (and file-section
+                         (eq (oref file-section type) 'pr-file))
+                (shipit--call-with-section-shown
+                 file-section
+                 (lambda ()
+                   (let ((target (shipit--find-diff-line-in-file-section
+                                  matched-path line file-section)))
+                     (when target
+                       (let (before after target-line)
+                         (save-excursion
+                           (goto-char target)
+                           (setq target-line
+                                 (buffer-substring
+                                  (line-beginning-position)
+                                  (line-end-position))))
+                         ;; Collect RADIUS lines BEFORE target, skipping pending sections.
+                         (save-excursion
+                           (goto-char target)
+                           (let ((collected 0))
+                             (while (< collected radius)
+                               (forward-line -1)
+                               (when (bobp) (setq collected radius))
+                               (unless (shipit-review-queue--at-pending-section-p)
+                                 (setq before
+                                       (shipit-review-queue--collect-context-line
+                                        before))
+                                 (setq collected (1+ collected))))))
+                         ;; Collect RADIUS lines AFTER target, skipping
+                         ;; inline pending-comment sections by jumping
+                         ;; past their end markers when we land on one.
+                         (save-excursion
+                           (goto-char target)
+                           (let ((collected 0))
+                             (while (< collected radius)
+                               (forward-line 1)
+                               (when (eobp) (setq collected radius))
+                               (cond
+                                ((shipit-review-queue--at-pending-section-p)
+                                 (let ((sec (magit-current-section)))
+                                   (when (and sec (slot-boundp sec 'end))
+                                     (goto-char (oref sec end)))))
+                                (t
+                                 (push (buffer-substring
+                                        (line-beginning-position)
+                                        (line-end-position))
+                                       after)
+                                 (setq collected (1+ collected)))))))
+                         (mapconcat #'identity
+                                    (append (nreverse before)
+                                            (list target-line)
+                                            (nreverse after))
+                                    "\n"))))))))))))))
 
 (defun shipit-review-queue--insert-section-at-point ()
   "Insert the Pending Review section tree at point.
@@ -1222,9 +1214,7 @@ Caller is responsible for `inhibit-read-only', position, and
                          (add-face-text-property start (point) 'shadow t))))
                    (let* ((body (or (plist-get entry :body) ""))
                           (wrapped
-                           (if (fboundp 'shipit--wrap-body)
-                               (shipit--wrap-body body "         ")
-                             (concat "         " body))))
+                           (shipit--wrap-body body "         ")))
                      (insert wrapped "\n\n"))))))
           ;; Apply the rounded-pill background -- same treatment
           ;; posted inline comments and the inline pending pill in

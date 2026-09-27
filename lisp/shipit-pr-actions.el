@@ -1191,6 +1191,41 @@ Dispatches to the active PR backend's :remove-reviewer."
       ;; TODO: Implement actual thread resolution via GraphQL
       )))
 
+(defvar shipit-diff-line-actions nil
+  "Actions other packages add to the menu of a diff line.
+Each is (LABEL . COMMAND).  The menu calls COMMAND interactively,
+with point on the diff line.")
+
+(defun shipit--diff-line-actions ()
+  "Action menu for a diff line in Files Changed (no existing comment).
+Offers `Add comment' when the buffer is a real PR (so a comment
+can actually be posted), and the actions of
+`shipit-diff-line-actions'.  In preview-mode buffers `Add
+comment' is hidden -- the branch has no PR yet, so there\\='s
+nothing to post against."
+  (let* ((pr-number (get-text-property (point) 'shipit-pr-number))
+         (repo (get-text-property (point) 'shipit-repo))
+         (file-path (get-text-property (point) 'shipit-file-path))
+         (line-number (or (get-text-property (point) 'shipit-line-number)
+                          (get-text-property (point) 'shipit-old-line-number)))
+         (preview-p (derived-mode-p 'shipit-preview-mode))
+         (can-comment (and (not preview-p) pr-number repo))
+         (actions (append
+                   (when can-comment (list "Add comment"))
+                   (mapcar #'car shipit-diff-line-actions))))
+    (unless (and file-path line-number)
+      (user-error "Missing diff context: file=%s line=%s"
+                  file-path line-number))
+    (unless actions
+      (user-error "No action for this line"))
+    (let ((choice (completing-read "Action: " actions nil t)))
+      (cond
+       ((string= choice "Add comment")
+        (shipit--simple-comment-dialog pr-number repo))
+       ((assoc choice shipit-diff-line-actions)
+        (call-interactively (cdr (assoc choice shipit-diff-line-actions))))
+       (t (message "No action selected"))))))
+
 (defun shipit--inline-comment-actions ()
   "Handle dwim actions for inline comments (comments on specific file lines).
 If point is on a URL, includes Open URL option in the action menu."
@@ -1455,16 +1490,7 @@ ACTION function takes no args, executes the handler behavior."
                  (or (get-text-property (point) 'shipit-line-number)
                      (get-text-property (point) 'shipit-old-line-number))
                  (not (get-text-property (point) 'shipit-comment))))
- (lambda ()
-   (let ((pr-number (get-text-property (point) 'shipit-pr-number))
-         (repo (get-text-property (point) 'shipit-repo))
-         (file-path (get-text-property (point) 'shipit-file-path))
-         (line-number (or (get-text-property (point) 'shipit-line-number)
-                          (get-text-property (point) 'shipit-old-line-number))))
-     (if (and pr-number repo file-path line-number)
-         (shipit--simple-comment-dialog pr-number repo)
-       (user-error "Missing context for inline comment: pr=%s repo=%s file=%s line=%s"
-                   pr-number repo file-path line-number)))))
+ #'shipit--diff-line-actions)
 
 (shipit-register-dwim-handler
  'general-comment

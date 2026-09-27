@@ -306,7 +306,7 @@ buffer-local overrides so the issue fetches use the correct backend
             (shipit-issue--insert-linked-items-section
              (cdr (assq 'issuelinks issue-data))
              (shipit-issue--get-work-item-columns))
-            ;; Similar work items -- idle until asked, answered by `shipit-issue-similar-finder'
+            ;; Similar work items -- idle until asked, answered by the finder
             (shipit-issue--insert-similar-items-section)
             ;; Linked PRs -- reverse of PR-buffer Linked Issue
             (shipit-issue--insert-linked-prs-section issue-number repo)
@@ -2636,7 +2636,7 @@ Called both at load time (if shipit-magit loaded) and via `with-eval-after-load'
                      (magit-section-match '(issue-linked-prs) (magit-current-section))))
      #'shipit-issue--link-pull-request)
 
-    ;; Similar Work Items heading — ask for similar work items
+    ;; Similar Work Items heading — ask the finder
     (shipit-register-dwim-handler
      'issue-similar-items
      (lambda () (and (derived-mode-p 'shipit-issue-mode)

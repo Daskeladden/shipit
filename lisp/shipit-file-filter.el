@@ -72,7 +72,14 @@ Possible values:
 - `comments': files with inline comments only
 - `owned': files I own based on CODEOWNERS
 - `viewed' / `unviewed': by viewed status
-- `drafts': files with pending review-queue drafts only.")
+- `drafts': files with pending review-queue drafts only.
+- a mode of `shipit-files-show-only-filters'.")
+
+(defvar shipit-files-show-only-filters nil
+  "Filters other packages add to what Files Changed can show only.
+Each is (MODE DESCRIPTION PREDICATE).  PREDICATE is called with the
+name of a file, and returns non-nil for a file to show.  DESCRIPTION
+is what the filter line says.")
 
 (defvar-local shipit--files-hidden nil
   "Names of the files hidden from Files Changed, one by one.")
@@ -129,6 +136,8 @@ It says what the filter shows only, and how many of FILES are hidden."
     "unviewed files")
    ((eq shipit--files-filter-mode 'drafts)
     "files with draft comments")
+   ((assq shipit--files-filter-mode shipit-files-show-only-filters)
+    (nth 1 (assq shipit--files-filter-mode shipit-files-show-only-filters)))
    ((not (string-empty-p shipit--files-filter-text))
     shipit--files-filter-text)
    (t nil)))
@@ -299,6 +308,9 @@ Checks `shipit--files-filter-mode' first:
      (not (shipit--file-viewed-p filename)))
     ('drafts
      (shipit--file-has-draft-p filename))
+    ((guard (assq shipit--files-filter-mode shipit-files-show-only-filters))
+     (funcall (nth 2 (assq shipit--files-filter-mode shipit-files-show-only-filters))
+              filename))
     (_
      ;; Default: text-based filename filter
      (if (or (null filter-text) (string-empty-p filter-text))
@@ -346,13 +358,19 @@ Checks `shipit--files-filter-mode' first:
         ;; Refresh main Files Changed section (commit files update on re-expand)
         (shipit--refresh-files-section-only)))))
 
+(defun shipit-files-show-only (mode)
+  "Show only the files of Files Changed that the filter MODE shows.
+MODE is one of `shipit--files-filter-mode', such as `comments', or a
+mode of `shipit-files-show-only-filters'.  It replaces the text filter."
+  (setq shipit--files-filter-mode mode)
+  (setq shipit--files-filter-text "")
+  (shipit--refresh-files-section-only)
+  (message "Showing %s only" (shipit--files-show-only-display)))
+
 (defun shipit--filter-files-with-comments ()
   "Filter to show only files with inline comments."
   (interactive)
-  (setq shipit--files-filter-mode 'comments)
-  (setq shipit--files-filter-text "")  ; Clear text filter
-  (shipit--refresh-files-section-only)
-  (message "Showing files with comments only"))
+  (shipit-files-show-only 'comments))
 
 (defun shipit--filter-files-owned ()
   "Filter to show only files I own based on CODEOWNERS.
@@ -368,26 +386,17 @@ Matches both direct user ownership (@username) and team membership (@org/team)."
 (defun shipit--filter-files-viewed ()
   "Filter to show only viewed files."
   (interactive)
-  (setq shipit--files-filter-mode 'viewed)
-  (setq shipit--files-filter-text "")
-  (shipit--refresh-files-section-only)
-  (message "Showing viewed files only"))
+  (shipit-files-show-only 'viewed))
 
 (defun shipit--filter-files-unviewed ()
   "Filter to show only unviewed files."
   (interactive)
-  (setq shipit--files-filter-mode 'unviewed)
-  (setq shipit--files-filter-text "")
-  (shipit--refresh-files-section-only)
-  (message "Showing unviewed files only"))
+  (shipit-files-show-only 'unviewed))
 
 (defun shipit--filter-files-with-drafts ()
   "Filter to show only files with pending review-queue drafts."
   (interactive)
-  (setq shipit--files-filter-mode 'drafts)
-  (setq shipit--files-filter-text "")
-  (shipit--refresh-files-section-only)
-  (message "Showing files with draft comments only"))
+  (shipit-files-show-only 'drafts))
 
 (defun shipit--files-section ()
   "The Files Changed section of this buffer, or nil."
@@ -469,6 +478,11 @@ Works from anywhere within the Files Changed section."
 (defvar shipit--files-section-refresh-in-progress nil
   "Guard to prevent concurrent files section refreshes.")
 
+(defvar shipit-files-section-refreshed-hook nil
+  "Hook run in a pull request buffer once Files Changed is drawn again.
+A redraw, as when the filter changes, drops what other packages put
+inside the file sections, and their functions here put it back.")
+
 (defun shipit--refresh-files-section-only ()
   "Refresh the files section content while preserving section structure.
 Updates only the BODY (content between `content` and `end` markers),
@@ -543,6 +557,7 @@ Works from any buffer - refreshes all visible shipit-mode buffers with files sec
                                               (shipit-review-queue--render))
                                             (when (fboundp 'shipit-review-queue--render-badges)
                                               (shipit-review-queue--render-badges))
+                                            (run-hooks 'shipit-files-section-refreshed-hook)
                                             (setq refreshed-count (1+ refreshed-count))))
                                       (error
                                        (shipit--debug-log "TARGET-REFRESH: Section update failed: %s"

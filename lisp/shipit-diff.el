@@ -782,6 +782,11 @@ Uses worktree git context if available for blob navigation (n/p)."
           (user-error "No commit SHA at point"))
       (user-error "No file at point"))))
 
+(defvar shipit-open-at-point-functions nil
+  "Functions that RET tries at point before shipit handles it.
+Each is called with no argument, and returns non-nil when it handled
+point, which ends the search.  Only links and references come first.")
+
 (defun shipit--open-file-at-point ()
   "Open file at point, dispatching to the appropriate handler.
 Detects whether point is on a file (commit file or PR file), a commit header,
@@ -789,7 +794,8 @@ approval section, activity event, or other elements and calls the appropriate fu
 Overlay actions (URLs, references) take priority over all other dispatch.
 This is a DWIM function that handles multiple contexts."
   (interactive)
-  (unless (shipit--try-overlay-action-at-point)
+  (unless (or (shipit--try-overlay-action-at-point)
+              (run-hook-with-args-until-success 'shipit-open-at-point-functions))
   (let ((commit-sha (get-text-property (point) 'shipit-commit-sha))
         (file-path (get-text-property (point) 'shipit-file-path))
         (is-commit-header (get-text-property (point) 'shipit-commit))

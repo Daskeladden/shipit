@@ -166,7 +166,19 @@ THEN that is refused: there is no work to move."
     (should-error (shipit-worktree-move-spin-off "feat/x") :type 'user-error)
     (should (string-empty-p (test-move--git "branch" "--list" "feat/x")))))
 
-;;; The command
+;;; What other packages do on a move
+
+(ert-deftest test-move-runs-the-functions-that-follow-a-move ()
+  "GIVEN a function that follows each move
+WHEN the branch checked out is moved to a worktree
+THEN the function is called with the checkout and the worktree."
+  (shipit-sandbox-with-repo
+    (let* ((checkout (file-name-as-directory (expand-file-name default-directory)))
+           (moves nil)
+           (shipit-worktree-move-functions
+            (list (lambda (from to) (push (list from to) moves))))
+           (dir (shipit-worktree-move-branch "work")))
+      (should (equal (list (list checkout dir)) moves)))))
 
 (ert-deftest test-move-command-names-the-spin-off-as-suggested ()
   "GIVEN `main' checked out, with a commit not pushed, and a suggester
@@ -187,6 +199,8 @@ to a branch named as it suggests."
       (should (string-match-p "Read the header once" work))
       (should (shipit-worktree-move-worktree-of "read-the-header")))))
 
+;;; The command
+
 (ert-deftest test-move-command-moves-a-feature-branch ()
   "GIVEN the branch `work' checked out
 WHEN the work is moved with the command
@@ -204,6 +218,8 @@ THEN it offers to move the work to a worktree."
   (require 'magit-worktree)
   (should (string-match-p "shipit-worktree-move-work"
                           (format "%S" (transient-get-suffix 'magit-worktree "s")))))
+
+;;; Handing over to the session of the worktree
 
 (provide 'test-shipit-worktree-move)
 ;;; test-shipit-worktree-move.el ends here

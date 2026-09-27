@@ -153,5 +153,47 @@ THEN the preview no longer shows it, and says one file is hidden."
               (should (string-match-p "Filter: 1 hidden" (buffer-string))))
           (kill-buffer))))))
 
+(ert-deftest test-files-hide-runs-the-functions-that-follow-a-redraw ()
+  "GIVEN a function on the hook that follows a redraw of Files Changed
+WHEN files are hidden, which draws Files Changed again
+THEN the function runs once, in the pull request buffer."
+  (test-files-hide--in-pr-buffer
+    (let* ((runs nil)
+           (shipit-files-section-refreshed-hook
+            (list (lambda () (push (current-buffer) runs)))))
+      (shipit--hide-files-matching "TSX")
+      (should (equal (list (current-buffer)) runs)))))
+
+(defun test-files-hide--files-section ()
+  "The Files Changed section of this buffer."
+  (save-excursion
+    (goto-char (text-property-any (point-min) (point-max) 'shipit-pr-files t))
+    (magit-current-section)))
+
+(ert-deftest test-files-hide-runs-the-functions-that-follow-each-show ()
+  "GIVEN a function that follows each show of Files Changed
+WHEN Files Changed is closed and opened again, and a file in it opened
+THEN the function ran once, for the one show of Files Changed."
+  (test-files-hide--in-pr-buffer
+    (let* ((runs 0)
+           (shipit-files-section-shown-hook (list (lambda () (cl-incf runs))))
+           (files (test-files-hide--files-section)))
+      (magit-section-hide files)
+      (magit-section-show files)
+      (magit-section-show (car (oref files children)))
+      (should (= 1 runs)))))
+
+(ert-deftest test-files-hide-a-filter-added-to-it-shows-only-its-files ()
+  "GIVEN a filter another package adds, for files named Button
+WHEN Files Changed shows only what that filter shows
+THEN only the Button file shows, and the filter line says what shows."
+  (test-files-hide--in-pr-buffer
+    (let ((shipit-files-show-only-filters
+           (list (list 'buttons "button files"
+                       (lambda (name) (string-match-p "Button" name))))))
+      (shipit-files-show-only 'buttons)
+      (should (equal '("src/Button.tsx") (test-files-hide--shown)))
+      (should (string-match-p "Filter: button files" (buffer-string))))))
+
 (provide 'test-shipit-files-hide)
 ;;; test-shipit-files-hide.el ends here

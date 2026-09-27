@@ -968,8 +968,7 @@ THEN the git branch moves with it."
       (delete-directory root t))))
 
 (defmacro test-stacked--with-auth-layer (&rest body)
-  "Run BODY in a stacked preview of one layer of two auth commits.
-The rename prompt takes the text it is offered."
+  "Run BODY in a stacked preview of one layer of two auth commits."
   (declare (indent 0))
   `(with-temp-buffer
      (setq-local shipit-stacked-preview--branch "work")

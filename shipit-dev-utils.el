@@ -88,6 +88,7 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
       ;; shipit-core.el, which requires it.
       (let ((load-files '("shipit-faces.el"
                           "shipit-lib.el" "shipit-sections.el" "shipit-core.el" "shipit-cache.el" "shipit-comments.el"
+                          "shipit-custom-edit.el"
                           "shipit-stack.el"
                           "shipit-stack-plan.el"
                           "shipit-stacked-preview.el"

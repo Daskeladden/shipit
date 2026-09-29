@@ -6178,6 +6178,7 @@ Returns (octicon . color) or nil."
     ("merged" '("git-merge" . "#8250df"))                      ; Purple - Merged (matches GitHub)
     ("committed" '("git-commit" . "#6f42c1"))                  ; Purple - Commit (distinctive/special)
     ("head_ref_force_pushed" '("repo-push" . "#6e7781"))       ; Gray - Force push (neutral/informational)
+    ("description_edited" '("pencil" . "#6e7781"))             ; Gray - Edit (neutral/informational)
     (_ '("pin" . "#999999"))))
 
 (defun shipit--get-activity-event-icon (event-type &optional state emoji-fallback)

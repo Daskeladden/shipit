@@ -140,7 +140,7 @@ Pinned comments appear prominently between the description and comment sections 
 
 The mode line shows your position when navigating comments: `[42/315 ####------]`
 
-In the Activity section, an event that changed the description of a Jira issue opens with `TAB` to a word diff of the change: removed words are struck through in red, and added words are green.
+In the Activity section, an event that changed the description of a Jira issue opens with `TAB` to a word diff of the change: removed words are struck through in red, and added words are green. The Activity section of a GitHub pull request shows each edit of its description the same way. shipit asks GitHub for the edits along with the timeline, and runs the diff only when you open an edit.
 
 ### Atlassian dashboard
 

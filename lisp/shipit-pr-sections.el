@@ -3988,6 +3988,11 @@ INDENT is optional parent section indent in columns (default 0)."
       (shipit--insert-force-push-event event actor-login timestamp
                                        repo pr-number indent))
 
+     ;; Edits of the description
+     ((string= event-type "description_edited")
+      (shipit--insert-description-edit-event event actor-login timestamp
+                                             repo pr-number indent))
+
      ;; Cross-referenced events (when another PR/issue references this one)
      ((string= event-type "mentioned")
       (shipit--insert-activity-item "📣" actor-login
@@ -4140,6 +4145,17 @@ row is expanded."
      timestamp nil event repo pr-number indent
      (when (and before after)
        (lambda () (shipit--insert-force-push-compare repo before after))))))
+
+(defun shipit--insert-description-edit-event (event actor timestamp repo pr-number indent)
+  "Insert the activity row for EVENT, an edit of the description by ACTOR.
+TIMESTAMP, REPO, PR-NUMBER and INDENT are the usual activity context.
+The body is the word diff of the edit, made the first time the row is
+expanded."
+  (let ((from (cdr (assq 'shipit-description-from event)))
+        (to (cdr (assq 'shipit-description-to event))))
+    (shipit--insert-activity-item
+     "📝" actor "edited the description" timestamp nil event repo pr-number indent
+     (lambda () (shipit--insert-word-diff from to (make-string (+ (or indent 0) 3) ?\s))))))
 
 (defun shipit--insert-activity-item (icon actor action timestamp body event repo pr-number &optional indent body-fn)
   "Insert a single activity timeline item.

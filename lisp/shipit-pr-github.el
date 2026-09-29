@@ -22,6 +22,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'shipit-core)
 (require 'shipit-pr-backends)
 (require 'shipit-http)
@@ -276,8 +277,8 @@ with only one end is of no use to a comparison."
          (nodes (append (cdr (assq 'nodes items)) nil)))
     (delq nil (mapcar #'shipit-pr-github--force-push-pair nodes))))
 
-(defun shipit-pr-github--force-push-variables (config number)
-  "Return the GraphQL variables for the force pushes on PR NUMBER in CONFIG."
+(defun shipit-pr-github--pr-variables (config number)
+  "Return the GraphQL variables that name PR NUMBER of the repository in CONFIG."
   (let ((parts (split-string (plist-get config :repo) "/")))
     `((owner . ,(car parts))
       (repo . ,(cadr parts))
@@ -290,13 +291,13 @@ carries in `commit_id\='."
   (shipit--debug-log "GitHub PR backend: fetching force pushes for PR #%s" number)
   (shipit-pr-github--force-push-pairs
    (shipit--graphql-request shipit-pr-github--force-push-query
-                            (shipit-pr-github--force-push-variables config number))))
+                            (shipit-pr-github--pr-variables config number))))
 
 (defun shipit-pr-github--fetch-force-pushes-async (config number callback)
   "Call CALLBACK with the force pushes on PR NUMBER, as pairs."
   (shipit--graphql-request
    shipit-pr-github--force-push-query
-   (shipit-pr-github--force-push-variables config number)
+   (shipit-pr-github--pr-variables config number)
    (lambda (response)
      (funcall callback (shipit-pr-github--force-push-pairs response)))))
 
@@ -336,12 +337,74 @@ force-pushed pull request does not block on it."
      (lambda (pairs)
        (funcall callback (shipit-pr-github--apply-force-push-pairs events pairs))))))
 
+;;; Edits of the description
+
+(defconst shipit-pr-github--description-edits-query
+  "query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      userContentEdits(first: 50) {
+        nodes { id editedAt diff editor { login avatarUrl } }
+      }
+    }
+  }
+}"
+  "GraphQL query for the versions of the description of a pull request.
+The REST timeline has no event for an edited description.  GraphQL
+keeps each version, newest first, and `diff' holds its whole text, not
+a diff.  The oldest is the text the pull request was opened with.")
+
+(defun shipit-pr-github--description-edit-event (newer older)
+  "The activity event of the edit that saved NEWER over OLDER.
+Both are versions of a description from GraphQL."
+  (let ((editor (cdr (assq 'editor newer))))
+    `((event . "description_edited")
+      (id . ,(cdr (assq 'id newer)))
+      (created_at . ,(cdr (assq 'editedAt newer)))
+      (actor . ((login . ,(cdr (assq 'login editor)))
+                (avatar_url . ,(cdr (assq 'avatarUrl editor)))))
+      (shipit-description-from . ,(or (cdr (assq 'diff older)) ""))
+      (shipit-description-to . ,(or (cdr (assq 'diff newer)) "")))))
+
+(defun shipit-pr-github--description-edit-events (response)
+  "The edits of the description in GraphQL RESPONSE, as activity events.
+Each goes from the version before it to its own.  A RESPONSE of nil,
+from a request that failed, has none."
+  (let* ((data (cdr (assq 'data response)))
+         (repository (cdr (assq 'repository data)))
+         (pull-request (cdr (assq 'pullRequest repository)))
+         (edits (cdr (assq 'userContentEdits pull-request)))
+         (nodes (append (cdr (assq 'nodes edits)) nil)))
+    (cl-loop for (newer older) on nodes
+             while older
+             collect (shipit-pr-github--description-edit-event newer older))))
+
+(defun shipit-pr-github--add-description-edits (config number events)
+  "EVENTS of PR NUMBER in CONFIG, with the edits of its description after them."
+  (append events
+          (shipit-pr-github--description-edit-events
+           (shipit--graphql-request shipit-pr-github--description-edits-query
+                                    (shipit-pr-github--pr-variables config number)))))
+
+(defun shipit-pr-github--add-description-edits-async (config number events callback)
+  "Call CALLBACK with EVENTS of PR NUMBER, and the edits of its description.
+It costs one request: the timeline cannot say whether the description
+was ever edited."
+  (shipit--graphql-request
+   shipit-pr-github--description-edits-query
+   (shipit-pr-github--pr-variables config number)
+   (lambda (response)
+     (funcall callback
+              (append events (shipit-pr-github--description-edit-events response))))))
+
 (defun shipit-pr-github--fetch-timeline (config number)
   "Fetch timeline events for PR NUMBER using CONFIG."
   (let ((repo (plist-get config :repo)))
     (shipit--debug-log "GitHub PR backend: fetching timeline for PR #%s" number)
-    (shipit-pr-github--annotate-force-pushes
-     config number (shipit--fetch-timeline-events repo number))))
+    (shipit-pr-github--add-description-edits
+     config number
+     (shipit-pr-github--annotate-force-pushes
+      config number (shipit--fetch-timeline-events repo number)))))
 
 ;;; Async backend wrappers
 ;; These adapt the existing async functions to the (config number callback)
@@ -361,7 +424,10 @@ Calls CALLBACK with the list of events."
      repo number
      (lambda (events)
        (shipit-pr-github--annotate-force-pushes-async
-        config number events callback)))))
+        config number events
+        (lambda (annotated)
+          (shipit-pr-github--add-description-edits-async
+           config number annotated callback)))))))
 
 (defun shipit-pr-github--fetch-commits-async (config number callback)
   "Fetch commits for PR NUMBER using CONFIG asynchronously.

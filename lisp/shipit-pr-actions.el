@@ -2126,6 +2126,8 @@ the navigation actually moves point."
       (shipit--crossref-actions crossref-repo crossref-number crossref-url crossref-title))
      ((string= event-type "head_ref_force_pushed")
       (shipit--toggle-force-push-compare))
+     ((string= event-type "description_edited")
+      (magit-section-toggle (magit-current-section)))
      (t
       (message "No navigation available for this activity event type: %s" event-type)))
     (unless (= (point) start-pos)

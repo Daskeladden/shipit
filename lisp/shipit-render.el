@@ -6603,6 +6603,28 @@ ROWS is a list of lists where each inner list is a row of cells."
       ;; Join lines
       (mapconcat 'identity (reverse table-lines) "\n"))))
 
+;;; Icons in a slot of columns
+
+(defun shipit--image-columns (drawn)
+  "The columns DRAWN, an icon on a space, takes on this display."
+  (if (display-graphic-p)
+      (car (image-size (get-text-property 0 'display drawn)))
+    1))
+
+(defun shipit--thin-space (columns)
+  "A thin space COLUMNS wide, a part of a column; nothing when COLUMNS is none."
+  (if (> columns 0)
+      (propertize " " 'display `(space :width ,columns))
+    ""))
+
+(defun shipit--icon-in-slot (icon slot)
+  "ICON filled out to SLOT columns, so the text after it lines up with spaces.
+ICON is text, such as an emoji, or an image drawn on a space.  An
+image is not as wide as its columns, so a thin space fills the rest."
+  (if (imagep (get-text-property 0 'display icon))
+      (concat icon (shipit--thin-space (- slot (shipit--image-columns icon))))
+    (concat icon (make-string (max 0 (- slot (string-width icon))) ?\s))))
+
 ;;; Word diff of two texts
 
 (defconst shipit--word-diff-context 2

@@ -237,9 +237,9 @@ once the sections above it are finished."
 
 (defun test-sfp--open-file-sections ()
   "Open every file section of the comparison in the current buffer."
-  (dolist (section (oref magit-root-section children))
-    (when (eq (oref section type) 'pr-file)
-      (magit-section-show section))))
+  (magit-map-sections (lambda (section)
+                        (when (eq (oref section type) 'pr-file)
+                          (magit-section-show section)))))
 
 (ert-deftest test-sfp-compare-renders-the-changed-files ()
   "GIVEN a force push whose two heads differ in one file
@@ -317,6 +317,349 @@ to the pull request diff and not to this comparison."
     (should-not (string-match-p
                  "a review comment on the pull request diff"
                  (buffer-substring-no-properties (point-min) (point-max))))))
+
+;;; The commits of a push, each with its files
+;; A real repository for each case.  The old commits are paired with
+;; the new ones by `git range-diff', and each commit opens to the files
+;; it changes, so what a rebase brought in never shows.
+
+(defun test-sfp--git (&rest args)
+  "The trimmed output of git with ARGS, in `default-directory'."
+  (string-trim (apply #'shipit--git-output args)))
+
+(defun test-sfp--commit (file text message)
+  "Write TEXT to FILE, commit it with MESSAGE, and return the commit."
+  (with-temp-file (expand-file-name file) (insert text))
+  (test-sfp--git "add" file)
+  (test-sfp--git "commit" "-q" "-m" message)
+  (test-sfp--git "rev-parse" "HEAD"))
+
+(defun test-sfp--text ()
+  "The text of the buffer, without properties."
+  (buffer-substring-no-properties (point-min) (point-max)))
+
+(defmacro test-sfp--in-repo (&rest body)
+  "Run BODY in a new, empty repository, deleted after."
+  (declare (indent 0))
+  `(let* ((dir (file-name-as-directory (make-temp-file "shipit-force-push-" t)))
+          (default-directory dir)
+          (shipit-show-avatars nil))
+     (unwind-protect
+         (progn
+           (test-sfp--git "-c" "init.defaultBranch=main" "init" "-q")
+           (test-sfp--git "config" "user.email" "test@example.invalid")
+           (test-sfp--git "config" "user.name" "Test")
+           ,@body)
+       (delete-directory dir t))))
+
+(defmacro test-sfp--rendering (base before after &rest body)
+  "Run BODY on the comparison of BEFORE and AFTER, rendered in a new buffer.
+The pull request has BASE as the commit of its base branch."
+  (declare (indent 3))
+  `(let ((dir default-directory))
+     (with-temp-buffer
+       (setq default-directory dir)
+       (magit-section-mode)
+       (setq-local shipit-buffer-pr-data `((base . ((ref . "main") (sha . ,,base)))))
+       (let ((inhibit-read-only t))
+         (magit-insert-section (root)
+           (shipit--insert-force-push-compare "o/r" ,before ,after)))
+       ,@body)))
+
+(defconst test-sfp--branch-lines "two\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\n"
+  "The lines the commit of the branch adds to a.txt.
+Enough of them that `git range-diff' still pairs the two versions of
+the commit when one of them and a line of context change.")
+
+(defconst test-sfp--added-lines (concat "one\n" test-sfp--branch-lines)
+  "What a.txt holds after the commit of the first push.")
+
+(defun test-sfp--history (spec)
+  "Build a pull request pushed twice; return its commits as a plist.
+Main has a.txt and b.txt, and the one commit of the branch, \"Add
+lines\", adds lines to a.txt.  SPEC is a plist.  `:main', a (FILE .
+TEXT), is a change main makes, with a new c.txt, before the second push
+is rebased onto it.  `:fixed' changes \"three\" to \"THREE\" in the
+second push.  The plist returned has `:before', `:after' and `:base',
+the commit main ends on."
+  (test-sfp--commit "b.txt" "x\n" "b")
+  (test-sfp--commit "a.txt" "one\n" "a")
+  (test-sfp--git "checkout" "-q" "-b" "work")
+  (let ((before (test-sfp--commit "a.txt" test-sfp--added-lines "Add lines"))
+        (main (plist-get spec :main)))
+    (test-sfp--git "checkout" "-q" "main")
+    (when main
+      (test-sfp--commit (car main) (cdr main) "main moves")
+      (test-sfp--commit "c.txt" "new\n" "main adds"))
+    (let ((base (test-sfp--git "rev-parse" "HEAD")))
+      (test-sfp--git "checkout" "-q" "-b" "work2")
+      (list :before before :base base
+            :after (test-sfp--commit
+                    "a.txt"
+                    (concat (if (equal (car main) "a.txt") (cdr main) "one\n")
+                            (if (plist-get spec :fixed)
+                                (replace-regexp-in-string "three" "THREE" test-sfp--branch-lines)
+                              test-sfp--branch-lines))
+                    "Add lines")))))
+
+(defmacro test-sfp--with-history (spec &rest body)
+  "Run BODY on the rendered comparison of the history SPEC builds.
+See `test-sfp--history'.  BODY sees the plist it returns as `history'."
+  (declare (indent 1))
+  `(test-sfp--in-repo
+     (let ((history (test-sfp--history ,spec)))
+       (test-sfp--rendering (plist-get history :base)
+           (plist-get history :before) (plist-get history :after)
+         ,@body))))
+
+(defun test-sfp--commits-section ()
+  "The section of the commits of the comparison, or nil."
+  (seq-find (lambda (section) (eq 'force-push-commits (oref section type)))
+            (oref magit-root-section children)))
+
+(defun test-sfp--commit-section (subject)
+  "The section of the commit of the comparison with SUBJECT."
+  (seq-find (lambda (section)
+              (string-match-p (regexp-quote subject)
+                              (buffer-substring-no-properties
+                               (oref section start) (oref section content))))
+            (oref (test-sfp--commits-section) children)))
+
+(defun test-sfp--opened-commit (subject)
+  "Open the folded commit of the comparison with SUBJECT; return its text."
+  (let ((commit (test-sfp--commit-section subject)))
+    (should (oref commit hidden))
+    (magit-section-show commit)
+    (buffer-substring (oref commit start) (oref commit end))))
+
+(defun test-sfp--opened-commit-files (subject)
+  "Open the commit with SUBJECT and each of its files; return its text."
+  (test-sfp--opened-commit subject)
+  (let ((commit (test-sfp--commit-section subject)))
+    (dolist (file (oref commit children))
+      (magit-section-show file))
+    (buffer-substring-no-properties (oref commit start) (oref commit end))))
+
+(ert-deftest test-sfp-after-a-rebase-a-changed-commit-shows-only-its-change ()
+  "GIVEN a branch rebased onto a main that changed b.txt and added c.txt,
+and its commit fixed in the same push
+WHEN the comparison is rendered, and the commit and its file opened
+THEN it says the rebase is left out, and the commit shows only a.txt,
+whose diff holds only the fix."
+  (test-sfp--with-history '(:main ("b.txt" . "x\ny\n") :fixed t)
+    (should (string-match-p "Only the author's changes" (test-sfp--text)))
+    (should (string-match-p "Commits: 1 changed" (test-sfp--text)))
+    (let ((text (test-sfp--opened-commit-files "Add lines")))
+      (should (string-match-p "a\\.txt" text))
+      (should-not (string-match-p "b\\.txt\\|c\\.txt" text))
+      (should (string-match-p "^ *-three" text))
+      (should (string-match-p "^ *\\+THREE" text)))))
+
+(ert-deftest test-sfp-a-changed-commit-compares-with-its-old-change-on-the-new-parent ()
+  "GIVEN a rebased and fixed commit
+WHEN it is opened
+THEN its file compares with the old commit applied onto the new
+commit's parent, so the diff commands at point leave the rebase out."
+  (test-sfp--with-history '(:main ("b.txt" . "x\ny\n") :fixed t)
+    (test-sfp--opened-commit "Add lines")
+    (let* ((pos (test-sfp--position-with 'shipit-file-path "a.txt"))
+           (from (get-text-property pos 'shipit-base-sha)))
+      (should (equal test-sfp--added-lines (shipit--git-output "show" (concat from ":a.txt"))))
+      (should (equal "x\ny\n" (shipit--git-output "show" (concat from ":b.txt")))))))
+
+(ert-deftest test-sfp-a-push-that-only-rebased-says-so ()
+  "GIVEN a branch rebased onto a newer main and changed in nothing else,
+as a bot that keeps branches up to date does
+WHEN the comparison is rendered
+THEN one line says the push only rebased, and its commit is unchanged."
+  (test-sfp--with-history '(:main ("b.txt" . "x\ny\n"))
+    (should (string-match-p "Only a rebase onto [0-9a-f]\\{7\\}: the push changed nothing else"
+                            (test-sfp--text)))
+    (should (string-match-p "Commits: 1 unchanged" (test-sfp--text)))
+    (should-not (string-match-p "No file changes\\|Only the author" (test-sfp--text)))))
+
+(ert-deftest test-sfp-without-a-rebase-no-rebase-is-mentioned ()
+  "GIVEN a push that fixed the commit on the same main
+WHEN the comparison is rendered, and the commit and its file opened
+THEN nothing speaks of a rebase, and the commit shows the fix."
+  (test-sfp--with-history '(:fixed t)
+    (should-not (string-match-p "rebase" (test-sfp--text)))
+    (should (string-match-p "^ *\\+THREE" (test-sfp--opened-commit-files "Add lines")))))
+
+(ert-deftest test-sfp-a-conflict-shows-how-the-author-resolved-it ()
+  "GIVEN a branch rebased onto a main that added a line where the commit
+adds its lines, so the old commit conflicts, resolved by the author
+WHEN the comparison is rendered, and the commit and its file opened
+THEN the commit says it conflicted, and the diff of a.txt goes from
+git's conflict markers to the author's resolution."
+  (test-sfp--with-history '(:main ("a.txt" . "one\nzero\n") :fixed t)
+    (let ((text (test-sfp--opened-commit-files "Add lines")))
+      (should (string-match-p "conflict" text))
+      (should (string-match-p "^ *-<<<<<<<" text)))))
+
+(ert-deftest test-sfp-a-commit-already-on-the-base-is-on-base ()
+  "GIVEN a branch of two commits, where the second changes the line the
+first added, and a main that took the first commit as a commit of its
+own; the branch is then rebased onto main, which drops that commit
+WHEN the comparison is rendered
+THEN the first commit counts as on the base, not as dropped, and the
+push only rebased."
+  (test-sfp--in-repo
+    (test-sfp--commit "a.txt" "one\n" "a")
+    (test-sfp--git "checkout" "-q" "-b" "work")
+    (let* ((first (test-sfp--commit "a.txt" "one\ntwo\n" "two"))
+           (before (test-sfp--commit "a.txt" "one\nTWO\n" "TWO")))
+      (test-sfp--git "checkout" "-q" "main")
+      ;; A commit of main's own first, so the copy is a new commit and
+      ;; not the same one again.
+      (test-sfp--commit "b.txt" "x\n" "main moves")
+      (test-sfp--git "cherry-pick" first)
+      (let ((base (test-sfp--commit "c.txt" "new\n" "main adds")))
+        (test-sfp--git "checkout" "-q" "-b" "work2")
+        (let ((after (test-sfp--commit "a.txt" "one\nTWO\n" "TWO")))
+          (test-sfp--rendering base before after
+            (should (string-match-p "Only a rebase onto" (test-sfp--text)))
+            (should (string-match-p "Commits: 1 on base, 1 unchanged" (test-sfp--text)))
+            (should-not (string-match-p "dropped\\|conflict" (test-sfp--text)))))))))
+
+(defmacro test-sfp--with-reword (&rest body)
+  "Run BODY on the rendered comparison of a push that only reworded a commit."
+  (declare (indent 0))
+  `(test-sfp--in-repo
+     (let ((base (test-sfp--commit "a.txt" "one\n" "a")))
+       (test-sfp--git "checkout" "-q" "-b" "work")
+       (let ((before (test-sfp--commit "a.txt" "one\ntwo\n" "Add two")))
+         (test-sfp--git "commit" "-q" "--amend" "-m" "Add two\n\nThe reader needs it.")
+         (test-sfp--rendering base before (test-sfp--git "rev-parse" "HEAD")
+           ,@body)))))
+
+(ert-deftest test-sfp-a-reworded-message-shows-its-change ()
+  "GIVEN a push that only reworded the message of a commit
+WHEN the comparison is rendered, and the commit opened
+THEN the commits count one changed, and the folded commit shows the
+words added to its message in their face, and says its changes are
+the same."
+  (test-sfp--with-reword
+    (should (string-match-p "Commits: 1 changed" (test-sfp--text)))
+    (let ((text (test-sfp--opened-commit "Add two")))
+      (should (string-match-p "Commit message changed:" text))
+      (should (eq 'shipit-word-diff-added-face
+                  (get-text-property (string-match "reader" text) 'font-lock-face text)))
+      (should (string-match-p "changes are the same" text)))))
+
+(ert-deftest test-sfp-the-commits-have-the-commit-octicon ()
+  "GIVEN SVG icons, and a push that reworded a commit
+WHEN the comparison is rendered
+THEN the heading of the commits asks for the git-commit octicon, and
+its image is in the buffer, before a title in the face of headings."
+  (let ((asked nil))
+    ;; `features' is not special, so only `dlet' binds it for `featurep'.
+    (dlet ((shipit-use-svglib-icons t)
+           (features (cons 'svg-lib features)))
+      (cl-letf (((symbol-function 'svg-lib-icon)
+                 (lambda (name &rest _)
+                   (push name asked)
+                   '(image :type svg :data "<svg/>"))))
+        (test-sfp--with-reword
+          (should (member "git-commit" asked))
+          (let ((start (oref (test-sfp--commits-section) start)))
+            (should (imagep (get-text-property (+ 3 start) 'display)))
+            (goto-char start)
+            (search-forward "Commits")
+            (should (eq 'magit-section-heading
+                        (get-text-property (match-beginning 0) 'font-lock-face)))))))))
+
+(defun test-sfp--column-of (regexp)
+  "The column where the first match of REGEXP in the buffer starts."
+  (save-excursion
+    (goto-char (point-min))
+    (re-search-forward regexp)
+    (goto-char (match-beginning 0))
+    (current-column)))
+
+(ert-deftest test-sfp-the-rows-line-up-under-their-headings ()
+  "GIVEN a rendered comparison with a changed commit, opened
+WHEN the columns are read
+THEN the commit row starts where the title of the commits does, and
+what the commit holds, its message and its file, starts 2 columns in."
+  (test-sfp--with-reword
+    (test-sfp--opened-commit "Add two")
+    (let ((title (test-sfp--column-of "Commits")))
+      (should (= title (test-sfp--column-of "changed ")))
+      (should (= (+ title 2) (test-sfp--column-of "Commit message changed"))))))
+
+(ert-deftest test-sfp-the-files-of-a-commit-sit-under-it ()
+  "GIVEN a push that changed a commit
+WHEN the comparison is rendered, and the commit opened
+THEN no list of files stands apart from the commits, and the files are
+sections under the commit."
+  (test-sfp--with-history '(:fixed t)
+    (should-not (seq-find (lambda (section) (eq 'force-push-files (oref section type)))
+                          (oref magit-root-section children)))
+    (test-sfp--opened-commit "Add lines")
+    (should (equal '(pr-file)
+                   (delete-dups (mapcar (lambda (section) (oref section type))
+                                        (oref (test-sfp--commit-section "Add lines") children)))))))
+
+(ert-deftest test-sfp-added-and-dropped-commits-list-their-files ()
+  "GIVEN a push that dropped the first of two commits, kept the second,
+and added a new one
+WHEN the comparison is rendered, and the added and dropped ones opened
+THEN the commits count each kind, and each opens to the files it
+changes, with their diffs."
+  (test-sfp--in-repo
+    (let ((base (test-sfp--commit "a.txt" "one\n" "a")))
+      (test-sfp--git "checkout" "-q" "-b" "work")
+      (test-sfp--commit "x.txt" "x\n" "Add x")
+      (let* ((kept (test-sfp--commit "k.txt" "k\n" "Add k"))
+             (before kept))
+        (test-sfp--git "checkout" "-q" "-b" "work2" base)
+        (test-sfp--git "cherry-pick" kept)
+        (let ((after (test-sfp--commit "n.txt" "n\n" "Add n")))
+          (test-sfp--rendering base before after
+            (should (string-match-p "Commits: 1 added, 1 dropped, 1 unchanged" (test-sfp--text)))
+            (should (string-match-p "n\\.txt[^z]*\\+n" (test-sfp--opened-commit-files "Add n")))
+            (should (string-match-p "x\\.txt[^z]*\\+x" (test-sfp--opened-commit-files "Add x")))))))))
+
+(defconst test-sfp--lines "a\nb\nc\nd\ne\nf\ng\nh\n"
+  "A file long enough for a change with lines of context around it.")
+
+(ert-deftest test-sfp-a-changed-commit-shows-the-files-its-change-differs-in ()
+  "GIVEN a push that changed one of the lines a commit adds
+WHEN the comparison is rendered, and the commit and its file opened
+THEN the commit shows that file, with the one line that changed."
+  (test-sfp--in-repo
+    (let ((base (test-sfp--commit "s.txt" test-sfp--lines "s")))
+      (test-sfp--git "checkout" "-q" "-b" "work")
+      (let ((before (test-sfp--commit "s.txt" "a\nb\nc\nd1\nd2\nd3\nd4\ne\nf\ng\nh\n" "Add d")))
+        (test-sfp--git "checkout" "-q" "-b" "work2" base)
+        (let ((after (test-sfp--commit "s.txt" "a\nb\nc\nd1\nd2\nD3\nd4\ne\nf\ng\nh\n" "Add d")))
+          (test-sfp--rendering base before after
+            (should (string-match-p "Commits: 1 changed" (test-sfp--text)))
+            (let ((text (test-sfp--opened-commit-files "Add d")))
+              (should (string-match-p "s\\.txt" text))
+              (should (string-match-p "^ *-d3" text))
+              (should (string-match-p "^ *\\+D3" text)))))))))
+
+(ert-deftest test-sfp-a-commit-whose-context-moved-says-so ()
+  "GIVEN a branch rebased onto a main that changed a line near the one a
+commit changes, so only the lines around its change differ
+WHEN the comparison is rendered, and the commit opened
+THEN it says its changes are the same and only the lines around them
+differ, and it has no file."
+  (test-sfp--in-repo
+    (test-sfp--commit "s.txt" test-sfp--lines "s")
+    (test-sfp--git "checkout" "-q" "-b" "work")
+    (let ((before (test-sfp--commit "s.txt" "a\nb\nc\nd\nE\nf\ng\nh\n" "Change e")))
+      (test-sfp--git "checkout" "-q" "main")
+      (let ((base (test-sfp--commit "s.txt" "a\nB\nc\nd\ne\nf\ng\nh\n" "Change b")))
+        (test-sfp--git "checkout" "-q" "-b" "work2")
+        (let ((after (test-sfp--commit "s.txt" "a\nB\nc\nd\nE\nf\ng\nh\n" "Change e")))
+          (test-sfp--rendering base before after
+            (should (string-match-p "Commits: 1 changed" (test-sfp--text)))
+            (should (string-match-p "only the lines around them differ"
+                                    (test-sfp--opened-commit "Change e")))
+            (should-not (oref (test-sfp--commit-section "Change e") children))))))))
 
 ;;; RET on the row
 ;; Driven through finished sections rather than stubs.  Until a row is

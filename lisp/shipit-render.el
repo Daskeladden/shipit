@@ -6037,6 +6037,7 @@ Returns (octicon . color) or nil."
     ("linked-issue" '("link" . "#8250df"))                           ; Purple - PR to tracker issue link
     ("video" '("play" . "#0366d6"))                                  ; Blue - Video play button
     ("resolved" '("check-circle-fill" . "#28a745"))                  ; Green - Resolved review thread
+    ("commits" '("git-commit" . "#6f42c1"))                          ; Purple - Commits a force push changed
     (_ nil)))
 
 (defun shipit--get-pr-field-icon (field-type emoji-fallback)

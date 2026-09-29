@@ -4072,9 +4072,227 @@ GitHub\='s own Compare button shows only what the push changed."
   (shipit--ensure-diff-revisions (cons before after) repo)
   (shipit--range-files-from-git before after))
 
+(defun shipit--pr-base-sha ()
+  "Return the commit of the base branch of the pull request here, or nil."
+  (cdr (assq 'sha (cdr (assq 'base (bound-and-true-p shipit-buffer-pr-data))))))
+
+(defun shipit--commit-parent (commit)
+  "The first parent of COMMIT."
+  (magit-git-string "rev-parse" (concat commit "^")))
+
+(defun shipit--replay-commit (tip commit)
+  "Apply COMMIT onto TIP, without a worktree.
+Return (NEW-TIP . CONFLICTED): a commit that holds the result, and
+whether COMMIT conflicted, in which case its conflicted files hold
+git's conflict markers.  A `user-error' when git cannot apply it at
+all; `git merge-tree --merge-base' needs git 2.40."
+  (let ((merge (shipit--run-git "merge-tree" "--write-tree" "--no-messages"
+                                (concat "--merge-base=" commit "^") tip commit)))
+    (unless (memq (car merge) '(0 1))
+      (user-error "git could not replay the old commit %s: %s"
+                  (shipit--force-push-short-sha commit)
+                  (car (split-string (cdr merge) "\n"))))
+    (let ((made (shipit--run-git "-c" "user.name=shipit" "-c" "user.email=shipit@invalid"
+                                 "commit-tree" (car (split-string (cdr merge) "\n"))
+                                 "-p" tip "-m" "shipit: a force push replayed")))
+      (unless (zerop (car made))
+        (user-error "git could not keep the replay: %s" (cdr made)))
+      (cons (cdr made) (= 1 (car merge))))))
+
+;;;; The commits of a force push
+;; The old commits are paired with the new ones, and each commit opens
+;; to the files it changes.  A changed commit compares with its old
+;; version applied onto its new parent, so neither a rebase nor the
+;; other commits show in its diff.
+
+(put 'force-push-commits 'magit-section t)
+(put 'force-push-commit 'magit-section t)
+(put 'force-push-files 'magit-section t)
+
+;; The columns of a force-push comparison: a part's icon at 3, in a slot
+;; of 2; the part's title, and the rows under it, at 6; what a commit
+;; holds at 8; and the diff of a file 2 columns in from its row.
+(defconst shipit--force-push-icon-slot 2
+  "The columns the icon of a part of a force-push comparison takes.")
+
+(defconst shipit--force-push-row-column 6
+  "Where the rows of a part of a force-push comparison start.")
+
+(defconst shipit--force-push-commit-indent (make-string 8 ?\s)
+  "Where the text under a commit of a force push starts.")
+
+(defconst shipit--range-diff-header-regexp
+  (concat "^ *\\(?:[0-9]+\\|-\\): +\\([0-9a-f]+\\|-+\\) \\([=!<>]\\)"
+          " +\\(?:[0-9]+\\|-\\): +\\([0-9a-f]+\\|-+\\) \\(.*\\)$")
+  "A header line of `git range-diff': the old commit, how it relates to the
+new one, the new commit, and the subject.  A missing commit is dashes.")
+
+(defconst shipit--range-diff-kinds
+  '((?> . added) (?< . dropped) (?! . changed) (?= . unchanged))
+  "The kind of a pair of commits, by the mark `git range-diff' gives it.")
+
+(defconst shipit--force-push-commit-kinds
+  '((added "added" success) (on-base "on base" shadow) (dropped "dropped" error)
+    (changed "changed" warning) (unchanged "unchanged" nil))
+  "Each kind of commit of a force push, as (KIND WORD FACE), in the order counted.")
+
+(defun shipit--force-push-part-heading (icon title &optional rest)
+  "The heading of a part of a force-push comparison: ICON, TITLE and REST.
+TITLE is in the face of headings, so a part stands apart from the rows
+under it."
+  (concat "   " (shipit--icon-in-slot icon shipit--force-push-icon-slot) " "
+          (propertize title 'font-lock-face 'magit-section-heading) (or rest "")))
+
+(defun shipit--range-diff-commit (text)
+  "TEXT, a commit of a header line of `git range-diff', or nil for dashes."
+  (unless (string-prefix-p "-" text) text))
+
+(defun shipit--commits-on-base (new-base before)
+  "The commits of BEFORE whose change NEW-BASE holds already, as full hashes."
+  (delq nil (mapcar (lambda (line) (and (string-prefix-p "=" line) (substring line 1)))
+                    (magit-git-lines "rev-list" "--cherry-mark" "--right-only" "--no-merges"
+                                     (format "%s...%s" new-base before)))))
+
+(defun shipit--force-push-commits (old-base before new-base after)
+  "The commits of the push from BEFORE on OLD-BASE to AFTER on NEW-BASE.
+Each is a plist of `:kind', `:old' and `:new', the commits or nil, and
+`:subject', in the order `git range-diff' gives.  It pairs them by
+their patches, so a commit keeps its pair after a rebase or a reword;
+only its header lines are read.  A dropped commit whose change the new
+base holds, such as the first of a stack that was merged, is `on-base'."
+  (let ((on-base (shipit--commits-on-base new-base before)))
+    (delq nil
+          (mapcar (lambda (line)
+                    (when (string-match shipit--range-diff-header-regexp line)
+                      (let ((old (shipit--range-diff-commit (match-string 1 line)))
+                            (new (shipit--range-diff-commit (match-string 3 line)))
+                            (kind (cdr (assq (string-to-char (match-string 2 line))
+                                             shipit--range-diff-kinds)))
+                            (subject (match-string 4 line)))
+                        (list :kind (if (and (eq kind 'dropped)
+                                             (seq-some (lambda (full) (string-prefix-p old full))
+                                                       on-base))
+                                        'on-base
+                                      kind)
+                              :old old :new new :subject subject))))
+                  (magit-git-lines "range-diff" "--no-color"
+                                   (concat old-base ".." before) (concat new-base ".." after))))))
+
+(defun shipit--commit-message (commit)
+  "The whole message of COMMIT, without the blank lines at its end."
+  (string-trim-right (shipit--git-output "log" "-1" "--format=%B" commit)))
+
+(defun shipit--insert-force-push-comment (text)
+  "Insert TEXT, dimmed, as a line under a commit of a force push."
+  (insert shipit--force-push-commit-indent
+          (propertize text 'font-lock-face 'font-lock-comment-face) "\n"))
+
+(defun shipit--insert-force-push-commit-files (from to repo)
+  "Insert the files that differ between FROM and TO in REPO, under a commit."
+  (dolist (file (shipit--range-files-from-git from to))
+    (shipit--insert-force-push-file file repo from to (length shipit--force-push-commit-indent))))
+
+(defun shipit--insert-force-push-changed-commit (old new repo)
+  "Insert how commit NEW in REPO differs from OLD, its version before the push.
+Its message first, when that changed.  Then its files, compared with
+OLD applied onto the parent of NEW."
+  (let* ((old-message (shipit--commit-message old))
+         (new-message (shipit--commit-message new))
+         (replay (shipit--replay-commit (shipit--commit-parent new) old))
+         (files (shipit--range-files-from-git (car replay) new)))
+    (unless (equal old-message new-message)
+      (shipit--insert-force-push-comment "Commit message changed:")
+      (shipit--insert-word-diff old-message new-message shipit--force-push-commit-indent))
+    (cond ((cdr replay)
+           (shipit--insert-force-push-comment
+            "Its old change conflicts with the commit before it, so the diff shows how the author resolved that."))
+          (files nil)
+          ((equal old-message new-message)
+           (shipit--insert-force-push-comment
+            "Its changes are the same; only the lines around them differ."))
+          (t (shipit--insert-force-push-comment "Its changes are the same.")))
+    (dolist (file files)
+      (shipit--insert-force-push-file file repo (car replay) new
+                                      (length shipit--force-push-commit-indent)))))
+
+(defun shipit--insert-force-push-commit (commit repo)
+  "Insert COMMIT of a force push in REPO, a plist of `shipit--force-push-commits'.
+It is folded, and opens to its files, and a changed commit to what
+changed in it."
+  (let ((kind (assq (plist-get commit :kind) shipit--force-push-commit-kinds))
+        (shown (or (plist-get commit :new) (plist-get commit :old))))
+    (magit-insert-section (force-push-commit shown t)
+      (magit-insert-heading
+        (format "%s%-9s %s %s" (make-string shipit--force-push-row-column ?\s)
+                (propertize (nth 1 kind) 'font-lock-face (nth 2 kind))
+                (shipit--force-push-short-sha shown) (plist-get commit :subject)))
+      (magit-insert-section-body
+        (if (eq 'changed (plist-get commit :kind))
+            (shipit--insert-force-push-changed-commit (plist-get commit :old) shown repo)
+          (shipit--insert-force-push-commit-files (shipit--commit-parent shown) shown repo))
+        (insert "\n")))))
+
+(defun shipit--force-push-commit-counts (commits)
+  "How many of COMMITS are of each kind, as text, such as \"1 added, 3 unchanged\"."
+  (mapconcat #'identity
+             (delq nil (mapcar (lambda (kind)
+                                 (let ((count (seq-count (lambda (commit)
+                                                           (eq (car kind) (plist-get commit :kind)))
+                                                         commits)))
+                                   (and (> count 0) (format "%d %s" count (nth 1 kind)))))
+                               shipit--force-push-commit-kinds))
+             ", "))
+
+(defun shipit--insert-force-push-commits (commits repo)
+  "Insert COMMITS of a force push in REPO, a line for each that is not unchanged."
+  (magit-insert-section (force-push-commits)
+    (magit-insert-heading
+      (shipit--force-push-part-heading (shipit--get-pr-field-icon "commits" "✎") "Commits"
+                                       (concat ": " (shipit--force-push-commit-counts commits))))
+    (dolist (commit commits)
+      (unless (eq 'unchanged (plist-get commit :kind))
+        (shipit--insert-force-push-commit commit repo)))))
+
+(defun shipit--insert-force-push-files (files repo from after)
+  "Insert FILES, those that differ between FROM and AFTER in REPO, under a heading."
+  (magit-insert-section (force-push-files)
+    (magit-insert-heading
+      (shipit--force-push-part-heading (shipit--get-files-icon "📁")
+                                       (format "Files: %d changed" (length files))))
+    (dolist (file files)
+      (shipit--insert-force-push-file file repo from after shipit--force-push-row-column))))
+
+(defun shipit--force-push-note (old-base new-base commits)
+  "What a line says of a push whose branch moved from OLD-BASE to NEW-BASE.
+Nil when the branch stayed on its base.  COMMITS are those of the push."
+  (unless (equal old-base new-base)
+    (if (seq-every-p (lambda (commit) (memq (plist-get commit :kind) '(unchanged on-base)))
+                     commits)
+        (format "Only a rebase onto %s: the push changed nothing else."
+                (shipit--force-push-short-sha new-base))
+      (format "Only the author's changes: the rebase onto %s is left out."
+              (shipit--force-push-short-sha new-base)))))
+
+(defun shipit--force-push-comparison (repo before after)
+  "What to show of the force push from BEFORE to AFTER in REPO, as a plist.
+With the base branch known, `:commits' are the commits of the push as
+`shipit--force-push-commits' pairs them, and `:note' says whether it
+also rebased.  Without it, `:files' are the files that differ between
+the two heads."
+  (shipit--ensure-diff-revisions (cons before after) repo)
+  (let* ((base (shipit--pr-base-sha))
+         (old-base (and base
+                        (progn (shipit--ensure-diff-revisions (cons base base) repo)
+                               (magit-git-string "merge-base" before base))))
+         (new-base (and old-base (magit-git-string "merge-base" after base)))
+         (commits (and new-base (shipit--force-push-commits old-base before new-base after))))
+    (if commits
+        (list :commits commits :note (shipit--force-push-note old-base new-base commits))
+      (list :files (shipit--force-push-compare-files repo before after)))))
+
 (defun shipit--force-push-file-heading (file)
-  "Return the heading line for FILE in a force-push comparison."
-  (format "     %s %s (%s %s)"
+  "Return the heading line for FILE in a force-push comparison, not indented."
+  (format "%s %s (%s %s)"
           (propertize (shipit--file-status-char (cdr (assq 'status file)))
                       'font-lock-face 'magit-diff-file-heading)
           (propertize (or (cdr (assq 'filename file)) "?")
@@ -4093,8 +4311,10 @@ compare them and not the pull request\='s own base and head."
     shipit-base-sha ,before
     shipit-head-sha ,after))
 
-(defun shipit--insert-force-push-file (file repo before after)
-  "Insert FILE of the force-push comparison BEFORE..AFTER in REPO.
+(defun shipit--insert-force-push-file (file repo before after column)
+  "Insert FILE of the force-push comparison BEFORE..AFTER in REPO, at COLUMN.
+Its diff goes 2 columns further in, by the `line-prefix' of its lines,
+since the diff draws them at a fixed column of 5.
 The diff is read and rendered when the file is opened rather than
 when the comparison is: a rebase moves every file the new base
 brought with it, and hundreds of diffs cost far more than the reader
@@ -4102,9 +4322,10 @@ asked for.  The review-comment cache is emptied inside the body,
 where it is in force when the body actually runs."
   (let* ((filename (cdr (assq 'filename file)))
          (props (shipit--force-push-file-props filename repo before after))
+         (prefix (make-string (max 0 (- (+ column 2) 5)) ?\s))
          (start (point)))
     (magit-insert-section (pr-file filename t)
-      (magit-insert-heading (shipit--force-push-file-heading file))
+      (magit-insert-heading (concat (make-string column ?\s) (shipit--force-push-file-heading file)))
       (add-text-properties start (point) props)
       (magit-insert-section-body
         (let ((body-start (point))
@@ -4113,19 +4334,29 @@ where it is in force when the body actually runs."
           (shipit--insert-file-diff
            (shipit--file-patch-from-git before after filename)
            filename 0 repo nil)
-          (add-text-properties body-start (point) props))))))
+          (add-text-properties body-start (point) props)
+          (unless (string-empty-p prefix)
+            (add-text-properties body-start (point) `(line-prefix ,prefix))))))))
 
 (defun shipit--insert-force-push-compare (repo before after)
-  "Insert the diff between the two heads BEFORE and AFTER of a force push.
+  "Insert the comparison of the two heads BEFORE and AFTER of a force push.
+With the base branch known, it shows the commits of the push, each
+opening to its files; a line says when the push also rebased, which is
+left out.  Without it, the files that differ between the two heads.
 The pull request's review comments are left out.  Their line numbers
 belong to the pull request diff, and only the newest force push ends
 on the head those numbers are counted against."
   (condition-case err
-      (let ((files (shipit--force-push-compare-files repo before after)))
-        (if (null files)
-            (insert "   No file changes between the two pushes\n")
-          (dolist (file files)
-            (shipit--insert-force-push-file file repo before after))))
+      (let* ((comparison (shipit--force-push-comparison repo before after))
+             (note (plist-get comparison :note)))
+        (when note
+          (dolist (line (split-string (shipit--wrap-text note 72) "\n"))
+            (insert "   " (propertize line 'font-lock-face 'font-lock-comment-face) "\n")))
+        (cond ((plist-get comparison :commits)
+               (shipit--insert-force-push-commits (plist-get comparison :commits) repo))
+              ((plist-get comparison :files)
+               (shipit--insert-force-push-files (plist-get comparison :files) repo before after))
+              (t (insert "   No file changes between the two pushes\n"))))
     ;; Signalling out of a washer abandons the render and leaves the
     ;; section tree without its children, so the reason goes in the
     ;; section instead.

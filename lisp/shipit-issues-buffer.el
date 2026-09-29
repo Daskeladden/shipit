@@ -1254,9 +1254,27 @@ Timestamps are right-aligned to the window edge."
          (left-width (string-width left-part))
          (padding-needed (max 1 (- window-width left-width 16)))
          (padding (make-string padding-needed ?\s)))
-    (magit-insert-section (issue-activity-event event-id)
-      (magit-insert-heading
-        (concat left-part padding ts-col)))))
+    (let ((change (shipit-issue--description-change entry)))
+      (magit-insert-section (issue-activity-event event-id (and change t))
+        (magit-insert-heading
+          (concat left-part padding ts-col))
+        (when change
+          ;; The body is drawn when the event opens, so git runs then.
+          (magit-insert-section-body
+            (shipit--insert-word-diff (car change) (cdr change) "      ")))))))
+
+;;; The change of a description
+
+(defun shipit-issue--description-change (entry)
+  "The description before and after activity ENTRY, as (FROM . TO), or nil.
+Nil too when the backend sent neither text."
+  (let ((item (seq-find (lambda (item) (equal "description" (cdr (assq 'field item))))
+                        (cdr (assq 'items entry)))))
+    (when item
+      (let ((from (or (cdr (assq 'from item)) ""))
+            (to (or (cdr (assq 'to item)) "")))
+        (unless (and (string-empty-p from) (string-empty-p to))
+          (cons from to))))))
 
 (defun shipit-issue--format-changelog-items (items)
   "Format changelog ITEMS into a human-readable description string."

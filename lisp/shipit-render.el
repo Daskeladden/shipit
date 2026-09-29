@@ -6602,5 +6602,97 @@ ROWS is a list of lists where each inner list is a row of cells."
       ;; Join lines
       (mapconcat 'identity (reverse table-lines) "\n"))))
 
+;;; Word diff of two texts
+
+(defconst shipit--word-diff-context 2
+  "The lines kept around each change in a word diff of two texts.")
+
+(defun shipit--word-diff-file (text)
+  "A new temporary file that holds TEXT as lines ending in a newline."
+  (let ((lines (replace-regexp-in-string "\r" "" text)))
+    (make-temp-file "shipit-word-diff-" nil ".txt"
+                    (if (string-suffix-p "\n" lines) lines (concat lines "\n")))))
+
+(defun shipit--word-diff (from to)
+  "The word diff of FROM and TO, two texts, in the porcelain form of git."
+  (let ((old (shipit--word-diff-file from))
+        (new (shipit--word-diff-file to))
+        (default-directory temporary-file-directory))
+    (unwind-protect
+        (with-temp-buffer
+          (let ((status (call-process "git" nil t nil "diff" "--no-index" "--no-color"
+                                      "--word-diff=porcelain"
+                                      (format "--unified=%d" shipit--word-diff-context)
+                                      old new)))
+            ;; git diff --no-index exits with 1 when the files differ.
+            (unless (memq status '(0 1))
+              (error "shipit: git diff of two texts failed: %s" (buffer-string)))
+            (buffer-string)))
+      (delete-file old)
+      (delete-file new))))
+
+(defun shipit--word-diff-segment (raw)
+  "RAW, a line of a porcelain word diff inside a hunk, as text with its face.
+Nil for a line that holds no text, such as the note of a missing newline."
+  (pcase (and (> (length raw) 0) (aref raw 0))
+    (?\s (substring raw 1))
+    (?- (propertize (substring raw 1) 'font-lock-face 'shipit-word-diff-removed-face))
+    (?+ (propertize (substring raw 1) 'font-lock-face 'shipit-word-diff-added-face))
+    (_ nil)))
+
+(defun shipit--word-diff-lines (porcelain)
+  "The lines of PORCELAIN, a word diff of git, as text with faces.
+Each hunk after the first starts with a dimmed ellipsis line."
+  (let ((lines nil)
+        (line "")
+        (in-hunk nil))
+    (dolist (raw (split-string porcelain "\n"))
+      (cond ((string-prefix-p "@@" raw)
+             (when in-hunk
+               (push (propertize "…" 'font-lock-face 'font-lock-comment-face) lines))
+             (setq in-hunk t))
+            ((not in-hunk) nil)
+            ((equal raw "~")
+             (push line lines)
+             (setq line ""))
+            (t (setq line (concat line (or (shipit--word-diff-segment raw) ""))))))
+    (nreverse lines)))
+
+(defun shipit--overlay-word-diff-faces (start end)
+  "Draw the faces of the word diff between START and END with overlays too.
+magit draws the section at point with an overlay that sets the
+background, and that wins over the background of the text.  An overlay
+of higher priority wins over it, so the words keep their colours."
+  (let ((pos start))
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'font-lock-face nil end))
+            (face (get-text-property pos 'font-lock-face)))
+        (when (memq face '(shipit-word-diff-removed-face shipit-word-diff-added-face))
+          (let ((overlay (make-overlay pos next)))
+            (overlay-put overlay 'face face)
+            (overlay-put overlay 'priority 1)
+            (overlay-put overlay 'evaporate t)))
+        (setq pos next)))))
+
+(defun shipit--insert-word-diff (from to indent)
+  "Insert the word diff of FROM and TO, two texts, each line after INDENT.
+Only the changed lines show, with a few lines around each, wrapped to
+the window.  The faces inherit those of `diff-mode', which this loads."
+  (require 'diff-mode)
+  (let ((width (max 40 (- (window-width) (length indent) 2)))
+        (lines (shipit--word-diff-lines (shipit--word-diff from to)))
+        (start (point)))
+    (if (null lines)
+        (insert indent (propertize "The text did not change." 'font-lock-face
+                                   'font-lock-comment-face)
+                "\n")
+      (dolist (line lines)
+        (insert (mapconcat (lambda (part) (concat indent part))
+                           (split-string (shipit--wrap-text line width) "\n")
+                           "\n")
+                "\n")))
+    (shipit--overlay-word-diff-faces start (point))
+    (insert "\n")))
+
 (provide 'shipit-render)
 ;;; shipit-render.el ends here

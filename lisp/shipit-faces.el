@@ -248,6 +248,20 @@ spot \"the PR author actually pinged me\" without scanning
 every comment."
   :group 'shipit)
 
+;; Word diff faces --------------------------------------------------
+
+;; They inherit the refine faces of `diff-mode', which
+;; `shipit--insert-word-diff' loads.
+(shipit-defface shipit-word-diff-removed-face
+  '((t :inherit diff-refine-removed :strike-through t))
+  "Face for words removed from a text, such as a description, in its diff."
+  :group 'shipit)
+
+(shipit-defface shipit-word-diff-added-face
+  '((t :inherit diff-refine-added))
+  "Face for words added to a text, such as a description, in its diff."
+  :group 'shipit)
+
 (provide 'shipit-faces)
 
 ;;; shipit-faces.el ends here

@@ -140,6 +140,8 @@ Pinned comments appear prominently between the description and comment sections 
 
 The mode line shows your position when navigating comments: `[42/315 ####------]`
 
+In the Activity section, an event that changed the description of a Jira issue opens with `TAB` to a word diff of the change: removed words are struck through in red, and added words are green.
+
 ### Atlassian dashboard
 
 `M-x shipit-atlassian-dashboard` opens a Jira-focused buffer with My Open Issues, What's Next, an optional Kanban Board, Frequently Visited, and a full filterable Issues section. `f` opens the filter transient (status, assignee, reporter, type, priority, text/comment search, sort), `l` loads more, `M-;` opens context actions including Create new issue with full Jira fields (issue type, components, labels, assignee).

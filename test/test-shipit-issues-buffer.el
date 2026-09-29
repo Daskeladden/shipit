@@ -1408,6 +1408,97 @@ THEN an issue-activity-header handler exists in the dispatch list."
     (should handler)
     (should (functionp (cdr (assq 'action (cdr handler)))))))
 
+;;; Description changes
+
+(defun test-shipit-issue--description-event (from to &optional id)
+  "An activity event, ID or \"d1\", that changed the description FROM to TO."
+  `((id . ,(or id "d1")) (created_at . "2026-03-03T10:00:00Z")
+    (user . ((login . "alice")))
+    (items . (((field . "description") (from . ,from) (to . ,to))))))
+
+(defun test-shipit-issue--event-section (id)
+  "The section of the activity event ID."
+  (let ((found nil))
+    (magit-map-sections (lambda (section)
+                          (when (and (eq 'issue-activity-event (oref section type))
+                                     (equal id (oref section value)))
+                            (setq found section))))
+    found))
+
+(defun test-shipit-issue--opened-event-text (id)
+  "Open the activity event ID, and return the text of its section."
+  (let ((section (test-shipit-issue--event-section id)))
+    (magit-section-show section)
+    (buffer-substring (oref section start) (oref section end))))
+
+(defun test-shipit-issue--face-of (text word)
+  "The `font-lock-face' of WORD in TEXT."
+  (get-text-property (string-match (regexp-quote word) text) 'font-lock-face text))
+
+(ert-deftest test-shipit-issue-a-description-change-opens-to-its-words ()
+  "GIVEN an event that changed a word of the description
+WHEN the activity shows, and the event is opened
+THEN it was folded, and it shows the text with the old word removed
+and the new word added, each in its face."
+  (with-temp-buffer
+    (test-shipit-issue--render-activity
+     (list (test-shipit-issue--description-event
+            "Open the valve slowly.\n" "Open the valve quickly.\n")))
+    (should (oref (test-shipit-issue--event-section "d1") hidden))
+    (let ((text (test-shipit-issue--opened-event-text "d1")))
+      (should (string-match-p "Open the valve" text))
+      (should (eq 'shipit-word-diff-removed-face
+                  (test-shipit-issue--face-of text "slowly.")))
+      (should (eq 'shipit-word-diff-added-face
+                  (test-shipit-issue--face-of text "quickly."))))))
+
+(ert-deftest test-shipit-issue-the-words-of-a-change-keep-their-colour-at-point ()
+  "GIVEN an event that changed a word of the description, opened
+WHEN magit highlights the section at point, with an overlay that sets
+the background
+THEN the added word keeps its colour: an overlay of higher priority
+draws it too."
+  (with-temp-buffer
+    (test-shipit-issue--render-activity
+     (list (test-shipit-issue--description-event
+            "Open the valve slowly.\n" "Open the valve quickly.\n")))
+    (test-shipit-issue--opened-event-text "d1")
+    (goto-char (point-min))
+    (search-forward "quickly")
+    (should (seq-find (lambda (overlay)
+                        (and (eq 'shipit-word-diff-added-face (overlay-get overlay 'face))
+                             (> (or (overlay-get overlay 'priority) 0) 0)))
+                      (overlays-at (match-beginning 0))))))
+
+(ert-deftest test-shipit-issue-a-description-diff-shows-the-changed-part ()
+  "GIVEN an event that changed the last paragraph of a long description
+WHEN the event is opened
+THEN it shows the changed paragraph, and not the first one, which is
+far from the change."
+  (with-temp-buffer
+    (let ((old (mapconcat (lambda (n) (format "Paragraph %d." n)) '(1 2 3 4 5 6) "\n\n")))
+      (test-shipit-issue--render-activity
+       (list (test-shipit-issue--description-event
+              old (replace-regexp-in-string "Paragraph 6\\." "Paragraph six." old))))
+      (let ((text (test-shipit-issue--opened-event-text "d1")))
+        (should (string-match-p "six\\." text))
+        (should-not (string-match-p "Paragraph 1\\." text))))))
+
+(ert-deftest test-shipit-issue-an-event-without-a-description-change-has-no-body ()
+  "GIVEN an event that changed the status, and one that changed the
+description without sending its texts
+WHEN the activity shows
+THEN neither has anything to open."
+  (with-temp-buffer
+    (test-shipit-issue--render-activity
+     (list '((id . "s1") (created_at . "2026-03-03T10:00:00Z") (user . ((login . "bob")))
+             (items . (((field . "status") (from . "Open") (to . "Done")))))
+           (test-shipit-issue--description-event "" "" "d2")))
+    (dolist (id '("s1" "d2"))
+      (let ((section (test-shipit-issue--event-section id)))
+        (should-not (oref section hidden))
+        (should (= (oref section content) (oref section end)))))))
+
 ;;; Attachments
 
 (defconst test-issue-attachments

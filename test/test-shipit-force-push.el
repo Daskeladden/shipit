@@ -522,6 +522,35 @@ push only rebased."
             (should (string-match-p "Commits: 1 on base, 1 unchanged" (test-sfp--text)))
             (should-not (string-match-p "dropped\\|conflict" (test-sfp--text)))))))))
 
+(ert-deftest test-sfp-every-marker-of-a-diff-has-its-face ()
+  "GIVEN the opened diff of a commit that removes a line and adds one
+WHEN the markers of its lines are read
+THEN each - and each + has the face of its kind, not only those that a
+word refinement happens to cover."
+  (test-sfp--with-history '(:fixed t)
+    (test-sfp--opened-commit-files "Add lines")
+    (goto-char (point-min))
+    (let ((markers 0))
+      (while (re-search-forward "^     \\([-+]\\)" nil t)
+        (should (memq (if (equal "-" (match-string 1))
+                          'shipit-diff-removed-indicator-face
+                        'shipit-diff-added-indicator-face)
+                      (ensure-list (get-text-property (match-beginning 1) 'font-lock-face))))
+        (setq markers (1+ markers)))
+      (should (= 2 markers)))))
+
+(ert-deftest test-sfp-the-markers-keep-their-colour-in-the-section-at-point ()
+  "GIVEN the faces of the markers of a diff
+WHEN magit highlights the section at point, with an overlay that sets
+the background
+THEN a marker keeps its colour: it is drawn in inverse video from its
+foreground, which that overlay does not set, and it sets no background
+for the overlay to cover."
+  (dolist (face '(shipit-diff-removed-indicator-face shipit-diff-added-indicator-face))
+    (should (face-attribute face :inverse-video nil t))
+    (should (stringp (face-attribute face :foreground nil t)))
+    (should (eq 'unspecified (face-attribute face :background nil)))))
+
 (defmacro test-sfp--with-reword (&rest body)
   "Run BODY on the rendered comparison of a push that only reworded a commit."
   (declare (indent 0))

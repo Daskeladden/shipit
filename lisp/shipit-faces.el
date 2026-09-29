@@ -248,6 +248,25 @@ spot \"the PR author actually pinged me\" without scanning
 every comment."
   :group 'shipit)
 
+;; Diff marker faces ------------------------------------------------
+
+;; The + or - that starts a line of a diff is a block of the colour of
+;; its kind, so every changed line shows as one.  The block is drawn in
+;; inverse video from the foreground: magit draws the section at point
+;; with an overlay that sets the background, and an overlay's background
+;; wins over the text's, but it cannot undo inverse video.
+(shipit-defface shipit-diff-added-indicator-face
+  '((((background dark)) :foreground "#3fb950" :inverse-video t :weight bold)
+    (t :foreground "#1a7f37" :inverse-video t :weight bold))
+  "Face for the + that starts an added line of a diff."
+  :group 'shipit)
+
+(shipit-defface shipit-diff-removed-indicator-face
+  '((((background dark)) :foreground "#f85149" :inverse-video t :weight bold)
+    (t :foreground "#cf222e" :inverse-video t :weight bold))
+  "Face for the - that starts a removed line of a diff."
+  :group 'shipit)
+
 ;; Word diff faces --------------------------------------------------
 
 ;; They inherit the refine faces of `diff-mode', which

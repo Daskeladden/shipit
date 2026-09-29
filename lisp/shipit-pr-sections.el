@@ -3364,7 +3364,7 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                                                     shipit-repo ,repo
                                                     shipit-pr-number ,pr-number))
                         (put-text-property (+ start 5) (+ start 6) 'font-lock-face
-                                           '(magit-diff-added-indicator magit-diff-added bold))
+                                           'shipit-diff-added-indicator-face)
                         (push (list (+ start 6) (1- (point)) ?+) diff-line-ranges))
                       ;; Look up RIGHT side comments for added lines
                       (let ((comments-at-line (gethash current-line-number comments-by-line-right)))
@@ -3389,7 +3389,7 @@ Optional COMMIT-SHA filters comments to those made on that specific commit."
                                                     shipit-repo ,repo
                                                     shipit-pr-number ,pr-number))
                         (put-text-property (+ start 5) (+ start 6) 'font-lock-face
-                                           '(magit-diff-removed-indicator magit-diff-removed bold))
+                                           'shipit-diff-removed-indicator-face)
                         (push (list (+ start 6) (1- (point)) ?-) diff-line-ranges))
                       ;; Look up LEFT side comments for deleted lines
                       (let ((comments-at-line (gethash current-old-line-number comments-by-line-left)))

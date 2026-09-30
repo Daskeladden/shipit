@@ -3572,5 +3572,33 @@ THEN the order flips each time
         (should (eq shipit-activity-timeline-order 'reverse-chronological))
         (should (= 4 (length calls)))))))
 
+;;; Showing that a section is closed
+
+(put 'test-shipit-thing 'magit-section t)
+
+(defun test-shipit--ellipsis-at (section)
+  "Non-nil when the heading of SECTION ends with the ellipsis of a closed section."
+  (seq-find (lambda (overlay) (equal "…" (overlay-get overlay 'after-string)))
+            (overlays-in (oref section start) (oref section content))))
+
+(ert-deftest test-shipit-a-closed-section-ends-its-heading-with-an-ellipsis ()
+  "GIVEN a shipit buffer with a section that has a body
+WHEN the section is closed, and then opened
+THEN its heading ends with an ellipsis while it is closed, so a reader
+sees there is more, and not while it is open."
+  (with-temp-buffer
+    (magit-section-mode)
+    (shipit--apply-section-defaults)
+    (let ((inhibit-read-only t)
+          (section nil))
+      (magit-insert-section (root)
+        (setq section (magit-insert-section (test-shipit-thing)
+                        (magit-insert-heading "Thing")
+                        (insert "body\n"))))
+      (magit-section-hide section)
+      (should (test-shipit--ellipsis-at section))
+      (magit-section-show section)
+      (should-not (test-shipit--ellipsis-at section)))))
+
 (provide 'test-shipit)
 ;;; test-shipit.el ends here

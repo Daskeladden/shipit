@@ -316,18 +316,21 @@ very large PRs this can add latency, in which case set to nil."
   :type 'boolean
   :group 'shipit)
 
-(defcustom shipit-section-visibility-indicators nil
+(defcustom shipit-section-visibility-indicators '(("…" . t) ("…" . t))
   "Value to use for `magit-section-visibility-indicators' in shipit buffers.
 
 Magit defaults to showing a left-fringe `>' (collapsed) or `v'
 (expanded) marker on every expandable section.  Shipit buffers
-contain many nested sections where these indicators add visual
-noise, so the default here is nil to suppress them in shipit
-buffers without changing the global magit default.
+contain many nested sections where these markers add visual noise,
+so the default here puts an ellipsis at the end of the heading of a
+closed section that has more to show, in graphical and terminal
+frames alike, and nothing on an open one.  Without any indicator, a
+closed section looked the same as one with nothing in it, and a reply
+under a closed turn could go unseen.
 
 The value is applied buffer-locally; any format accepted by
-`magit-section-visibility-indicators' works.  Set to the symbol
-`inherit' to follow the global magit default instead."
+`magit-section-visibility-indicators' works.  nil shows no indicator.
+Set to the symbol `inherit' to follow the global magit default instead."
   :type '(choice (const :tag "No indicators" nil)
                  (const :tag "Inherit global magit default" inherit)
                  (sexp  :tag "Custom value"))

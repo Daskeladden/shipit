@@ -725,5 +725,28 @@ THEN that is refused: there is nothing to offer."
     (let ((shipit-diff-line-actions nil))
       (should-error (shipit--diff-line-actions) :type 'user-error))))
 
+(ert-deftest test-shipit-dwim-a-handler-of-a-higher-priority-goes-first ()
+  "GIVEN a handler of priority 10, registered before one of the default
+priority, both matching
+WHEN `shipit-dwim' runs
+THEN the handler of priority 10 runs, whatever the order of registration."
+  (let ((shipit--dwim-handlers nil)
+        (ran nil))
+    (shipit-register-dwim-handler 'test-high (lambda () t) (lambda () (push 'high ran)) 10)
+    (shipit-register-dwim-handler 'test-low (lambda () t) (lambda () (push 'low ran)))
+    (shipit-dwim)
+    (should (equal '(high) ran))))
+
+(ert-deftest test-shipit-dwim-handlers-of-one-priority-go-newest-first ()
+  "GIVEN two handlers of the default priority, both matching
+WHEN `shipit-dwim' runs
+THEN the one registered last runs."
+  (let ((shipit--dwim-handlers nil)
+        (ran nil))
+    (shipit-register-dwim-handler 'test-old (lambda () t) (lambda () (push 'old ran)))
+    (shipit-register-dwim-handler 'test-new (lambda () t) (lambda () (push 'new ran)))
+    (shipit-dwim)
+    (should (equal '(new) ran))))
+
 (provide 'test-shipit-pr-actions)
 ;;; test-shipit-pr-actions.el ends here

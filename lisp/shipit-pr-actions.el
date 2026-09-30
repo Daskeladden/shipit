@@ -24,6 +24,7 @@
 
 ;;; Code:
 (require 'cl-lib)
+(require 'seq)
 (require 'shipit-lib)
 (require 'shipit-core)
 (require 'shipit-sections)
@@ -1425,13 +1426,27 @@ Uses the new shipit-editor with live preview and PR reference completion."
 (defvar shipit--dwim-handlers '()
   "Registry of dwim handlers. Each handler is (name . ((matcher . func) (action . func))).")
 
-(defun shipit-register-dwim-handler (name matcher action)
+(defun shipit--dwim-handler-priority (handler)
+  "The priority of HANDLER, an entry of `shipit--dwim-handlers'."
+  (or (alist-get 'priority (cdr handler)) 0))
+
+(defun shipit-register-dwim-handler (name matcher action &optional priority)
   "Register a dwim handler with NAME, MATCHER function, and ACTION function.
 MATCHER function takes no args, returns non-nil if this handler should execute.
-ACTION function takes no args, executes the handler behavior."
-  (let ((handler `(,name . ((matcher . ,matcher) (action . ,action)))))
+ACTION function takes no args, executes the handler behavior.
+PRIORITY, a number, 0 by default, orders the handlers: `shipit-dwim'
+tries those of a higher priority first, and those of one priority
+newest first.  A package whose sections sit inside shipit's gives its
+handlers a higher priority, so that a handler of shipit that matches
+there too does not win just because its file loaded later."
+  (let* ((priority (or priority 0))
+         (handler `(,name . ((matcher . ,matcher) (action . ,action) (priority . ,priority))))
+         (others (assq-delete-all name shipit--dwim-handlers))
+         (before (seq-take-while (lambda (other)
+                                   (> (shipit--dwim-handler-priority other) priority))
+                                 others)))
     (setq shipit--dwim-handlers
-          (cons handler (assq-delete-all name shipit--dwim-handlers)))))
+          (append before (list handler) (nthcdr (length before) others)))))
 
 (defun shipit-dwim ()
   "Execute the first handler that claims the current context."

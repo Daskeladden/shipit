@@ -34,5 +34,16 @@ THEN the command hook holds none, as before."
     (shipit-dev--remove-shipit-hooks)
     (should-not post-command-hook)))
 
+(ert-deftest test-shipit-dev-reload-loads-other-packages-last ()
+  "GIVEN a package on top of shipit that listed its files for the reload
+WHEN the files of a reload are listed
+THEN shipit's own come first, from its directory, and the package's
+follow, in the order it gave: its code calls shipit's."
+  (let ((shipit-dev-reload-extra-files '("/pkg/lisp/pkg-a.el" "/pkg/lisp/pkg-b.el")))
+    (let ((paths (shipit-dev--reload-paths "/shipit/lisp/")))
+      (should (equal "/shipit/lisp/shipit-faces.el" (car paths)))
+      (should (equal '("/pkg/lisp/pkg-a.el" "/pkg/lisp/pkg-b.el") (last paths 2)))
+      (should (member "/shipit/lisp/shipit.el" paths)))))
+
 (provide 'test-shipit-dev-utils)
 ;;; test-shipit-dev-utils.el ends here

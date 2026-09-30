@@ -15,6 +15,65 @@ function: `load-file' runs `kill-buffer-hook' when it kills the buffer
 it read a file in, so a shipit function there failed every load.
 Loading the files adds the functions back.")
 
+(defconst shipit-dev--load-files
+  '("shipit-faces.el"
+    "shipit-lib.el" "shipit-sections.el" "shipit-core.el" "shipit-cache.el" "shipit-comments.el"
+    "shipit-custom-edit.el"
+    "shipit-stack.el"
+    "shipit-stack-plan.el"
+    "shipit-stacked-preview.el"
+    "shipit-worktree.el" "shipit-http.el" "shipit-gh-etag.el"
+    "shipit-issue-backends.el" "shipit-issue-titles.el"
+    "shipit-issue-github.el" "shipit-issue-jira.el" "shipit-issue-gitlab.el" "shipit-issue-gitbug.el"
+    "shipit-pr-backends.el" "shipit-pr-github.el"
+    "shipit-gitlab-http.el" "shipit-pr-gitlab.el"
+    "shipit-comment-backends.el" "shipit-comment-github.el" "shipit-comment-gitlab.el"
+    "shipit-render.el" "shipit-diff.el" "shipit-notifications.el"
+    "shipit-releases-buffer.el" "shipit-notifications-buffer.el"
+    "shipit-checks.el" "shipit-actions.el" "shipit-actions-list.el"
+    "shipit-pr-search.el" "shipit-file-filter.el"
+    "shipit-rounded-section.el"
+    "shipit-pr-sections.el" "shipit-pr-actions.el" "shipit-pr-diff.el"
+    "shipit-pr-linked-issue.el"
+    "shipit-buffer.el" "shipit-commands.el"
+    "shipit-review-history.el" "shipit-review-mode.el" "shipit-review-revision.el"
+    "shipit-preview.el" "shipit-editor.el"
+    "shipit-worktree-move.el"
+    "shipit-review-queue.el"
+    "shipit-issue-create.el"
+    "shipit-issues.el" "shipit-issues-buffer.el"
+    "shipit-issue-branch.el"
+    "shipit-repo-buffer.el"
+    "shipit-subscriptions-buffer.el"
+    "shipit-commit-comments-buffer.el"
+    "shipit-discussion-backends.el"
+    "shipit-discussions-graphql.el"
+    "shipit-discussions.el" "shipit-discussions-buffer.el"
+    "shipit-canvas.el" "shipit-atlassian-board.el" "shipit-atlassian-history.el"
+    "shipit-atlassian-dashboard.el"
+    "shipit-atlassian-kanban.el" "shipit-stack-canvas.el"
+    "shipit-actions-timeline.el"
+    "shipit-notifications-rss.el"
+    "shipit-code-refs.el"
+    "shipit-magit-worktrees.el"
+    "shipit-debug.el" "shipit.el")
+  "The files of shipit that `shipit-reload' loads, in dependency order.
+shipit-faces.el is a leaf (no requires) and must load before
+shipit-core.el, which requires it.")
+
+(defvar shipit-dev-reload-extra-files nil
+  "Files of other packages that `shipit-reload' loads after shipit's own.
+A package on top of shipit adds its files here, as absolute names,
+in the order they load.  The reload unbinds every function whose
+name starts with shipit-, so such a package loses its functions too.")
+
+(defun shipit-dev--reload-paths (shipit-dir)
+  "The files `shipit-reload' loads, in order: shipit's own, in SHIPIT-DIR,
+then `shipit-dev-reload-extra-files'."
+  (append (mapcar (lambda (file) (expand-file-name file shipit-dir))
+                  shipit-dev--load-files)
+          shipit-dev-reload-extra-files))
+
 (defun shipit-dev--shipit-function-p (fn)
   "Non-nil when FN is the symbol of a shipit function."
   (and (symbolp fn) (string-prefix-p "shipit-" (symbol-name fn))))
@@ -103,53 +162,12 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
                     (keymapp (symbol-value sym)))
            (makunbound sym))))
 
-      ;; Load files in dependency order (core → specific modules)
-      ;; shipit-faces.el is a leaf (no requires) and must load before
-      ;; shipit-core.el, which requires it.
-      (let ((load-files '("shipit-faces.el"
-                          "shipit-lib.el" "shipit-sections.el" "shipit-core.el" "shipit-cache.el" "shipit-comments.el"
-                          "shipit-custom-edit.el"
-                          "shipit-stack.el"
-                          "shipit-stack-plan.el"
-                          "shipit-stacked-preview.el"
-                          "shipit-worktree.el" "shipit-http.el" "shipit-gh-etag.el"
-                          "shipit-issue-backends.el" "shipit-issue-titles.el"
-                          "shipit-issue-github.el" "shipit-issue-jira.el" "shipit-issue-gitlab.el" "shipit-issue-gitbug.el"
-                          "shipit-pr-backends.el" "shipit-pr-github.el"
-                          "shipit-gitlab-http.el" "shipit-pr-gitlab.el"
-                          "shipit-comment-backends.el" "shipit-comment-github.el" "shipit-comment-gitlab.el"
-                          "shipit-render.el" "shipit-diff.el" "shipit-notifications.el"
-                          "shipit-releases-buffer.el" "shipit-notifications-buffer.el"
-                          "shipit-checks.el" "shipit-actions.el" "shipit-actions-list.el"
-                          "shipit-pr-search.el" "shipit-file-filter.el"
-                          "shipit-rounded-section.el"
-                          "shipit-pr-sections.el" "shipit-pr-actions.el" "shipit-pr-diff.el"
-                          "shipit-pr-linked-issue.el"
-                          "shipit-buffer.el" "shipit-commands.el"
-                          "shipit-review-history.el" "shipit-review-mode.el" "shipit-review-revision.el"
-                          "shipit-preview.el" "shipit-editor.el"
-                          "shipit-worktree-move.el"
-                          "shipit-review-queue.el"
-                          "shipit-issue-create.el"
-                          "shipit-issues.el" "shipit-issues-buffer.el"
-                          "shipit-issue-branch.el"
-                          "shipit-repo-buffer.el"
-                          "shipit-subscriptions-buffer.el"
-                          "shipit-commit-comments-buffer.el"
-                          "shipit-discussion-backends.el"
-                          "shipit-discussions-graphql.el"
-                          "shipit-discussions.el" "shipit-discussions-buffer.el"
-                          "shipit-canvas.el" "shipit-atlassian-board.el" "shipit-atlassian-history.el"
-                          "shipit-atlassian-dashboard.el"
-                          "shipit-atlassian-kanban.el" "shipit-stack-canvas.el"
-                          "shipit-actions-timeline.el"
-                          "shipit-notifications-rss.el"
-                          "shipit-code-refs.el"
-                          "shipit-magit-worktrees.el"
-                          "shipit-debug.el" "shipit.el")))
+      ;; Load shipit's files in dependency order, then those of packages
+      ;; on top of it.
+      (let ((load-paths (shipit-dev--reload-paths shipit-dir)))
         ;; First pass: Delete all .elc bytecode files to force fresh load
-        (dolist (file load-files)
-          (let ((elc-path (expand-file-name (concat (file-name-sans-extension file) ".elc") shipit-dir)))
+        (dolist (path load-paths)
+          (let ((elc-path (concat (file-name-sans-extension path) ".elc")))
             (when (file-exists-p elc-path)
               (delete-file elc-path))))
         ;; Second pass: Remove shipit advice from all functions BEFORE unbinding
@@ -194,8 +212,8 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
                             (string-prefix-p "shipit--" name))))
              (fmakunbound sym))))
         ;; Fifth pass: Load the .el files directly (use load-file to bypass .elc preference)
-        (dolist (file load-files)
-          (let ((full-path (expand-file-name file shipit-dir)))
+        (dolist (full-path load-paths)
+          (let ((file (file-name-nondirectory full-path)))
             (when (file-exists-p full-path)
               (message "Loading %s..." file)
               (condition-case err

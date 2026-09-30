@@ -39,6 +39,8 @@
 
 ;; Forward declarations for functions defined later in this file
 (declare-function shipit--check-notifications-background-async "shipit-notifications")
+(declare-function shipit-open-pr-buffer "shipit-buffer"
+                  (pr-number &optional repo backend-id backend-config))
 (declare-function shipit--notifications-header-actions "shipit-notifications")
 (declare-function shipit-discussion--resolve-for-repo "shipit-discussion-backends")
 (declare-function shipit-commit-comments-open-commit "shipit-commit-comments-buffer")

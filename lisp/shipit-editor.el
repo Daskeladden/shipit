@@ -49,6 +49,8 @@
 (declare-function shipit-review-queue--locate-pr-buffer
                   "shipit-review-queue" (repo pr-number))
 (declare-function shipit-review-queue-count "shipit-review-queue")
+(declare-function shipit-review--rounded-after-string "shipit-review-mode"
+                  (lines &optional bg-color))
 (declare-function shipit--get-comment-type-icon "shipit-render")
 (declare-function shipit--replace-general-comments-section-with-content "shipit-pr-sections")
 (declare-function shipit--insert-reply-as-child "shipit-pr-sections")

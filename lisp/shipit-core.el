@@ -28,6 +28,7 @@
 (require 'shipit-faces)
 
 (defvar shipit-mode-map)
+(defvar shipit-preview--base-ref)
 
 (defun shipit--file-safe (text)
   "TEXT with every character but letters, digits and `-' made `_'.

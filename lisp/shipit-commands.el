@@ -35,6 +35,9 @@
 
 ;; Forward declarations for functions from other modules
 (declare-function shipit--refresh-after-comment-operation "shipit-pr-actions")
+(declare-function shipit-buffer-refresh "shipit-buffer" (&optional ignore-auto noconfirm))
+(defvar shipit-buffer-pr-number)
+(defvar shipit-buffer-repo)
 (declare-function shipit--refresh-files-section-only "shipit-file-filter")
 (declare-function shipit--in-general-comments-section-p "shipit-diff")
 (declare-function shipit--toggle-reaction-interactive "shipit-http")

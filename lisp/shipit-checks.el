@@ -32,6 +32,7 @@
 (defvar shipit--resolved-comments-hash) ; hash table from shipit-comments.el
 (defvar shipit--cached-review-decision) ; buffer-local from shipit-cache.el
 (declare-function shipit--ensure-cache-initialized "shipit-cache")
+(declare-function shipit-buffer-refresh "shipit-buffer" (&optional ignore-auto noconfirm))
 (declare-function shipit-auto-detect-repository "shipit-commands")
 (declare-function shipit-open-actions-run "shipit-actions")
 (declare-function shipit-actions--fetch-job-logs-raw "shipit-actions")

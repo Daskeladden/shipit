@@ -25,6 +25,7 @@
                   (pr-number event &optional body comments repo))
 (declare-function shipit-buffer-refresh "shipit-buffer" (&optional _ _))
 (declare-function shipit-editor-open "shipit-editor" (context))
+(defvar shipit-review--pr-data)
 
 (defgroup shipit-review-queue nil
   "Batch review queue for shipit."

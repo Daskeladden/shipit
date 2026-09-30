@@ -1,9 +1,7 @@
 shipit-atlassian-dashboard.el:shipit--prepend-font-lock-face
 shipit-cache.el:shipit-cache-menu
 shipit-checks.el:shipit--api-request
-shipit-checks.el:shipit-buffer-refresh
 shipit-checks.el:shipit-get-pull-request
-shipit-commands.el:shipit-buffer-refresh
 shipit-comment-gitlab.el:shipit--reaction-cache-key
 shipit-commit-comments-buffer.el:shipit--checks-heading-summary
 shipit-commit-comments-buffer.el:shipit--get-checks-status-emoji
@@ -43,11 +41,9 @@ shipit-diff.el:shipit--user-has-reaction
 shipit-discussions-buffer.el:shipit--get-repo-root
 shipit-editor.el:shipit--close-pr
 shipit-editor.el:shipit-pr--get-backend
-shipit-editor.el:shipit-review--rounded-after-string
 shipit.el:shipit-notifications-init
 shipit-http.el:shipit--add-line-numbers
 shipit-http.el:shipit--are-file-ownership-requirements-satisfied
-shipit-http.el:shipit-buffer-refresh
 shipit-http.el:shipit--clear-branch-cache
 shipit-http.el:shipit--find-section-by-type
 shipit-http.el:shipit--format-comment-as-text
@@ -80,7 +76,6 @@ shipit-notifications.el:shipit-notifications-buffer-auto-mark-menu
 shipit-notifications.el:shipit-notifications-buffer-create
 shipit-notifications.el:shipit-notifications-buffer-refresh
 shipit-notifications.el:shipit-notifications-menu
-shipit-notifications.el:shipit-open-pr-buffer
 shipit-notifications.el:shipit--set-notifications-filter
 shipit-notifications.el:shipit--update-notifications-display-immediately
 shipit-pr-actions.el:shipit--clear-branch-cache
@@ -106,7 +101,6 @@ shipit-pr-gitlab.el:shipit-comment-gitlab--normalize-reaction
 shipit-pr-gitlab.el:shipit-editor-insert-issue-reference
 shipit-pr-gitlab.el:shipit--transient-args-to-search-plist
 shipit-pr-linked-issue.el:shipit--get-pr-field-icon
-shipit-pr-sections.el:shipit--imenu-store-children
 shipit-render.el:shipit--api-request
 shipit-render.el:shipit--clean-comment-text
 shipit-render.el:shipit-code-refs-mode
@@ -126,5 +120,3 @@ shipit-review-mode.el:shipit-comment--resolve-for-repo
 shipit-review-mode.el:shipit-editor-open
 shipit-review-mode.el:shipit--get-repo-root
 shipit-review-mode.el:shipit--is-comment-in-resolved-thread
-shipit-review-mode.el:shipit-review-compare-menu
-shipit-review-mode.el:shipit-review-menu

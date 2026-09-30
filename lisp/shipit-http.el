@@ -128,6 +128,7 @@ not mutated, so the caller's alist is untouched."
 
 ;; Forward declarations for functions
 (declare-function shipit-gh-etag-invalidate "shipit-gh-etag")
+(declare-function shipit-buffer-refresh "shipit-buffer" (&optional ignore-auto noconfirm))
 (declare-function shipit-gh-etag--invalidate-refresh-cache "shipit-gh-etag")
 (declare-function shipit-comment--fetch-reactions-batch "shipit-comments")
 (declare-function shipit-comment--fetch-reactions "shipit-comments")

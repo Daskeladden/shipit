@@ -49,6 +49,9 @@
 
 ;; Forward declarations
 (declare-function shipit-buffer-name "shipit-buffer")
+(declare-function shipit--imenu-store-children "shipit-buffer"
+                  (section-start child-names &optional section-type))
+(defvar shipit-buffer-pr-data)
 (declare-function shipit-gitlab--api-request "shipit-gitlab-http")
 (declare-function shipit--browse-pr-url "shipit-notifications")
 (declare-function shipit-comment--fetch-reactions-batch "shipit-comments")

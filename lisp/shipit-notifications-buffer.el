@@ -27,6 +27,10 @@
 
 ;; Forward declarations
 (declare-function shipit--mark-notification-read "shipit-notifications")
+;; Bound below for the watch menu, so they must be special here.
+(defvar shipit-buffer-pr-number)
+(defvar shipit-buffer-repo)
+(defvar shipit-buffer-pr-data)
 (declare-function shipit--notification-pr-actions "shipit-notifications")
 (declare-function shipit--notification-actions "shipit-notifications")
 (declare-function shipit--notification-activity-key "shipit-notifications")

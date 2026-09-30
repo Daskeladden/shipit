@@ -147,6 +147,10 @@ every nav step, making commit walks visibly stutter.")
 (defvar-local shipit-review--total-commits nil
   "Total number of commits in PR.")
 
+;; Defined further down, next to the code of the history side.
+(defvar shipit-review--active-history-side)
+(defvar shipit-review--file-commits-list)
+
 (defvar-local shipit-review--changed-lines nil
   "List of line ranges that were changed in the diff. Format: ((added-start . added-end) (removed-start . removed-end) ...)")
 
@@ -236,6 +240,10 @@ SOURCE review buffer.")
 shows on H toggle).  Larger indices reach further into the
 file\\='s past.  Reset to 0 whenever the chain is rebuilt.")
 
+
+;; Defined further down, as transients.
+(declare-function shipit-review-compare-menu "shipit-review-mode")
+(declare-function shipit-review-menu "shipit-review-mode")
 
 (defvar shipit-review-mode-map
   (let ((map (make-sparse-keymap)))

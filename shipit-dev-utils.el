@@ -5,6 +5,26 @@
 
 ;;; Code:
 
+(defconst shipit-dev--reload-hooks
+  '(post-command-hook pre-command-hook after-change-functions
+    before-change-functions kill-buffer-hook magit-status-sections-hook
+    magit-diff-sections-hook magit-revision-sections-hook)
+  "The global hooks a reload empties of shipit functions before it unbinds them.
+A hook that runs while the files load must not name an unbound
+function: `load-file' runs `kill-buffer-hook' when it kills the buffer
+it read a file in, so a shipit function there failed every load.
+Loading the files adds the functions back.")
+
+(defun shipit-dev--shipit-function-p (fn)
+  "Non-nil when FN is the symbol of a shipit function."
+  (and (symbolp fn) (string-prefix-p "shipit-" (symbol-name fn))))
+
+(defun shipit-dev--remove-shipit-hooks ()
+  "Remove the shipit functions from each hook of `shipit-dev--reload-hooks'."
+  (dolist (hook shipit-dev--reload-hooks)
+    (when (boundp hook)
+      (set hook (seq-remove #'shipit-dev--shipit-function-p (symbol-value hook))))))
+
 ;;;###autoload
 (defun shipit-reload (&optional compile-first)
   "Properly reload shipit from source files.
@@ -149,18 +169,7 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
         ;; Third pass: Remove shipit functions from hooks BEFORE unbinding
         ;; This prevents "void-function" errors from hooks
         (message "Removing shipit functions from hooks...")
-        (dolist (hook '(post-command-hook pre-command-hook after-change-functions
-                        before-change-functions magit-status-sections-hook
-                        magit-diff-sections-hook magit-revision-sections-hook))
-          (when (boundp hook)
-            (set hook
-                 (seq-remove
-                  (lambda (fn)
-                    (and (symbolp fn)
-                         (let ((name (symbol-name fn)))
-                           (or (string-prefix-p "shipit-" name)
-                               (string-prefix-p "shipit--" name)))))
-                  (symbol-value hook)))))
+        (shipit-dev--remove-shipit-hooks)
         ;; Also remove from buffer-local hooks in all buffers
         (dolist (buffer (buffer-list))
           (with-current-buffer buffer

@@ -82,6 +82,7 @@ test-unit: compile
 		-l test/test-shipit-rounded-section.el \
 		-l test/test-shipit-force-push.el \
 		-l test/test-shipit-pr-description-edits.el \
+		-l test/test-shipit-dev-utils.el \
 		-l test/test-shipit-diff-entry-points.el \
 		-l test/test-shipit-key-hints.el \
 		-l test/test-shipit-open-in-worktree.el \

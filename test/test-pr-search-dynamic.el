@@ -10,6 +10,7 @@
 (require 'ert)
 (require 'shipit)
 (require 'shipit-pr-sections)
+(require 'shipit-commands)
 
 ;;; Tests for shipit--build-github-query
 
@@ -236,6 +237,31 @@ THEN it is displayed."
               ((symbol-function 'message) #'ignore))
       (shipit--select-pr)
       (should (equal displayed '(42 . "foo/bar"))))))
+
+(ert-deftest test-pr-search-dynamic--annotates-a-pr-without-labels ()
+  "GIVEN the repo's pull requests, one of them without labels, and no
+marginalia
+WHEN the completion list annotates the candidates
+THEN each gets its author and state, and its labels when it has any."
+  (let ((annotations nil))
+    (cl-letf (((symbol-function 'shipit--search-prs-multi-page)
+               (lambda (_repo _query _limit)
+                 (list (test-pr-search-dynamic--make-pr 42 "Fix sensor" "alice")
+                       '((number . 7) (title . "Docs") (state . "open")
+                         (user . ((login . "bob")))
+                         (labels . (((name . "docs"))))))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (let ((annotate (completion-metadata-get
+                                  (completion-metadata "" table nil)
+                                  'annotation-function)))
+                   (setq annotations (mapcar annotate (all-completions "" table))))
+                 nil))
+              ((symbol-function 'message) #'ignore))
+      (should-not (fboundp 'marginalia--fields))
+      (shipit--read-pr "Pick: " "foo/bar")
+      (should (string-match-p "@alice - Open" (nth 0 annotations)))
+      (should (string-match-p "@bob - Open - docs" (nth 1 annotations))))))
 
 (provide 'test-pr-search-dynamic)
 

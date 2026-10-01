@@ -938,8 +938,9 @@ Uses marginalia--fields when available for proper alignment."
                (time-ago (if (and updated (fboundp 'shipit--format-time-ago))
                              (shipit--format-time-ago updated)
                            ""))
-               (labels-str (when label-names
-                             (mapconcat #'identity (seq-take label-names 3) ",")))
+               (labels-str (if label-names
+                               (mapconcat #'identity (seq-take label-names 3) ",")
+                             ""))
                (comments-str (if (and comments (> comments 0))
                                  (format "💬%d" comments)
                                ""))

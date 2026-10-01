@@ -493,6 +493,16 @@ THEN it loads, so requiring shipit never depends on the canvas."
 
 ;;;; The buffer and its keys
 
+(defmacro test-kanban--abandoning (&rest body)
+  "Run BODY, a command that the user leaves with a quit, and catch the quit.
+The command loop catches a quit, and a test must do the same: a quit is
+no error, so `ignore-errors' lets it through and it ends the test before
+its assertions.  BODY that ends without a quit fails the test."
+  (declare (indent 0))
+  `(should (eq 'quit (condition-case nil
+                         (progn ,@body 'no-quit)
+                       (quit 'quit)))))
+
 (defmacro test-kanban--with-buffer (buffer pending &rest body)
   "Open the fixture board in a kanban buffer bound to BUFFER; run BODY.
 PENDING is staged first.  The repository's issues are on Jira, as those
@@ -1149,7 +1159,7 @@ THEN the board and the keyboard are as they were."
                (lambda (candidates &rest args)
                  (funcall (plist-get args :state) 'preview (car candidates))
                  (keyboard-quit))))
-      (ignore-errors (shipit-atlassian-kanban-search)))
+      (test-kanban--abandoning (shipit-atlassian-kanban-search)))
     (should (null (plist-get shipit-atlassian-kanban--filter :text)))
     (should (equal 3 (length (test-kanban--cards
                               (canvas-diagram-current-model)
@@ -1303,7 +1313,7 @@ THEN the filter is the one it was before."
                (lambda (&rest args)
                  (funcall (plist-get args :state) 'preview "widget")
                  (keyboard-quit))))
-      (ignore-errors (shipit-atlassian-kanban-focus)))
+      (test-kanban--abandoning (shipit-atlassian-kanban-focus)))
     (should (equal "parser" (plist-get shipit-atlassian-kanban--filter :text)))
     (should (equal '("PROJ-3")
                    (mapcar #'canvas-diagram-node-label

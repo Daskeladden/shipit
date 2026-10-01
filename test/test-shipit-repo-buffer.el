@@ -1861,28 +1861,72 @@ THEN it has no Type line, where a guess could call a private repository public."
                "Type:"
                (test-repo-buffer--header-text (test-repo-buffer--repo test-repo-buffer--mine)))))
 
+(defun test-repo-buffer--octicons-of (repo-data label)
+  "Draw the header from REPO-DATA with SVG icons, and look at the line of LABEL.
+Return the names of the octicons that were asked for, if that line has
+an image, and nil if it has none."
+  (let ((asked nil))
+    ;; `features' is not special, so only `dlet' binds it for `featurep'.
+    (dlet ((shipit-use-svglib-icons t)
+           (features (cons 'svg-lib features)))
+      (cl-letf (((symbol-function 'svg-lib-icon)
+                 (lambda (name &rest _)
+                   (push name asked)
+                   '(image :type svg :data "<svg/>"))))
+        (with-temp-buffer
+          (test-repo-buffer--header repo-data)
+          (goto-char (point-min))
+          (re-search-forward label)
+          (and (cl-some (lambda (pos) (imagep (get-text-property pos 'display)))
+                        (number-sequence (line-beginning-position) (point)))
+               asked))))))
+
 (ert-deftest test-repo-buffer-header-type-line-has-an-octicon ()
   "GIVEN SVG icons
 WHEN the header of a private and of a public repository is drawn
 THEN the Type line of each starts with an image, the lock octicon for
 the private one and the globe for the public one."
   (dolist (case '(("private" . "lock") ("public" . "globe") ("internal" . "organization")))
-    (let ((asked nil))
-      ;; `features' is not special, so only `dlet' binds it for `featurep'.
-      (dlet ((shipit-use-svglib-icons t)
-             (features (cons 'svg-lib features)))
-        (cl-letf (((symbol-function 'svg-lib-icon)
-                   (lambda (name &rest _)
-                     (push name asked)
-                     '(image :type svg :data "<svg/>"))))
-          (with-temp-buffer
-            (test-repo-buffer--header
-             (test-repo-buffer--repo (cons 'visibility (car case)) test-repo-buffer--mine))
-            (should (member (cdr case) asked))
-            (goto-char (point-min))
-            (re-search-forward "Type:")
-            (should (cl-some (lambda (pos) (imagep (get-text-property pos 'display)))
-                             (number-sequence (line-beginning-position) (point))))))))))
+    (should (member (cdr case)
+                    (test-repo-buffer--octicons-of
+                     (test-repo-buffer--repo (cons 'visibility (car case)) test-repo-buffer--mine)
+                     "Type:")))))
+
+;;; The stars of the repository in the header
+
+(ert-deftest test-repo-buffer-header-counts-the-stars ()
+  "GIVEN a repository that 42 people starred
+WHEN the header is drawn
+THEN it has a Stars line that says 42."
+  (should (string-match-p
+           "Stars: +42$"
+           (test-repo-buffer--header-text (test-repo-buffer--repo '(stargazers_count . 42))))))
+
+(ert-deftest test-repo-buffer-header-says-zero-for-no-stars ()
+  "GIVEN a repository that nobody starred
+WHEN the header is drawn
+THEN the Stars line says 0: the forge gave a count, and the owner of a
+new repository watches for its first star."
+  (should (string-match-p
+           "Stars: +0$"
+           (test-repo-buffer--header-text (test-repo-buffer--repo '(stargazers_count . 0))))))
+
+(ert-deftest test-repo-buffer-header-has-no-stars-line-without-a-count ()
+  "GIVEN repository data without a count of stars, as a forge without
+stars gives it
+WHEN the header is drawn
+THEN it has no Stars line."
+  (should-not (string-match-p
+               "Stars:"
+               (test-repo-buffer--header-text (test-repo-buffer--repo)))))
+
+(ert-deftest test-repo-buffer-header-stars-line-has-an-octicon ()
+  "GIVEN SVG icons
+WHEN the header of a repository with stars is drawn
+THEN the Stars line starts with an image, the star octicon."
+  (should (member "star"
+                  (test-repo-buffer--octicons-of
+                   (test-repo-buffer--repo '(stargazers_count . 3)) "Stars:"))))
 
 ;;; The prompt for the repository of the page
 

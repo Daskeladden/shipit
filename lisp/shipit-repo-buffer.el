@@ -500,6 +500,15 @@ visibility is not known, or when there is nothing to say."
                          "\U0001f4e6"))
                     (upcase-initials (string-join notes ", "))))))
 
+(defun shipit-repo-buffer--insert-stars-line (repo-data)
+  "Insert the Stars line of the header from REPO-DATA.
+A forge that gives no count of stars gets no line."
+  (let ((stars (cdr (assq 'stargazers_count repo-data))))
+    (when (integerp stars)
+      (insert (format "   %s Stars:    %d\n"
+                      (shipit--get-pr-field-icon "repo-stars" "\u2b50")
+                      stars)))))
+
 (defun shipit-repo-buffer--insert-header-section (repo-data &optional lang-pcts)
   "Insert repo header section from REPO-DATA.
 LANG-PCTS, if non-nil, is a list of (NAME . PERCENT) pairs inserted
@@ -528,6 +537,7 @@ as a child languages sub-section."
                         (shipit--get-pr-field-icon "branch" "\U0001f33f")
                         (propertize default-branch 'font-lock-face 'font-lock-constant-face))))
       (shipit-repo-buffer--insert-type-line repo-data)
+      (shipit-repo-buffer--insert-stars-line repo-data)
       (when description
         ;; Wrap long descriptions to the same 80-col envelope the README
         ;; renders into.  Continuation lines align under the start of the

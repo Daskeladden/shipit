@@ -6028,6 +6028,7 @@ Returns (octicon . color) or nil."
     ("repo-public" '("globe" . "#28a745"))                       ; Green - Repository open to all
     ("repo-private" '("lock" . "#d29922"))                       ; Amber - Repository open to few
     ("repo-internal" '("organization" . "#0366d6"))              ; Blue - Repository of an organization
+    ("repo-stars" '("star" . "#e3b341"))                         ; Yellow - Stars of a repository
     ("branch" '("git-branch" . "#28a745"))                       ; Green - Branch
     ("language" '("code" . "#6f42c1"))                           ; Purple - Language
     ("stats" '("graph" . "#0366d6"))                              ; Blue - Statistics

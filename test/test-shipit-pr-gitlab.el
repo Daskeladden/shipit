@@ -2559,5 +2559,20 @@ THEN the visibility is public AND no flag is set."
       (should-not (eq t (cdr (assq 'fork info))))
       (should-not (eq t (cdr (assq 'admin (cdr (assq 'permissions info)))))))))
 
+(ert-deftest test-shipit-pr-gitlab-repo-info-carries-the-count-of-stars ()
+  "GIVEN a GitLab project that 12 people starred
+WHEN its repository info is fetched
+THEN the info has the count under the name that the repo page reads."
+  (require 'shipit-pr-gitlab)
+  (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+             (lambda (_config _path)
+               '((path_with_namespace . "group/project")
+                 (star_count . 12)
+                 (namespace . ((name . "group")))))))
+    (should (equal 12 (cdr (assq 'stargazers_count
+                                 (shipit-pr-gitlab--fetch-repo-info
+                                  '(:api-url "https://gitlab.com" :token "test-token"
+                                    :project-path "group/project"))))))))
+
 (provide 'test-shipit-pr-gitlab)
 ;;; test-shipit-pr-gitlab.el ends here

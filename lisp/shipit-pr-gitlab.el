@@ -1639,6 +1639,7 @@ Normalizes GitLab fields to match the expected format."
           (visibility . ,(cdr (assq 'visibility data)))
           (archived . ,(eq t (cdr (assq 'archived data))))
           (fork . ,(and (cdr (assq 'forked_from_project data)) t))
+          (stargazers_count . ,(cdr (assq 'star_count data)))
           (permissions . ((admin . ,(shipit-pr-gitlab--administered-p data)))))))))
 
 (defun shipit-pr-gitlab--fetch-readme (config)

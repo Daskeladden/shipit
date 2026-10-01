@@ -65,5 +65,14 @@ THEN the section is in it."
   (let ((shipit-review-actions-legend-extra-sections '(("Extra" ("x" "do the extra")))))
     (should (string-match-p "do the extra" (shipit-review--actions-legend-full)))))
 
+(ert-deftest test-shipit-review-mode-leaves-c-c-letters-to-the-user ()
+  "GIVEN the keymap of review mode
+WHEN each key of C-c and a letter is looked up
+THEN none is bound, because Emacs keeps those keys for the user."
+  (dolist (letter (string-to-list "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+    ;; A number means that the map has no such prefix at all.
+    (let ((binding (lookup-key shipit-review-mode-map (kbd (format "C-c %c" letter)))))
+      (should (or (null binding) (numberp binding))))))
+
 (provide 'test-shipit-review-mode)
 ;;; test-shipit-review-mode.el ends here

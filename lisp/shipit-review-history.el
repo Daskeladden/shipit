@@ -20,8 +20,8 @@
 ;; so navigation / DWIM dispatch follow the rest of shipit's UI
 ;; conventions.
 ;;
-;; Entry point: `shipit-review-file-history' (bound in
-;; `shipit-review-mode-map' to `C-c r h').
+;; Entry point: `shipit-review-file-history', `t' in the legend window
+;; of a review session.
 
 ;;; Code:
 (require 'cl-lib)

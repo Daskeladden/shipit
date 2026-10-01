@@ -241,17 +241,14 @@ shows on H toggle).  Larger indices reach further into the
 file\\='s past.  Reset to 0 whenever the chain is rebuilt.")
 
 
-;; Defined further down, as transients.
-(declare-function shipit-review-compare-menu "shipit-review-mode")
+;; Defined further down, as a transient.
 (declare-function shipit-review-menu "shipit-review-mode")
 
-(defvar shipit-review-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c r c") #'shipit-review-compare-menu)
-    (define-key map (kbd "C-c r t") #'shipit-review-file-history)
-    (define-key map (kbd "C-c r r") #'shipit-review-menu)
-    map)
-  "Keymap for shipit-review-mode.")
+(defvar shipit-review-mode-map (make-sparse-keymap)
+  "Keymap for `shipit-review-mode', in the buffer of the file under review.
+It binds nothing.  The keys of a review session are in its legend
+window, `shipit-review-actions-mode-map'.  Bind your own keys here, for
+example to `shipit-review-menu' or `shipit-review-file-history'.")
 
 (defvar shipit-review--transient-source-buffer nil
   "Buffer captured at the last `shipit-review-menu' invocation.
@@ -1882,7 +1879,9 @@ When enabled on a file opened from a PR worktree:
 - Transient menu provides revision navigation
 - Buffer remains editable for exploring changes
 
-\\{shipit-review-mode-map}"
+The keys are in the legend window of the review session, where `r'
+opens the review menu and `t' the timeline of the file.  The mode
+binds no key in the buffer of the file."
   :lighter (:eval shipit-review--mode-line-string)
   :keymap shipit-review-mode-map
   (if shipit-review-mode

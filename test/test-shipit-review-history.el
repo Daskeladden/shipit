@@ -16,6 +16,7 @@
 (require 'shipit-core)
 (require 'shipit-review-mode)
 (require 'shipit-review-history)
+(require 'shipit-sandbox)
 
 (ert-deftest shipit-review--resolve-base-sha-prefers-reachable-pr-data-test ()
   "GIVEN pr-data.base.sha is reachable locally
@@ -147,6 +148,30 @@ THEN it returns the SHAs synthesized via `--ensure-commits-list'."
                    ((sha . "cccccc2") (message . "y"))))))
       (should (equal '("cccccc1" "cccccc2")
                      (shipit-review-history--pr-shas (current-buffer)))))))
+
+;;; Fetching the history
+
+(ert-deftest shipit-review-history--fetch-reads-the-log-where-git-would-page-test ()
+  "GIVEN a repository, and a pager for git that swallows what it is given
+WHEN the history of a file is fetched
+THEN its commits arrive, because git runs on a pipe and starts no pager.
+On a terminal git hands its output to the pager.  The usual pager, less,
+then waits for a key when the history is longer than a screen, and the
+timeline never loads."
+  (let ((root (make-temp-file "shipit-history-test" t))
+        (commits 'pending)
+        (process-environment (cons "GIT_PAGER=cat > /dev/null" process-environment)))
+    (unwind-protect
+        (let ((work (shipit-sandbox-build root)))
+          (shipit-review-history--fetch
+           work "base.txt" (lambda (found) (setq commits found)))
+          (with-timeout (10 (ert-fail "The history never arrived"))
+            (while (eq commits 'pending)
+              (accept-process-output nil 0.05)))
+          (should (equal '("base")
+                         (mapcar (lambda (commit) (plist-get commit :subject))
+                                 commits))))
+      (delete-directory root t))))
 
 (provide 'test-shipit-review-history)
 ;;; test-shipit-review-history.el ends here

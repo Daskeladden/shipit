@@ -135,6 +135,9 @@ On exit, call CALLBACK with the parsed commit list."
      :name "shipit-history"
      :buffer out-buf
      :command (cons "git" (shipit-review-history--git-log-args file-path))
+     ;; On a terminal git pipes a log through its pager, and less waits
+     ;; for a key once the log is longer than a screen.
+     :connection-type 'pipe
      :noquery t
      :sentinel
      (lambda (proc _event)

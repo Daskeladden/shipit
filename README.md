@@ -26,7 +26,7 @@ Supports SVG icons, inline images, avatars, and syntax-highlighted code blocks.
 
 ## Install
 
-Emacs 27.1+, [magit](https://magit.vc/), [transient](https://github.com/magit/transient).
+Emacs 29.1+, [magit](https://magit.vc/), [transient](https://github.com/magit/transient).
 
 Shipit builds on magit-section for all buffer rendering and navigation, and transient for menus and actions.
 

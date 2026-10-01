@@ -139,5 +139,24 @@ files are adopted rather than quietly outliving the problem."
                    known)))
     (should (equal '() (sort adopted #'string<)))))
 
+;;; The README and the package header
+
+(defun test-registration--emacs-version (relative pattern)
+  "The Emacs version that PATTERN finds in the file RELATIVE, its group 1.
+Finding none is an error."
+  (let ((text (test-registration--file-text relative)))
+    (unless (string-match pattern text)
+      (error "No Emacs version in %s" relative))
+    (match-string 1 text)))
+
+(ert-deftest test-shipit-readme-names-the-emacs-of-the-package-header ()
+  "GIVEN the Emacs version that the package header requires
+WHEN the install section of the README is read
+THEN it names the same version."
+  (should (equal (test-registration--emacs-version
+                  "lisp/shipit.el" "Package-Requires: ((emacs \"\\([0-9.]+\\)\")")
+                 (test-registration--emacs-version
+                  "README.md" "^Emacs \\([0-9.]+\\)\\+"))))
+
 (provide 'test-shipit-file-registration)
 ;;; test-shipit-file-registration.el ends here

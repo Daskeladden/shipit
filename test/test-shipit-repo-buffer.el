@@ -6,6 +6,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'ert-x)
 (require 'cl-lib)
 (require 'shipit-core)
 (require 'shipit-pr-backends)
@@ -1766,6 +1767,112 @@ THEN child sections of type `markdown-heading' are added to the wrapping section
     (should (re-search-forward "^Installation$" nil t))
     (goto-char (point-min))
     (should-not (re-search-forward "^## " nil t))))
+
+;;; The prompt for the repository of the page
+
+(defconst test-repo-buffer--fork-remotes
+  '(("fork" . "git@github.com:me/widget.git")
+    ("origin" . "https://github.com/upstream/widget.git"))
+  "The remotes of a checkout of a fork.
+The fork is added first, and origin is the repository it was forked from.")
+
+(defun test-repo-buffer--git (&rest args)
+  "Run git with ARGS in the directory, and fail with its output when it fails."
+  (with-temp-buffer
+    (unless (zerop (apply #'call-process "git" nil t nil args))
+      (error "git %s failed: %s" (string-join args " ") (buffer-string)))))
+
+(defun test-repo-buffer--call-in-checkout (remotes function)
+  "Call FUNCTION in a scratch git checkout with REMOTES, an alist of name and URL."
+  (let ((default-directory (file-name-as-directory (make-temp-file "shipit-remotes-" t))))
+    (unwind-protect
+        (progn
+          (test-repo-buffer--git "init" "-q")
+          (pcase-dolist (`(,name . ,url) remotes)
+            (test-repo-buffer--git "remote" "add" name url))
+          (funcall function))
+      (delete-directory default-directory t))))
+
+(defun test-repo-buffer--read-repo-typing (remotes keys)
+  "The repository that the prompt returns in a checkout with REMOTES, on KEYS."
+  (require 'shipit-repo-buffer)
+  (test-repo-buffer--call-in-checkout remotes
+                                      (lambda ()
+                                        (ert-simulate-keys (kbd keys)
+                                          (shipit-repo-buffer--read-repo)))))
+
+(ert-deftest test-repo-buffer-remotes-name-their-repositories-origin-first ()
+  "GIVEN a checkout whose remote fork was added before its remote origin
+WHEN the repositories of its remotes are asked for
+THEN both are named, that of origin first."
+  (should (equal '("upstream/widget" "me/widget")
+                 (test-repo-buffer--call-in-checkout test-repo-buffer--fork-remotes
+                                                     #'shipit--repos-from-remotes))))
+
+(ert-deftest test-repo-buffer-remotes-name-a-repository-once ()
+  "GIVEN a checkout with two remotes of one repository, over HTTPS and SSH
+WHEN the repositories of its remotes are asked for
+THEN the repository is named once."
+  (should (equal '("upstream/widget")
+                 (test-repo-buffer--call-in-checkout
+                  '(("origin" . "https://github.com/upstream/widget.git")
+                    ("ssh" . "git@github.com:upstream/widget.git"))
+                  #'shipit--repos-from-remotes))))
+
+(ert-deftest test-repo-buffer-remotes-without-an-origin ()
+  "GIVEN a checkout whose only remote is not named origin
+WHEN the repositories of its remotes are asked for
+THEN the repository of that remote is named."
+  (should (equal '("me/widget")
+                 (test-repo-buffer--call-in-checkout '(("fork" . "git@github.com:me/widget.git"))
+                                                     #'shipit--repos-from-remotes))))
+
+(ert-deftest test-repo-buffer-no-remotes-name-no-repository ()
+  "GIVEN a checkout without remotes
+WHEN the repositories of its remotes are asked for
+THEN there are none."
+  (should-not (test-repo-buffer--call-in-checkout nil #'shipit--repos-from-remotes)))
+
+(ert-deftest test-repo-buffer-command-opens-the-repository-of-origin-by-default ()
+  "GIVEN a checkout of a fork
+WHEN the command that opens the repo page is called AND RET is typed
+THEN the page of the repository of origin is opened."
+  (require 'shipit-repo-buffer)
+  (let ((buf-name "*shipit-repo: upstream/widget*"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'shipit-repo-buffer-refresh) #'ignore))
+          (test-repo-buffer--call-in-checkout
+           test-repo-buffer--fork-remotes
+           (lambda ()
+             (ert-simulate-keys (kbd "RET")
+               (call-interactively #'shipit-open-repo-buffer))))
+          (should (get-buffer buf-name)))
+      (when (get-buffer buf-name)
+        (kill-buffer buf-name)))))
+
+(ert-deftest test-repo-buffer-prompt-completes-the-repository-of-another-remote ()
+  "GIVEN a checkout of a fork
+WHEN the start of the fork is typed in the prompt AND completed with TAB
+THEN the prompt returns the repository of the remote fork."
+  (should (equal "me/widget"
+                 (test-repo-buffer--read-repo-typing test-repo-buffer--fork-remotes
+                                                     "m e / TAB RET"))))
+
+(ert-deftest test-repo-buffer-prompt-takes-a-repository-of-no-remote ()
+  "GIVEN a checkout of a fork
+WHEN a repository that no remote names is typed in the prompt
+THEN the prompt returns it."
+  (should (equal "octocat/hello-world"
+                 (test-repo-buffer--read-repo-typing
+                  test-repo-buffer--fork-remotes
+                  "o c t o c a t / h e l l o - w o r l d RET"))))
+
+(ert-deftest test-repo-buffer-prompt-refuses-no-repository ()
+  "GIVEN a checkout without remotes, so the prompt has no default
+WHEN RET is typed in the empty prompt
+THEN the prompt refuses with a user error."
+  (should-error (test-repo-buffer--read-repo-typing nil "RET")
+                :type 'user-error))
 
 (provide 'test-shipit-repo-buffer)
 ;;; test-shipit-repo-buffer.el ends here

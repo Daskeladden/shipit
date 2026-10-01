@@ -366,14 +366,24 @@ Returns list of discussion alists, or nil on failure."
 
 ;;; Entry point
 
+(defun shipit-repo-buffer--read-repo ()
+  "Read a repository, an owner/name path, in the minibuffer.
+The candidates are the repositories of the git remotes of the
+directory, with that of origin as the default.  A repository that
+no remote names can be typed."
+  (let* ((repos (shipit--repos-from-remotes))
+         (repo (completing-read (format-prompt "Repository (owner/repo)" (car repos))
+                                repos nil nil nil nil (car repos))))
+    (when (string-empty-p repo)
+      (user-error "No repository given"))
+    repo))
+
 ;;;###autoload
 (defun shipit-open-repo-buffer (repo &optional backend-id backend-config)
   "Open a dedicated landing page buffer for REPO (owner/name).
 Creates or reuses the buffer *shipit-repo: REPO*.
 BACKEND-ID and BACKEND-CONFIG override auto-detection when provided."
-  (interactive
-   (list (read-string "Repository (owner/repo): "
-                      (shipit--get-repo-from-remote))))
+  (interactive (list (shipit-repo-buffer--read-repo)))
   (let* ((buf-name (format "*shipit-repo: %s*" repo))
          (existing (get-buffer buf-name))
          ;; Resolve backend in calling buffer (which has git context)

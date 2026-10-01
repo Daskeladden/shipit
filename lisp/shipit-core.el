@@ -451,6 +451,21 @@ during a session."
         (puthash dir result shipit--repo-from-remote-cache)
         result)))))
 
+(defun shipit--remote-urls ()
+  "Return the URL of each git remote of the directory."
+  (mapcar (lambda (line) (substring line (1+ (string-search " " line))))
+          ;; git exits with 1 when no key matches, so without remotes.
+          (process-lines-ignore-status
+           "git" "config" "--get-regexp" "^remote\\..*\\.url$")))
+
+(defun shipit--repos-from-remotes ()
+  "Return the repository of each git remote of the directory.
+Each is an owner/name path.  That of origin is first, and a
+repository that two remotes name is listed once."
+  (delete-dups
+   (delq nil (cons (shipit--get-repo-from-remote)
+                   (mapcar #'shipit--parse-repo-from-url (shipit--remote-urls))))))
+
 (defun shipit--buffer-repo-variable ()
   "The repository a buffer-local variable names, or nil.
 Each kind of shipit buffer records what it is about in its own

@@ -78,6 +78,22 @@ next to `|', the key that opens the A side."
     (should (equal "walk A or B" (cadr (assoc "s" navigate))))
     (should-not (assoc "s" view))))
 
+(ert-deftest test-shipit-review-legend-window-has-room-under-a-tall-mode-line ()
+  "GIVEN a line of text of 18 pixels
+WHEN the height of the legend window is worked out for one line of
+keys, under a mode line of one line and under one of 32 pixels
+THEN the window is 2 lines under the plain mode line AND 3 lines under
+the tall one, where 2 lines left 4 pixels for the keys."
+  (should (= 2 (shipit-review--legend-window-lines 18 18 18)))
+  (should (= 3 (shipit-review--legend-window-lines 18 32 18))))
+
+(ert-deftest test-shipit-review-legend-window-counts-every-line-of-the-full-legend ()
+  "GIVEN the full legend, ten lines of 18 pixels
+WHEN the height of its window is worked out under a mode line of 32 pixels
+THEN the window is 12 lines: ten for the text, and two that hold the
+mode line."
+  (should (= 12 (shipit-review--legend-window-lines 180 32 18))))
+
 (ert-deftest test-shipit-review-menus-show-outside-the-row-of-the-legend ()
   "GIVEN a side window at the bottom, as the legend of a review session is
 WHEN the review menu or the compare menu shows its popup

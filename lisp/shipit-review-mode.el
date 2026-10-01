@@ -766,17 +766,26 @@ table, so a reload of this file keeps what the packages added.")
   (append shipit-review--actions-legend-sections
           shipit-review-actions-legend-extra-sections))
 
-(defun shipit-review--actions-legend-expanded-height ()
-  "Window height needed for the expanded legend.
-2 chrome rows (heading + `===' rule) plus the longest
-section\\='s entry count, plus 1 for the buffer\\='s trailing
-blank line and 1 for the mode line.  Computed from the
-sections data so growing a column doesn\\='t need a hardcoded
-height bump."
-  (+ (apply #'max
-            (mapcar (lambda (s) (length (cdr s)))
-                    (shipit-review--actions-legend-all-sections)))
-     4))
+(defun shipit-review--legend-window-lines (text-pixels chrome-pixels line-pixels)
+  "The height in lines of a window that shows TEXT-PIXELS of text.
+CHROME-PIXELS is what the window spends on its mode line, and
+LINE-PIXELS is the height of one line of the frame.  A mode line can
+be taller than a line of text, so it cannot be counted as one line: a
+window sized that way has no room left for its text."
+  (ceiling (+ text-pixels chrome-pixels) (float line-pixels)))
+
+(defun shipit-review--fit-legend-window (window)
+  "Give WINDOW, which shows the legend, the height of its text and mode line."
+  (let* ((chrome (- (window-pixel-height window) (window-body-height window t)))
+         (text (cdr (window-text-pixel-size window nil t)))
+         (lines (shipit-review--legend-window-lines
+                 text chrome (frame-char-height (window-frame window))))
+         (window-min-height 1))
+    ;; A side window keeps the height it was made with unless its size
+    ;; lock is cleared, and it snaps only to an exact minimum and maximum.
+    (with-selected-window window
+      (setq window-size-fixed nil)
+      (fit-window-to-buffer window lines lines))))
 
 (defun shipit-review--actions-legend-section-width (section)
   "Return the rendered column width (in chars) for SECTION.
@@ -903,28 +912,9 @@ panel and the expanded view doesn\\='t scroll off the top."
         ;; the top get scrolled out of view.  Reset point and the
         ;; window-start below so the heading is always visible.
         (goto-char (point-min)))
-      (let ((win (get-buffer-window buf t))
-            (target-height
-             ;; Expanded: heading + rule + max(section entries)
-             ;; (Comments has 6) + 1 trailing blank = 9 rows of
-             ;; content, so the side window needs 9 lines for the
-             ;; mode line to land below.
-             ;; Minimal: a single content row + mode line = 2 rows.
-             (if shipit-review--actions-legend-expanded
-                 (shipit-review--actions-legend-expanded-height)
-               2)))
+      (let ((win (get-buffer-window buf t)))
         (when (window-live-p win)
-          ;; `window-resize' on a side window often no-ops because the
-          ;; original `window-height' from `display-buffer-alist'
-          ;; sticks and `window-size-fixed' protects it.  Clear the
-          ;; lock + use `fit-window-to-buffer' with explicit min/max
-          ;; so the window snaps to the exact target.  Without this
-          ;; the minimal layout sat in a 9-line window with eight
-          ;; rows of empty space underneath it.
-          (with-selected-window win
-            (setq window-size-fixed nil)
-            (let ((window-min-height 1))
-              (fit-window-to-buffer win target-height target-height)))
+          (shipit-review--fit-legend-window win)
           (set-window-point win (point-min))
           (set-window-start win (point-min)))))))
 
@@ -1022,23 +1012,20 @@ not the layout after the H side window opened."
       (unless shipit-review--saved-window-config
         (setq shipit-review--saved-window-config
               (current-window-configuration)))
-      (let ((height (if shipit-review--actions-legend-expanded
-                       (shipit-review--actions-legend-expanded-height)
-                     2)))
-        (display-buffer
-         buf
-         `((display-buffer-in-side-window)
-           (side . bottom)
-           (slot . 1)
-           (window-height . ,height)
-           ;; Don't preserve-size: it blocks the subsequent
-           ;; window-resize that fires when the user toggles
-           ;; between the minimal and full legend with `?', leaving
-           ;; the expanded layout's heading + rule rows scrolled
-           ;; off the top.
-           (window-parameters
-            (no-other-window . nil)
-            (no-delete-other-windows . t))))))
+      (display-buffer
+       buf
+       '((display-buffer-in-side-window)
+         (side . bottom)
+         (slot . 1)
+         (window-height . shipit-review--fit-legend-window)
+         ;; Don't preserve-size: it blocks the subsequent
+         ;; window-resize that fires when the user toggles
+         ;; between the minimal and full legend with `?', leaving
+         ;; the expanded layout's heading + rule rows scrolled
+         ;; off the top.
+         (window-parameters
+          (no-other-window . nil)
+          (no-delete-other-windows . t)))))
     (let ((win (get-buffer-window buf t)))
       (when (window-live-p win)
         ;; Snap the window to point-min so the heading + `===' rule

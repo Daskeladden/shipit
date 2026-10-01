@@ -453,6 +453,53 @@ BACKEND-ID and BACKEND-CONFIG override auto-detection when provided."
 
 ;;; Section rendering
 
+(defconst shipit-repo-buffer--visibility-emoji
+  '(("public" . "\U0001f310") ("private" . "\U0001f512") ("internal" . "\U0001f3e2"))
+  "The emoji for each visibility of a repository, where SVG icons are off.")
+
+(defun shipit-repo-buffer--flag-p (repo-data key)
+  "Whether the flag KEY of REPO-DATA is set.  A JSON false is not."
+  (eq t (cdr (assq key repo-data))))
+
+(defun shipit-repo-buffer--visibility (repo-data)
+  "The visibility of the repository in REPO-DATA, or nil when it is not known.
+It is \"public\", \"private\" or \"internal\".  Data without a
+visibility can have a private flag.  With neither, the visibility is
+not known, and a guess could call a private repository public."
+  (or (cdr (assq 'visibility repo-data))
+      (when (assq 'private repo-data)
+        (if (shipit-repo-buffer--flag-p repo-data 'private) "private" "public"))))
+
+(defun shipit-repo-buffer--administered-p (repo-data)
+  "Whether the user administers the repository in REPO-DATA."
+  (shipit-repo-buffer--flag-p (cdr (assq 'permissions repo-data)) 'admin))
+
+(defun shipit-repo-buffer--type-notes (repo-data visibility)
+  "What the Type line says of the repository in REPO-DATA, as a list.
+VISIBILITY is its visibility.  Public is said only of a repository that
+the user administers: of the repository of another it is what one
+expects, and it says nothing."
+  (delq nil
+        (list (unless (and (equal visibility "public")
+                           (not (shipit-repo-buffer--administered-p repo-data)))
+                visibility)
+              (and (shipit-repo-buffer--flag-p repo-data 'fork) "fork")
+              (and (shipit-repo-buffer--flag-p repo-data 'archived) "archived"))))
+
+(defun shipit-repo-buffer--insert-type-line (repo-data)
+  "Insert the Type line of the header from REPO-DATA.
+It says whether the repository is public, private or internal, and
+whether it is a fork or archived.  Nothing is inserted when the
+visibility is not known, or when there is nothing to say."
+  (when-let* ((visibility (shipit-repo-buffer--visibility repo-data))
+              (notes (shipit-repo-buffer--type-notes repo-data visibility)))
+    (insert (format "   %s Type:     %s\n"
+                    (shipit--get-pr-field-icon
+                     (concat "repo-" visibility)
+                     (or (cdr (assoc visibility shipit-repo-buffer--visibility-emoji))
+                         "\U0001f4e6"))
+                    (upcase-initials (string-join notes ", "))))))
+
 (defun shipit-repo-buffer--insert-header-section (repo-data &optional lang-pcts)
   "Insert repo header section from REPO-DATA.
 LANG-PCTS, if non-nil, is a list of (NAME . PERCENT) pairs inserted
@@ -480,6 +527,7 @@ as a child languages sub-section."
         (insert (format "   %s Branch:   %s\n"
                         (shipit--get-pr-field-icon "branch" "\U0001f33f")
                         (propertize default-branch 'font-lock-face 'font-lock-constant-face))))
+      (shipit-repo-buffer--insert-type-line repo-data)
       (when description
         ;; Wrap long descriptions to the same 80-col envelope the README
         ;; renders into.  Continuation lines align under the start of the

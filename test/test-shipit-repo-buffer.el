@@ -1768,6 +1768,122 @@ THEN child sections of type `markdown-heading' are added to the wrapping section
     (goto-char (point-min))
     (should-not (re-search-forward "^## " nil t))))
 
+;;; The type of the repository in the header
+
+(defun test-repo-buffer--repo (&rest fields)
+  "Repository data as a forge gives it, with FIELDS, alist entries, added."
+  (append fields
+          '((full_name . "octocat/hello-world")
+            (owner . ((login . "octocat")))
+            (default_branch . "main"))))
+
+(defun test-repo-buffer--header (repo-data)
+  "Draw the header of the repo page from REPO-DATA in the current buffer."
+  (require 'shipit-repo-buffer)
+  (let ((inhibit-read-only t))
+    (magit-insert-section (repo-root)
+      (shipit-test-http-answering (list shipit-test-http-not-starred)
+        (shipit-repo-buffer--insert-header-section repo-data)))))
+
+(defun test-repo-buffer--header-text (repo-data)
+  "The text of the header that the repo page draws from REPO-DATA."
+  (with-temp-buffer
+    (test-repo-buffer--header repo-data)
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(defconst test-repo-buffer--mine '(permissions . ((admin . t)))
+  "What a forge adds to the data of a repository that the user administers.")
+
+(ert-deftest test-repo-buffer-header-says-that-my-repository-is-public ()
+  "GIVEN a public repository that the user administers
+WHEN the header is drawn
+THEN it has a Type line that says Public."
+  (should (string-match-p
+           "Type: +Public$"
+           (test-repo-buffer--header-text
+            (test-repo-buffer--repo '(visibility . "public") test-repo-buffer--mine)))))
+
+(ert-deftest test-repo-buffer-header-does-not-call-the-repository-of-another-public ()
+  "GIVEN a public repository that the user does not administer
+WHEN the header is drawn
+THEN it has no Type line: public is what one expects there."
+  (should-not (string-match-p
+               "Type:"
+               (test-repo-buffer--header-text
+                (test-repo-buffer--repo '(visibility . "public")
+                                        '(permissions . ((admin . :json-false))))))))
+
+(ert-deftest test-repo-buffer-header-names-a-private-archived-fork ()
+  "GIVEN a private repository of another that is a fork and is archived
+WHEN the header is drawn
+THEN the Type line says Private, and names the fork and the archive."
+  (should (string-match-p
+           "Type: +Private, fork, archived$"
+           (test-repo-buffer--header-text
+            (test-repo-buffer--repo '(visibility . "private") '(fork . t) '(archived . t))))))
+
+(ert-deftest test-repo-buffer-header-names-the-public-fork-of-another ()
+  "GIVEN a public repository of another that is a fork
+WHEN the header is drawn
+THEN the Type line says Fork, and not that it is public."
+  (should (string-match-p
+           "Type: +Fork$"
+           (test-repo-buffer--header-text
+            (test-repo-buffer--repo '(visibility . "public") '(fork . t))))))
+
+(ert-deftest test-repo-buffer-header-says-internal-for-an-internal-repository ()
+  "GIVEN a repository that only the members of its organization see
+WHEN the header is drawn
+THEN the Type line says Internal, AND a fork flag that is false adds nothing."
+  (should (string-match-p
+           "Type: +Internal$"
+           (test-repo-buffer--header-text
+            (test-repo-buffer--repo '(visibility . "internal") '(fork . :json-false))))))
+
+(ert-deftest test-repo-buffer-header-reads-the-private-flag-without-a-visibility ()
+  "GIVEN repository data with a private flag and no visibility
+WHEN the header is drawn
+THEN a true flag says Private AND a false flag says Public on a
+repository that the user administers."
+  (should (string-match-p
+           "Type: +Private$"
+           (test-repo-buffer--header-text (test-repo-buffer--repo '(private . t)))))
+  (should (string-match-p
+           "Type: +Public$"
+           (test-repo-buffer--header-text
+            (test-repo-buffer--repo '(private . :json-false) test-repo-buffer--mine)))))
+
+(ert-deftest test-repo-buffer-header-has-no-type-line-when-the-forge-says-nothing ()
+  "GIVEN repository data without a visibility and without a private flag
+WHEN the header is drawn
+THEN it has no Type line, where a guess could call a private repository public."
+  (should-not (string-match-p
+               "Type:"
+               (test-repo-buffer--header-text (test-repo-buffer--repo test-repo-buffer--mine)))))
+
+(ert-deftest test-repo-buffer-header-type-line-has-an-octicon ()
+  "GIVEN SVG icons
+WHEN the header of a private and of a public repository is drawn
+THEN the Type line of each starts with an image, the lock octicon for
+the private one and the globe for the public one."
+  (dolist (case '(("private" . "lock") ("public" . "globe") ("internal" . "organization")))
+    (let ((asked nil))
+      ;; `features' is not special, so only `dlet' binds it for `featurep'.
+      (dlet ((shipit-use-svglib-icons t)
+             (features (cons 'svg-lib features)))
+        (cl-letf (((symbol-function 'svg-lib-icon)
+                   (lambda (name &rest _)
+                     (push name asked)
+                     '(image :type svg :data "<svg/>"))))
+          (with-temp-buffer
+            (test-repo-buffer--header
+             (test-repo-buffer--repo (cons 'visibility (car case)) test-repo-buffer--mine))
+            (should (member (cdr case) asked))
+            (goto-char (point-min))
+            (re-search-forward "Type:")
+            (should (cl-some (lambda (pos) (imagep (get-text-property pos 'display)))
+                             (number-sequence (line-beginning-position) (point))))))))))
+
 ;;; The prompt for the repository of the page
 
 (defconst test-repo-buffer--fork-remotes

@@ -2509,5 +2509,55 @@ THEN the :set-pr-draft operation is present."
   (should (functionp (plist-get (cdr (assq 'gitlab shipit-pr-backends))
                                 :set-pr-draft))))
 
+;;; Repository info
+
+(ert-deftest test-shipit-pr-gitlab-repo-info-carries-the-type-of-the-project ()
+  "GIVEN a GitLab project that is internal, archived and forked from
+another, where the user is a maintainer
+WHEN its repository info is fetched
+THEN the info has the visibility, the archived flag, the fork flag and
+that the user administers it, under the names that the repo page reads."
+  (require 'shipit-pr-gitlab)
+  (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+             (lambda (_config _path)
+               '((path_with_namespace . "group/project")
+                 (visibility . "internal")
+                 (archived . t)
+                 (forked_from_project . ((id . 7) (path_with_namespace . "other/project")))
+                 (permissions . ((project_access . ((access_level . 40)))
+                                 (group_access)))
+                 (namespace . ((name . "group")))
+                 (default_branch . "main")
+                 (web_url . "https://gitlab.com/group/project")))))
+    (let ((info (shipit-pr-gitlab--fetch-repo-info
+                 '(:api-url "https://gitlab.com" :token "test-token"
+                   :project-path "group/project"))))
+      (should (equal "internal" (cdr (assq 'visibility info))))
+      (should (eq t (cdr (assq 'archived info))))
+      (should (eq t (cdr (assq 'fork info))))
+      (should (eq t (cdr (assq 'admin (cdr (assq 'permissions info)))))))))
+
+(ert-deftest test-shipit-pr-gitlab-repo-info-of-a-plain-project-is-no-fork ()
+  "GIVEN a public GitLab project that is no fork and is not archived,
+where the user is a developer
+WHEN its repository info is fetched
+THEN the visibility is public AND no flag is set."
+  (require 'shipit-pr-gitlab)
+  (cl-letf (((symbol-function 'shipit-gitlab--api-request)
+             (lambda (_config _path)
+               '((path_with_namespace . "group/project")
+                 (visibility . "public")
+                 (archived . :json-false)
+                 (permissions . ((project_access . ((access_level . 30)))
+                                 (group_access)))
+                 (namespace . ((name . "group")))))))
+    (let ((info (shipit-pr-gitlab--fetch-repo-info
+                 '(:api-url "https://gitlab.com" :token "test-token"
+                   :project-path "group/project"))))
+      (should (equal "public" (cdr (assq 'visibility info))))
+      (should-not (eq t (cdr (assq 'archived info))))
+      (should-not (eq t (cdr (assq 'fork info))))
+      (should-not (eq t (cdr (assq 'admin (cdr (assq 'permissions info)))))))))
+
 (provide 'test-shipit-pr-gitlab)
 ;;; test-shipit-pr-gitlab.el ends here

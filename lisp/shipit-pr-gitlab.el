@@ -1610,6 +1610,15 @@ Returns plist (:type TYPE :repo REPO :number N) or nil."
 
 ;;; Repo info, README, and languages
 
+(defun shipit-pr-gitlab--administered-p (project)
+  "Whether the user is a maintainer or an owner of PROJECT, GitLab's data.
+The access comes from the project itself or from its group."
+  (let ((permissions (cdr (assq 'permissions project))))
+    (seq-some (lambda (source)
+                (let ((level (cdr (assq 'access_level (cdr (assq source permissions))))))
+                  (and (numberp level) (>= level 40))))
+              '(project_access group_access))))
+
 (defun shipit-pr-gitlab--fetch-repo-info (config)
   "Fetch repository metadata using CONFIG.
 Normalizes GitLab fields to match the expected format."
@@ -1626,7 +1635,11 @@ Normalizes GitLab fields to match the expected format."
           (owner . ((login . ,owner-name)
                     (avatar_url . ,owner-avatar)))
           (default_branch . ,(cdr (assq 'default_branch data)))
-          (html_url . ,(cdr (assq 'web_url data))))))))
+          (html_url . ,(cdr (assq 'web_url data)))
+          (visibility . ,(cdr (assq 'visibility data)))
+          (archived . ,(eq t (cdr (assq 'archived data))))
+          (fork . ,(and (cdr (assq 'forked_from_project data)) t))
+          (permissions . ((admin . ,(shipit-pr-gitlab--administered-p data)))))))))
 
 (defun shipit-pr-gitlab--fetch-readme (config)
   "Fetch repository README using CONFIG.

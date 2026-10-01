@@ -6025,6 +6025,9 @@ Returns (octicon . color) or nil."
     ("github" '("mark-github" . "#999999"))                    ; Gray - GitHub backend
     ("gitlab" '("gitlab" "#e24329" "simple"))                  ; Orange - GitLab backend (simple-icons)
     ("repo" '("repo" . "#0366d6"))                               ; Blue - Repository
+    ("repo-public" '("globe" . "#28a745"))                       ; Green - Repository open to all
+    ("repo-private" '("lock" . "#d29922"))                       ; Amber - Repository open to few
+    ("repo-internal" '("organization" . "#0366d6"))              ; Blue - Repository of an organization
     ("branch" '("git-branch" . "#28a745"))                       ; Green - Branch
     ("language" '("code" . "#6f42c1"))                           ; Purple - Language
     ("stats" '("graph" . "#0366d6"))                              ; Blue - Statistics

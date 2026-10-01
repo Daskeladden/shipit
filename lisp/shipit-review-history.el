@@ -730,7 +730,7 @@ Builds two temp buffers (`*REL @ SHORT*'), populates them via
 `shipit-review-history-insert-file-at-sha' (so renames are
 followed), then runs `ediff-buffers'.
 
-On ediff quit, `ediff-after-quit-hook-internal' kills the two
+On ediff quit, a hook local to the session kills the two
 temp buffers and restores the window configuration captured
 just before this call -- so the workflow round-trips back to
 exactly the layout the user had before pressing `e' / `=' /
@@ -763,12 +763,7 @@ exactly the layout the user had before pressing `e' / `=' /
         (when (and mode (fboundp mode)) (funcall mode))
         (setq buffer-read-only t)
         (set-buffer-modified-p nil)))
-    ;; `ediff-after-quit-hook-internal' is a hook variable -- a
-    ;; *list* of functions, run via `run-hooks'.  Setting it to a
-    ;; bare lambda crashes `ediff-really-quit' with a `listp'
-    ;; mismatch.  Wrap in a list so it round-trips correctly.
-    (setq ediff-after-quit-hook-internal
-          (list
+    (let ((cleanup
            (lambda ()
              (when (buffer-live-p buf-a) (kill-buffer buf-a))
              (when (buffer-live-p buf-b) (kill-buffer buf-b))
@@ -784,7 +779,14 @@ exactly the layout the user had before pressing `e' / `=' /
                 (lambda ()
                   (when (commandp transient-prefix)
                     (call-interactively transient-prefix))))))))
-    (ediff-buffers buf-a buf-b)))
+      ;; The startup hook runs in the control buffer of this session,
+      ;; and the cleanup is added there as a local hook, so it ends with
+      ;; the session.  Set globally, it would run after every later
+      ;; ediff session and put this window configuration back.
+      (ediff-buffers buf-a buf-b
+                     (list (lambda ()
+                             (add-hook 'ediff-after-quit-hook-internal
+                                       cleanup nil t)))))))
 
 (defun shipit-review-history--show-file-at-sha (sha)
   "Open the file at SHA in another window using `git show'.

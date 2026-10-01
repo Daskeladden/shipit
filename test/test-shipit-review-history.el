@@ -17,6 +17,7 @@
 (require 'shipit-review-mode)
 (require 'shipit-review-history)
 (require 'shipit-sandbox)
+(require 'ediff)
 
 (ert-deftest shipit-review--resolve-base-sha-prefers-reachable-pr-data-test ()
   "GIVEN pr-data.base.sha is reachable locally
@@ -171,6 +172,35 @@ timeline never loads."
           (should (equal '("base")
                          (mapcar (lambda (commit) (plist-get commit :subject))
                                  commits))))
+      (delete-directory root t))))
+
+;;; Ediff from a review session
+
+(ert-deftest shipit-review-history-ediff-leaves-nothing-for-later-sessions-test ()
+  "GIVEN two versions of a file, compared with ediff from a review session
+WHEN the ediff session starts, and when it quits
+THEN the hook that ediff runs after every quit holds nothing of this
+session, so a later ediff session does not get its window layout, AND
+the two buffers of the versions are gone."
+  (let ((root (make-temp-file "shipit-ediff-test" t))
+        (ediff-window-setup-function #'ediff-setup-windows-plain)
+        (ediff-after-quit-hook-internal nil))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory (shipit-sandbox-build root))))
+          (with-temp-file "base.txt" (insert "base, changed\n"))
+          (shipit-sandbox--git "commit" "-q" "-am" "change base")
+          (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                    ((symbol-function 'message) #'ignore))
+            (save-window-excursion
+              (shipit-review-history-ediff-files-at-shas
+               "HEAD~1" "HEAD" "base.txt" default-directory)
+              (should-not (default-value 'ediff-after-quit-hook-internal))
+              (with-current-buffer "*Ediff Control Panel*"
+                (ediff-really-quit nil))))
+          (should-not (default-value 'ediff-after-quit-hook-internal))
+          (should-not (seq-filter (lambda (buffer)
+                                    (string-prefix-p "*base.txt @ " (buffer-name buffer)))
+                                  (buffer-list))))
       (delete-directory root t))))
 
 (provide 'test-shipit-review-history)

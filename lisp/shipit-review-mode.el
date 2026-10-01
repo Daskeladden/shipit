@@ -258,9 +258,19 @@ buffer for the entire transient session -- so a stale timeline
 window for a different file can't redirect navigation.")
 
 ;; Transient menu for comparison target
+(defconst shipit-review--menu-display-action
+  '(display-buffer-at-bottom
+    (dedicated . t)
+    (inhibit-same-window . t))
+  "Where the menus of a review session show.
+Not in a side window, as a transient shows by default.  The legend is a
+side window at the bottom, and Emacs gives the windows on one side one
+height, so a one-line legend cut a menu in its row off.")
+
 (when (fboundp 'transient-define-prefix)
   (transient-define-prefix shipit-review-compare-menu ()
     "Menu to adjust diff comparison target in review mode."
+    :display-action shipit-review--menu-display-action
     [["Comparison Target"
       ("b" "Compare vs Base" shipit-review--compare-vs-base)
       ("h" "Compare vs HEAD" shipit-review--compare-vs-head)
@@ -278,6 +288,7 @@ window for a different file can't redirect navigation.")
 Commit-navigation suffixes (`n', `p', `M', `N', `=') are sticky --
 they keep the menu open so you can step through commits while
 watching the timeline buffer's highlighted current commit move."
+    :display-action shipit-review--menu-display-action
     [["Navigate commits"
       ("n" "Next commit"        shipit-review--next-commit
        :transient t)

@@ -78,6 +78,26 @@ next to `|', the key that opens the A side."
     (should (equal "walk A or B" (cadr (assoc "s" navigate))))
     (should-not (assoc "s" view))))
 
+(ert-deftest test-shipit-review-menus-show-outside-the-row-of-the-legend ()
+  "GIVEN a side window at the bottom, as the legend of a review session is
+WHEN the review menu or the compare menu shows its popup
+THEN the popup is no side window.  Emacs gives the windows on one side
+of the frame one height, so in the row of a one-line legend a menu was
+cut off."
+  (dolist (command '(shipit-review-menu shipit-review-compare-menu))
+    (let ((legend (get-buffer-create " *test legend*"))
+          (popup (get-buffer-create " *test popup*"))
+          (menu (get command 'transient--prefix)))
+      (unwind-protect
+          (save-window-excursion
+            (display-buffer-in-side-window legend '((side . bottom) (window-height . 2)))
+            (let ((window (display-buffer popup (or (oref menu display-action)
+                                                    transient-display-buffer-action))))
+              (should (window-live-p window))
+              (should-not (window-parameter window 'window-side))))
+        (kill-buffer legend)
+        (kill-buffer popup)))))
+
 (ert-deftest test-shipit-review-mode-leaves-c-c-letters-to-the-user ()
   "GIVEN the keymap of review mode
 WHEN each key of C-c and a letter is looked up

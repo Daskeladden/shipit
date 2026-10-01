@@ -200,6 +200,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
 (declare-function shipit-cache-menu "shipit-cache")
 (declare-function shipit-config "shipit-commands")
 (declare-function shipit-subscriptions "shipit-subscriptions-buffer")
+(declare-function shipit-open-repo-buffer "shipit-repo-buffer")
 (declare-function shipit-help "shipit-core")
 (declare-function shipit-notifications-menu "shipit-notifications")
 (declare-function shipit-issues--quick-search "shipit-issues")
@@ -220,6 +221,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
     ("o" "Open PR in browser" shipit--open-pr-in-browser)
     ("a" "Advanced PR search" shipit-advanced-pr-search)]]
   ["Navigate"
+   ("H" "Repository page" shipit-open-repo-buffer)
    ("u" "Open URL" shipit-open-url)
    ("W" "Workflows" shipit-open-actions-list)
    ("S" "Subscriptions" shipit-subscriptions)

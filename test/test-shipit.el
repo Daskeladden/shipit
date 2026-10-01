@@ -3600,5 +3600,17 @@ sees there is more, and not while it is open."
       (magit-section-show section)
       (should-not (test-shipit--ellipsis-at section)))))
 
+;;; The main menu
+
+(ert-deftest test-shipit-main-menu-opens-the-page-of-a-repository ()
+  "GIVEN the main menu of shipit
+WHEN the key `H' is looked up in it
+THEN it is named Repository page AND it runs the command that opens
+the landing page of a repository."
+  (let ((suffix (cdr (transient-get-suffix 'shipit-menu "H"))))
+    (should (equal "Repository page" (plist-get suffix :description)))
+    (should (eq 'shipit-open-repo-buffer (plist-get suffix :command)))
+    (should (commandp 'shipit-open-repo-buffer))))
+
 (provide 'test-shipit)
 ;;; test-shipit.el ends here

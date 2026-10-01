@@ -2175,6 +2175,37 @@ thread-safe, but Emacs is single-threaded for buffer work.")
       (setq shipit--wrap-text-scratch-buffer
             (get-buffer-create " *shipit-wrap-text*"))))
 
+(defconst shipit--wrap-lead-regexp
+  "\\`[ \t]*\\(?:\\(?:[-*+]\\|[0-9]+[.)]\\)[ \t]+\\)?"
+  "Matches what a line has before its text.
+That is its indent, and the marker of a list item if it has one.")
+
+(defun shipit--wrap-line (line width)
+  "Fill LINE to WIDTH in the current buffer, which it empties; the result.
+The lines after the first start where the text of LINE starts: under
+the indent of a line inside a list item, and past the marker of a list
+item.  Without that the rest of a paragraph leaves the item it is in."
+  (string-match shipit--wrap-lead-regexp line)
+  (let* ((lead (match-string 0 line))
+         (hang (make-string (string-width lead) ?\s))
+         (fill-column (max 20 (- width (string-width lead)))))
+    (erase-buffer)
+    (insert (substring line (length lead)))
+    ;; Plain `fill-region' calls `fill-forward-paragraph' /
+    ;; `move-to-left-margin' per visual line, runs
+    ;; `adaptive-fill-mode' prefix detection, and fires
+    ;; before/after-change hooks -- all overhead we don't need for
+    ;; a single pre-extracted line.  Use the lower-level
+    ;; `fill-region-as-paragraph' (skips paragraph detection)
+    ;; inside a context that turns every other slow path off.
+    (let ((inhibit-modification-hooks t)
+          (inhibit-point-motion-hooks t)
+          (adaptive-fill-mode nil)
+          (paragraph-start "\f\\|[ \t]*$")
+          (paragraph-separate "[ \t\f]*$"))
+      (fill-region-as-paragraph (point-min) (point-max)))
+    (concat lead (replace-regexp-in-string "\n" (concat "\n" hang) (buffer-string)))))
+
 (defun shipit--wrap-text (text width &optional code-block-indent)
   "Wrap TEXT to WIDTH, preserving word boundaries and intentional newlines.
 Lines inside code blocks (fenced with ```) are preserved exactly without
@@ -2190,40 +2221,22 @@ every subsequent call reuses it via `erase-buffer'."
         (indent (or code-block-indent 0))
         (result '()))
     (with-current-buffer (shipit--wrap-text-buffer)
-      (let ((fill-column width))
-        (dolist (line (split-string text "\n"))
-          (cond
-           ((string-match-p "^\\s-*```" line)
-            (setq in-code-block (not in-code-block))
-            (push line result))
-           (in-code-block
-            (push (shipit--expand-tabs-to-spaces line indent) result))
-           ((string-empty-p line)
-            (push "" result))
-           ;; A row of a table.  Inside a list item it starts with
-           ;; spaces, and filled as a paragraph it would lose the
-           ;; padding that lines its columns up.
-           ((string-match-p "^[ \t]*|" line)
-            (push line result))
-           (t
-            (erase-buffer)
-            (insert line)
-            ;; This loop runs once per input line.  Plain
-            ;; `fill-region' calls `fill-forward-paragraph' /
-            ;; `move-to-left-margin' per visual line, runs
-            ;; `adaptive-fill-mode' prefix detection, and fires
-            ;; before/after-change hooks -- all overhead we don't
-            ;; need for a single pre-extracted line.  Use the
-            ;; lower-level `fill-region-as-paragraph' (skips
-            ;; paragraph detection) inside a context that turns
-            ;; every other slow path off.
-            (let ((inhibit-modification-hooks t)
-                  (inhibit-point-motion-hooks t)
-                  (adaptive-fill-mode nil)
-                  (paragraph-start "\f\|[ \t]*$")
-                  (paragraph-separate "[ \t\f]*$"))
-              (fill-region-as-paragraph (point-min) (point-max)))
-            (push (buffer-string) result))))))
+      (dolist (line (split-string text "\n"))
+        (cond
+         ((string-match-p "^\\s-*```" line)
+          (setq in-code-block (not in-code-block))
+          (push line result))
+         (in-code-block
+          (push (shipit--expand-tabs-to-spaces line indent) result))
+         ((string-empty-p line)
+          (push "" result))
+         ;; A row of a table.  Inside a list item it starts with
+         ;; spaces, and filled as a paragraph it would lose the
+         ;; padding that lines its columns up.
+         ((string-match-p "^[ \t]*|" line)
+          (push line result))
+         (t
+          (push (shipit--wrap-line line width) result)))))
     (mapconcat #'identity (nreverse result) "\n")))
 
 (defun shipit--humanize-workflow-name (filename)

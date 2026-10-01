@@ -372,6 +372,41 @@ they lose the padding that lines the columns up."
          (input (concat "- An item of a list\n\n" table "\n\n  More of the item.")))
     (should (string-search table (shipit--wrap-text input 40)))))
 
+(ert-deftest test-shipit--wrap-text-keeps-the-indent-of-a-wrapped-line ()
+  "GIVEN a paragraph inside a list item, one long line that starts with
+two spaces
+WHEN the text is wrapped to a width that the line does not fit
+THEN every line of the result starts with the two spaces: without them
+the rest of the paragraph leaves the item it belongs to."
+  (let ((lines (split-string
+                (shipit--wrap-text
+                 (concat "  Install the formatter and the linter as wheels with the"
+                         " other tooling, so the image no longer needs the packages.")
+                 40)
+                "\n")))
+    (should (> (length lines) 1))
+    (dolist (line lines)
+      (should (string-match-p "\\`  [^ ]" line))
+      (should (<= (string-width line) 40)))))
+
+(ert-deftest test-shipit--wrap-text-hangs-a-list-item-under-its-text ()
+  "GIVEN a list item whose one line is longer than the wrap width, with a
+bullet and with a number
+WHEN the text is wrapped
+THEN the first line keeps the marker AND the lines after it start under
+the text of the item, past the marker."
+  (dolist (case '(("- " . "  ") ("10. " . "    ") ("  * " . "    ")))
+    (let ((lines (split-string
+                  (shipit--wrap-text
+                   (concat (car case) "Split the image into layers that are built on one"
+                           " another, so that a job takes only what it needs.")
+                   40)
+                  "\n")))
+      (should (> (length lines) 1))
+      (should (string-prefix-p (concat (car case) "Split") (car lines)))
+      (dolist (line (cdr lines))
+        (should (string-match-p (concat "\\`" (cdr case) "[^ ]") line))))))
+
 ;;; Integration Tests
 
 (ert-deftest test-shipit-magit-integration-setup ()

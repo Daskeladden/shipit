@@ -2200,7 +2200,10 @@ every subsequent call reuses it via `erase-buffer'."
             (push (shipit--expand-tabs-to-spaces line indent) result))
            ((string-empty-p line)
             (push "" result))
-           ((string-match-p "^|" line)
+           ;; A row of a table.  Inside a list item it starts with
+           ;; spaces, and filled as a paragraph it would lose the
+           ;; padding that lines its columns up.
+           ((string-match-p "^[ \t]*|" line)
             (push line result))
            (t
             (erase-buffer)

@@ -359,6 +359,19 @@ this is called from an idle timer whenever a magit diff appears."
     (let ((first-line (car (split-string result "\n"))))
       (should (<= (length first-line) 45)))))
 
+(ert-deftest test-shipit--wrap-text-preserves-a-table-inside-a-list-item ()
+  "GIVEN a markdown table inside a list item, so that each of its lines
+starts with spaces, with columns padded to line up and lines wider than
+the wrap width
+WHEN the text is wrapped
+THEN the lines of the table are as they were: filled as a paragraph,
+they lose the padding that lines the columns up."
+  (let* ((table (concat "  | Image | Built on | Contents                    |\n"
+                        "  |-------|----------|-----------------------------|\n"
+                        "  | base  | Arch     | Formatters, linters, cmake  |"))
+         (input (concat "- An item of a list\n\n" table "\n\n  More of the item.")))
+    (should (string-search table (shipit--wrap-text input 40)))))
+
 ;;; Integration Tests
 
 (ert-deftest test-shipit-magit-integration-setup ()

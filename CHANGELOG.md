@@ -1,5 +1,94 @@
 # Changelog
 
+## v1.7.0 (2026-10-01)
+
+shipit now requires Emacs 29.1. The code already used functions of Emacs 29.1, and Emacs 29 is the oldest version that the tests run on.
+
+### Features
+
+#### Stacked pull requests
+
+- `shipit-stacked-preview`, `S` in the preview of a pull request, opens the commits of a branch and divides them into layers, one pull request for each layer. `s` puts a division at the commit at point, `u` takes one away, and `c` puts a branch on each layer. Nothing is rebased, so you can divide again at no cost.
+- The preview knows the stack that its branch sits in. It says what the branch stacks on, drafts a stack, and shows how far each layer has got, with its checks and its review decision.
+- A stack goes to the remote in one atomic push, so a refused push leaves the remote as it was. `shipit-push-max-refs` sets how many branches one push updates. Before a push, shipit works out what the push will do.
+- A pull request shows the stack that it belongs to. Each row of the stack opens, names and expands its siblings, and `M-w` copies the address of the stack or of a sibling.
+- shipit refuses to submit branches that are not a stack, and it registers a stack of pull requests that was made elsewhere.
+
+#### Review
+
+- A review session for one file. When the pull request has a worktree, `RET` on a file under Files Changed opens the file with a legend of its keys. `n` and `p` step through the hunks, and `M-n` and `M-p` step through the commits. `|` shows the previous version beside the file, and `s` picks which of the two sides `M-n` and `M-p` walk. `e` runs ediff on the two sides, and `t` opens a timeline of the commits that touched the file.
+- Review mode no longer binds `C-c r c`, because Emacs keeps `C-c` and a letter for your own keys. The compare menu is `c` in the review menu, which `r` opens from the legend.
+- A review queue keeps inline comments as drafts under their diff lines and submits them as one review. The queue is kept on disk for each pull request, so a refresh or a restart does not lose it.
+- Inline comments show only where they apply. Resolved threads are marked in every view, and inline comments have a rounded background.
+- Files Changed can hide files, such as a lock file or generated code. You hide the file at point, or every file whose name contains some text. The name filter now matches its text as typed, not as a regexp.
+
+#### Pull requests
+
+- The Activity section shows a force push by its commits, without the changes that a rebase brought in. It also shows each edit of the description as a word diff.
+- `M-;` on the title or the state line reopens a closed pull request and toggles its draft state.
+- The reviewers menu can request a Copilot code review.
+- The collapsed Checks heading shows the status of all checks. The Activity section has one sort order and a menu on its heading.
+- `o` opens the pull request in the browser.
+- Commit comments on a branch without a pull request show in the style of a pull request.
+- A commit SHA in text has a menu. When the forge cannot give the files of a commit, shipit reads them from the local repository.
+
+#### Issues
+
+- A git-bug backend. shipit lists, searches, reads, creates and comments on the bugs that git-bug keeps in the repository. A repository that keeps bugs this way uses the backend without a setting.
+- The issue buffer edits the title and the labels, links work items and pull requests, and shows the priority. An event that changed the description opens to a word diff of the change.
+- You can paste a picture, or yank it with `C-y`, into a comment, a description or a new issue.
+- The images and videos of Jira issues show in the buffer. An issue lists its attachments, each with a thumbnail.
+- A new issue takes defaults for its repository from `:create-defaults`.
+
+#### Jira boards
+
+- The dashboard shows several Jira boards, and an edit mode moves issues across the columns of a board.
+- On Emacs 32, a board draws as cards on a canvas. `M-<right>` and `M-<left>` stage a move, and `C-c C-c` sends the staged moves. `M-p` and `M-n` step the board back and forth in time. A card shows its priority and its type.
+
+#### Notifications
+
+- Mute rules for pull requests that are not yours: for every repository, for one repository or for one thread. Notifications that your own actions caused are muted without a rule.
+- Auto-mark rules can match labels, file paths and replies to you. Mark-by-regex also matches the name of the repository.
+- `RET` on a check suite notification opens the Actions list.
+
+#### Actions
+
+- On Emacs 32, `v` on a run draws its jobs on a time axis, so you see which jobs ran side by side.
+- `o` opens the item at point. An Actions buffer remembers the pull request that it came from.
+
+#### Worktrees
+
+- A worktree is created in the background, and LFS files are pulled only where they are needed.
+- A new command moves the work of a checkout, with its uncommitted changes, to a worktree. `Z` in a pull request buffer opens the worktree actions.
+- The worktree section of magit shows the state of the pull request of each worktree.
+
+#### Other
+
+- `H` in the main menu opens the landing page of a repository, with its data and its README. The prompt offers the repository of each git remote of the checkout, with that of `origin` as the default.
+- The page of a repository has a Type line. The line says that the repository is private or internal, a fork, or archived. On a repository that you administer, the line also says that it is public.
+- `$` opens a buffer of the git commands that shipit runs, with their output, as magit does.
+- Other packages can build on shipit. A handler of `M-;` can go before the handlers of shipit, and `shipit-reload` can reload the files of such a package.
+- The README names the optional canvas packages that the canvas views need.
+
+### Performance
+
+- Opening a pull request no longer waits for reactions and repository lookups.
+
+### Bug fixes
+
+- Without marginalia, the list of pull requests in the minibuffer failed for a pull request without labels.
+- When the draft flag is set, the pull request is created as a draft.
+- The preview finds an existing pull request by its branch, and it decides that a push worked by the exit code. It keeps a description that you edited since it last saved, and it shows the changes from where the branch left its base.
+- Jira: the activity names the person who made the latest change. Empty board columns resolve, and every assignable user is listed. A comment can be edited from its issue page, and pasted images and card links show.
+- Requests through url.el are guarded against multibyte text and against a token in a message. Async requests keep the time locale that they need.
+- Rendering: strikethrough shows in comments. When a comment collapses, the next comment keeps its indentation. When the font size changes, icons keep their size. Each `+` and `-` marker of a diff keeps its colour under the highlight.
+- Review mode leaves the buffer of the caller alone. When the worktree lacks the base commit, review mode works without it. Review mode is also on for a worktree that is out of sync.
+- The assignee picker no longer fails for a user with a display name.
+- A reload no longer fails on a shipit function in `kill-buffer-hook`.
+- A test run no longer writes to your shipit state.
+
+---
+
 ## v1.6.0 (2026-05-01)
 
 ### Features

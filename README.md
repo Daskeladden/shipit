@@ -51,6 +51,18 @@ Shipit builds on magit-section for all buffer rendering and navigation, and tran
 (shipit-init)
 ```
 
+### Canvas views
+
+Three views draw on a canvas image, an image whose pixels Lisp can write. They are the kanban board of the Atlassian dashboard, the job timeline of an Actions run, and the stack canvas of a stacked preview. Canvas images come with Emacs 32. Emacs 32 is not released, so you build it from the master branch, with canvas images and modules. The views also need these packages:
+
+- [canvas-diagram](https://github.com/Daskeladden/canvas-diagram) draws the kanban board and the run timeline. Its `canvas-cairo` module does the drawing for all three views. You compile the module against cairo and pango.
+- [canvas-graph](https://github.com/Daskeladden/canvas-graph) lays out the stack canvas.
+- [canvas-keys](https://github.com/Daskeladden/canvas-keys) holds the keys of canvas buffers. canvas-diagram requires it.
+
+[canvas-browser](https://github.com/Daskeladden/canvas-browser) plays the videos of issues and pull requests in the buffer, under their Play button. The option `shipit-video-inline-function` names the function that does this, `canvas-browser-embed` by default.
+
+These packages are optional, and shipit does not require them. Without them, a canvas view says what it needs, a video plays outside the buffer, and the rest of shipit works as before.
+
 ## Authentication
 
 Shipit uses Emacs auth-source for credentials. Add entries to `~/.authinfo.gpg` (or `~/.authinfo`):

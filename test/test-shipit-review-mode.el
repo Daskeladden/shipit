@@ -65,6 +65,19 @@ THEN the section is in it."
   (let ((shipit-review-actions-legend-extra-sections '(("Extra" ("x" "do the extra")))))
     (should (string-match-p "do the extra" (shipit-review--actions-legend-full)))))
 
+(ert-deftest test-shipit-review-legends-name-the-key-that-picks-the-side ()
+  "GIVEN the one-line legend and the full legend of a review session
+WHEN each is read
+THEN it names `s', the key that picks the side that M-n and M-p walk,
+next to `|', the key that opens the A side."
+  (should (string-match-p "| prev side +s walk A or B"
+                          (shipit-review--actions-legend-minimal)))
+  (let ((navigate (cdr (assoc "Navigate" shipit-review--actions-legend-sections)))
+        (view (cdr (assoc "View" shipit-review--actions-legend-sections))))
+    (should (equal '("|" "s") (last (mapcar #'car navigate) 2)))
+    (should (equal "walk A or B" (cadr (assoc "s" navigate))))
+    (should-not (assoc "s" view))))
+
 (ert-deftest test-shipit-review-mode-leaves-c-c-letters-to-the-user ()
   "GIVEN the keymap of review mode
 WHEN each key of C-c and a letter is looked up

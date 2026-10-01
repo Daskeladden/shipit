@@ -681,7 +681,8 @@ ediff-style multi-column layout built from
 
 (defun shipit-review--actions-legend-minimal ()
   "Build the minimal one-line legend.
-Keeps the essentials -- hunk nav, commit walk, H, quit --
+Keeps the essentials -- hunk nav, commit walk, the A side, the side
+that the commit walk moves, quit --
 on a SINGLE row with the `? expand' hint inline so the
 signpost to the full menu travels with the shortcuts and
 can't be cropped by a short side-window."
@@ -693,6 +694,7 @@ can't be cropped by a short side-window."
      (propertize "p" 'face key-face) " prev   "
      (propertize "M-n/M-p" 'face key-face) " walk commits   "
      (propertize "|" 'face key-face) " prev side   "
+     (propertize "s" 'face key-face) " walk A or B   "
      (propertize "q" 'face key-face) " quit   "
      (propertize "?" 'face key-face)
      (propertize " expand menu" 'face hint-face)
@@ -708,14 +710,14 @@ can't be cropped by a short side-window."
      ("p"   "prev hunk")
      ("M-n" "newer commit")
      ("M-p" "older commit")
-     ("|"   "toggle A/B split"))
+     ("|"   "toggle A/B split")
+     ("s"   "walk A or B"))
     ("View"
      ("v"   "page down")
      ("V"   "page up")
      ("C-n" "next line")
      ("C-p" "prev line")
-     ("C-l" "recenter")
-     ("s"   "active A/B"))
+     ("C-l" "recenter"))
     ("Toggle"
      ("o"   "diff overlays")
      ("i"   "inline comments")

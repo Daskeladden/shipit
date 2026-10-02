@@ -38,6 +38,8 @@
   nil)
 (put 'shipit-subscriptions-repo 'magit-section t)
 
+(put 'shipit-subscriptions-own 'magit-section t)
+
 ;;; Buffer constants
 
 (defconst shipit-subscriptions-buffer-name "*shipit-subscriptions*"
@@ -103,24 +105,32 @@
 
 ;;; Data fetching
 
+(defun shipit-subscriptions--fetch (backend-id backend-plist operation)
+  "Fetch the repositories that OPERATION of BACKEND-PLIST gives.
+A backend without OPERATION gives none, and so does a fetch that fails,
+which is logged with BACKEND-ID."
+  (when-let* ((fetch-fn (plist-get backend-plist operation)))
+    (condition-case err
+        (funcall fetch-fn (list :repo ""))
+      (error
+       (shipit--debug-log "Subscriptions: %s failed for %s: %S"
+                          operation backend-id err)
+       nil))))
+
 (defun shipit-subscriptions--fetch-all ()
   "Fetch watched repos from all supported backends.
-Returns alist of (BACKEND-ID BACKEND-PLIST REPOS-LIST).
+Returns alist of (BACKEND-ID BACKEND-PLIST REPOS-LIST OWN-LIST), where
+OWN-LIST holds the repositories that the user owns and does not watch.
 Each backend\'s :fetch-watched-repos handles its own API strategy."
-  (let ((results nil))
-    (dolist (entry (shipit-subscriptions--backends-with-watched-repos))
-      (let* ((backend-id (car entry))
-             (backend-plist (cdr entry))
-             (config (list :repo ""))
-             (fetch-fn (plist-get backend-plist :fetch-watched-repos))
-             (repos (condition-case err
-                        (funcall fetch-fn config)
-                      (error
-                       (shipit--debug-log "Subscriptions: fetch failed for %s: %S"
-                                          backend-id err)
-                       nil))))
-        (push (list backend-id backend-plist repos) results)))
-    (nreverse results)))
+  (mapcar (lambda (entry)
+            (let ((backend-id (car entry))
+                  (backend-plist (cdr entry)))
+              (list backend-id backend-plist
+                    (shipit-subscriptions--fetch backend-id backend-plist
+                                                 :fetch-watched-repos)
+                    (shipit-subscriptions--fetch backend-id backend-plist
+                                                 :fetch-own-unwatched-repos))))
+          (shipit-subscriptions--backends-with-watched-repos)))
 
 ;;; Filtering
 
@@ -210,8 +220,28 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
 ;;; Rendering
 
 
-(defun shipit-subscriptions--insert-backend-section (backend-id backend-plist repos)
-  "Insert a magit section for BACKEND-ID with BACKEND-PLIST and REPOS."
+(defun shipit-subscriptions--sorted (repos)
+  "REPOS in the order of their names."
+  (sort (copy-sequence repos)
+        (lambda (a b)
+          (string< (or (cdr (assq 'full_name a)) "")
+                   (or (cdr (assq 'full_name b)) "")))))
+
+(defun shipit-subscriptions--insert-own-section (backend-id repos)
+  "Insert a section for REPOS, which the user owns and does not watch.
+They are of BACKEND-ID.  Without such repositories there is no section."
+  (when repos
+    (magit-insert-section (shipit-subscriptions-own backend-id)
+      (magit-insert-heading
+        (propertize (format "  Yours, not watched (%d)" (length repos))
+                    'font-lock-face 'magit-section-secondary-heading))
+      (magit-insert-section-body
+        (dolist (repo (shipit-subscriptions--sorted repos))
+          (shipit-subscriptions--insert-repo-line backend-id repo))))))
+
+(defun shipit-subscriptions--insert-backend-section (backend-id backend-plist repos own)
+  "Insert a magit section for BACKEND-ID with BACKEND-PLIST and REPOS.
+OWN holds the repositories that the user owns and does not watch."
   (let* ((name (plist-get backend-plist :name))
          (emoji (or (plist-get backend-plist :emoji-fallback) ""))
          (icon (shipit--get-pr-field-icon
@@ -221,15 +251,12 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
         (format "%s %s (%d)" icon name (length repos)))
       (magit-insert-section-body
         (if repos
-            (let ((sorted (sort (copy-sequence repos)
-                                (lambda (a b)
-                                  (string< (or (cdr (assq 'full_name a)) "")
-                                           (or (cdr (assq 'full_name b)) ""))))))
-              (dolist (repo sorted)
-                (shipit-subscriptions--insert-repo-line
-                 backend-id repo)))
+            (dolist (repo (shipit-subscriptions--sorted repos))
+              (shipit-subscriptions--insert-repo-line
+               backend-id repo))
           (insert (propertize "  No watched repos\n"
                               'font-lock-face 'font-lock-comment-face)))
+        (shipit-subscriptions--insert-own-section backend-id own)
         (insert "\n")))))
 
 (defun shipit-subscriptions--subscription-label (viewer-subscription)
@@ -291,14 +318,13 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
                           'font-lock-face 'magit-section-heading))
       (if data
           (dolist (entry data)
-            (let* ((backend-id (nth 0 entry))
-                   (backend-plist (nth 1 entry))
-                   (repos (nth 2 entry))
-                   (filtered (if has-filter
-                                 (seq-filter #'shipit-subscriptions--matches-filter-p repos)
-                               repos)))
+            (let ((filtered (lambda (repos)
+                              (if has-filter
+                                  (seq-filter #'shipit-subscriptions--matches-filter-p repos)
+                                repos))))
               (shipit-subscriptions--insert-backend-section
-               backend-id backend-plist filtered)))
+               (nth 0 entry) (nth 1 entry)
+               (funcall filtered (nth 2 entry)) (funcall filtered (nth 3 entry)))))
         (insert (propertize "  No backends with subscription support\n"
                             'font-lock-face 'font-lock-comment-face))))))
 
@@ -371,7 +397,7 @@ Each backend\'s :fetch-watched-repos handles its own API strategy."
         ;; Update cached data and re-render
         (when shipit-subscriptions--cached-data
           (dolist (entry shipit-subscriptions--cached-data)
-            (let ((repos (nth 2 entry)))
+            (let ((repos (append (nth 2 entry) (nth 3 entry))))
               (dolist (r repos)
                 (when (equal (cdr (assq 'full_name r)) repo)
                   (setcdr (assq 'starred r) new-state))))))

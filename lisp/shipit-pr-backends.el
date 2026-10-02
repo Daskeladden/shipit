@@ -103,6 +103,9 @@
 ;;   :get-repo-starred        — (config) → t or nil
 ;;   :set-repo-starred        — (config starred) → result
 ;;   :fetch-watched-repos     — (config) → list of repo alists
+;;   :fetch-own-unwatched-repos — (config) → list of repo alists: the
+;;                              repositories that the user owns and
+;;                              neither watches nor ignores
 ;;   :get-thread-subscription — (config repo type number) → state string or nil
 ;;   :set-thread-subscription — (config repo type number subscribed) → t on success
 ;;   :set-pr-draft            — (config number draft-p) → non-nil on success

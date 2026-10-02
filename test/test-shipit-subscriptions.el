@@ -226,6 +226,163 @@ THEN that backend is included."
       (should (= 1 (length backends)))
       (should (eq 'mock (car (car backends)))))))
 
+;;; Tests — the repositories that the user owns and does not watch
+
+(defun test-subs--own-page (more cursor &rest nodes)
+  "A page of what GitHub answers for the repositories that the user owns.
+MORE says whether a page follows, after CURSOR.  Each of NODES is a
+name and a subscription."
+  `((viewer
+     . ((repositories
+         . ((pageInfo . ((hasNextPage . ,(if more t :json-false)) (endCursor . ,cursor)))
+            (nodes . ,(mapcar (lambda (node)
+                                `((nameWithOwner . ,(car node))
+                                  (description . "A repository")
+                                  (owner . ((login . "me")))
+                                  (viewerSubscription . ,(cadr node))
+                                  (viewerHasStarred . :json-false)))
+                              nodes))))))))
+
+(ert-deftest test-subs-fetch-own-unwatched-repos ()
+  "GIVEN a GitHub user who owns three repositories: one watched, one
+ignored, and one that is neither
+WHEN the repositories that the user owns and does not watch are fetched
+THEN only the third is returned, in the form of a watched repository,
+AND GitHub was asked for the repositories that the user owns."
+  (test-subs--with-mock-github
+    (let ((asked nil))
+      (cl-letf (((symbol-function 'shipit--graphql-query)
+                 (lambda (query _vars)
+                   (setq asked query)
+                   (test-subs--own-page nil nil
+                                        '("me/watched" "SUBSCRIBED")
+                                        '("me/quiet" "UNSUBSCRIBED")
+                                        '("me/ignored" "IGNORED")))))
+        (let ((repos (shipit-pr-github--fetch-own-unwatched-repos '(:repo ""))))
+          (should (string-match-p "ownerAffiliations: *OWNER" asked))
+          (should (equal '("me/quiet")
+                         (mapcar (lambda (repo) (cdr (assq 'full_name repo))) repos)))
+          (should (equal "me" (cdr (assq 'owner_name (car repos)))))
+          (should (equal "UNSUBSCRIBED" (cdr (assq 'subscription (car repos))))))))))
+
+(ert-deftest test-subs-fetch-own-unwatched-repos-reads-every-page ()
+  "GIVEN a GitHub user whose repositories come in two pages
+WHEN the repositories that the user owns and does not watch are fetched
+THEN those of both pages are returned, AND the second page was asked
+for with the cursor of the first."
+  (test-subs--with-mock-github
+    (let ((cursors nil))
+      (cl-letf (((symbol-function 'shipit--graphql-query)
+                 (lambda (_query vars)
+                   (push (cdr (assq 'cursor vars)) cursors)
+                   (if (cdr (assq 'cursor vars))
+                       (test-subs--own-page nil nil '("me/second" "UNSUBSCRIBED"))
+                     (test-subs--own-page t "c1" '("me/first" "UNSUBSCRIBED"))))))
+        (should (equal '("me/first" "me/second")
+                       (mapcar (lambda (repo) (cdr (assq 'full_name repo)))
+                               (shipit-pr-github--fetch-own-unwatched-repos '(:repo "")))))
+        (should (equal '(nil "c1") (reverse cursors)))))))
+
+(defun test-subs--repo (name subscription)
+  "A repository NAME of the user with SUBSCRIPTION, as a backend gives it."
+  `((full_name . ,name) (owner_name . "me") (description . "A repository")
+    (subscription . ,subscription) (starred . :json-false)))
+
+(defmacro test-subs--in-buffer (watched own &rest body)
+  "Run BODY in the subscriptions buffer of one backend.
+The backend gives WATCHED as the repositories that the user watches and
+OWN as those that the user owns and does not watch.  With the symbol
+`unsupported' as OWN, the backend cannot tell the second kind."
+  (declare (indent 2))
+  `(let* ((own ,own)
+          (shipit-pr-backends
+           (list (cons 'mock
+                       (append (test-subs--make-minimal-plist)
+                               (list :name "Mock" :emoji-fallback "M"
+                                     :fetch-watched-repos (lambda (_config) ,watched))
+                               (unless (eq own 'unsupported)
+                                 (list :fetch-own-unwatched-repos (lambda (_config) own))))))))
+     (when (get-buffer "*shipit-subscriptions*")
+       (kill-buffer "*shipit-subscriptions*"))
+     (unwind-protect
+         (progn
+           (shipit-subscriptions-refresh)
+           (with-current-buffer "*shipit-subscriptions*"
+             ,@body))
+       (when (get-buffer "*shipit-subscriptions*")
+         (kill-buffer "*shipit-subscriptions*")))))
+
+(defun test-subs--own-sections ()
+  "The sections of repositories that are owned and not watched, in this buffer.
+The section of a backend starts folded, and has its body once it is
+shown, so each is shown first."
+  (seq-mapcat (lambda (backend)
+                (magit-section-show backend)
+                (seq-filter (lambda (section)
+                              (eq (oref section type) 'shipit-subscriptions-own))
+                            (oref backend children)))
+              (oref magit-root-section children)))
+
+(defun test-subs--names-in (section)
+  "The names of the repositories that SECTION lists."
+  (mapcar (lambda (child) (cdr (assq 'full_name (oref child value))))
+          (oref section children)))
+
+(ert-deftest test-subs-buffer-lists-own-repos-that-are-not-watched ()
+  "GIVEN a backend with one watched repository and two that the user
+owns and does not watch
+WHEN the subscriptions buffer is drawn
+THEN it has a section for the two, in the order of their names, with
+their count in its heading."
+  (test-subs--in-buffer (list (test-subs--repo "me/watched" "SUBSCRIBED"))
+      (list (test-subs--repo "me/quiet" "UNSUBSCRIBED")
+            (test-subs--repo "me/also-quiet" "UNSUBSCRIBED"))
+    (let ((sections (test-subs--own-sections)))
+      (should (= 1 (length sections)))
+      (should (equal '("me/also-quiet" "me/quiet") (test-subs--names-in (car sections))))
+      (goto-char (oref (car sections) start))
+      (should (string-match-p "(2)" (buffer-substring (point) (line-end-position)))))))
+
+(ert-deftest test-subs-buffer-own-repo-line-is-a-repo-to-act-on ()
+  "GIVEN the subscriptions buffer with a repository that the user owns
+and does not watch
+WHEN point is on its line
+THEN the repository at point is that one, with its backend, so the keys
+that open it and that set its subscription act on it."
+  (test-subs--in-buffer nil (list (test-subs--repo "me/quiet" "UNSUBSCRIBED"))
+    (should (test-subs--own-sections))
+    (goto-char (point-min))
+    ;; `text-property-any' compares with `eq', which no two strings are.
+    (goto-char (prop-match-beginning
+                (text-property-search-forward 'shipit-subscriptions-repo "me/quiet" #'equal)))
+    (should (equal '("me/quiet" . mock) (shipit-subscriptions--repo-at-point)))))
+
+(ert-deftest test-subs-buffer-has-no-own-section-with-nothing-to-list ()
+  "GIVEN a backend that names no repository as owned and not watched, AND
+a backend that cannot tell such repositories at all
+WHEN the subscriptions buffer of each is drawn
+THEN neither has the section."
+  (dolist (own (list nil 'unsupported))
+    (test-subs--in-buffer (list (test-subs--repo "me/watched" "SUBSCRIBED")) own
+      (should-not (test-subs--own-sections)))))
+
+(ert-deftest test-subs-buffer-text-filter-narrows-the-own-repos ()
+  "GIVEN the subscriptions buffer with two repositories that the user
+owns and does not watch
+WHEN the text filter is set to a part of the name of one AND the buffer
+is drawn again
+THEN the section lists that one alone."
+  (test-subs--in-buffer nil
+      (list (test-subs--repo "me/quiet" "UNSUBSCRIBED")
+            (test-subs--repo "me/other" "UNSUBSCRIBED"))
+    (setq shipit-subscriptions--filter-text "qui")
+    (unwind-protect
+        (progn
+          (shipit-subscriptions--rerender)
+          (should (equal '("me/quiet")
+                         (test-subs--names-in (car (test-subs--own-sections))))))
+      (setq shipit-subscriptions--filter-text ""))))
+
 ;;; Tests — GitLab subscription operations
 
 (ert-deftest test-subs-gitlab-get-subscription-watching ()

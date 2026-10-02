@@ -1429,27 +1429,56 @@ STARRED is t to star, nil to unstar."
       (subscription . ,subscription)
       (starred . ,starred))))
 
-(defun shipit-pr-github--fetch-watched-repos (_config)
-  "Fetch all watched/ignored repos via GraphQL with pagination.
-Returns list of normalized repo alists with subscription and star status."
-  (shipit--debug-log "GitHub PR backend: fetching watched repos via GraphQL")
+(defun shipit-pr-github--fetch-viewer-repos (query connection)
+  "Fetch every repository of CONNECTION, a field of the viewer, with QUERY.
+QUERY takes a cursor, and gives the page info and the nodes of
+CONNECTION.  Returns list of normalized repo alists with subscription
+and star status."
   (let ((all-repos nil)
         (cursor nil)
         (has-more t))
     (while has-more
-      (let* ((vars (if cursor
-                       `((cursor . ,cursor))
-                      '((cursor))))
-             (result (shipit--graphql-query
-                      shipit-pr-github--watched-repos-graphql vars))
-             (watching (cdr (assq  'watching (cdr (assq  'viewer result)))))
-             (nodes (cdr (assq  'nodes watching)))
-             (page-info (cdr (assq  'pageInfo watching))))
-        (dolist (node (append nodes nil))
+      (let* ((result (shipit--graphql-query query `((cursor . ,cursor))))
+             (page (cdr (assq connection (cdr (assq 'viewer result)))))
+             (page-info (cdr (assq 'pageInfo page))))
+        (dolist (node (append (cdr (assq 'nodes page)) nil))
           (push (shipit-pr-github--normalize-watched-repo node) all-repos))
-        (setq has-more (eq (cdr (assq  'hasNextPage page-info)) t))
-        (setq cursor (cdr (assq  'endCursor page-info)))))
+        (setq has-more (eq (cdr (assq 'hasNextPage page-info)) t))
+        (setq cursor (cdr (assq 'endCursor page-info)))))
     (nreverse all-repos)))
+
+(defun shipit-pr-github--fetch-watched-repos (_config)
+  "Fetch all watched/ignored repos via GraphQL with pagination.
+Returns list of normalized repo alists with subscription and star status."
+  (shipit--debug-log "GitHub PR backend: fetching watched repos via GraphQL")
+  (shipit-pr-github--fetch-viewer-repos shipit-pr-github--watched-repos-graphql
+                                        'watching))
+
+(defconst shipit-pr-github--own-repos-graphql
+  "query($cursor: String) {
+  viewer {
+    repositories(first: 100, after: $cursor, ownerAffiliations: OWNER) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        nameWithOwner
+        description
+        owner { login }
+        viewerSubscription
+        viewerHasStarred
+      }
+    }
+  }
+}"
+  "GraphQL query to fetch the repositories that the user owns.")
+
+(defun shipit-pr-github--fetch-own-unwatched-repos (_config)
+  "Fetch the repositories that the user owns and neither watches nor ignores.
+GitHub tells the owner of such a repository of a new issue only when
+the owner takes part in it.  Returns list of normalized repo alists."
+  (shipit--debug-log "GitHub PR backend: fetching own unwatched repos via GraphQL")
+  (seq-filter (lambda (repo) (equal "UNSUBSCRIBED" (cdr (assq 'subscription repo))))
+              (shipit-pr-github--fetch-viewer-repos shipit-pr-github--own-repos-graphql
+                                                    'repositories)))
 
 (defun shipit-pr-github--mark-repo-notifications-read (config)
   "Mark all notifications for repo in CONFIG as read on GitHub."
@@ -1965,6 +1994,7 @@ data should pass it: this runs on every render of the section."
        :get-repo-starred #'shipit-pr-github--get-repo-starred
        :set-repo-starred #'shipit-pr-github--set-repo-starred
        :fetch-watched-repos #'shipit-pr-github--fetch-watched-repos
+       :fetch-own-unwatched-repos #'shipit-pr-github--fetch-own-unwatched-repos
        :mark-repo-notifications-read #'shipit-pr-github--mark-repo-notifications-read
        :classify-url #'shipit-pr-github--classify-url
        :fetch-file-viewed-states #'shipit-pr-github--fetch-file-viewed-states

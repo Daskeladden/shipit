@@ -30,10 +30,11 @@ Loading the files adds the functions back.")
     "shipit-comment-backends.el" "shipit-comment-github.el" "shipit-comment-gitlab.el"
     "shipit-render.el" "shipit-diff.el" "shipit-notifications.el"
     "shipit-releases-buffer.el" "shipit-notifications-buffer.el"
-    "shipit-checks.el" "shipit-actions.el" "shipit-actions-list.el"
+    "shipit-checks.el" "shipit-actions.el"
     "shipit-pr-search.el" "shipit-file-filter.el"
     "shipit-rounded-section.el"
-    "shipit-pr-sections.el" "shipit-pr-actions.el" "shipit-pr-diff.el"
+    "shipit-pr-sections.el" "shipit-pr-actions.el" "shipit-actions-list.el"
+    "shipit-pr-diff.el"
     "shipit-pr-linked-issue.el"
     "shipit-buffer.el" "shipit-commands.el"
     "shipit-review-history.el" "shipit-review-mode.el" "shipit-review-revision.el"
@@ -84,6 +85,65 @@ then `shipit-dev-reload-extra-files'."
   (dolist (hook shipit-dev--reload-hooks)
     (when (boundp hook)
       (set hook (seq-remove #'shipit-dev--shipit-function-p (symbol-value hook))))))
+
+(defun shipit-dev--load-file (path)
+  "Load the file PATH from source; non-nil when it loaded.
+A file that fails is said, and the reload goes on with the next one."
+  (let ((file (file-name-nondirectory path)))
+    (message "Loading %s..." file)
+    (condition-case err
+        ;; `load-file' loads the exact .el file, not a .elc beside it.
+        (progn (load-file path) t)
+      (error (message "Error loading %s: %s" file (error-message-string err))
+             nil))))
+
+(defun shipit-dev--run-after-load (path)
+  "Run the forms that wait for the feature of the file PATH.
+They are the forms of `with-eval-after-load' for the feature that is
+named as the file."
+  (dolist (function (cdr (assq (intern (file-name-base path)) after-load-alist)))
+    (condition-case err
+        (funcall function)
+      (error (message "Error after loading %s: %s"
+                      (file-name-nondirectory path) (error-message-string err))))))
+
+(defun shipit-dev--load-files (paths)
+  "Load each of PATHS from source, and then run what waits for them.
+A form of `with-eval-after-load' runs each time its file is loaded.  A
+reload has unbound every function, so a form that waits for one file
+and calls a function of a later one would fail.  The configuration of a
+user does, when it starts a package on top of shipit as soon as shipit
+is loaded.  So these forms wait until the last file is loaded."
+  (let ((loaded nil))
+    (let ((after-load-alist nil))
+      (dolist (path paths)
+        (when (and (file-exists-p path) (shipit-dev--load-file path))
+          (push path loaded))))
+    (mapc #'shipit-dev--run-after-load (nreverse loaded))))
+
+(defun shipit-dev--own-functions ()
+  "Return the functions that this file defines, as `load-history' has them."
+  (let ((entry (seq-find (lambda (entry)
+                           (and (stringp (car entry))
+                                (equal "shipit-dev-utils" (file-name-base (car entry)))))
+                         load-history)))
+    (delq nil (mapcar (lambda (definition)
+                        (and (eq (car-safe definition) 'defun) (cdr definition)))
+                      (cdr entry)))))
+
+(defun shipit-dev--functions-to-unbind ()
+  "Return the shipit functions that a reload unbinds before it loads them.
+The functions of this file stay bound: the reload calls them after it
+unbinds the others, and `shipit-reload' is the command of the next
+reload."
+  (let ((own (shipit-dev--own-functions))
+        (functions nil))
+    (mapatoms (lambda (symbol)
+                (when (and (fboundp symbol)
+                           (shipit-dev--shipit-function-p symbol)
+                           (not (memq symbol own)))
+                  (push symbol functions))))
+    functions))
 
 ;;;###autoload
 (defun shipit-reload (&optional compile-first)
@@ -205,22 +265,9 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
         ;; Fourth pass: Unbind all shipit functions to ensure fresh definitions
         ;; This is critical - load doesn't replace existing fboundp symbols reliably
         (message "Unbinding shipit functions...")
-        (mapatoms
-         (lambda (sym)
-           (when (and (fboundp sym)
-                      (let ((name (symbol-name sym)))
-                        (or (string-prefix-p "shipit-" name)
-                            (string-prefix-p "shipit--" name))))
-             (fmakunbound sym))))
-        ;; Fifth pass: Load the .el files directly (use load-file to bypass .elc preference)
-        (dolist (full-path load-paths)
-          (let ((file (file-name-nondirectory full-path)))
-            (when (file-exists-p full-path)
-              (message "Loading %s..." file)
-              (condition-case err
-                  ;; Use load-file to load the exact .el file, not .elc
-                  (load-file full-path)
-                (error (message "Error loading %s: %s" file (error-message-string err))))))))
+        (mapc #'fmakunbound (shipit-dev--functions-to-unbind))
+        ;; Fifth pass: Load the .el files, and then run what waits for them
+        (shipit-dev--load-files load-paths))
       
       ;; 6. Regenerate and reload autoloads to pick up any new autoload cookies
       (message "Regenerating autoloads...")

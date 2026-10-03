@@ -54,6 +54,7 @@ Loading the files adds the functions back.")
     "shipit-atlassian-kanban.el" "shipit-stack-canvas.el"
     "shipit-actions-timeline.el"
     "shipit-notifications-rss.el"
+    "shipit-notifications-external.el"
     "shipit-code-refs.el"
     "shipit-magit-worktrees.el"
     "shipit-debug.el" "shipit.el")

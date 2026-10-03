@@ -63,6 +63,10 @@
 ;; Optional plist keys (for notifications):
 ;;   :notifications     — (config since) → list of notification activities
 ;;   :mark-notification-read — (config activity) → marks notification as read
+;;   :open-notification — (config activity) → opens the notification, in
+;;                        place of what shipit opens for its type
+;;   :notification-only — non-nil for a backend that has no issues: see
+;;                        `shipit-issue-register-notification-source'
 
 ;;; Code:
 
@@ -86,6 +90,28 @@ PLIST must contain all keys in `shipit-issue--required-keys'."
   (setq shipit-issue-backends (assq-delete-all id shipit-issue-backends))
   (push (cons id plist) shipit-issue-backends)
   (shipit--debug-log "Registered issue backend: %s (%s)" id (plist-get plist :name)))
+
+(defun shipit-issue--notifications-only (&rest _)
+  "Signal that a backend has no issues."
+  (error "This backend gives notifications only"))
+
+(defun shipit-issue-register-notification-source (id plist)
+  "Register ID as a backend that gives notifications and has no issues.
+PLIST holds its `:name', its icon and its notification operations.  The
+backend is marked `:notification-only', and each operation on issues
+that `shipit-issue--required-keys' asks of a backend is an error for it."
+  (shipit-issue-register-backend
+   id (append plist
+              (list :notification-only t
+                    :fetch-issue #'shipit-issue--notifications-only
+                    :fetch-comments #'shipit-issue--notifications-only
+                    :fetch-comments-async #'shipit-issue--notifications-only
+                    :search #'shipit-issue--notifications-only
+                    :create-issue #'shipit-issue--notifications-only
+                    :reference-patterns #'ignore
+                    :browse-url #'shipit-issue--notifications-only
+                    :id-to-string #'identity
+                    :string-to-id #'identity))))
 
 (defun shipit-issue--get-backend ()
   "Return the active backend plist.

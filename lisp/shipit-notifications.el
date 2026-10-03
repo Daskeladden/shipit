@@ -2610,6 +2610,13 @@ Uses backend-config from the activity if present."
          (config (or activity-config (list :backend backend-id))))
     (cons backend-plist config)))
 
+(defun shipit--notification-backend-op (activity operation)
+  "What the backend of ACTIVITY has for OPERATION, or nil.
+It is nil too for a notification of GitHub's own, which names no
+backend."
+  (when-let* ((id (cdr (assq 'backend-id activity))))
+    (plist-get (cdr (assq id (bound-and-true-p shipit-issue-backends))) operation)))
+
 (defun shipit--apply-local-mark-as-read (activity-key activity)
   "Apply the local-state side of marking ACTIVITY (at ACTIVITY-KEY) as read.
 Server-side mark is the caller's responsibility; this just:

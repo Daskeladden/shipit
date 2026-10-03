@@ -34,6 +34,7 @@
 (declare-function shipit--notification-pr-actions "shipit-notifications")
 (declare-function shipit--notification-actions "shipit-notifications")
 (declare-function shipit--notification-activity-key "shipit-notifications")
+(declare-function shipit--notification-backend-op "shipit-notifications")
 (declare-function shipit--check-notifications-background "shipit-notifications")
 (declare-function shipit--fetch-notifications-total-count-async "shipit-notifications")
 (declare-function shipit-subscriptions--backends-with-watched-repos "shipit-subscriptions-buffer")
@@ -1222,6 +1223,18 @@ section value so callers can identify it later."
                              shipit-notification ,notification)))
     (magit-section-hide sect)))
 
+(defun shipit-notifications-buffer--notification-only-p (activity)
+  "Whether the backend of ACTIVITY gives notifications only."
+  (shipit--notification-backend-op activity :notification-only))
+
+(defun shipit-notifications-buffer--numberless-p (activity)
+  "Whether ACTIVITY has no number to show.
+A release, a run and the like have none, and neither has what comes
+from a backend that gives notifications only, as an entry of a feed."
+  (or (member (cdr (assq 'type activity))
+              '("release" "check" "commit" "workflow" "alert" "invitation"))
+      (shipit-notifications-buffer--notification-only-p activity)))
+
 (defun shipit-notifications-buffer--icon-type-for (type is-draft pr-state reason)
   "Return the icon-type key to use for a notification heading.
 TYPE is the internal type string.  IS-DRAFT, PR-STATE and REASON
@@ -1271,6 +1284,7 @@ icon matches GitHub's web UI for deployment review requests."
                                  ("workflow" "WF")
                                  ("alert" "AL")
                                  ("invitation" "IN")
+                                 ("external" "NT")
                                  (_ "??"))))
          (cache shipit-notifications-buffer--render-cache)
          (repo-width (or (and cache (plist-get cache :repo-width))
@@ -1286,9 +1300,7 @@ icon matches GitHub's web UI for deployment review requests."
          (spacer (or (and cache (plist-get cache :spacer))
                      (make-string spacing ?\s)))
          (number-str (cond
-                      ((member type '("rss" "release" "check" "commit"
-                                      "workflow" "alert" "invitation"))
-                       "")
+                      ((shipit-notifications-buffer--numberless-p activity) "")
                       ((integerp number) (format "#%d" number))
                       (t (format "%s" number))))
          (pr-str (truncate-string-to-width number-str (1+ pr-width) nil ?\s))
@@ -1343,9 +1355,9 @@ icon matches GitHub's web UI for deployment review requests."
                        ("workflow" "Workflow Run")
                        ("alert" "Security Alert")
                        ("invitation" "Repository Invitation")
+                       ("external" "Notification")
                        (_ type)))
-         (hide-number-p (member type '("release" "check" "commit" "workflow"
-                                       "alert" "invitation" "rss")))
+         (hide-number-p (shipit-notifications-buffer--numberless-p activity))
          (number-str (cond
                       (hide-number-p "")
                       ((integerp number) (format "#%d" number))
@@ -1620,12 +1632,11 @@ invisibility overlay."
 
 (defun shipit-notifications-buffer--load-section-content (section activity)
   "Load and insert content for notification SECTION from ACTIVITY."
-  (let* ((type (or (cdr (assq 'type activity)) "pr"))
-         (description (cdr (assq 'description activity))))
-    (if (and (string= type "rss")
+  (let ((description (cdr (assq 'description activity))))
+    (if (and (shipit-notifications-buffer--notification-only-p activity)
              (stringp description)
              (not (string-empty-p description)))
-        ;; RSS — insert description synchronously (already have it)
+        ;; A feed entry and the like: the description came with it.
         (shipit-notifications-buffer--insert-content-into-section
          section
          (lambda () (shipit-notifications-buffer--insert-description description)))
@@ -2008,7 +2019,8 @@ when nothing relevant is pending."
 
 (defun shipit-notifications-buffer-open ()
   "Open the notification at point directly.
-Opens PR/Issue/Discussion buffer, or browser for RSS.
+A backend that opens its own notifications opens it.  Else this opens
+the PR/Issue/Discussion buffer, or the browser for RSS.
 If point is on an activity line within an expanded PR notification,
 also navigates to that activity inside the opened PR buffer.
 With prefix arg (C-u), show action menu instead."
@@ -2017,100 +2029,116 @@ With prefix arg (C-u), show action menu instead."
       (shipit-notifications-buffer-action)
     (let ((activity (shipit-notifications-buffer--activity-at-point))
           (activity-props (shipit-notifications-buffer--activity-props-at-point)))
-      (if (not activity)
-          (user-error "No notification at point")
-        (let* ((type (or (cdr (assq 'type activity)) "pr"))
-               (repo (cdr (assq 'repo activity)))
-               (number (or (cdr (assq 'number activity))
-                           (cdr (assq 'pr-number activity)))))
-          (pcase type
-            ("pr"
-             (let ((buffer (shipit--open-notification-pr number repo activity)))
-               (when (and activity-props (bufferp buffer))
-                 (shipit-notifications-buffer--schedule-activity-nav
-                  buffer activity-props))))
-            ("issue"
-             (let ((buffer (shipit--open-notification-issue number repo activity)))
-               (when (and activity-props (bufferp buffer))
-                 (shipit-notifications-buffer--schedule-activity-nav
-                  buffer activity-props))))
-            ("discussion" (shipit--open-notification-discussion number repo))
-            ("commit" (shipit--open-notification-commit number repo activity))
-            ("workflow"
-             ;; Workflow runs (esp. approval_requested) belong in the
-             ;; actions buffer where the user can review/approve from
-             ;; Emacs.  The run-id comes from `browse-url' because
-             ;; `number' falls back to the notification thread-id
-             ;; when GitHub doesn't expose a specific run id, and
-             ;; that thread-id is not a valid run-id.
-             (let* ((url (cdr (assq 'browse-url activity)))
-                    (run-id (and url
-                                 (string-match "/runs/\\([0-9]+\\)" url)
-                                 (string-to-number (match-string 1 url)))))
-               (cond
-                ((and repo run-id)
-                 (require 'shipit-actions-list)
-                 (shipit-open-actions-list repo run-id))
-                (url (browse-url url))
-                (t (message "No browse URL for workflow run")))))
-            ("check"
-             ;; CheckSuite notifications carry no authoritative URL --
-             ;; `subject.url' and `latest_comment_url' are routinely
-             ;; null.  All we get is the title text.  Read the workflow
-             ;; name straight off the title (\"NAME workflow run
-             ;; STATUS for BRANCH branch\") and open the actions list
-             ;; with that name as a filter; the user picks the actual
-             ;; run from the visible list.  No run-id guessing.
-             (let* ((title (cdr (assq 'subject activity)))
-                    (parsed (and title
-                                 (shipit-actions--parse-workflow-failure-title
-                                  title)))
-                    (workflow-name (and parsed (plist-get parsed :name)))
-                    (browse (cdr (assq 'browse-url activity))))
-               (cond
-                (repo
-                 (require 'shipit-actions-list)
-                 (shipit-open-actions-list repo nil workflow-name))
-                (browse (browse-url browse))
-                (t (message "No browse URL for check suite")))))
-            ("release"
-             (require 'shipit-releases-buffer)
-             (let ((tag (cdr (assq 'subject activity))))
-               (shipit-open-releases-buffer repo tag)))
-            ("rss" (when-let* ((url (cdr (assq 'browse-url activity))))
-                     (browse-url url)))
-            (_
-             (if-let* ((url (cdr (assq 'browse-url activity))))
-                 (browse-url url)
-               (message "No browse URL for notification type: %s" type)))))))))
+      (cond ((not activity)
+             (user-error "No notification at point"))
+            ((shipit--notification-backend-op activity :open-notification)
+             (shipit-notifications-buffer--open-by-backend activity))
+            (t
+             (shipit-notifications-buffer--open-by-type activity activity-props))))))
+
+(defun shipit-notifications-buffer--open-by-backend (activity)
+  "Have the backend of ACTIVITY open it, in its own way."
+  (funcall (shipit--notification-backend-op activity :open-notification)
+           (cdr (assq 'backend-config activity))
+           activity))
+
+(defun shipit-notifications-buffer--open-by-type (activity activity-props)
+  "Open ACTIVITY as its type says.
+ACTIVITY-PROPS name the activity line that point is on, inside an
+expanded notification, to go to in the buffer that opens."
+  (let* ((type (or (cdr (assq 'type activity)) "pr"))
+         (repo (cdr (assq 'repo activity)))
+         (number (or (cdr (assq 'number activity))
+                     (cdr (assq 'pr-number activity)))))
+    (pcase type
+      ("pr"
+       (let ((buffer (shipit--open-notification-pr number repo activity)))
+         (when (and activity-props (bufferp buffer))
+           (shipit-notifications-buffer--schedule-activity-nav
+            buffer activity-props))))
+      ("issue"
+       (let ((buffer (shipit--open-notification-issue number repo activity)))
+         (when (and activity-props (bufferp buffer))
+           (shipit-notifications-buffer--schedule-activity-nav
+            buffer activity-props))))
+      ("discussion" (shipit--open-notification-discussion number repo))
+      ("commit" (shipit--open-notification-commit number repo activity))
+      ("workflow"
+       ;; Workflow runs (esp. approval_requested) belong in the
+       ;; actions buffer where the user can review/approve from
+       ;; Emacs.  The run-id comes from `browse-url' because
+       ;; `number' falls back to the notification thread-id
+       ;; when GitHub doesn't expose a specific run id, and
+       ;; that thread-id is not a valid run-id.
+       (let* ((url (cdr (assq 'browse-url activity)))
+              (run-id (and url
+                           (string-match "/runs/\\([0-9]+\\)" url)
+                           (string-to-number (match-string 1 url)))))
+         (cond
+          ((and repo run-id)
+           (require 'shipit-actions-list)
+           (shipit-open-actions-list repo run-id))
+          (url (browse-url url))
+          (t (message "No browse URL for workflow run")))))
+      ("check"
+       ;; CheckSuite notifications carry no authoritative URL --
+       ;; `subject.url' and `latest_comment_url' are routinely
+       ;; null.  All we get is the title text.  Read the workflow
+       ;; name straight off the title (\"NAME workflow run
+       ;; STATUS for BRANCH branch\") and open the actions list
+       ;; with that name as a filter; the user picks the actual
+       ;; run from the visible list.  No run-id guessing.
+       (let* ((title (cdr (assq 'subject activity)))
+              (parsed (and title
+                           (shipit-actions--parse-workflow-failure-title
+                            title)))
+              (workflow-name (and parsed (plist-get parsed :name)))
+              (browse (cdr (assq 'browse-url activity))))
+         (cond
+          (repo
+           (require 'shipit-actions-list)
+           (shipit-open-actions-list repo nil workflow-name))
+          (browse (browse-url browse))
+          (t (message "No browse URL for check suite")))))
+      ("release"
+       (require 'shipit-releases-buffer)
+       (let ((tag (cdr (assq 'subject activity))))
+         (shipit-open-releases-buffer repo tag)))
+      ("rss" (when-let* ((url (cdr (assq 'browse-url activity))))
+               (browse-url url)))
+      (_
+       (if-let* ((url (cdr (assq 'browse-url activity))))
+           (browse-url url)
+         (message "No browse URL for notification type: %s" type))))))
 
 (defun shipit-notifications-buffer-action ()
   "Show action menu for notification at point.
-For RSS entries, opens the link in browser directly."
+What comes from a backend that gives notifications only, as an entry of
+a feed, can be opened and marked as read."
   (interactive)
   (let ((activity (shipit-notifications-buffer--activity-at-point)))
     (if (not activity)
         (user-error "No notification at point")
-      (if (eq (cdr (assq 'source activity)) 'rss)
-          (shipit-notifications-buffer--rss-action activity)
+      (if (shipit-notifications-buffer--notification-only-p activity)
+          (shipit-notifications-buffer--source-action activity)
         (if (fboundp 'shipit--notification-actions)
             (shipit--notification-actions activity)
           (message "Notification actions not available"))))))
 
-(defun shipit-notifications-buffer--rss-action (activity)
-  "Handle action for RSS notification ACTIVITY."
-  (let* ((url (cdr (assq 'browse-url activity)))
-         (section (magit-current-section))
-         (actions (list "Open in browser" "Mark as read"))
-         (choice (completing-read "RSS action: " actions nil t)))
+(defun shipit-notifications-buffer--source-action (activity)
+  "Ask what to do with ACTIVITY, of a backend that gives notifications only."
+  (let* ((section (magit-current-section))
+         (actions (list "Open" "Mark as read"))
+         (choice (completing-read "Action: " actions nil t)))
     (cond
-     ((string= choice "Open in browser")
-      (when url (browse-url url)))
+     ((string= choice "Open")
+      (let ((current-prefix-arg nil))
+        (shipit-notifications-buffer-open)))
      ((string= choice "Mark as read")
       (let ((number (cdr (assq 'number activity)))
             (repo (cdr (assq 'repo activity))))
         (when (fboundp 'shipit--mark-notification-read)
-          (shipit--mark-notification-read number repo t "rss"))
+          (shipit--mark-notification-read number repo t (cdr (assq 'type activity))))
         (when section
           (let ((inhibit-read-only t))
             (delete-region (oref section start) (oref section end))

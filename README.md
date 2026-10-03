@@ -162,6 +162,19 @@ A force push in the Activity section opens to its commits, the old ones paired w
 
 The dashboard requires the current repo to resolve to a Jira backend. Set up the mapping via `shipit-issue-repo-backends` as shown in the Authentication section, or see the [Backend Configuration wiki page](https://github.com/Daskeladden/shipit/wiki/Backend-Configuration).
 
+### Notifications from other packages
+
+Another package can put a notification among those of shipit. It then stands in the notifications buffer and in the count of the mode line. `RET` opens it, which also marks it as read.
+
+```elisp
+(require 'shipit-notifications-external)
+(shipit-notifications-push
+ :source "mail.example"                 ; stands where the repository stands
+ :title "New mail"
+ :body "From alice"                     ; shown when the notification is unfolded
+ :open (lambda () (my-show-the-mail)))  ; or :url, an address for a browser
+```
+
 ## Configuration
 
 ```elisp

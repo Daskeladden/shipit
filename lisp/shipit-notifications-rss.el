@@ -286,23 +286,9 @@ activity list once all feeds have responded."
 
 ;;; Backend registration
 
-(defun shipit-rss--not-supported (&rest _args)
-  "Stub for unsupported issue backend operations."
-  (error "RSS backend is notification-only"))
-
-(shipit-issue-register-backend
+(shipit-issue-register-notification-source
  'rss
  (list :name "RSS"
-       :notification-only t
-       :fetch-issue #'shipit-rss--not-supported
-       :fetch-comments #'shipit-rss--not-supported
-       :fetch-comments-async #'shipit-rss--not-supported
-       :search #'shipit-rss--not-supported
-       :create-issue #'shipit-rss--not-supported
-       :reference-patterns (lambda () nil)
-       :browse-url #'shipit-rss--not-supported
-       :id-to-string #'identity
-       :string-to-id #'identity
        :notifications #'shipit-rss--fetch-notifications
        :notifications-async #'shipit-rss--fetch-notifications-async
        :mark-notification-read #'shipit-rss--mark-read

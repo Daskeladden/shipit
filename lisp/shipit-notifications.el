@@ -1197,8 +1197,7 @@ and stutter."
     ;; requests that are also async and rerender on completion.
     (shipit--enrich-pr-notifications)
     (shipit--enrich-workflow-notifications)
-    (setq shipit--mention-prs mention-prs)
-    (setq shipit--mention-count mention-count)
+    (shipit--set-mentions mention-prs)
 
     ;; Recompute the unread count AFTER auto-mark rules have run, so the
     ;; modeline reflects the post-auto-mark state immediately instead of
@@ -3187,6 +3186,38 @@ marks within ~one poll cycle."
       (shipit--debug-log "GitHub merge: kept-stale=%d evicted=%d (grace period)"
                          kept-stale evicted))))
 
+(defun shipit--mention-of-activity (activity)
+  "The entry of `shipit--mention-prs' for ACTIVITY, which a backend gave."
+  `((repo . ,(cdr (assq 'repo activity)))
+    (number . ,(cdr (assq 'number activity)))
+    (type . ,(cdr (assq 'type activity)))
+    (subject . ,(cdr (assq 'subject activity)))
+    (url . ,(cdr (assq 'browse-url activity)))
+    (backend-id . ,(cdr (assq 'backend-id activity)))))
+
+(defun shipit--backend-mentions ()
+  "The mentions among the notifications that a backend gave.
+A notification of GitHub's own names no backend."
+  (let ((mentions nil))
+    (maphash (lambda (_key activity)
+               (when (and (cdr (assq 'backend-id activity))
+                          (equal (cdr (assq 'reason activity)) "mention"))
+                 (push (shipit--mention-of-activity activity) mentions)))
+             shipit--notification-pr-activities)
+    mentions))
+
+(defun shipit--set-mentions (github-mentions)
+  "Keep GITHUB-MENTIONS and the mentions that backends gave, and count them.
+A poll of GitHub knows only the mentions of GitHub, and a backend only
+its own, so each keeps what the other gave."
+  (setq shipit--mention-prs (append github-mentions (shipit--backend-mentions))
+        shipit--mention-count (length shipit--mention-prs)))
+
+(defun shipit--github-mentions ()
+  "The mentions that a poll of GitHub gave."
+  (seq-remove (lambda (mention) (cdr (assq 'backend-id mention)))
+              shipit--mention-prs))
+
 (defun shipit--merge-backend-notifications (activities)
   "Merge backend notification ACTIVITIES into the global hash table.
 Each activity should be an alist with keys: number, type, subject, reason, repo."
@@ -3214,6 +3245,7 @@ Each activity should be an alist with keys: number, type, subject, reason, repo.
   ;; auto-marked when the next GitHub poll happens to run, leaving them
   ;; visible until the user manually refreshes.
   (shipit--auto-mark-rules-apply)
+  (shipit--set-mentions (shipit--github-mentions))
   ;; Update modeline only with the unread count, and skip the update
   ;; entirely when an `all'-scope refresh is in flight -- the hash
   ;; carries read GitHub entries too in that mode and would inflate

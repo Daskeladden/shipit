@@ -10,6 +10,7 @@
 (require 'shipit-notifications-external)
 (require 'shipit-notifications-rss)
 (require 'shipit-notifications-buffer)
+(require 'shipit-pr-github)
 (require 'shipit-test-http)
 
 (defmacro test-external--fresh (&rest body)
@@ -21,6 +22,7 @@ A request to a server is an error: a pushed notification needs none."
          (shipit--last-notification-count 0)
          (shipit--notification-count 0)
          (shipit--mention-count 0)
+         (shipit--mention-prs nil)
          (shipit--modeline-string nil))
      (shipit-test-http-answering nil
        ,@body)))
@@ -94,7 +96,114 @@ THEN each is an error that names what is missing, AND nothing is kept."
                             (cadr (should-error (shipit-notifications-push :source "s")))))
     (should (zerop (hash-table-count shipit--notification-pr-activities)))))
 
+;;; Mentions
+
+(defconst test-external--github-mention
+  '((id . "thread-1")
+    (subject . ((type . "Issue")
+                (title . "A bug")
+                (url . "https://api.github.com/repos/owner/repo/issues/7")))
+    (reason . "mention")
+    (unread . t)
+    (repository . ((full_name . "owner/repo")
+                   (html_url . "https://github.com/owner/repo")))
+    (updated_at . "2026-04-24T08:00:00Z"))
+  "A notification of GitHub that says the user was mentioned in an issue.")
+
+(defun test-external--github-poll (notifications)
+  "Have shipit process NOTIFICATIONS, as a poll of GitHub gives them."
+  (let ((shipit-notification-alert-backend nil))
+    (shipit--process-notifications notifications)))
+
+(ert-deftest test-external-a-notification-says-why-it-came ()
+  "GIVEN a package that knows why a notification came
+WHEN it pushes the notification with that reason
+THEN the notification has the reason, AND one that is pushed without a
+reason has \"new\"."
+  (test-external--fresh
+    (test-external--push-mail :reason "mention")
+    (should (equal "mention" (cdr (assq 'reason (test-external--the-one))))))
+  (test-external--fresh
+    (test-external--push-mail)
+    (should (equal "new" (cdr (assq 'reason (test-external--the-one)))))))
+
+(ert-deftest test-external-a-reason-must-be-a-string ()
+  "GIVEN a push with a reason that is a symbol
+THEN it is an error that names the reason, AND nothing is kept."
+  (test-external--fresh
+    (should (string-match-p ":reason"
+                            (cadr (should-error
+                                   (test-external--push-mail :reason 'mention)))))
+    (should (zerop (hash-table-count shipit--notification-pr-activities)))))
+
+(ert-deftest test-external-a-pushed-mention-is-counted-as-a-mention ()
+  "GIVEN no mention
+WHEN a package pushes a notification with the reason \"mention\"
+THEN shipit counts one mention, AND the mode line shows it at the @."
+  (test-external--fresh
+    (test-external--push-mail :reason "mention")
+    (should (= 1 shipit--mention-count))
+    (should (string-match-p "@1" shipit--modeline-string))))
+
+(ert-deftest test-external-a-pushed-notification-with-another-reason-is-no-mention ()
+  "GIVEN no mention
+WHEN a package pushes a notification without a reason
+THEN shipit counts no mention."
+  (test-external--fresh
+    (test-external--push-mail)
+    (should (= 0 shipit--mention-count))
+    (should-not (string-match-p "@" shipit--modeline-string))))
+
+(ert-deftest test-external-a-poll-of-github-keeps-a-pushed-mention ()
+  "GIVEN a pushed mention
+WHEN shipit processes a poll of GitHub that holds no mention
+THEN the pushed mention is still counted."
+  (test-external--fresh
+    (test-external--push-mail :reason "mention")
+    (test-external--github-poll nil)
+    (should (= 1 shipit--mention-count))))
+
+(ert-deftest test-external-a-pushed-mention-and-one-of-github-are-two ()
+  "GIVEN a pushed mention
+WHEN shipit processes a poll of GitHub that holds a mention
+THEN two mentions are counted, AND a second poll with the same mention
+counts two again: none is counted twice."
+  (test-external--fresh
+    (test-external--push-mail :reason "mention")
+    (test-external--github-poll (list test-external--github-mention))
+    (should (= 2 shipit--mention-count))
+    (test-external--github-poll (list test-external--github-mention))
+    (should (= 2 shipit--mention-count))))
+
+(ert-deftest test-external-a-second-push-does-not-drop-a-mention-of-github ()
+  "GIVEN a mention that a poll of GitHub gave
+WHEN a package pushes a notification that is no mention
+THEN the mention of GitHub is still counted."
+  (test-external--fresh
+    (test-external--github-poll (list test-external--github-mention))
+    (test-external--push-mail)
+    (should (= 1 shipit--mention-count))))
+
+(ert-deftest test-external-a-pushed-mention-that-is-opened-is-counted-no-more ()
+  "GIVEN a pushed mention that can be opened
+WHEN it is opened in the notifications buffer
+THEN no mention is counted."
+  (test-external--fresh
+    (test-external--push-mail :reason "mention" :open #'ignore)
+    (test-external--in-buffer
+      (shipit-notifications-buffer-open))
+    (should (= 0 shipit--mention-count))))
+
 ;;; In the notifications buffer
+
+(ert-deftest test-external-the-buffer-shows-the-reason-of-a-mention ()
+  "GIVEN a pushed notification that is a mention
+WHEN the notifications buffer is drawn
+THEN its line shows the reason, as the line of a mention of GitHub does."
+  (test-external--fresh
+    (test-external--push-mail :reason "mention")
+    (test-external--in-buffer
+      (should (string-match-p "New mail.*mention" (test-external--line))))))
 
 (ert-deftest test-external-the-buffer-shows-the-source-and-the-title ()
   "GIVEN a pushed notification

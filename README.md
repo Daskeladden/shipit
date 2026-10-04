@@ -175,6 +175,8 @@ Another package can put a notification among those of shipit. It then stands in 
  :open (lambda () (my-show-the-mail)))  ; or :url, an address for a browser
 ```
 
+A notification can say why it came, with `:reason` and a word as GitHub uses for its own. With `:reason "mention"` it is counted as a mention: at the `@` of the mode line and in the view of the mentions only.
+
 ## Configuration
 
 ```elisp

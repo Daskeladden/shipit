@@ -51,13 +51,22 @@ after one with the same title was marked as read."
     (number . ,(shipit-external--id))
     (type . "external")
     (subject . ,(plist-get notification :title))
-    (reason . "new")
+    (reason . ,(or (plist-get notification :reason) "new"))
     (source . external)
     (backend-id . external)
     (browse-url . ,(plist-get notification :url))
     (description . ,(or (plist-get notification :body) ""))
     (open . ,(plist-get notification :open))
     (updated-at . ,(format-time-string "%Y-%m-%dT%H:%M:%SZ" nil t))))
+
+(defun shipit-external--check (notification)
+  "Signal when NOTIFICATION, a plist of `shipit-notifications-push', is not sound."
+  (dolist (key '(:source :title))
+    (unless (stringp (plist-get notification key))
+      (error "shipit-notifications-push: %s must be a string" key)))
+  (let ((reason (plist-get notification :reason)))
+    (unless (or (null reason) (stringp reason))
+      (error "shipit-notifications-push: :reason must be a string"))))
 
 ;;;###autoload
 (defun shipit-notifications-push (&rest notification)
@@ -70,11 +79,12 @@ NOTIFICATION is a plist:
   :body    its text, shown when the notification is unfolded.
   :open    a function of no arguments that opens it.
   :url     an address that opens it in a browser, when it has no :open.
+  :reason  why it came, a string, as GitHub says of its own.  With
+           \"mention\" it is counted as a mention.  Without one it
+           is \"new\".
 
 The source and the title are needed, the rest may be left out."
-  (dolist (key '(:source :title))
-    (unless (stringp (plist-get notification key))
-      (error "shipit-notifications-push: %s must be a string" key)))
+  (shipit-external--check notification)
   (shipit--merge-backend-notifications (list (shipit-external--activity notification)))
   (shipit--rerender-notifications-buffer-if-visible))
 

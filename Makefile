@@ -22,9 +22,14 @@ CANVAS_KEYS = ../canvas-keys
 all: compile autoloads
 
 # Compile the package
+# A file is compiled against the source of a file it requires, when that
+# is newer than its .elc.  Else a macro that is new in a core file is
+# unknown to each file that is compiled before the core file, and that
+# file calls it as a function.
 compile: $(LISP_FILES)
 	$(EMACS) -batch -Q \
 		-eval "(setq package-user-dir \"$(PWD)/.packages\")" \
+		-eval "(setq load-prefer-newer t)" \
 		-eval "(package-initialize)" \
 		-eval "(unless (package-installed-p 'dash) (package-install 'dash))" \
 		-eval "(unless (package-installed-p 'transient) (package-install 'transient))" \

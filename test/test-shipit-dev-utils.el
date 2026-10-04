@@ -28,6 +28,19 @@ THEN the kill hook holds only the other function."
     (shipit-dev--remove-shipit-hooks)
     (should (equal '(ignore) kill-buffer-hook))))
 
+(ert-deftest test-shipit-dev-reload-empties-the-global-kill-hook-from-any-buffer ()
+  "GIVEN a shipit function on the global `kill-buffer-hook'
+AND a current buffer that has a value of its own for that hook, as a
+terminal buffer has
+WHEN the hooks are emptied of shipit functions
+THEN the global hook holds only the other function: the buffer that a
+file is read in runs the global hook."
+  (let ((kill-buffer-hook (list 'shipit-test--on-kill #'ignore)))
+    (with-temp-buffer
+      (add-hook 'kill-buffer-hook #'ignore nil t)
+      (shipit-dev--remove-shipit-hooks)
+      (should (equal '(ignore) (default-value 'kill-buffer-hook))))))
+
 (ert-deftest test-shipit-dev-reload-empties-the-command-hooks-of-shipit ()
   "GIVEN a shipit function on the global `post-command-hook'
 WHEN the hooks are emptied of shipit functions

@@ -81,10 +81,14 @@ then `shipit-dev-reload-extra-files'."
   (and (symbolp fn) (string-prefix-p "shipit-" (symbol-name fn))))
 
 (defun shipit-dev--remove-shipit-hooks ()
-  "Remove the shipit functions from each hook of `shipit-dev--reload-hooks'."
+  "Remove the shipit functions from each hook of `shipit-dev--reload-hooks'.
+The global value of a hook is emptied.  The buffer a reload is run from
+can have a value of its own for a hook, as a terminal buffer has for
+`kill-buffer-hook', and then the plain value is that of the buffer."
   (dolist (hook shipit-dev--reload-hooks)
-    (when (boundp hook)
-      (set hook (seq-remove #'shipit-dev--shipit-function-p (symbol-value hook))))))
+    (when (default-boundp hook)
+      (set-default hook (seq-remove #'shipit-dev--shipit-function-p
+                                    (default-value hook))))))
 
 (defun shipit-dev--load-file (path)
   "Load the file PATH from source; non-nil when it loaded.

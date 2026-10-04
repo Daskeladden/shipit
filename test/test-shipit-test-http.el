@@ -41,6 +41,16 @@ second reaches the error callback."
       (should (equal '(1 2) got))
       (should failed))))
 
+(ert-deftest test-http-fails-when-a-response-is-left-alive ()
+  "GIVEN code that asks, and does not kill the buffer of the answer
+WHEN the form ends
+THEN it signals, AND the buffer is gone, so that it does not fail the
+next form."
+  (should-error
+   (shipit-test-http-answering '(("/thing" 200 ((ok . t))))
+     (url-retrieve-synchronously "https://example.test/thing")))
+  (should-not (shipit-test-http-live-responses)))
+
 (ert-deftest test-http-fails-on-a-request-it-has-no-answer-for ()
   "GIVEN answers that do not cover a request
 WHEN the code asks for it, and swallows the error it gets

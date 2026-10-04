@@ -171,29 +171,30 @@ async pagination of issue comments and reviews."
 Appends reactions to the cache and recursively fetches the next page
 when the current page is full.  Marks the comment as done in RESULTS
 when all pages are fetched."
-  (condition-case err
-      (progn
-        (goto-char (point-min))
-        (re-search-forward "\n\n")
-        (let* ((json-object-type 'alist)
-               (json-array-type 'list)
-               (reactions (json-read)))
-          ;; Page 1: replace cache; page 2+: append (pagination)
-          (if (= page 1)
-              (puthash cache-key (or reactions '()) shipit--reaction-cache)
-            (let ((existing (gethash cache-key shipit--reaction-cache)))
-              (puthash cache-key (append (or existing '()) (or reactions '()))
-                       shipit--reaction-cache)))
-          ;; Stop after page 1: display counts come from the comment's
-          ;; `reactions' summary object, not the enumerated list. The
-          ;; first-page sample is only used for tooltip reactor names.
-          (puthash comment-id t results)))
-    (error
-     (shipit--debug-log "[reactions-batch] Failed page %d for comment %s: %s"
-                        page comment-id (error-message-string err))
-     (unless (gethash cache-key shipit--reaction-cache)
-       (puthash cache-key '() shipit--reaction-cache))
-     (puthash comment-id t results))))
+  (shipit--with-response-buffer (current-buffer)
+    (condition-case err
+        (progn
+          (goto-char (point-min))
+          (re-search-forward "\n\n")
+          (let* ((json-object-type 'alist)
+                 (json-array-type 'list)
+                 (reactions (json-read)))
+            ;; Page 1: replace cache; page 2+: append (pagination)
+            (if (= page 1)
+                (puthash cache-key (or reactions '()) shipit--reaction-cache)
+              (let ((existing (gethash cache-key shipit--reaction-cache)))
+                (puthash cache-key (append (or existing '()) (or reactions '()))
+                         shipit--reaction-cache)))
+            ;; Stop after page 1: display counts come from the comment's
+            ;; `reactions' summary object, not the enumerated list. The
+            ;; first-page sample is only used for tooltip reactor names.
+            (puthash comment-id t results)))
+      (error
+       (shipit--debug-log "[reactions-batch] Failed page %d for comment %s: %s"
+                          page comment-id (error-message-string err))
+       (unless (gethash cache-key shipit--reaction-cache)
+         (puthash cache-key '() shipit--reaction-cache))
+       (puthash comment-id t results)))))
 
 (defun shipit-comment-github--store-review-reactions (repo review-pairs is-inline by-node)
   "Store BY-NODE reactions for REVIEW-PAIRS under REPO cache keys.

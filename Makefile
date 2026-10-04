@@ -96,6 +96,7 @@ test-unit: compile
 		-l test/test-shipit-file-registration.el \
 		-l test/test-shipit-test-offline.el \
 		-l test/test-shipit-test-http.el \
+		-l test/test-shipit-response-buffers.el \
 		-l test/test-shipit-requires.el \
 		-l test/test-files-filter.el \
 		-l test/test-shipit-files-hide.el \

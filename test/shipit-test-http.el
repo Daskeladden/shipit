@@ -15,6 +15,11 @@
 ;; A request no answer covers is an error where it is made.  Code that
 ;; catches errors would hide it there, so the whole form fails too when
 ;; it ends.
+;;
+;; url.el never kills the buffer of a response: the code that asked
+;; must.  Code that does not leaves one buffer for each request, for the
+;; life of Emacs.  So the whole form fails as well when a response is
+;; still alive at its end.
 
 ;;; Code:
 
@@ -64,6 +69,16 @@ Records ADDRESS and signals when none does."
       (insert (shipit-test-http--body body)))
     buffer))
 
+(defun shipit-test-http-live-responses ()
+  "The response buffers that are still alive."
+  (seq-filter (lambda (buffer)
+                (string-prefix-p " *shipit-test-http*" (buffer-name buffer)))
+              (buffer-list)))
+
+(defun shipit-test-http--kill-responses ()
+  "Kill the response buffers that are still alive."
+  (mapc #'kill-buffer (shipit-test-http-live-responses)))
+
 (defun shipit-test-http--answer (answers url)
   "The response ANSWERS give to a request of URL, which is recorded."
   (let* ((address (shipit-test-http--address url))
@@ -87,23 +102,40 @@ Records ADDRESS and signals when none does."
         (apply callback (shipit-test-http--status buffer) cbargs))
       buffer)))
 
-(defun shipit-test-http--check ()
+(defun shipit-test-http--check-answered ()
   "Signal when a request went unanswered, naming each address."
   (when shipit-test-http--unanswered
     (error "shipit-test-http: no answer for %s"
            (string-join (reverse shipit-test-http--unanswered) ", "))))
+
+(defun shipit-test-http--check-killed ()
+  "Signal when a response is still alive, naming the addresses asked for.
+The responses are killed first, so that they do not fail the next form."
+  (let ((alive (length (shipit-test-http-live-responses))))
+    (shipit-test-http--kill-responses)
+    (when (> alive 0)
+      (error "shipit-test-http: %d response buffers left alive after %s"
+             alive (string-join (mapcar #'cadr shipit-test-http-requests) ", ")))))
+
+(defun shipit-test-http--check ()
+  "Signal when a request went unanswered or a response was left alive."
+  (shipit-test-http--check-answered)
+  (shipit-test-http--check-killed))
 
 (defmacro shipit-test-http-answering (answers &rest body)
   "Run BODY with url.el answering each request from ANSWERS.
 ANSWERS is a list of (PATTERN STATUS BODY).  A request whose address
 matches PATTERN, a regexp, gets STATUS and BODY: a string as it is,
 anything else encoded as JSON, so an empty array is written [].  A
-request none covers signals, and fails the form when BODY ends."
+request none covers signals, and fails the form when BODY ends.  A
+response that is still alive when BODY ends fails the form too."
   (declare (indent 1))
   (let ((table (make-symbol "answers")))
     `(let ((shipit-test-http-requests nil)
            (shipit-test-http--unanswered nil)
            (,table ,answers))
+       ;; A form that signalled left its responses: they are not of this one.
+       (shipit-test-http--kill-responses)
        (prog1
            (cl-letf (((symbol-function 'url-retrieve-synchronously)
                       (lambda (url &rest _) (shipit-test-http--answer ,table url)))

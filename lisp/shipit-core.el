@@ -1040,6 +1040,21 @@ Examples:
           (write-region (point-min) (point-max)
                         shipit--debug-log-file nil 'silent))))))
 
+;; Answers to requests
+
+(defmacro shipit--with-response-buffer (buffer &rest body)
+  "Run BODY in BUFFER, the answer to a request, and then kill BUFFER.
+url.el hands the buffer of an answer to the code that asked, and never
+kills it.  A buffer that this code does not kill either stays for the
+life of Emacs, one for each request."
+  (declare (indent 1) (debug t))
+  (let ((response (make-symbol "response")))
+    `(let ((,response ,buffer))
+       (unwind-protect
+           (with-current-buffer ,response ,@body)
+         (when (buffer-live-p ,response)
+           (kill-buffer ,response))))))
+
 ;; Performance timing helpers
 
 (defmacro shipit--time-operation (description &rest body)

@@ -429,7 +429,7 @@ Returns plist with :status, :json, :etag, :from-cache, :rate-remaining, :rate-re
 
                 ;; Process conditional request response
                 (condition-case err
-                    (with-current-buffer buf
+                    (shipit--with-response-buffer buf
                   ;; Enable multibyte mode to properly interpret UTF-8 bytes
                   (set-buffer-multibyte t)
                   (when (fboundp 'shipit--debug-log)
@@ -617,7 +617,7 @@ Returns plist with :status, :json, :etag, :from-cache, :rate-remaining, :rate-re
           (error "No response buffer for fresh request"))
 
         (condition-case err
-            (with-current-buffer buf
+            (shipit--with-response-buffer buf
               ;; Enable multibyte mode to properly interpret UTF-8 bytes
               (set-buffer-multibyte t)
               (when (fboundp 'shipit--debug-log)
@@ -1195,8 +1195,9 @@ Result format is the same as shipit-gh-etag-get-json-with-refresh-cache."
     (let ((system-time-locale "C"))
       (url-retrieve url
                     (lambda (status)
-                      (shipit-gh-etag--handle-async-response
-                       status endpoint params token callback cache-key stored-etag force-fresh))
+                      (shipit--with-response-buffer (current-buffer)
+                        (shipit-gh-etag--handle-async-response
+                         status endpoint params token callback cache-key stored-etag force-fresh)))
                     nil t t))))
 
 (defun shipit-gh-etag--handle-async-response (status endpoint params token callback cache-key stored-etag force-fresh)

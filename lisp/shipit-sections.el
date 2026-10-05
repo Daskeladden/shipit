@@ -270,6 +270,40 @@ for a section being shown."
 
 (advice-add 'magit-section-show :after #'shipit--run-files-section-shown-hook)
 
+;;; A hidden body and the line after it
+;;
+;; What:  the line after a hidden body is drawn in its own column.
+;; Why:   Magit hides a body from its first character.  The screen line
+;;        that shows what follows the body starts at that hidden
+;;        character, and Emacs reads `line-prefix' at the position a
+;;        screen line starts from, not at its visible text.  A body
+;;        that is drawn further in than the line after it would move
+;;        that line to the right.
+;; How:   the overlay that hides the body carries the prefix of the
+;;        line after it.  An overlay goes before the text, and Magit
+;;        deletes it when the body is shown again.
+
+(defun shipit--hiding-overlay (section)
+  "The overlay that hides the body of SECTION, or nil."
+  (let ((content (oref section content)))
+    (seq-find (lambda (overlay)
+                (and (overlay-get overlay 'invisible)
+                     (= content (overlay-start overlay))))
+              (overlays-at content))))
+
+(defun shipit--hidden-body-takes-next-prefix (section)
+  "Give the hidden body of SECTION the `line-prefix' of the line after it.
+Advice for `magit-section-hide'."
+  (when-let* ((content (oref section content))
+              (end (oref section end))
+              ((< content end)))
+    (let ((next (get-text-property end 'line-prefix)))
+      (unless (equal next (get-text-property content 'line-prefix))
+        (when-let* ((overlay (shipit--hiding-overlay section)))
+          (overlay-put overlay 'line-prefix (or next "")))))))
+
+(advice-add 'magit-section-hide :after #'shipit--hidden-body-takes-next-prefix)
+
 ;;; Section State
 
 (defvar-local shipit--section-expansion-state (make-hash-table :test 'equal)

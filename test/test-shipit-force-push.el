@@ -630,6 +630,47 @@ sections under the commit."
                    (delete-dups (mapcar (lambda (section) (oref section type))
                                         (oref (test-sfp--commit-section "Add lines") children)))))))
 
+(defun test-sfp--prefix-width (position)
+  "How wide the line prefix is that Emacs reads at POSITION, in columns.
+Asked the way the display asks: an overlay goes before the text."
+  (string-width (or (get-char-property position 'line-prefix) "")))
+
+(ert-deftest test-sfp-a-closed-file-leaves-the-next-line-in-its-column ()
+  "GIVEN a commit of a force push with its file opened, whose diff is
+drawn further in by a line prefix
+WHEN the file is closed again
+THEN the hidden start of the diff has the prefix of the line after the
+file, which has none.  Emacs draws the line after the file from that
+hidden start, and reads the prefix there, so the prefix of the diff
+would move that line to the right.
+WHEN the file is opened again
+THEN its diff has its prefix back."
+  (test-sfp--with-history '(:fixed t)
+    (test-sfp--opened-commit-files "Add lines")
+    (let* ((file (car (oref (test-sfp--commit-section "Add lines") children)))
+           (start (oref file content))
+           (width (test-sfp--prefix-width start)))
+      (should (> width 0))
+      (should (= 0 (test-sfp--prefix-width (oref file end))))
+      (magit-section-hide file)
+      (should (= 0 (test-sfp--prefix-width start)))
+      (magit-section-show file)
+      (should (= width (test-sfp--prefix-width start))))))
+
+(ert-deftest test-sfp-a-closed-hunk-leaves-the-next-line-in-its-column ()
+  "GIVEN a commit of a force push with its file opened
+WHEN the last hunk of the file is closed
+THEN the hidden start of the hunk has the prefix of the line after it,
+which is past the file and has none."
+  (test-sfp--with-history '(:fixed t)
+    (test-sfp--opened-commit-files "Add lines")
+    (let* ((file (car (oref (test-sfp--commit-section "Add lines") children)))
+           (hunk (car (last (oref file children)))))
+      (should (eq 'diff-hunk (oref hunk type)))
+      (should (> (test-sfp--prefix-width (oref hunk content)) 0))
+      (magit-section-hide hunk)
+      (should (= 0 (test-sfp--prefix-width (oref hunk content)))))))
+
 (ert-deftest test-sfp-added-and-dropped-commits-list-their-files ()
   "GIVEN a push that dropped the first of two commits, kept the second,
 and added a new one

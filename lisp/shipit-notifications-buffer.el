@@ -263,6 +263,8 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "g") #'shipit-notifications-buffer-refresh)
     (define-key map (kbd "q") #'quit-window)
     (define-key map (kbd "f") #'shipit-notifications-buffer-filter-menu)
+    ;; SPC opens the menu too, and closes it again.
+    (define-key map (kbd "SPC") #'shipit-notifications-buffer-filter-menu)
     (define-key map (kbd "RET") #'shipit-notifications-buffer-open)
     (define-key map (kbd "M-;") #'shipit-notifications-buffer-action)
     (define-key map (kbd "TAB") #'shipit-notifications-buffer-toggle-section)
@@ -314,6 +316,11 @@ GraphQL round-trip only happens once per session.  Cleared by
     (define-key map (kbd "x") #'shipit-notifications-buffer-clear-all-filters)
     map)
   "Keymap for `shipit-notifications-buffer-mode'.")
+
+;; meow takes SPC in its motion state.  The menu gets it in the insert
+;; state.
+(with-eval-after-load 'meow
+  (shipit--start-in-meow-insert-state 'shipit-notifications-buffer-mode))
 
 ;;; Mode
 
@@ -4568,7 +4575,8 @@ grouping), Filter groups narrow the activity set that is shown."
    ["Refresh"
     ("g" "Refresh now" shipit-notifications-buffer-refresh)
     ("x" "Clear all filters" shipit-notifications-buffer-clear-all-filters)
-    ("q" "Quit" transient-quit-one)]])
+    ("q" "Quit" transient-quit-one)
+    ("SPC" "Quit" transient-quit-one)]])
 
 (defcustom shipit-notifications-filter-live-delay 0.25
   "Idle delay in seconds before re-rendering on live text-filter typing.

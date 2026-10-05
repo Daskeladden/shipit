@@ -344,6 +344,16 @@ Call from the body of each shipit mode derived from `magit-section-mode'."
     (setq-local magit-section-visibility-indicators
                 shipit-section-visibility-indicators)))
 
+(defvar meow-mode-state-list)
+
+(defun shipit--start-in-meow-insert-state (mode)
+  "Ask meow to start the buffers of MODE in its insert state.
+meow takes keys before a major mode map sees them.  In its motion
+state, where it starts a buffer that is not for typing, it takes SPC.
+In its insert state MODE gets every key.  Call this when meow is
+loaded."
+  (add-to-list 'meow-mode-state-list (cons mode 'insert)))
+
 ;;; Keys every page of one item has
 ;;
 ;; A pull request buffer and an issue buffer each show one item.  A key

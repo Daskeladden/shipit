@@ -4,6 +4,7 @@
 (require 'cl-lib)
 (require 'shipit-notifications-buffer)
 (require 'shipit-test-http)
+(require 'shipit-test-meow)
 
 (defun test-notifications-buffer--thread (number title reason)
   "GitHub's unread thread for pull request NUMBER of owner/repo.
@@ -114,6 +115,33 @@ THEN it should resolve to `shipit-notifications-buffer-filter-menu',
           (should (eq (lookup-key shipit-notifications-buffer-mode-map "f")
                       'shipit-notifications-buffer-filter-menu)))
       (kill-buffer buf))))
+
+(ert-deftest test-shipit-notifications-buffer-spc-opens-and-closes-the-filter-menu ()
+  "GIVEN a notifications buffer
+WHEN we look up the binding of SPC
+THEN it opens the filter menu, as f does, AND SPC in the menu closes it."
+  (let ((buf (shipit-notifications-buffer-create)))
+    (unwind-protect
+        (with-current-buffer buf
+          (should (eq (key-binding (kbd "SPC"))
+                      'shipit-notifications-buffer-filter-menu)))
+      (kill-buffer buf)))
+  (should (eq (plist-get (cdr (transient-get-suffix
+                               'shipit-notifications-buffer-filter-menu "SPC"))
+                         :command)
+              'transient-quit-one)))
+
+(ert-deftest test-shipit-notifications-buffer-meow-leaves-spc-to-the-menu ()
+  "GIVEN meow, which takes SPC for its keypad in its motion state
+WHEN meow loads
+THEN it starts a notifications buffer in its insert state, where SPC
+reaches the menu, AND undo-tree is not kept out, because the buffer has
+an undo of its own."
+  (shipit-test-with-meow-loaded
+    (should (eq 'insert (alist-get 'shipit-notifications-buffer-mode
+                                   meow-mode-state-list)))
+    (should-not (memq 'shipit-notifications-buffer-mode
+                      undo-tree-incompatible-major-modes))))
 
 (ert-deftest test-shipit-notifications-buffer-filter-menu-defined ()
   "Test that the filter transient is defined and interactive.

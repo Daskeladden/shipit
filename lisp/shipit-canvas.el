@@ -29,7 +29,6 @@
 (require 'cl-lib)
 (require 'shipit-core)
 
-(defvar meow-mode-state-list)
 (defvar undo-tree-incompatible-major-modes)
 
 (defun shipit-canvas--load (library)
@@ -83,7 +82,7 @@ Both take keys before a major mode map sees them.  meow starts MODE in
 insert state, and undo-tree stays out of it.  A package that is not
 loaded is left alone; each canvas file asks again once it loads."
   (when (boundp 'meow-mode-state-list)
-    (add-to-list 'meow-mode-state-list (cons mode 'insert)))
+    (shipit--start-in-meow-insert-state mode))
   (when (boundp 'undo-tree-incompatible-major-modes)
     (add-to-list 'undo-tree-incompatible-major-modes mode)))
 

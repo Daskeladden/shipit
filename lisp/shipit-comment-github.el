@@ -166,14 +166,18 @@ async pagination of issue comments and reviews."
 ;;; Batch operations
 
 (defun shipit-comment-github--handle-reaction-page
-    (_status comment-id cache-key base-endpoint page results)
+    (status comment-id cache-key base-endpoint page results)
   "Handle a single reaction page, fetching more pages if needed.
 Appends reactions to the cache and recursively fetches the next page
 when the current page is full.  Marks the comment as done in RESULTS
-when all pages are fetched."
+when all pages are fetched.  STATUS is what url.el says of the answer.
+A refusal, as of a comment that GitHub does not know, has a body too,
+which is no list of reactions and is not kept."
   (shipit--with-response-buffer (current-buffer)
     (condition-case err
         (progn
+          (when-let* ((refusal (plist-get status :error)))
+            (signal (car refusal) (cdr refusal)))
           (goto-char (point-min))
           (re-search-forward "\n\n")
           (let* ((json-object-type 'alist)

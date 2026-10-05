@@ -10,6 +10,7 @@
 (require 'shipit-core)
 (require 'shipit-comment-backends)
 (require 'shipit-http)
+(require 'shipit-test-http)
 
 ;;; Test helpers
 
@@ -582,6 +583,25 @@ THEN one GraphQL query is made and reactions come back per node id."
                        (cdr (assq 'content
                                   (car (cdr (assoc "PRR_a" result)))))))
         (should (equal '() (cdr (assoc "PRR_b" result))))))))
+
+(ert-deftest test-shipit-github-reactions-batch-keeps-nothing-of-a-refusal ()
+  "GIVEN a comment that GitHub does not know, as one that was deleted
+      after it was listed
+WHEN the GitHub reactions batch fetch runs
+THEN the comment has no reactions in the cache.  The answer of a
+     refusal is no list of reactions, and what draws a comment reads
+     the cache as one."
+  (require 'shipit-comment-github)
+  (let ((shipit--reaction-cache (make-hash-table :test 'equal))
+        (shipit-github-token "token")
+        (url-cache-directory (expand-file-name "url/cache" user-emacs-directory)))
+    (shipit-test-http-answering
+        '(("/issues/comments/111/reactions" 404
+           ((message . "Not Found") (status . "404"))))
+      (shipit-comment-github--fetch-reactions-batch
+       '(:repo "o/r") '(((id . 111) (shipit-comment-type . "issue"))) nil))
+    (should (null (gethash (shipit--reaction-cache-key "o/r" 111 nil)
+                           shipit--reaction-cache 'never-asked)))))
 
 (ert-deftest test-shipit-github-reactions-batch-fetches-review-reactions ()
   "GIVEN general comments holding an issue comment and a review body

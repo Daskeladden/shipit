@@ -132,9 +132,11 @@ CALLBACK receives a plist with :comment :pinned-by :pinned-at, or nil."
 (defun shipit-issues--fetch-comments-head-tail-async (repo issue-number per-page head-n tail-n callback)
   "Fetch head and tail comments for ISSUE-NUMBER in REPO.
 PER-PAGE, HEAD-N, TAIL-N control pagination.  Calls CALLBACK with a
-plist of :head :tail :hidden :total :unfetched :per-page.
-Falls back to fetching all comments when the backend does not provide
-:fetch-comments-head-tail-async."
+plist of :head :tail :hidden-head :hidden-tail :total :unfetched
+:per-page.  Falls back to fetching all comments when the backend does
+not provide :fetch-comments-head-tail-async.  The comments between the
+head and the tail are then all in :hidden-head, where the page looks for
+those that are fetched and not shown yet."
   (let* ((resolved (shipit-issue--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
@@ -158,7 +160,8 @@ Falls back to fetching all comments when the backend does not provide
                                   (seq-subseq all-comments head-n
                                               (- total tail-n)))))
                    (funcall callback
-                            (list :head head :tail tail :hidden hidden
+                            (list :head head :tail tail
+                                  :hidden-head hidden :hidden-tail nil
                                   :total total :unfetched nil :per-page per-page))))))))
 
 (defun shipit-issues--fetch-timeline-async (repo issue-number callback)

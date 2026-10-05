@@ -557,5 +557,78 @@ its comments on the answer."
         (should (eq 'jira shipit-issue-backend))
         (should (string-match-p "A comment of the sandbox" (buffer-string)))))))
 
+;;; The comments of a page
+
+(defun test-jira-sandbox--open-with-comments (bodies)
+  "Start the sandbox, give its first issue a comment for each of BODIES; open it."
+  (let ((config (shipit-jira-sandbox-start)))
+    (dolist (body bodies)
+      (shipit-issue-jira--add-comment config "PRJ-1" body))
+    (shipit-issues-open-buffer "PRJ-1" shipit-jira-sandbox-repo)))
+
+(defun test-jira-sandbox--place-of (text)
+  "Where TEXT stands in this buffer."
+  (save-excursion
+    (goto-char (point-min))
+    (should (search-forward text nil t))
+    (point)))
+
+(defun test-jira-sandbox--as-shown (bodies)
+  "BODIES, comments of this page, in the order that the page shows them."
+  (sort (copy-sequence bodies)
+        (lambda (a b)
+          (< (test-jira-sandbox--place-of a) (test-jira-sandbox--place-of b)))))
+
+(defmacro test-jira-sandbox--with-comments (bodies page &rest body)
+  "Open the sandbox's first issue with a comment for each of BODIES; run BODY.
+PAGE is bound to the buffer of the issue.  No login but the sandbox's is
+there."
+  (declare (indent 2))
+  `(progn
+     (skip-unless (executable-find "python3"))
+     (let ((auth-sources nil))
+       (test-jira-sandbox--with-page-opened-by
+           (test-jira-sandbox--open-with-comments ,bodies) ,page
+         ,@body))))
+
+(defconst test-jira-sandbox--five
+  '("First said" "Second said" "Third said" "Fourth said" "Fifth said")
+  "The bodies of five comments, in the order they are written in.")
+
+(defun test-jira-sandbox--shown (bodies)
+  "Those of BODIES that this buffer shows, in the order it shows them."
+  (test-jira-sandbox--as-shown
+   (seq-filter (lambda (body)
+                 (save-excursion (goto-char (point-min)) (search-forward body nil t)))
+               bodies)))
+
+(defun test-jira-sandbox--load-the-rest ()
+  "Load the comments that the line between the first and the last holds."
+  (let ((line (cl-find 'issue-comments-load-more
+                       (oref (shipit--find-section-by-type 'issue-comments) children)
+                       :key (lambda (section) (oref section type)))))
+    (should line)
+    (goto-char (oref line start))
+    (shipit-issue--load-more-comments)))
+
+(ert-deftest test-jira-sandbox-comments-between-the-first-and-the-last-can-be-loaded ()
+  "GIVEN an issue with five comments, AND a page that shows the first and
+the last comment
+WHEN its page is opened
+THEN it shows those two, AND a line between them that loads the others
+WHEN that line is used
+THEN the page shows all five.  Jira gives all the comments at once, and
+shipit keeps those that it does not show at first."
+  (let ((shipit-comments-initial-count 1)
+        (shipit-comments-tail-count 1)
+        (shipit-comments-pagination-threshold 2))
+    (test-jira-sandbox--with-comments test-jira-sandbox--five page
+      (with-current-buffer page
+        (should (equal '("First said" "Fifth said")
+                       (test-jira-sandbox--shown test-jira-sandbox--five)))
+        (test-jira-sandbox--load-the-rest)
+        (should (equal test-jira-sandbox--five
+                       (test-jira-sandbox--shown test-jira-sandbox--five)))))))
+
 (provide 'test-shipit-jira-sandbox)
 ;;; test-shipit-jira-sandbox.el ends here

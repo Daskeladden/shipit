@@ -374,6 +374,20 @@ issue buffer do.  It returns nil when the page has no address yet.")
   (browse-url (or (and shipit-page-url-function (funcall shipit-page-url-function))
                   (user-error "This buffer has no web address to open"))))
 
+(defvar-local shipit-page-menu-command nil
+  "The command that shows the menu of this page.
+The mode of a page of one item sets it, as a pull request buffer and an
+issue buffer do.")
+
+(defun shipit-page-menu ()
+  "Show the menu of the commands of this page.
+A line with keys of its own has this on SPC too: such a line is asked
+before the buffer is, and would keep SPC from the menu.  SPC was a
+second RET on those lines before the pages had menus, and it still is
+one in a buffer that has no menu."
+  (interactive)
+  (call-interactively (or shipit-page-menu-command (key-binding (kbd "RET")))))
+
 (defvar shipit-page-mode-map (make-sparse-keymap)
   "Keys shared by the buffers that show one item: a pull request or an issue.
 Each of their keymaps has this one as its parent, and keeps only the
@@ -386,6 +400,7 @@ keys that mean something else in it.")
 (define-key shipit-page-mode-map (kbd "q") #'quit-window)
 (define-key shipit-page-mode-map (kbd "$") #'shipit-process-buffer)
 (define-key shipit-page-mode-map (kbd "M-;") #'shipit-dwim)
+(define-key shipit-page-mode-map (kbd "SPC") #'shipit-page-menu)
 (define-key shipit-page-mode-map (kbd "w") #'shipit-repo-subscription)
 
 (defvar shipit-current-repo nil

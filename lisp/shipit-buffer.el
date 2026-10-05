@@ -31,6 +31,7 @@
 (require 'url)
 (require 'url-cache)
 (require 'imenu)
+(require 'transient)
 
 ;; Buffer-local hash table for storing imenu children metadata
 ;; Key: section type symbol, Value: list of (name . (parent-pos . name))
@@ -581,7 +582,6 @@ section and search for the child by name."
     (define-key map (kbd "RET") #'shipit--open-file-at-point)
     (define-key map (kbd "C-RET") #'shipit--open-file-from-worktree-at-point)
     (define-key map [C-return] #'shipit--open-file-from-worktree-at-point)
-    (define-key map (kbd "SPC") #'shipit-dwim)
     (define-key map (kbd "c") #'shipit-comment)
     (define-key map (kbd "r") #'shipit-buffer-refresh)
     (define-key map (kbd "g") #'shipit-buffer-refresh)
@@ -620,6 +620,47 @@ The keys it shares with an issue buffer come from its parent,
 ;; Outside the `defvar', so that loading this file again gives a running
 ;; Emacs the shared keys too.
 (set-keymap-parent shipit-mode-map shipit-page-mode-map)
+;; SPC is the menu of the page, from the parent.  It was `shipit-dwim',
+;; which a map that was made before still has.
+(define-key shipit-mode-map (kbd "SPC") nil t)
+
+(transient-define-prefix shipit-pr-menu ()
+  "The commands of a pull request buffer, each on the key the buffer has for it.
+SPC closes the menu again."
+  [["Review"
+    ("c" "Comment" shipit-comment)
+    ("a" "Approve / apply suggestion" shipit-suggestion-or-approve)
+    ("R" "Request changes" shipit-request-changes)
+    ("k" "Delete comment" shipit-delete-comment-at-point)
+    ("M-m" "Merge" shipit-merge)
+    ("M-;" "Actions at point" shipit-dwim)]
+   ["Files"
+    ("e" "Ediff file" shipit--ediff-file-at-point)
+    ("d" "Diff file" shipit-pr-diff-menu)
+    ("D" "Diff with comments" shipit--show-diff-with-comments-at-point)
+    ("f" "Filter files" shipit-files-filter)
+    ("m" "Toggle viewed" shipit-toggle-file-viewed)
+    ("M" "Toggle all viewed" shipit-mark-all-files-viewed)
+    ("+" "Load more files" shipit-load-more-files)
+    ("Z" "Worktree" shipit-worktree)]
+   ["Page"
+    ("g" "Refresh" shipit-buffer-refresh)
+    ("G" "Hard refresh" shipit-buffer-refresh-hard)
+    ("s" "Select PR" shipit-buffer-select-pr)
+    ("L" "Toggle time format" shipit-buffer-toggle-timestamps-dwim)
+    ("M-w" "Copy URL or text" shipit-buffer-copy-dwim)
+    ("o" "Open in browser" shipit-open-in-browser)
+    ("w" "Repo subscription" shipit-repo-subscription)
+    ("$" "Process buffer" shipit-process-buffer)
+    ("?" "Help" shipit-buffer-help)
+    ("q" "Quit" quit-window)
+    ("Q" "Quit and kill" shipit-buffer-quit-and-kill)
+    ("SPC" "Close" transient-quit-one)]])
+
+;; meow takes SPC in its motion state.  The menu gets it in the insert
+;; state.
+(with-eval-after-load 'meow
+  (shipit--start-in-meow-insert-state 'shipit-mode))
 
 ;;; Major mode definition
 
@@ -633,12 +674,12 @@ with focused context and optimized performance.
   :group 'shipit
   (shipit--watch-videos)
   (setq-local shipit-page-url-function #'shipit-buffer--pr-url)
+  (setq-local shipit-page-menu-command #'shipit-pr-menu)
 
   ;; Re-bind keys to ensure they override parent bindings
   (define-key shipit-mode-map (kbd "RET") #'shipit--open-file-at-point)
   (define-key shipit-mode-map (kbd "C-RET") #'shipit--open-file-from-worktree-at-point)
   (define-key shipit-mode-map [C-return] #'shipit--open-file-from-worktree-at-point)
-  (define-key shipit-mode-map (kbd "SPC") #'shipit-dwim)
   (define-key shipit-mode-map (kbd "e") #'shipit--ediff-file-at-point)
   (define-key shipit-mode-map (kbd "d") #'shipit-pr-diff-menu)
   (define-key shipit-mode-map (kbd "D") #'shipit--show-diff-with-comments-at-point)

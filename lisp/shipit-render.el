@@ -854,7 +854,7 @@ If SKIP-REACTIONS is non-nil, reactions are not rendered (caller will handle the
                               (define-key map [return] 'shipit--file-at-point)
                               (define-key map [C-return] 'shipit--open-file-from-worktree-at-point)
                               (define-key map (kbd "C-RET") 'shipit--open-file-from-worktree-at-point)
-                              (define-key map (kbd "SPC") 'shipit--file-at-point)
+                              (define-key map (kbd "SPC") #'shipit-page-menu)
                               (define-key map (kbd "M-;") 'shipit-dwim)
                               map)))
            ;; Apply background highlighting for inline comments if configured

@@ -164,6 +164,12 @@ Each entry is (TYPE . VALUE).  Supported types:
     map)
   "Keymap for shipit issue header line.")
 
+;; Outside the `defvar', so that loading this file again binds it in a
+;; running Emacs too.  The parent of the map has SPC, and would keep it
+;; from the menu of the page.
+(define-key shipit-issue-header-keymap (kbd "SPC") #'shipit-page-menu)
+
+
 ;;; Mode definition
 
 (defvar shipit-issue-mode-map
@@ -187,6 +193,31 @@ The keys it shares with a pull request buffer come from its parent,
 (define-key shipit-issue-mode-map (kbd "RET") #'shipit-issue--ret-dwim)
 (define-key shipit-issue-mode-map (kbd "L") #'shipit-toggle-timestamp-format)
 
+(transient-define-prefix shipit-issue-menu ()
+  "The commands of an issue buffer, each on the key the buffer has for it.
+SPC closes the menu again."
+  [["Issue"
+    ("M-;" "Actions at point" shipit-dwim)
+    ("b" "Branch" shipit-issue-branch-menu)]
+   ["Comments"
+    ("f" "Filter comments" shipit-issue-filter-comments)
+    ("l" "Jump to Load more" shipit-issue-jump-to-load-more)
+    ("R" "Toggle load direction" shipit-issue--toggle-load-direction)]
+   ["Page"
+    ("g" "Refresh" shipit-issue-buffer-refresh)
+    ("L" "Toggle time format" shipit-toggle-timestamp-format)
+    ("o" "Open in browser" shipit-open-in-browser)
+    ("w" "Repo subscription" shipit-repo-subscription)
+    ("$" "Process buffer" shipit-process-buffer)
+    ("q" "Quit" quit-window)
+    ("Q" "Quit and kill" shipit-issue-buffer-quit-and-kill)
+    ("SPC" "Close" transient-quit-one)]])
+
+;; meow takes SPC in its motion state.  The menu gets it in the insert
+;; state.
+(with-eval-after-load 'meow
+  (shipit--start-in-meow-insert-state 'shipit-issue-mode))
+
 (define-derived-mode shipit-issue-mode magit-section-mode "Shipit-Issue"
   "Major mode for shipit issue buffers.
 Provides a read-only interface for viewing GitHub issues.
@@ -201,6 +232,7 @@ Provides a read-only interface for viewing GitHub issues.
   (shipit--apply-section-defaults)
   (shipit--watch-videos)
   (setq-local shipit-page-url-function #'shipit-issue--browse-url)
+  (setq-local shipit-page-menu-command #'shipit-issue-menu)
   (font-lock-mode 1)
   (shipit--enable-issue-ref-eldoc)
   (add-hook 'post-command-hook #'shipit-issue--update-comment-position nil t)

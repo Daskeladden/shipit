@@ -1015,6 +1015,9 @@ DIFF-HUNK is the diff hunk context to help locate the correct position."
                                           'keymap (let ((map (make-sparse-keymap))
                                                         (target-line current-line))
                                                     (set-keymap-parent map magit-section-mode-map)
+                                                    ;; The parent has SPC, and would keep
+                                                    ;; it from the menu of the page.
+                                                    (define-key map (kbd "SPC") #'shipit-page-menu)
                                                     (define-key map [mouse-1]
                                                                 `(lambda (event)
                                                                    (interactive "e")

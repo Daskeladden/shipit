@@ -161,6 +161,7 @@ test-unit: compile
 		-l test/test-shipit-notifications-external.el \
 		-l test/test-shipit-explore.el \
 		-l test/test-shipit-explore-buffer.el \
+		-l test/test-shipit-page-menu.el \
 		-l test/test-shipit-actions-timestamps.el \
 		-l test/test-shipit-run-steps.el \
 		-l test/test-shipit-merge.el \

@@ -155,7 +155,6 @@
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
     (define-key map (kbd "RET") 'shipit--commit-at-point)
-    (define-key map (kbd "SPC") 'shipit--commit-at-point)
     (define-key map (kbd "M-;") 'shipit-dwim)
     (define-key map (kbd "M-w") 'shipit-copy-pr-url)
     (define-key map (kbd "n") 'magit-section-forward)
@@ -187,6 +186,13 @@
     (define-key map (kbd "M-w") 'shipit-copy-pr-url)
     map)
   "Keymap for shipit PR header line.")
+
+;; Outside the `defvar's, so that loading this file again binds it in a
+;; running Emacs too.  SPC is the menu of the page on these lines as on
+;; any other.  The parent of each map has SPC, and would keep it from the
+;; menu.
+(define-key shipit-commit-keymap (kbd "SPC") #'shipit-page-menu)
+(define-key shipit-pr-header-keymap (kbd "SPC") #'shipit-page-menu)
 
 (defvar-local shipit--commit-files-force-api nil
   "When non-nil, commit sections lazy-load their files via the backend

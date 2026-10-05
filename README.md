@@ -130,6 +130,8 @@ Run `M-x shipit` from any git repo with a remote.
 
 Navigate with `TAB` to expand/collapse, `RET` to open, and `M-;` for context actions.
 
+`SPC` in a pull request buffer or an issue buffer opens a menu of the commands of the buffer, each on the key that the buffer has for it, and `SPC` closes it again. With meow, the two buffers start in the insert state, because meow takes `SPC` in its motion state.
+
 ### Issue buffers
 
 | Key | Action |

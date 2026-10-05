@@ -84,9 +84,13 @@
 (defvar shipit-checks-keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'shipit--load-checks-on-demand)
-    (define-key map (kbd "SPC") 'shipit--load-checks-on-demand)
     map)
   "Keymap for lazy-loaded checks section.")
+
+;; Outside the `defvar', so that loading this file again binds it in a
+;; running Emacs too.  SPC is the menu of the page on this line as on
+;; any other.
+(define-key shipit-checks-keymap (kbd "SPC") #'shipit-page-menu)
 
 (defun shipit--load-checks-on-demand ()
   "Load checks for the current PR on demand using the original working implementation.

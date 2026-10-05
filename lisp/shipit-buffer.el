@@ -380,19 +380,6 @@ Expand a section first to include its children in the imenu index."
        (lambda (entry) (push entry index)))
       (nreverse index))))
 
-(defun shipit--imenu-get-heading (section)
-  "Extract clean heading text from SECTION."
-  (let* ((start (oref section start))
-         (content (oref section content))
-         (heading (buffer-substring-no-properties
-                   start
-                   (1- (or content (oref section end))))))
-    ;; Clean up heading - remove count suffix like " (5)"
-    (when (string-match " ([0-9]+)\\'" heading)
-      (setq heading (substring heading 0 (match-beginning 0))))
-    ;; Trim whitespace and icons
-    (string-trim heading)))
-
 (defun shipit--imenu-collect-sections-hierarchical (sections collect-fn)
   "Collect imenu entries from SECTIONS using COLLECT-FN.
 COLLECT-FN is called with an imenu entry (cons or nested alist).
@@ -563,10 +550,7 @@ section and search for the child by name."
                   (goto-char found)))))))
     ;; Regular position - just go there
     (goto-char position)
-    (let ((section (magit-current-section)))
-      (while (setq section (oref section parent))
-        (when (oref section hidden)
-          (magit-section-show section))))))
+    (shipit--imenu-unfold-around-point)))
 
 ;;; Keymap
 

@@ -691,5 +691,39 @@ THEN all five stand in that order."
           (test-jira-sandbox--load-the-rest)
           (should (equal five (test-jira-sandbox--shown test-jira-sandbox--five))))))))
 
+;;; The index of the page
+
+(defun test-jira-sandbox--entry-matching (regexp entries)
+  "The entry of ENTRIES, an imenu index, whose name matches REGEXP."
+  (cl-find-if (lambda (entry) (string-match-p regexp (car entry))) entries))
+
+(ert-deftest test-jira-sandbox-the-page-has-an-index-for-imenu ()
+  "GIVEN the page of an issue with three comments
+WHEN imenu asks the page for its index
+THEN the index has the description, AND the comments as a submenu: the
+comments section itself, and then each comment, named by who wrote it
+AND the page keeps the way imenu itself goes to an entry, which lets
+consult-imenu show an entry before it is chosen
+WHEN the comments are folded, and imenu goes to the second comment
+THEN point is on that comment, AND the comments are unfolded."
+  (test-jira-sandbox--with-comments test-jira-sandbox--three page
+    (with-current-buffer page
+      (let* ((index (funcall imenu-create-index-function))
+             (comments (cdr (test-jira-sandbox--entry-matching "Comments" index))))
+        (should (test-jira-sandbox--entry-matching "Description" index))
+        (should (= 4 (length comments)))
+        (should (string-match-p "Comments" (car (nth 0 comments))))
+        (dolist (comment (cdr comments))
+          (should (string-match-p (regexp-quote shipit-jira-sandbox-user) (car comment))))
+        (should (eq imenu-default-goto-function #'imenu-default-goto-function))
+        (magit-section-hide (shipit--find-section-by-type 'issue-comments))
+        (goto-char (point-min))
+        (imenu (nth 2 comments))
+        (should-not (oref (shipit--find-section-by-type 'issue-comments) hidden))
+        (should (looking-at-p (concat ".*" (regexp-quote shipit-jira-sandbox-user))))
+        (should (< (test-jira-sandbox--place-of "First said")
+                   (point)
+                   (test-jira-sandbox--place-of "Second said")))))))
+
 (provide 'test-shipit-jira-sandbox)
 ;;; test-shipit-jira-sandbox.el ends here

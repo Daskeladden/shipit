@@ -25,6 +25,8 @@
 (require 'shipit-core)
 (require 'shipit-http)
 (require 'shipit-render)
+(require 'shipit-sections)
+(require 'imenu)
 
 ;; Forward declarations
 (declare-function shipit-repo-subscription "shipit-repo-buffer")
@@ -218,6 +220,27 @@ SPC closes the menu again."
 (with-eval-after-load 'meow
   (shipit--start-in-meow-insert-state 'shipit-issue-mode))
 
+(defconst shipit-issue--imenu-types
+  '(shipit-issue-description
+    issue-attachments
+    issue-child-items issue-child-item
+    issue-linked-items issue-linked-group issue-linked-item
+    issue-similar-items issue-similar-item
+    issue-linked-prs linked-pr
+    issue-activity issue-activity-event
+    issue-pinned-comment
+    issue-comments issue-comment)
+  "The types of the sections of an issue buffer that imenu lists.")
+
+(defun shipit-issue--imenu-create-index ()
+  "The imenu index of this issue buffer: its sections, and what is in them.
+The comments are a submenu with an entry for each comment that is
+loaded, and so are the linked items and the activity.  It is nil while
+the buffer has nothing yet."
+  (when magit-root-section
+    (shipit--imenu-entries (oref magit-root-section children)
+                           shipit-issue--imenu-types)))
+
 (define-derived-mode shipit-issue-mode magit-section-mode "Shipit-Issue"
   "Major mode for shipit issue buffers.
 Provides a read-only interface for viewing GitHub issues.
@@ -233,6 +256,8 @@ Provides a read-only interface for viewing GitHub issues.
   (shipit--watch-videos)
   (setq-local shipit-page-url-function #'shipit-issue--browse-url)
   (setq-local shipit-page-menu-command #'shipit-issue-menu)
+  (setq-local imenu-create-index-function #'shipit-issue--imenu-create-index)
+  (add-hook 'imenu-after-jump-hook #'shipit--imenu-unfold-around-point nil t)
   (setq-local shipit--comments-rerender-function #'shipit-issue--rerender-comments)
   (font-lock-mode 1)
   (shipit--enable-issue-ref-eldoc)

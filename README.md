@@ -140,6 +140,7 @@ Navigate with `TAB` to expand/collapse, `RET` to open, and `M-;` for context act
 | `l` | Jump to Load more and open transient menu |
 | `w` | Manage repo/thread subscriptions |
 | `n`/`p` | Navigate between sections |
+| `M-x imenu` | Jump to a section, a comment, a linked item or an activity entry |
 
 Issues with many comments show the first and last few with a "Load more" section in between. Press `l` to open the load-more transient:
 

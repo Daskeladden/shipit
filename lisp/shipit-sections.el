@@ -516,5 +516,48 @@ above carry their states."
                 (string-trim-right line))
               "\n"))))
 
+;;; Imenu
+
+(defun shipit--imenu-get-heading (section)
+  "Extract clean heading text from SECTION."
+  (let* ((start (oref section start))
+         (content (oref section content))
+         (heading (buffer-substring-no-properties
+                   start
+                   (1- (or content (oref section end))))))
+    ;; Clean up heading - remove count suffix like " (5)"
+    (when (string-match " ([0-9]+)\\'" heading)
+      (setq heading (substring heading 0 (match-beginning 0))))
+    ;; Trim whitespace and icons
+    (string-trim heading)))
+
+(defun shipit--imenu-entries (sections types)
+  "The imenu entries of SECTIONS, and of the sections that are in them.
+A section whose type is one of TYPES is an entry, named by its heading.
+With entries of sections in it, it is a submenu whose first entry is
+the section itself.  A section of another type is no entry, and the
+entries of the sections in it stand in its place."
+  (mapcan
+   (lambda (section)
+     (let ((inner (shipit--imenu-entries (oref section children) types))
+           (heading (and (memq (oref section type) types)
+                         (shipit--imenu-get-heading section))))
+       (cond ((or (null heading) (string-empty-p heading)) inner)
+             (inner (list (cons heading
+                                (cons (cons heading (oref section start)) inner))))
+             (t (list (cons heading (oref section start)))))))
+   sections))
+
+(defun shipit--imenu-unfold-around-point ()
+  "Unfold each section that the section at point is in.
+This is for `imenu-after-jump-hook': imenu goes to an entry itself, and
+a folded section around the entry would hide where point is.  A buffer
+that leaves `imenu-default-goto-function' alone lets consult-imenu show
+an entry before it is chosen, which it does only for such a buffer."
+  (let ((section (magit-current-section)))
+    (while (setq section (oref section parent))
+      (when (oref section hidden)
+        (magit-section-show section)))))
+
 (provide 'shipit-sections)
 ;;; shipit-sections.el ends here

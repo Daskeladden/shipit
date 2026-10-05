@@ -59,7 +59,6 @@ shipit-issue-jira.el:shipit--api-request
 shipit-issue-jira.el:shipit--extract-username-from-email
 shipit-issue-jira.el:shipit-gh-etag--ensure-cache-loaded
 shipit-issue-jira.el:shipit-gh-etag--save-cache
-shipit-issues-buffer.el:shipit--find-section-by-type
 shipit-issues-buffer.el:shipit--get-repo-root
 shipit-issues-buffer.el:shipit-repo-buffer--insert-markdown-as-sections
 shipit-lib.el:shipit--debug-log

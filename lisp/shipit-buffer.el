@@ -602,6 +602,14 @@ The keys it shares with an issue buffer come from its parent,
 ;; which a map that was made before still has.
 (define-key shipit-mode-map (kbd "SPC") nil t)
 
+(defun shipit-buffer--directory-for (repo)
+  "The directory that a pull request buffer of REPO runs git in.
+A local clone of REPO when one is known, see `shipit--local-clone-of'.
+Else the repository here, or the current directory: a pull request of
+a repository without a clone still shows what the forge gives."
+  (or (shipit--local-clone-of repo)
+      (file-name-as-directory (or (shipit--get-repo-root) default-directory))))
+
 (defun shipit-buffer--rerender-general-comments ()
   "Draw the general comments of this pull request again, in the order set.
 They are drawn from what the buffer holds."
@@ -796,7 +804,7 @@ BACKEND-CONFIG, when non-nil, overrides `shipit-pr-backend-config'."
      (t
       (shipit--debug-log "Creating new shipit buffer: %s (backend: %s)" buffer-name (or backend-id "default"))
       (let ((buffer (generate-new-buffer buffer-name))
-            (repo-root (or (shipit--get-repo-root) default-directory)))
+            (repo-root (shipit-buffer--directory-for repo)))
         (with-current-buffer buffer
           (shipit-mode)
           ;; Set default-directory to repo root for git commands

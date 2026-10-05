@@ -215,6 +215,40 @@ editing `COMMIT_EDITMSG\=')."
         (puthash dir result shipit--repo-root-cache)
         result)))))
 
+;;; The local clone of a repository
+;;
+;; A pull request buffer can be opened from anywhere, for instance from
+;; the notifications buffer while the current directory is in another
+;; repository.  Its git commands belong in a clone of the repository of
+;; the pull request.  In another repository a fetch of one of its
+;; commits brings most of its history along, which takes minutes and
+;; leaves that history where it does not belong.
+
+(declare-function magit-list-repos "magit-repos" ())
+(declare-function project-known-project-roots "project" ())
+
+(defun shipit--known-repositories ()
+  "The local directories of the repositories that magit and project.el know."
+  (require 'project)
+  (seq-remove #'file-remote-p
+              (append (and (fboundp 'magit-list-repos) (magit-list-repos))
+                      (project-known-project-roots))))
+
+(defun shipit--clone-root (directory repo)
+  "The root of the working tree that DIRECTORY is in, when a clone of REPO.
+With a slash at its end.  Else nil."
+  (when (and (file-directory-p directory) (shipit--clone-of-p directory repo))
+    (let ((default-directory (file-name-as-directory directory)))
+      (when-let* ((root (shipit--get-repo-root)))
+        (file-name-as-directory root)))))
+
+(defun shipit--local-clone-of (repo)
+  "The root of a local clone of REPO, as owner/name, or nil when none is known.
+The repository of the current directory comes first, and then those
+that magit and project.el know, in their order."
+  (seq-some (lambda (directory) (shipit--clone-root directory repo))
+            (cons default-directory (shipit--known-repositories))))
+
 (defun shipit--get-current-repo ()
   "Get current repository from git remote origin.
 Returns the full repo name (owner/repo format), or nil if unable to determine."

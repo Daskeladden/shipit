@@ -638,6 +638,11 @@ hash, which is how the old side of the comparison gets here.  The
 remote is only looked up when something is actually missing."
   (let ((shas (list (car revisions) (cdr revisions))))
     (when (seq-remove #'shipit--sha-exists-locally-p shas)
+      ;; A fetch into another repository would bring most of the history
+      ;; of REPO along with the commit.
+      (unless (or (null repo) (shipit--clone-of-p default-directory repo))
+        (user-error "%s is no clone of %s, so its commits are not fetched here"
+                    (abbreviate-file-name default-directory) repo))
       (let ((missing (shipit--ensure-shas-local
                       shas (shipit--diff-remote-for repo))))
         (when missing

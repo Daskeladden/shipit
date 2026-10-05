@@ -492,6 +492,12 @@ repository that two remotes name is listed once."
    (delq nil (cons (shipit--get-repo-from-remote)
                    (mapcar #'shipit--parse-repo-from-url (shipit--remote-urls))))))
 
+(defun shipit--clone-of-p (directory repo)
+  "Whether the repository at DIRECTORY has a remote for REPO, as owner/name.
+A directory that is in no repository is a clone of nothing."
+  (let ((default-directory (file-name-as-directory directory)))
+    (and (member-ignore-case repo (shipit--repos-from-remotes)) t)))
+
 (defun shipit--buffer-repo-variable ()
   "The repository a buffer-local variable names, or nil.
 Each kind of shipit buffer records what it is about in its own

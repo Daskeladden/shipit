@@ -186,15 +186,22 @@ THEN the error names that revision rather than the whole comparison."
     (should (string-match-p "aaaaaaaaaaaa" raised))))
 
 (ert-deftest test-sdep-fetch-uses-the-remote-the-backend-names ()
-  "GIVEN a comparison in a repository that is not necessarily `origin\='
+  "GIVEN a comparison in a clone whose remote for the repository is not
+`origin\='
 WHEN a missing revision is fetched
 THEN the remote comes from the backend instead of being assumed."
   (let ((remotes nil)
-        (shipit-pr-backend 'github))
-    (cl-letf (((symbol-function 'shipit--sha-exists-locally-p) (lambda (_) nil))
-              ((symbol-function 'shipit--fetch-sha)
-               (lambda (_sha &optional remote) (push remote remotes) t)))
-      (ignore-errors (shipit--ensure-diff-revisions '("aaa" . "bbb") "o/r")))
+        (shipit-pr-backend 'github)
+        (default-directory (file-name-as-directory (make-temp-file "shipit-sdep-" t))))
+    (unwind-protect
+        (progn
+          (call-process "git" nil nil nil "init" "-q")
+          (call-process "git" nil nil nil "remote" "add" "upstream" "git@github.com:o/r.git")
+          (cl-letf (((symbol-function 'shipit--sha-exists-locally-p) (lambda (_) nil))
+                    ((symbol-function 'shipit--fetch-sha)
+                     (lambda (_sha &optional remote) (push remote remotes) t)))
+            (ignore-errors (shipit--ensure-diff-revisions '("aaa" . "bbb") "o/r"))))
+      (delete-directory default-directory t))
     (should (equal (car (last remotes)) "https://github.com/o/r.git"))))
 
 (ert-deftest test-sdep-difftastic-fetches-before-diffing ()

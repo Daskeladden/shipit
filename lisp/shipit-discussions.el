@@ -161,7 +161,7 @@ Populates LOOKUP-TABLE and returns a list of candidate strings."
   (let* ((repo-arg (cl-find-if
                     (lambda (a) (string-prefix-p "--repo=" a)) args))
          (repo (or (and repo-arg (substring repo-arg 7))
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (search-args (cl-remove-if
                        (lambda (a) (string-prefix-p "--repo=" a)) args)))
     (if repo
@@ -172,7 +172,7 @@ Populates LOOKUP-TABLE and returns a list of candidate strings."
 (defun shipit-discussions--quick-search ()
   "Quick search for discussions in the current repository."
   (interactive)
-  (let* ((repo (shipit--get-repo-from-remote))
+  (let* ((repo (shipit--repo-for-buffer))
          (args '("--limit=50")))
     (if repo
         (shipit-discussions--display-search-results repo args)
@@ -183,7 +183,7 @@ Populates LOOKUP-TABLE and returns a list of candidate strings."
 (defun shipit-discussions--read-category (_prompt _initial-input _history)
   "Read a discussion category with completion.
 Fetches categories from the current repo's GraphQL API."
-  (let* ((repo (or (ignore-errors (shipit--get-repo-from-remote)) ""))
+  (let* ((repo (or (ignore-errors (shipit--repo-for-buffer)) ""))
          (categories (when (not (string-empty-p repo))
                        (condition-case nil
                            (shipit-discussion--fetch-categories repo)
@@ -205,7 +205,7 @@ Fetches categories from the current repo's GraphQL API."
 (defun shipit-create-discussion ()
   "Create a new GitHub Discussion."
   (interactive)
-  (let ((repo (shipit--get-repo-from-remote)))
+  (let ((repo (shipit--repo-for-buffer)))
     (unless repo
       (user-error "Could not determine repository from remote"))
     (shipit-editor-open

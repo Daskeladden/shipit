@@ -189,7 +189,7 @@ the list to that name is deterministic, leaving the user to pick
 the actual run.
 Creates or reuses a buffer named *shipit-actions: REPO*."
   (interactive
-   (list (or (ignore-errors (shipit--get-repo-from-remote))
+   (list (or (shipit--repo-for-buffer)
              (read-string "Repository (owner/name): "))))
   (let* ((buf-name (format "*shipit-actions: %s*" repo))
          (existing (get-buffer buf-name)))

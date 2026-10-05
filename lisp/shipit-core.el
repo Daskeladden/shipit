@@ -465,7 +465,10 @@ working directory.")
 (defun shipit--get-repo-from-remote ()
   "Extract repository owner/name from git remote URL.
 Cached per `default-directory'; the remote URL doesn\='t change
-during a session."
+during a session.
+
+This says what the directory is a checkout of.  The repository that
+the user looks at can be another one: ask `shipit--repo-for-buffer'."
   (let* ((dir (or default-directory ""))
          (cached (gethash dir shipit--repo-from-remote-cache 'shipit--miss)))
     (cond
@@ -498,24 +501,49 @@ A directory that is in no repository is a clone of nothing."
   (let ((default-directory (file-name-as-directory directory)))
     (and (member-ignore-case repo (shipit--repos-from-remotes)) t)))
 
+(defconst shipit--buffer-repo-variables
+  '(shipit-buffer-repo
+    shipit-issue-buffer-repo
+    shipit-preview--repo
+    shipit-stacked-preview--repo
+    shipit-actions--repo
+    shipit-actions-list--repo
+    shipit-actions-timeline--repo
+    shipit-repo-buffer-repo
+    shipit-discussion-buffer-repo
+    shipit-releases-buffer-repo
+    shipit-commit-comments--repo
+    shipit-issue-create--repo
+    shipit-editor--repo
+    shipit-atlassian-dashboard--repo
+    shipit-atlassian-kanban--repo)
+  "The buffer variables that name the repository a shipit page is about.
+Each kind of page records it in its own variable; there is no single
+one they share.  A new kind of page must add its variable here, or a
+command asked from it is about the repository of the directory.")
+
 (defun shipit--buffer-repo-variable ()
   "The repository a buffer-local variable names, or nil.
-Each kind of shipit buffer records what it is about in its own
-variable; there is no single one they share."
+See `shipit--buffer-repo-variables'."
   (seq-some (lambda (variable)
               (and (boundp variable) (symbol-value variable)))
-            '(shipit-buffer-repo shipit-issue-buffer-repo
-              shipit-preview--repo shipit-stacked-preview--repo
-              shipit-actions--repo)))
+            shipit--buffer-repo-variables))
 
 (defun shipit--repo-for-buffer ()
   "Return the repository this buffer is about, or the directory\='s.
-A row names its repository most precisely, then the buffer; only when
-neither says anything does the directory\='s git remote answer.  A
-buffer\='s directory is wherever Emacs happened to be, which for
-shipit\='s own buffers has nothing to do with what they show."
+A row names its repository most precisely.  Then the buffer does: a
+page by its own variable, a diff that shipit made by the pull request
+it is of.  Only when none says anything does the directory\='s git
+remote answer.  A buffer\='s directory is wherever Emacs happened to
+be, which for shipit\='s own buffers has nothing to do with what they
+show.
+
+This is what code asks that means the repository the user looks at.
+`shipit--get-repo-from-remote' is for code that means the directory:
+its branch, its worktrees, whether it is a checkout of a repository."
   (or (get-text-property (point) 'shipit-repo)
       (shipit--buffer-repo-variable)
+      (cdr shipit--diff-pr-context)
       (ignore-errors (shipit--get-repo-from-remote))))
 
 (defun shipit--upstream-default-branch ()
@@ -836,17 +864,16 @@ Cached per `default-directory'."
 
 (defun shipit--ensure-repository ()
   "Ensure shipit-current-repo is set.
-In a shipit buffer, uses the buffer's repo (shipit-buffer-repo).
+On a shipit page, uses the repository of the page; see
+`shipit--buffer-repo-variables'.
 Otherwise, detects from current directory's git remote.
 Returns the repository string or nil if it cannot be determined."
   (shipit--debug-log "🔍 Repository detection - current dir: %s, current repo: %s, buffer-repo: %s"
                      default-directory shipit-current-repo
-                     (if (boundp 'shipit-buffer-repo) shipit-buffer-repo "unbound"))
+                     (shipit--buffer-repo-variable))
 
-  ;; In a shipit buffer, use the buffer's repo - this is authoritative
-  ;; Check both PR buffers (shipit-buffer-repo) and issue buffers (shipit-issue-buffer-repo)
-  (let ((buffer-repo (or (and (boundp 'shipit-buffer-repo) shipit-buffer-repo)
-                         (and (boundp 'shipit-issue-buffer-repo) shipit-issue-buffer-repo))))
+  ;; On a shipit page, the repository of the page is authoritative
+  (let ((buffer-repo (shipit--buffer-repo-variable)))
     (if buffer-repo
         (progn
           (unless (string= buffer-repo shipit-current-repo)

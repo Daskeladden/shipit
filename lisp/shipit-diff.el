@@ -32,7 +32,6 @@
 (declare-function magit-get-current-branch "magit-git")
 (declare-function magit-current-section "magit-section")
 (declare-function shipit--try-overlay-action-at-point "shipit-render")
-(declare-function shipit--get-repo-from-remote "shipit-core")
 (declare-function shipit--in-shipit-context-p "shipit-core")
 (declare-function shipit--get-current-pr-data "shipit-http")
 (declare-function shipit-gh-etag-get-json-with-refresh-cache "shipit-gh-etag")
@@ -51,7 +50,6 @@
 (declare-function shipit--format-label "shipit-pr-sections")
 (declare-function magit-current-section "magit-section")
 (declare-function magit-section-hide "magit-section")
-(declare-function shipit--get-repo-from-remote "shipit-http")
 (declare-function magit-get-current-branch "magit-git")
 (declare-function shipit--get-worktree-status "shipit-worktree")
 (declare-function shipit--find-worktree-for-pr "shipit-worktree")
@@ -767,9 +765,7 @@ Uses worktree git context if available for blob navigation (n/p)."
          ;; Get PR context from buffer or text properties for worktree lookup
          (pr-number (or (get-text-property (point) 'shipit-pr-number)
                         (bound-and-true-p shipit-buffer-pr-number)))
-         (pr-repo (or (get-text-property (point) 'shipit-repo)
-                      (bound-and-true-p shipit-buffer-repo)
-                      (shipit--get-repo-from-remote)))
+         (pr-repo (shipit--repo-for-buffer))
          ;; Find worktree if available for git context
          (worktree-path (when (and pr-number pr-repo
                                    (fboundp 'shipit--find-worktree-for-pr))

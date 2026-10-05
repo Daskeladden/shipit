@@ -351,8 +351,8 @@ A repository with an issue backend of its own is read through that one;
 see `shipit-issue--backend-of-buffer-for'."
   (interactive
    (list (read-number "Issue number: ")
-         (shipit--get-repo-from-remote)))
-  (let* ((repo (or repo (shipit--get-repo-from-remote)))
+         (shipit--repo-for-buffer)))
+  (let* ((repo (or repo (shipit--repo-for-buffer)))
          (backend (shipit-issue--backend-of-buffer-for repo backend-id backend-config))
          (backend-id (car backend))
          (backend-config (cdr backend))

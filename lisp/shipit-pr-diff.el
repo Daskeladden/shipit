@@ -1277,7 +1277,7 @@ If IS-INLINE is non-nil, treats comment as an inline comment for proper reaction
   (when (and (derived-mode-p 'magit-revision-mode)
              (boundp 'magit-buffer-revision)
              magit-buffer-revision)
-    (let* ((repo (shipit--get-repo-from-remote))
+    (let* ((repo (shipit--repo-for-buffer))
            (pr-data (when (car-safe shipit--current-displayed-pr)
                       (let ((displayed-pr-number (car shipit--current-displayed-pr)))
                         (shipit-get-pull-request displayed-pr-number))))
@@ -1382,7 +1382,7 @@ FORCE indicates whether to force display even if already shown."
   (when (or (derived-mode-p 'magit-diff-mode 'magit-revision-mode)
             (and (buffer-name) (string-match-p "magit-diff\\|magit-revision" (buffer-name))))
 
-    (let* ((repo (shipit--get-repo-from-remote))
+    (let* ((repo (shipit--repo-for-buffer))
            (branch (when (fboundp 'magit-get-current-branch) (magit-get-current-branch)))
            (current-pr (when (and repo branch) (shipit--get-current-pr-data branch repo))))
 
@@ -1434,7 +1434,7 @@ FORCE indicates whether to force display even if already shown."
                               'shipit-comment-body body
                               'shipit-file-path file-path
                               'shipit-line-number line
-                              'shipit-repo (shipit--get-repo-from-remote)
+                              'shipit-repo (shipit--repo-for-buffer)
                               'shipit-pr-number (when (and shipit--current-displayed-pr (listp shipit--current-displayed-pr))
                                                   (car shipit--current-displayed-pr))))
           (insert "\n"))))))
@@ -1508,7 +1508,7 @@ DIFF-HUNK provides context. Return t if found and point is positioned correctly.
                             (define-key map (kbd "M-;")
                                         (lambda ()
                                           (interactive)
-                                          (shipit--simple-comment-dialog pr-number (shipit--get-repo-from-remote))))
+                                          (shipit--simple-comment-dialog pr-number (shipit--repo-for-buffer))))
                             (when shipit-enable-mouse-navigation
                               (define-key map [mouse-1]
                                           `(lambda (event)
@@ -1542,7 +1542,7 @@ DIFF-HUNK provides context. Return t if found and point is positioned correctly.
                                                        'shipit-comment-body (shipit--clean-text (or (cdr (assq 'body comment)) ""))
                                                        'shipit-file-path (cdr (assq 'path comment))
                                                        'shipit-line-number (or (cdr (assq 'line comment)) 0)
-                                                       'shipit-repo (shipit--get-repo-from-remote)
+                                                       'shipit-repo (shipit--repo-for-buffer)
                                                        'shipit-pr-number pr-number
                                                        'keymap comment-keymap
                                                        'local-map comment-keymap)))
@@ -1566,7 +1566,7 @@ DIFF-HUNK provides context. Return t if found and point is positioned correctly.
                   (let ((body-indent (if (> actual-depth 0)
                                          (+ 3 (* (1- actual-depth) 6) 6) ; 3 base + depth offset + "└─ " width
                                        3)))
-                    (shipit--insert-comment-body-only comment body-indent comment-keymap (cdr (assq 'path comment)) (shipit--get-repo-from-remote) pr-number (or (cdr (assq 'line comment)) 0)))
+                    (shipit--insert-comment-body-only comment body-indent comment-keymap (cdr (assq 'path comment)) (shipit--repo-for-buffer) pr-number (or (cdr (assq 'line comment)) 0)))
 
                   ;; Insert reactions with proper indentation (always shows with placeholder)
                   (let ((reactions (shipit--format-comment-reactions comment t)))
@@ -1586,7 +1586,7 @@ DIFF-HUNK provides context. Return t if found and point is positioned correctly.
                                                                   shipit-comment-body ,(shipit--clean-text (or (cdr (assq 'body comment)) ""))
                                                                   shipit-file-path ,(cdr (assq 'path comment))
                                                                   shipit-line-number ,(or (cdr (assq 'line comment)) 0)
-                                                                  shipit-repo ,(shipit--get-repo-from-remote)
+                                                                  shipit-repo ,(shipit--repo-for-buffer)
                                                                   shipit-pr-number ,pr-number
                                                                   keymap ,comment-keymap
                                                                   local-map ,comment-keymap))))))
@@ -1600,7 +1600,7 @@ DIFF-HUNK provides context. Return t if found and point is positioned correctly.
                                                           shipit-comment-body ,(shipit--clean-text (or (cdr (assq 'body comment)) ""))
                                                           shipit-file-path ,(cdr (assq 'path comment))
                                                           shipit-line-number ,(or (cdr (assq 'line comment)) 0)
-                                                          shipit-repo ,(shipit--get-repo-from-remote)
+                                                          shipit-repo ,(shipit--repo-for-buffer)
                                                           shipit-pr-number ,pr-number
                                                           keymap ,comment-keymap
                                                           local-map ,comment-keymap))))
@@ -1953,7 +1953,7 @@ For PR files, shows PR diff with comments."
                         (bound-and-true-p shipit-buffer-pr-number)))
          (repo (or (get-text-property (point) 'shipit-repo)
                    (bound-and-true-p shipit-buffer-repo)
-                   (shipit--get-repo-from-remote))))
+                   (shipit--repo-for-buffer))))
     (cond
      ;; File with PR context available - show PR diff with comments
      ((and file-path pr-number repo)
@@ -2317,7 +2317,7 @@ fetched."
                         (bound-and-true-p shipit-buffer-pr-number)))
          (repo (or (get-text-property (point) 'shipit-repo)
                    (bound-and-true-p shipit-buffer-repo)
-                   (shipit--get-repo-from-remote))))
+                   (shipit--repo-for-buffer))))
     (cond
      ((not file-path)
       (user-error "No file at point"))

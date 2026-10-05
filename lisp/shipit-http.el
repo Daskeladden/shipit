@@ -4181,7 +4181,7 @@ FILE-PATH is used for targeted section refresh when deleting inline/file-level c
 
   (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
                    (cadr shipit--current-displayed-pr)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved)))
@@ -4289,7 +4289,7 @@ FILE-PATH is used for targeted section refresh when deleting inline/file-level c
   (let* ((displayed-pr-number (car-safe shipit--current-displayed-pr))
          (displayed-repo (cadr shipit--current-displayed-pr))
          (repo (or (bound-and-true-p shipit-buffer-repo)
-                   displayed-repo (shipit--get-repo-from-remote)))
+                   displayed-repo (shipit--repo-for-buffer)))
          (resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
@@ -4306,7 +4306,7 @@ If FILE-PATH is provided, uses targeted section refresh for better performance.
 Otherwise, falls back to full PR buffer refresh."
   (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
                    (cadr shipit--current-displayed-pr)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved)))
@@ -4375,7 +4375,7 @@ Otherwise, falls back to full PR buffer refresh."
 If SKIP-REFRESH is non-nil, don't trigger buffer refresh (for editor with live preview)."
   (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
                    (cadr shipit--current-displayed-pr)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved)))
@@ -4436,7 +4436,7 @@ Uses discussion_id from cache for GitLab, or comment ID for GitHub.
 If SKIP-REFRESH is non-nil, don't trigger buffer refresh (for editor with live preview)."
   (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
                    (cadr shipit--current-displayed-pr)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved)))
@@ -4498,7 +4498,7 @@ or falls back to the current git remote.
 OLD-LINE-NUMBER is the line in the old version (for context/deleted lines on GitLab)."
   (let* ((repo (or repo
                    (cadr shipit--current-displayed-pr)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved)))
@@ -4561,7 +4561,7 @@ Otherwise, use issues comments endpoint for general comments."
 
   (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
                    (cadr shipit--current-displayed-pr)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (resolved (shipit-comment--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
@@ -4623,7 +4623,7 @@ Otherwise, use issues comments endpoint for general comments."
   "Edit PR description for PR-NUMBER to have NEW-BODY text."
   (let* ((repo (or (bound-and-true-p shipit-buffer-repo)
                    (cadr shipit--current-displayed-pr)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved)))
@@ -5979,7 +5979,7 @@ comments are now cleared automatically during magit refresh."
                               'shipit-comment-body (shipit--clean-text (or body ""))
                               'shipit-file-path (cdr (assq 'path comment))
                               'shipit-line-number (cdr (assq 'line comment))
-                              'shipit-repo (shipit--get-repo-from-remote)
+                              'shipit-repo (shipit--repo-for-buffer)
                               'shipit-pr-number (when (and shipit--current-displayed-pr (listp shipit--current-displayed-pr))
                                                   (car shipit--current-displayed-pr))))
           ;; Apply blockquote faces to preserve markdown styling
@@ -5999,7 +5999,7 @@ comments are now cleared automatically during magit refresh."
                                 'shipit-comment-body (shipit--clean-text (or body ""))
                                 'shipit-file-path (cdr (assq 'path comment))
                                 'shipit-line-number (cdr (assq 'line comment))
-                                'shipit-repo (shipit--get-repo-from-remote)
+                                'shipit-repo (shipit--repo-for-buffer)
                                 'shipit-pr-number (when (and shipit--current-displayed-pr (listp shipit--current-displayed-pr))
                                                     (car shipit--current-displayed-pr))))))))
 
@@ -6401,7 +6401,7 @@ description / comment renders) hit this fast path."
   "Get inline comments for FILE-PATH in pull request PR-NUMBER with caching.
 Dispatches fetch to the active comment backend's :fetch-inline-comments."
   (let* ((cache-key (format "%s:%s" pr-number file-path))
-         (repo (shipit--get-repo-from-remote))
+         (repo (shipit--repo-for-buffer))
          (cached-comments (gethash cache-key shipit--comment-cache)))
 
     ;; Return cached comments if available

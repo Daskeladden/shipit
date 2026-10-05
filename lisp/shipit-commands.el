@@ -684,7 +684,7 @@ backend for plain \"owner/repo\"."
   (let* ((repo-arg (seq-find (lambda (a) (string-prefix-p "--repo=" a)) args))
          (repo-raw (if repo-arg
                        (substring repo-arg 7)
-                     (shipit--get-repo-from-remote)))
+                     (shipit--repo-for-buffer)))
          (parsed (if repo-raw (shipit--parse-repo-arg repo-raw)))
          (backend-id (car parsed))
          (repo (cdr parsed))
@@ -756,7 +756,7 @@ Returns list of strings in org/team-slug format, cached after first call."
   (or shipit--cached-user-teams
       (condition-case err
           (let* ((resolved (shipit-pr--resolve-for-repo
-                            (or (shipit--get-repo-from-remote) "")))
+                            (or (shipit--repo-for-buffer) "")))
                  (backend (car resolved))
                  (config (cdr resolved))
                  (fetch-fn (plist-get backend :fetch-user-teams)))
@@ -1611,7 +1611,7 @@ Tries multiple data sources: completion table, then cache."
 (defun shipit--embark-pr-url (candidate)
   "Get URL for PR CANDIDATE via backend dispatch."
   (let ((pr-number (shipit--extract-pr-number-from-candidate candidate))
-        (repo (or shipit--embark-pr-repo (shipit--get-repo-from-remote))))
+        (repo (or shipit--embark-pr-repo (shipit--repo-for-buffer))))
     (when (and pr-number repo)
       (let* ((resolved (shipit-pr--resolve-for-repo repo))
              (backend (car resolved))
@@ -1652,7 +1652,7 @@ Tries multiple data sources: completion table, then cache."
   "Open PR CANDIDATE in shipit buffer."
   (interactive "sCandidate: ")
   (let ((pr-number (shipit--extract-pr-number-from-candidate candidate))
-        (repo (or shipit--embark-pr-repo (shipit--get-repo-from-remote))))
+        (repo (or shipit--embark-pr-repo (shipit--repo-for-buffer))))
     (if (and pr-number repo)
         (shipit-open-pr-buffer pr-number repo)
       (message "Could not determine PR"))))

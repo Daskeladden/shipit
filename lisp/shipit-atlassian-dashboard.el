@@ -656,7 +656,7 @@ driven by another backend.  Returns the buffer."
 (defun shipit-atlassian-dashboard ()
   "Open the Atlassian/Jira project dashboard for the current repository."
   (interactive)
-  (let ((repo (shipit--get-repo-from-remote)))
+  (let ((repo (shipit--repo-for-buffer)))
     (unless repo
       (error "Could not detect repository from git remote"))
     (shipit-atlassian-dashboard--open repo)))
@@ -2010,7 +2010,7 @@ Only records visits for Jira issues (string keys like PROJ-123)."
     (when (and (stringp issue-number)
                (string-match-p "\\`[A-Z][A-Z0-9]*-[0-9]+" issue-number))
       (condition-case nil
-          (let* ((repo (or (car args) (shipit--get-repo-from-remote)))
+          (let* ((repo (or (car args) (shipit--repo-for-buffer)))
                  (buf-name (shipit-issue-buffer-name repo issue-number)))
             (when-let* ((buf (get-buffer buf-name)))
               (with-current-buffer buf

@@ -726,7 +726,7 @@ Without prefix, uses `browse-url' default behavior."
          (repo (or (get-text-property (point) 'shipit-repo)
                    (and (boundp 'shipit--current-repo)
                         shipit--current-repo)
-                   (shipit--get-repo-from-remote))))
+                   (shipit--repo-for-buffer))))
     ;; If still no PR number, try to get from current branch
     (unless pr-number
       (when repo

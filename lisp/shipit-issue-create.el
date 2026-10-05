@@ -602,10 +602,9 @@ Includes only fields that have values set."
 ;;;###autoload
 (defun shipit-issue-create-buffer (&optional repo-override prefill)
   "Open a rich issue creation buffer.
-REPO-OVERRIDE lets callers pass the repository explicitly, bypassing
-`shipit--get-repo-from-remote'.  Useful when the calling buffer already
-knows the repo (e.g. a shipit PR buffer) and the remote detection would
-return the wrong context.
+REPO-OVERRIDE lets callers pass the repository explicitly.  Without
+it the repository is that of the buffer the command is asked from; see
+`shipit--repo-for-buffer'.
 
 PREFILL, when supplied, is a plist whose values override draft
 restoration and backend defaults so an upstream command can seed
@@ -615,7 +614,7 @@ plist are ignored; non-nil values win over any pre-existing
 draft / default value, so the user does not have to dismiss a
 stale draft first."
   (interactive)
-  (let* ((repo (or repo-override (shipit--get-repo-from-remote)))
+  (let* ((repo (or repo-override (shipit--repo-for-buffer)))
          (_ (unless repo (user-error "Could not determine repository from remote")))
          (resolved (shipit-issue--resolve-for-repo repo))
          (backend-plist (car resolved))

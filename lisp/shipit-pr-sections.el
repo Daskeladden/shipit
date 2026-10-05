@@ -1043,7 +1043,7 @@ Returns (start . end) cons cell or nil if not in a shipit region."
   (let* ((labels (cdr (assq 'labels pr-data)))
          (label-count (if labels (length labels) 0))
          (pr-number (cdr (assq 'number pr-data)))
-         (repo (or repo (shipit--get-repo-from-remote))))
+         (repo (or repo (shipit--repo-for-buffer))))
     (magit-insert-section (labels nil t)
       (let ((heading-start (point)))
         (magit-insert-heading (format "%s Labels (%d)" (shipit--get-label-icon "🏷") label-count))
@@ -5266,7 +5266,7 @@ FILE-PATCH is the patch text from GitHub API.
 FILENAME is the file path.
 Optional COMMIT-SHA filters inline comments to those made on that commit."
   (let ((start-pos (point))
-        (repo (shipit--get-repo-from-remote))
+        (repo (shipit--repo-for-buffer))
         (pr-number (when (and (boundp 'shipit--current-displayed-pr)
                               shipit--current-displayed-pr
                               (listp shipit--current-displayed-pr))

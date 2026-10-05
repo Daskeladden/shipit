@@ -207,8 +207,8 @@ Provides a read-only interface for viewing GitHub Discussions.
   "Open dedicated buffer for discussion NUMBER in REPO."
   (interactive
    (list (read-number "Discussion number: ")
-         (shipit--get-repo-from-remote)))
-  (let* ((repo (or repo (shipit--get-repo-from-remote)))
+         (shipit--repo-for-buffer)))
+  (let* ((repo (or repo (shipit--repo-for-buffer)))
          (buffer-name (shipit-discussion-buffer-name repo number))
          (existing (get-buffer buffer-name)))
     (cond

@@ -3871,7 +3871,7 @@ renders into the PR buffer\='s comment section."
            (cdr (assq 'full_name
                       (cdr (assq 'repo
                                  (cdr (assq 'base shipit-review--pr-data)))))))
-      (shipit--get-repo-from-remote)))
+      (shipit--repo-for-buffer)))
 
 (defun shipit-review--inline-comments-at-line (line)
   "Return inline comments in the source file whose `line' equals LINE."

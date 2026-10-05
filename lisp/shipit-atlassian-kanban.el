@@ -76,7 +76,6 @@
 (declare-function shipit-issue--insert-description-section "shipit-issues-buffer")
 (declare-function shipit-issue--insert-activity-section "shipit-issues-buffer")
 (declare-function shipit-issues--fetch-issue "shipit-issues")
-(declare-function shipit--get-repo-from-remote "shipit-core")
 (declare-function shipit-issue-jira--fetch-myself "shipit-issue-jira")
 (declare-function consult--read "consult")
 (declare-function consult--prompt "consult")
@@ -3111,7 +3110,7 @@ Needs Emacs 32 and canvas-diagram.  Without them
   (shipit-atlassian-kanban--require-canvas)
   (unless (or board-id shipit-atlassian-board-ids)
     (user-error "No Jira boards configured; set `shipit-atlassian-board-ids'"))
-  (let* ((repo (or (shipit--get-repo-from-remote)
+  (let* ((repo (or (shipit--repo-for-buffer)
                    (user-error "Could not detect repository from git remote")))
          (config (cdr (shipit-issue--resolve-for-repo repo))))
     (if board-id

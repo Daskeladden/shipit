@@ -777,8 +777,8 @@ BACKEND-ID, when non-nil, overrides `shipit-pr-backend' for this buffer.
 BACKEND-CONFIG, when non-nil, overrides `shipit-pr-backend-config'."
   (interactive
    (list (read-number "PR number: ")
-         (shipit--get-repo-from-remote)))
-  (let* ((repo (or repo (shipit--get-repo-from-remote)))
+         (shipit--repo-for-buffer)))
+  (let* ((repo (or repo (shipit--repo-for-buffer)))
          (buffer-name (shipit-buffer-name repo pr-number))
          (existing-buffer (get-buffer buffer-name)))
 

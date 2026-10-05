@@ -395,17 +395,17 @@ THEN it returns nil."
 (ert-deftest test-shipit-create-issue-opens-rich-buffer ()
   "GIVEN a backend with :creation-fields
 WHEN calling shipit-create-issue
-THEN it opens the rich creation buffer."
+THEN it opens the rich creation buffer for the repository."
   (let ((rich-buffer-opened nil))
     (cl-letf (((symbol-function 'shipit--get-repo-from-remote)
                (lambda () "owner/repo"))
               ((symbol-function 'shipit-issue-create-buffer)
-               (lambda () (setq rich-buffer-opened t))))
+               (lambda (repo) (setq rich-buffer-opened repo))))
       (let ((shipit-issue-backend 'github)
             (shipit-issue-backend-config nil)
             (shipit-issue-repo-backends nil))
         (shipit-create-issue)
-        (should rich-buffer-opened)))))
+        (should (equal "owner/repo" rich-buffer-opened))))))
 
 (ert-deftest test-shipit-create-issue-falls-back-to-editor ()
   "GIVEN a backend WITHOUT :creation-fields

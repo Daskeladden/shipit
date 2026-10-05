@@ -253,7 +253,7 @@ IS-INLINE-COMMENT indicates if this was an inline comment operation."
     (setq shipit--cached-inline-comments nil
           shipit--inline-comments-fetched nil)
     ;; Clear the per-file comment cache for all files in this PR
-    (let* ((repo (shipit--get-repo-from-remote))
+    (let* ((repo (shipit--repo-for-buffer))
            (pr-data (when (car-safe shipit--current-displayed-pr)
                       (shipit-get-pull-request (car shipit--current-displayed-pr))))
            (pr-number (when pr-data (cdr (assq 'number pr-data)))))
@@ -776,7 +776,7 @@ Uses the new shipit-editor with live preview and PR reference completion."
   "Update title of PR-NUMBER to NEW-TITLE via backend dispatch.
 REPO defaults to the current displayed PR's repo."
   (let* ((repo (or repo (cadr shipit--current-displayed-pr)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
@@ -1151,7 +1151,7 @@ Dispatches to the active PR backend's :remove-reviewer."
   "Get the author login of the comment at current point by finding it in cached comments."
   (let* ((comment-id (get-text-property (point) 'shipit-comment-id))
          (pr-number (car-safe shipit--current-displayed-pr))
-         (repo (shipit--get-repo-from-remote)))
+         (repo (shipit--repo-for-buffer)))
     (when (and comment-id pr-number repo)
       ;; Look in inline comments first
       (let ((inline-author (shipit--find-comment-author-in-cache comment-id shipit--cached-inline-comments)))
@@ -1182,7 +1182,7 @@ Dispatches to the active PR backend's :remove-reviewer."
   "Mark the thread containing COMMENT-ID as resolved using GitHub API."
   ;; This would need to use GitHub's GraphQL API to resolve threads
   ;; For now, we'll provide a basic implementation that can be enhanced
-  (let* ((repo (shipit--get-repo-from-remote))
+  (let* ((repo (shipit--repo-for-buffer))
          (pr-number (car-safe shipit--current-displayed-pr)))
     (when (and repo pr-number)
       ;; GitHub's thread resolution requires GraphQL API
@@ -1333,7 +1333,7 @@ Returns 0 if not found."
          (comment-type (get-text-property (point) 'shipit-comment-type))
          (review-state (get-text-property (point) 'shipit-review-state))
          (repo (or (bound-and-true-p shipit-buffer-repo)
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (pr-number (or (bound-and-true-p shipit-buffer-pr-number)
                         (when (car-safe shipit--current-displayed-pr)
                           (car shipit--current-displayed-pr))))
@@ -1768,7 +1768,7 @@ there too does not win just because its file loaded later."
     (t
      (let ((pr-number (or (car-safe shipit--current-displayed-pr)
                           (user-error "No PR context available in diff mode")))
-           (repo (shipit--get-repo-from-remote)))
+           (repo (shipit--repo-for-buffer)))
        (if repo
            (shipit--simple-comment-dialog pr-number repo)
          (user-error "Cannot determine repository from git remote")))))))

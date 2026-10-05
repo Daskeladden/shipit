@@ -44,7 +44,6 @@
 (defvar shipit-code-block-detect-shebang)
 
 ;; Forward declarations for functions from other modules
-(declare-function shipit--get-repo-from-remote "shipit-core")
 (declare-function shipit--browse-pr-url "shipit-notifications")
 (declare-function shipit--browse-issue-url "shipit-notifications")
 (declare-function shipit--is-comment-unread-p "shipit-core")
@@ -3821,7 +3820,7 @@ BODY-START and BODY-END define the region to search."
   "Open USERNAME's profile in browser via the active PR backend."
   (let* ((resolved (shipit-pr--resolve-for-repo
                     (or (bound-and-true-p shipit-current-repo)
-                        (shipit--get-repo-from-remote))))
+                        (shipit--repo-for-buffer))))
          (backend (car resolved))
          (config (cdr resolved))
          (fn (plist-get backend :browse-user-url)))
@@ -3883,7 +3882,7 @@ BODY-START and BODY-END define the region to search."
                              (keymap (make-sparse-keymap))
                              (id-copy matched-text)
                              (url-copy url)
-                             (repo-copy (shipit--get-repo-from-remote)))
+                             (repo-copy (shipit--repo-for-buffer)))
                         (set-keymap-parent keymap (current-local-map))
                         (define-key keymap (kbd "RET")
                           (lambda ()

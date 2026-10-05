@@ -2364,7 +2364,7 @@ ACCOUNT-ID, when non-nil, is used for exact Jira user matching in searches."
 (defun shipit--jira-mention-search-issues (display-name role &optional account-id)
   "Search for issues where DISPLAY-NAME is ROLE (assignee or reporter).
 When ACCOUNT-ID is non-nil, use it for exact Jira user matching."
-  (let ((repo (shipit--get-repo-from-remote))
+  (let ((repo (shipit--repo-for-buffer))
         (role-arg (if account-id
                       (format "--%s-id=%s"
                               (if (string= role "reporter") "author" role)

@@ -624,7 +624,7 @@ the user types."
 Candidates come from the current repo, GitHub watched repos,
 `shipit-issue-subscribed-repos', and `shipit-issue-repo-backends'.
 Free-form input is also accepted."
-  (let* ((current (ignore-errors (shipit--get-repo-from-remote)))
+  (let* ((current (ignore-errors (shipit--repo-for-buffer)))
          (watched (shipit-issues--fetch-watched-repos))
          (subscribed (copy-sequence shipit-issue-subscribed-repos))
          (backend-repos (cl-remove-if
@@ -645,7 +645,7 @@ Free-form input is also accepted."
   (shipit--debug-log "Advanced issue search raw args: %S" args)
   (let* ((repo-arg (cl-find-if (lambda (a) (string-prefix-p "--repo=" a)) args))
          (repo (or (and repo-arg (substring repo-arg 7))
-                   (shipit--get-repo-from-remote)))
+                   (shipit--repo-for-buffer)))
          (search-args (cl-remove-if (lambda (a) (string-prefix-p "--repo=" a)) args)))
     (if repo
         (shipit-issues--display-search-results repo search-args)
@@ -655,7 +655,7 @@ Free-form input is also accepted."
 (defun shipit-issues--quick-search ()
   "Quick search for issues in the current repository."
   (interactive)
-  (let* ((repo (shipit--get-repo-from-remote))
+  (let* ((repo (shipit--repo-for-buffer))
          (args '("--limit=100" "--sort=created")))
     (if repo
         (shipit-issues--display-search-results repo args)
@@ -671,13 +671,13 @@ Free-form input is also accepted."
 When the backend supports rich creation fields, opens a section-based
 creation buffer.  Otherwise falls back to the plain-text editor."
   (interactive)
-  (let ((repo (shipit--get-repo-from-remote)))
+  (let ((repo (shipit--repo-for-buffer)))
     (unless repo
       (user-error "Could not determine repository from remote"))
     (let* ((resolved (shipit-issue--resolve-for-repo repo))
            (backend (car resolved)))
       (if (plist-get backend :creation-fields)
-          (shipit-issue-create-buffer)
+          (shipit-issue-create-buffer repo)
         (shipit-editor-open
          (list :type 'create-issue
                :repo repo))))))

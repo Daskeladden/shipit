@@ -177,6 +177,8 @@ Another package can put a notification among those of shipit. It then stands in 
  :open (lambda () (my-show-the-mail)))  ; or :url, an address for a browser
 ```
 
+No server holds such a notification, so shipit keeps the newest ones that were read itself, for the session. The notifications buffer shows them when it shows all notifications and not only the unread. `shipit-external-read-limit` says how many it keeps.
+
 A notification can say why it came, with `:reason` and a word as GitHub uses for its own. With `:reason "mention"` it is counted as a mention: at the `@` of the mode line and in the view of the mentions only.
 
 ### Explore

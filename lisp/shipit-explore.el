@@ -193,7 +193,9 @@ The notification of new entries has done its work then, and goes."
                                (shipit-explore--notifications))))
     (dolist (activity activities)
       (shipit--mark-notification-read (cdr (assq 'number activity))
-                                      shipit-explore--source t "external"))
+                                      shipit-explore--source t "external")
+      ;; It was taken back, not read: the view of all need not show it.
+      (shipit-notifications-forget activity))
     (shipit--rerender-notifications-buffer-if-visible)))
 
 (defun shipit-explore--open ()

@@ -2616,6 +2616,15 @@ backend."
   (when-let* ((id (cdr (assq 'backend-id activity))))
     (plist-get (cdr (assq id (bound-and-true-p shipit-issue-backends))) operation)))
 
+(defun shipit--read-backend-notifications ()
+  "The notifications that their backends keep as read themselves.
+A notification of GitHub that was read comes from GitHub again when all
+notifications are asked for.  A backend without a server that holds
+what was read gives its own with `:read-notifications'."
+  (cl-loop for (_id . plist) in (bound-and-true-p shipit-issue-backends)
+           for read = (plist-get plist :read-notifications)
+           when read append (funcall read)))
+
 (defun shipit--apply-local-mark-as-read (activity-key activity)
   "Apply the local-state side of marking ACTIVITY (at ACTIVITY-KEY) as read.
 Server-side mark is the caller's responsibility; this just:

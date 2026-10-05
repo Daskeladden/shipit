@@ -23,7 +23,8 @@ A request to a server is an error: a pushed notification needs none."
          (shipit--notification-count 0)
          (shipit--mention-count 0)
          (shipit--mention-prs nil)
-         (shipit--modeline-string nil))
+         (shipit--modeline-string nil)
+         (shipit-external--read nil))
      (shipit-test-http-answering nil
        ,@body)))
 
@@ -415,6 +416,102 @@ notifications came."
               (shipit-notifications-buffer-open)))
         (kill-buffer buffer))
       (should (equal "https://blog.example/new" asked)))))
+
+;;; Read ones, in the view of all notifications
+
+(defun test-external--buffer-text (scope)
+  "The text of the notifications buffer, drawn in SCOPE: `unread' or `all'."
+  (let ((buffer (shipit-notifications-buffer-create)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq shipit-notifications-buffer--display-scope scope)
+          (shipit-notifications-buffer--rerender)
+          (buffer-substring-no-properties (point-min) (point-max)))
+      (kill-buffer buffer))))
+
+(defmacro test-external--in-all (&rest body)
+  "Run BODY in the notifications buffer that shows all, on the pushed line."
+  (declare (indent 0))
+  `(let ((buffer (shipit-notifications-buffer-create)))
+     (unwind-protect
+         (with-current-buffer buffer
+           (setq shipit-notifications-buffer--display-scope 'all)
+           (shipit-notifications-buffer--rerender)
+           (goto-char (point-min))
+           (let ((line (text-property-search-forward
+                        'shipit-notification-type "external" #'equal)))
+             (should line)
+             (goto-char (prop-match-beginning line)))
+           ,@body)
+       (kill-buffer buffer))))
+
+(ert-deftest test-external-one-that-was-opened-shows-among-all ()
+  "GIVEN a pushed notification that was opened in the notifications buffer
+THEN the view of the unread does not show it, AND it is counted no more
+WHEN the buffer shows all notifications, and not only the unread
+THEN it shows the notification: no server holds a pushed notification
+as read, so shipit keeps it."
+  (test-external--fresh
+    (test-external--push-mail :open #'ignore)
+    (test-external--in-buffer
+      (shipit-notifications-buffer-open))
+    (should-not (string-match-p "New mail" (test-external--buffer-text 'unread)))
+    (should (= 0 (shipit--count-unread-activities)))
+    (should (string-match-p "mail\\.example .*New mail" (test-external--buffer-text 'all)))))
+
+(ert-deftest test-external-one-that-was-marked-read-shows-among-all ()
+  "GIVEN a pushed notification that was marked as read without opening it
+WHEN the buffer shows all notifications
+THEN it shows the notification."
+  (test-external--fresh
+    (test-external--push-mail)
+    (let ((activity (test-external--the-one)))
+      (shipit--mark-notification-read (cdr (assq 'number activity)) "mail.example" t "external"))
+    (should-not (string-match-p "New mail" (test-external--buffer-text 'unread)))
+    (should (string-match-p "New mail" (test-external--buffer-text 'all)))))
+
+(ert-deftest test-external-one-that-was-read-opens-again ()
+  "GIVEN a pushed notification that was opened, shown among all
+WHEN it is opened there again
+THEN its function is called again, AND the view of all shows it once."
+  (test-external--fresh
+    (let ((opened 0))
+      (test-external--push-mail :open (lambda () (cl-incf opened)))
+      (test-external--in-buffer
+        (shipit-notifications-buffer-open))
+      (test-external--in-all
+        (shipit-notifications-buffer-open))
+      (should (= 2 opened))
+      (let ((text (test-external--buffer-text 'all)))
+        (should (= 1 (cl-count-if (lambda (line) (string-match-p "New mail" line))
+                                  (split-string text "\n"))))))))
+
+(ert-deftest test-external-only-the-newest-read-ones-are-kept ()
+  "GIVEN a limit of two read notifications that are kept
+WHEN three pushed notifications are marked as read, one after the other
+THEN the view of all shows the two that were read last."
+  (test-external--fresh
+    (let ((shipit-external-read-limit 2))
+      (dolist (title '("First mail" "Second mail" "Third mail"))
+        (shipit-notifications-push :source "mail.example" :title title)
+        (let ((activity (test-external--the-one)))
+          (shipit--mark-notification-read (cdr (assq 'number activity))
+                                          "mail.example" t "external")))
+      (let ((text (test-external--buffer-text 'all)))
+        (should-not (string-match-p "First mail" text))
+        (should (string-match-p "Second mail" text))
+        (should (string-match-p "Third mail" text))))))
+
+(ert-deftest test-external-one-that-is-forgotten-shows-nowhere ()
+  "GIVEN a pushed notification that was marked as read
+WHEN the package that pushed it has it forgotten
+THEN the view of all does not show it."
+  (test-external--fresh
+    (test-external--push-mail)
+    (let ((activity (test-external--the-one)))
+      (shipit--mark-notification-read (cdr (assq 'number activity)) "mail.example" t "external")
+      (shipit-notifications-forget activity))
+    (should-not (string-match-p "New mail" (test-external--buffer-text 'all)))))
 
 (provide 'test-shipit-notifications-external)
 ;;; test-shipit-notifications-external.el ends here

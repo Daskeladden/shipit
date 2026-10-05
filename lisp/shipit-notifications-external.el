@@ -34,6 +34,17 @@
 (require 'shipit-issue-backends)
 (require 'shipit-notifications)
 
+(defcustom shipit-external-read-limit 50
+  "How many pushed notifications that were read shipit keeps.
+No server holds a pushed notification, so shipit keeps the newest ones
+that were read itself, for the session.  The notifications buffer shows
+them when it shows all notifications, and not only the unread."
+  :type 'integer
+  :group 'shipit)
+
+(defvar shipit-external--read nil
+  "The pushed notifications that were read, the one read last first.")
+
 (defvar shipit-external--pushed 0
   "How many notifications were pushed in this session.")
 
@@ -88,6 +99,31 @@ The source and the title are needed, the rest may be left out."
   (shipit--merge-backend-notifications (list (shipit-external--activity notification)))
   (shipit--rerender-notifications-buffer-if-visible))
 
+(defun shipit-external--other-p (activity)
+  "A function that says whether a pushed notification is another than ACTIVITY."
+  (let ((number (cdr (assq 'number activity))))
+    (lambda (other) (not (equal number (cdr (assq 'number other)))))))
+
+(defun shipit-external--keep-read (_config activity)
+  "Keep ACTIVITY, a pushed notification that is marked as read.
+It is the newest of those that `shipit-external-read-limit' keeps."
+  (setq shipit-external--read
+        (seq-take (cons activity
+                        (seq-filter (shipit-external--other-p activity)
+                                    shipit-external--read))
+                  shipit-external-read-limit)))
+
+(defun shipit-external--read-notifications ()
+  "The pushed notifications that were read, for the view of all notifications."
+  shipit-external--read)
+
+(defun shipit-notifications-forget (activity)
+  "Keep ACTIVITY, a pushed notification, as read no longer.
+The package that pushed it calls this for a notification that it took
+back itself, as when a newer one took its place."
+  (setq shipit-external--read
+        (seq-filter (shipit-external--other-p activity) shipit-external--read)))
+
 (defun shipit-external--mark-read (activity)
   "Take ACTIVITY, a pushed notification, off the notifications of shipit."
   (shipit--mark-notification-read
@@ -110,6 +146,8 @@ it.  One that cannot be opened stays."
  'external
  (list :name "External"
        :open-notification #'shipit-external--open
+       :mark-notification-read #'shipit-external--keep-read
+       :read-notifications #'shipit-external--read-notifications
        :icon-spec '("plug" "octicons" . "#8250df")
        :icon-fallback-text "EX"))
 

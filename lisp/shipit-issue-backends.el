@@ -63,6 +63,9 @@
 ;; Optional plist keys (for notifications):
 ;;   :notifications     — (config since) → list of notification activities
 ;;   :mark-notification-read — (config activity) → marks notification as read
+;;   :read-notifications — () → the notifications that were read, from a
+;;                         backend that has no server to hold them; the
+;;                         notifications buffer shows them among all
 ;;   :open-notification — (config activity) → opens the notification, in
 ;;                        place of what shipit opens for its type
 ;;   :notification-only — non-nil for a backend that has no issues: see

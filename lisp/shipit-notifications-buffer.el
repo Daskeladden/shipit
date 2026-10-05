@@ -56,6 +56,7 @@
 (declare-function shipit--fetch-recent-timeline-events-async "shipit-http")
 (declare-function shipit--get-pr-field-icon "shipit-render")
 (declare-function shipit-toggle-timestamp-format "shipit-commands")
+(declare-function shipit--read-backend-notifications "shipit-notifications")
 (declare-function shipit--format-timestamp "shipit-core")
 (declare-function shipit--browse-pr-url "shipit-notifications")
 (declare-function shipit--browse-issue-url "shipit-notifications")
@@ -651,13 +652,17 @@ queries 1000 times on a big inbox."
       (shipit-notifications-buffer--insert-notifications))))
 
 (defun shipit-notifications-buffer--all-activities ()
-  "Return the list of all activities in the global hash (unfiltered)."
+  "Return the list of all activities in the global hash (unfiltered).
+In the `all' scope the list also has the notifications that their
+backends keep as read themselves, which the hash does not hold."
   (let ((all '()))
     (when (and (boundp 'shipit--notification-pr-activities)
                shipit--notification-pr-activities)
       (maphash (lambda (_k v) (push v all))
                shipit--notification-pr-activities))
-    all))
+    (if (eq shipit-notifications-buffer--display-scope 'all)
+        (append all (shipit--read-backend-notifications))
+      all)))
 
 (defun shipit-notifications-buffer--matches-repo-p (activity)
   "Return non-nil if ACTIVITY passes the repo allow-list and exclusion list.

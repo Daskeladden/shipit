@@ -103,6 +103,7 @@ No notification is kept, and what was seen is kept in no file."
          (shipit-explore-seen-file nil)
          (shipit-explore--seen nil)
          (shipit-explore--notified nil)
+         (shipit-external--read nil)
          (shipit-explore-kinds '("star" "fork" "create" "release" "public"))
          (shipit-explore-about 'all)
          (shipit-explore-notify t))

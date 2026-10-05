@@ -222,23 +222,17 @@ the buffer.")
 ;;;###autoload
 (defun shipit-issues-open-buffer (issue-number &optional repo backend-id backend-config)
   "Open dedicated buffer for issue ISSUE-NUMBER in REPO.
-When BACKEND-ID and BACKEND-CONFIG are provided, set them as
-buffer-local overrides so the issue fetches use the correct backend
-\(e.g. Jira) instead of resolving from `shipit-issue-repo-backends'."
+BACKEND-ID and BACKEND-CONFIG name the issue backend of a repository
+that has none of its own: a pull request buffer hands over its forge.
+A repository with an issue backend of its own is read through that one;
+see `shipit-issue--backend-of-buffer-for'."
   (interactive
    (list (read-number "Issue number: ")
          (shipit--get-repo-from-remote)))
   (let* ((repo (or repo (shipit--get-repo-from-remote)))
-         ;; Resolve backend from repo config when not explicitly provided
-         (resolved (unless backend-id
-                     (condition-case nil
-                         (shipit-issue--resolve-for-repo repo)
-                       (error nil))))
-         (backend-id (or backend-id
-                         (when resolved
-                           (car (rassq (car resolved) shipit-issue-backends)))))
-         (backend-config (or backend-config
-                             (when resolved (cdr resolved))))
+         (backend (shipit-issue--backend-of-buffer-for repo backend-id backend-config))
+         (backend-id (car backend))
+         (backend-config (cdr backend))
          (buffer-name (shipit-issue-buffer-name repo issue-number))
          (existing (get-buffer buffer-name)))
     ;; Auto-clear notification for this issue if one exists

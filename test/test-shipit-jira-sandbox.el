@@ -25,6 +25,10 @@
 (require 'shipit-issues)
 (require 'shipit-issues-buffer)
 (require 'shipit-pr-github)
+;; The backends of GitHub for issues and comments, which a page that was
+;; opened from a pull request of GitHub is handed.
+(require 'shipit-issue-github)
+(require 'shipit-comment-github)
 (require 'shipit-editor)
 (require 'shipit-issue-create)
 (require 'shipit-test-clipboard)
@@ -473,21 +477,27 @@ The hook is set by its default value: it is local to each buffer, so
       (setf (default-value 'shipit-issue-buffer-ready-hook) before))
     (should ready)))
 
-(defmacro test-jira-sandbox--with-page (page &rest body)
-  "Open the sandbox's first issue as by hand, bind its buffer to PAGE; run BODY.
-The sandbox stops only once the page is whole, so no request of it is
-left to fail in a later test."
-  (declare (indent 1))
+(defmacro test-jira-sandbox--with-page-opened-by (open page &rest body)
+  "Run OPEN, a form that opens the sandbox's first issue; then BODY.
+PAGE is bound to the buffer of the issue.  The sandbox stops only once
+the page is whole, so no request of it is left to fail in a later test."
+  (declare (indent 2))
   `(let ((,page nil))
      (unwind-protect
          (progn
-           (shipit-jira-sandbox-open)
+           ,open
            (test-jira-sandbox--wait-until-ready)
            (setq ,page (get-buffer (shipit-issue-buffer-name shipit-jira-sandbox-repo "PRJ-1")))
            ,@body)
        (when (buffer-live-p ,page)
          (kill-buffer ,page))
        (shipit-jira-sandbox-close))))
+
+(defmacro test-jira-sandbox--with-page (page &rest body)
+  "Open the sandbox's first issue as by hand, bind its buffer to PAGE; run BODY."
+  (declare (indent 1))
+  `(test-jira-sandbox--with-page-opened-by (shipit-jira-sandbox-open) ,page
+     ,@body))
 
 (defun test-jira-sandbox--page-text (token)
   "The text of the sandbox's first issue, opened as by hand with TOKEN.
@@ -519,6 +529,33 @@ THEN the whole page shows all the same, AND nothing leaves the machine:
 code that skips GitHub for want of a token would reach it with one."
   (skip-unless (executable-find "python3"))
   (should (test-jira-sandbox--whole-page-p (test-jira-sandbox--page-text "not-a-token"))))
+
+(defun test-jira-sandbox--open-as-a-pull-request-does ()
+  "Start the sandbox, give its first issue a comment, and open the issue.
+It is opened as RET on its key in a pull request buffer opens it: with
+the backend of the pull request handed over as the backend to use."
+  (let ((config (shipit-jira-sandbox-start)))
+    (shipit-issue-jira--add-comment config "PRJ-1" "A comment of the sandbox")
+    (shipit-issues-open-buffer "PRJ-1" shipit-jira-sandbox-repo 'github nil)))
+
+(ert-deftest test-jira-sandbox-a-key-opened-from-a-pull-request-shows-its-comments ()
+  "GIVEN the sandbox, whose repository names Jira for its issues, AND a
+comment on its first issue, AND a GitHub token
+WHEN the issue is opened as RET on its key in a pull request buffer
+opens it, which hands over the backend of the pull request
+THEN the page reads through Jira, as the issue itself was fetched, AND
+it shows the comment.  A page that took the backend of the pull request
+asked GitHub for the reactions of the comments of Jira, and lost all of
+its comments on the answer."
+  (skip-unless (executable-find "python3"))
+  (let ((auth-sources nil)
+        (shipit-github-token "not-a-token")
+        (shipit--github-token-cache nil))
+    (test-jira-sandbox--with-page-opened-by
+        (test-jira-sandbox--open-as-a-pull-request-does) page
+      (with-current-buffer page
+        (should (eq 'jira shipit-issue-backend))
+        (should (string-match-p "A comment of the sandbox" (buffer-string)))))))
 
 (provide 'test-shipit-jira-sandbox)
 ;;; test-shipit-jira-sandbox.el ends here

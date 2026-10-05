@@ -132,25 +132,50 @@ Each backend with `:detect' is asked, in the checkout of the buffer."
            for config = (and detect (funcall detect repo))
            when config return (cons plist (plist-put (copy-sequence config) :repo repo))))
 
+(defun shipit-issue--named-backend (repo)
+  "(BACKEND-PLIST . CONFIG-PLIST) that `shipit-issue-repo-backends' names for REPO.
+It is nil when no entry there matches REPO."
+  (when-let* ((match (cl-find-if
+                      (lambda (entry)
+                        (string-match-p (concat "\\`" (car entry) "\\'") repo))
+                      shipit-issue-repo-backends))
+              (config-plist (cdr match))
+              (backend-id (plist-get config-plist :backend)))
+    (cons (or (cdr (assq backend-id shipit-issue-backends))
+              (error "No issue backend registered for `%s'" backend-id))
+          (plist-put (copy-sequence config-plist) :repo repo))))
+
+(defun shipit-issue--own-backend (repo)
+  "(BACKEND-PLIST . CONFIG-PLIST) of the issue backend that REPO has of its own.
+`shipit-issue-repo-backends' names it, or a backend detects that REPO
+uses it.  It is nil for a repository that keeps its issues where the
+default says."
+  (or (shipit-issue--named-backend repo)
+      (shipit-issue--detected-backend repo)))
+
 (defun shipit-issue--resolve-for-repo (repo)
   "Resolve backend and config for REPO.
 Checks `shipit-issue-repo-backends' first, then a backend that detects
 that REPO uses it, then falls back to `shipit-issue-backend' /
 `shipit-issue-backend-config'.
 Returns (BACKEND-PLIST . CONFIG-PLIST) with :repo injected into config."
-  (let ((match (cl-find-if
-                (lambda (entry)
-                  (string-match-p (concat "\\`" (car entry) "\\'") repo))
-                shipit-issue-repo-backends)))
-    (if match
-        (let* ((config-plist (cdr match))
-               (backend-id (plist-get config-plist :backend))
-               (backend-plist (or (cdr (assq backend-id shipit-issue-backends))
-                                  (error "No issue backend registered for `%s'" backend-id)))
-               (config (plist-put (copy-sequence config-plist) :repo repo)))
-          (cons backend-plist config))
-      (or (shipit-issue--detected-backend repo)
-          (shipit-issue--default-backend-for repo)))))
+  (or (shipit-issue--own-backend repo)
+      (shipit-issue--default-backend-for repo)))
+
+(defun shipit-issue--backend-of-buffer-for (repo backend-id backend-config)
+  "(BACKEND-ID . CONFIG) that a buffer of an issue of REPO is to use.
+The issue backend that REPO has of its own wins, because every fetch of
+the buffer resolves REPO and so goes through that one.  A buffer that
+took another backend from its caller would read through one backend and
+ask the other what it can do.  BACKEND-ID and BACKEND-CONFIG, what the
+caller asks for, count for a repository without a backend of its own,
+and without them the default does."
+  (let ((resolved (or (shipit-issue--own-backend repo)
+                      (and (not backend-id)
+                           (shipit-issue--default-backend-for repo)))))
+    (if resolved
+        (cons (car (rassq (car resolved) shipit-issue-backends)) (cdr resolved))
+      (cons backend-id backend-config))))
 
 (defun shipit-issue--default-backend-for (repo)
   "(BACKEND-PLIST . CONFIG-PLIST) of the default issue backend, for REPO."

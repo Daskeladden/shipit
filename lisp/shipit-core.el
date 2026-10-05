@@ -401,6 +401,7 @@ keys that mean something else in it.")
 (define-key shipit-page-mode-map (kbd "$") #'shipit-process-buffer)
 (define-key shipit-page-mode-map (kbd "M-;") #'shipit-dwim)
 (define-key shipit-page-mode-map (kbd "SPC") #'shipit-page-menu)
+(define-key shipit-page-mode-map (kbd "O") #'shipit-toggle-section-order)
 (define-key shipit-page-mode-map (kbd "w") #'shipit-repo-subscription)
 
 (defvar shipit-current-repo nil
@@ -1724,6 +1725,65 @@ Set buffer-locally by each Activity-rendering UI so
            (if (eq shipit-activity-timeline-order 'reverse-chronological)
                "newest first"
              "oldest first")))
+
+(defcustom shipit-comments-order 'chronological
+  "The order of the comments of an issue buffer.
+It is also the order of the general comments of a pull request buffer.
+chronological: the oldest first, as the forge shows them (default)
+reverse-chronological: the newest first
+In a pull request buffer this is the order of the threads: the answers
+under a comment stay in order of time.  Toggle at runtime with
+`shipit-toggle-section-order' on the comments."
+  :type '(choice (const :tag "Oldest first" chronological)
+                 (const :tag "Newest first" reverse-chronological))
+  :group 'shipit)
+
+(defun shipit--comments-in-order (comments)
+  "COMMENTS, which are in order of time, as `shipit-comments-order' asks."
+  (pcase shipit-comments-order
+    ('chronological comments)
+    ('reverse-chronological (reverse comments))
+    (other (error "%S is no order of comments" other))))
+
+(defvar-local shipit--comments-rerender-function nil
+  "Function that draws the comments of this buffer again, in the order set.
+An issue buffer and a pull request buffer each set theirs.")
+
+(defun shipit-comments-toggle-order ()
+  "Toggle the order of the comments, and draw those of this buffer again.
+Another buffer shows the new order when it is refreshed."
+  (interactive)
+  (unless shipit--comments-rerender-function
+    (user-error "This buffer has no comments to put in order"))
+  (setq shipit-comments-order
+        (if (eq shipit-comments-order 'chronological)
+            'reverse-chronological
+          'chronological))
+  (funcall shipit--comments-rerender-function)
+  (message "Comments: %s first"
+           (if (eq shipit-comments-order 'chronological) "oldest" "newest")))
+
+(defconst shipit-section-order-toggles
+  '((pr-activity . shipit-activity-toggle-sort-order)
+    (issue-activity . shipit-activity-toggle-sort-order)
+    (issue-comments . shipit-comments-toggle-order)
+    (general-comments . shipit-comments-toggle-order))
+  "The sections that have an order, each with the command that toggles it.")
+
+(defun shipit--section-order-toggle-at-point ()
+  "The command that toggles the order of the section at point, or nil.
+The section at point counts, and so does each section that it is in."
+  (cl-loop for section = (magit-current-section) then (oref section parent)
+           while section
+           thereis (cdr (assq (oref section type) shipit-section-order-toggles))))
+
+(defun shipit-toggle-section-order ()
+  "Toggle the order of the section at point: the newest first, or the oldest.
+The activity of a page has an order, and so have its comments."
+  (interactive)
+  (call-interactively
+   (or (shipit--section-order-toggle-at-point)
+       (user-error "The section at point has no order to toggle"))))
 
 (defcustom shipit-use-svglib-icons nil
   "Whether to use SVG icons (via svglib) instead of emoji throughout shipit.

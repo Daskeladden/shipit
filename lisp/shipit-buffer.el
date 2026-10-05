@@ -624,6 +624,12 @@ The keys it shares with an issue buffer come from its parent,
 ;; which a map that was made before still has.
 (define-key shipit-mode-map (kbd "SPC") nil t)
 
+(defun shipit-buffer--rerender-general-comments ()
+  "Draw the general comments of this pull request again, in the order set.
+They are drawn from what the buffer holds."
+  (shipit--refresh-general-comments-section-targeted
+   shipit-buffer-repo shipit-buffer-pr-number))
+
 (transient-define-prefix shipit-pr-menu ()
   "The commands of a pull request buffer, each on the key the buffer has for it.
 SPC closes the menu again."
@@ -648,6 +654,7 @@ SPC closes the menu again."
     ("G" "Hard refresh" shipit-buffer-refresh-hard)
     ("s" "Select PR" shipit-buffer-select-pr)
     ("L" "Toggle time format" shipit-buffer-toggle-timestamps-dwim)
+    ("O" "Toggle sort order" shipit-toggle-section-order)
     ("M-w" "Copy URL or text" shipit-buffer-copy-dwim)
     ("o" "Open in browser" shipit-open-in-browser)
     ("w" "Repo subscription" shipit-repo-subscription)
@@ -675,6 +682,8 @@ with focused context and optimized performance.
   (shipit--watch-videos)
   (setq-local shipit-page-url-function #'shipit-buffer--pr-url)
   (setq-local shipit-page-menu-command #'shipit-pr-menu)
+  (setq-local shipit--comments-rerender-function
+              #'shipit-buffer--rerender-general-comments)
 
   ;; Re-bind keys to ensure they override parent bindings
   (define-key shipit-mode-map (kbd "RET") #'shipit--open-file-at-point)

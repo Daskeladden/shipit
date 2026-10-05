@@ -130,7 +130,7 @@ Run `M-x shipit` from any git repo with a remote.
 
 Navigate with `TAB` to expand/collapse, `RET` to open, and `M-;` for context actions.
 
-`SPC` in a pull request buffer or an issue buffer opens a menu of the commands of the buffer, each on the key that the buffer has for it, and `SPC` closes it again. With meow, the two buffers start in the insert state, because meow takes `SPC` in its motion state.
+`SPC` in a pull request buffer or an issue buffer opens a menu of the commands of the buffer, each on the key that the buffer has for it, and `SPC` closes it again. `O` toggles the order of the section at point between the oldest first and the newest first: the activity, the comments of an issue, or the general comments of a pull request. `shipit-activity-timeline-order` and `shipit-comments-order` set the order that a new session starts with. With meow, the two buffers start in the insert state, because meow takes `SPC` in its motion state.
 
 ### Issue buffers
 

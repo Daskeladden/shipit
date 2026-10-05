@@ -57,7 +57,7 @@ buffer has for it, AND SPC in the menu closes it."
              'shipit-pr-menu
              '("c" "a" "R" "k" "M-m" "M-;"
                "e" "d" "D" "f" "m" "M" "+" "Z"
-               "g" "G" "s" "L" "M-w" "o" "w" "$" "?" "q" "Q")))
+               "g" "G" "s" "L" "O" "M-w" "o" "w" "$" "?" "q" "Q")))
     (should (eq (test-page-menu--command-of 'shipit-pr-menu "SPC")
                 #'transient-quit-one))))
 
@@ -71,7 +71,7 @@ buffer has for it, AND SPC in the menu closes it."
     (should (eq shipit-page-menu-command #'shipit-issue-menu))
     (should (test-page-menu--names-the-keys-p
              'shipit-issue-menu
-             '("M-;" "f" "l" "R" "b" "g" "L" "o" "w" "$" "q" "Q")))
+             '("M-;" "f" "l" "R" "O" "b" "g" "L" "o" "w" "$" "q" "Q")))
     (should (eq (test-page-menu--command-of 'shipit-issue-menu "SPC")
                 #'transient-quit-one))))
 

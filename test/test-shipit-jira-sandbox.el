@@ -557,7 +557,7 @@ its comments on the answer."
         (should (eq 'jira shipit-issue-backend))
         (should (string-match-p "A comment of the sandbox" (buffer-string)))))))
 
-;;; The comments of a page
+;;; The order of the comments
 
 (defun test-jira-sandbox--open-with-comments (bodies)
   "Start the sandbox, give its first issue a comment for each of BODIES; open it."
@@ -579,17 +579,55 @@ its comments on the answer."
         (lambda (a b)
           (< (test-jira-sandbox--place-of a) (test-jira-sandbox--place-of b)))))
 
+(defconst test-jira-sandbox--three '("First said" "Second said" "Third said")
+  "The bodies of three comments, in the order they are written in.")
+
 (defmacro test-jira-sandbox--with-comments (bodies page &rest body)
   "Open the sandbox's first issue with a comment for each of BODIES; run BODY.
 PAGE is bound to the buffer of the issue.  No login but the sandbox's is
-there."
+there, and the order of comments is as it is set when the macro starts."
   (declare (indent 2))
   `(progn
      (skip-unless (executable-find "python3"))
-     (let ((auth-sources nil))
+     (let ((auth-sources nil)
+           (shipit-comments-order shipit-comments-order))
        (test-jira-sandbox--with-page-opened-by
            (test-jira-sandbox--open-with-comments ,bodies) ,page
          ,@body))))
+
+(ert-deftest test-jira-sandbox-comments-show-the-oldest-first ()
+  "GIVEN an issue with three comments
+WHEN its page is opened
+THEN the comments stand in the order they were written in."
+  (test-jira-sandbox--with-comments test-jira-sandbox--three page
+    (with-current-buffer page
+      (should (equal test-jira-sandbox--three
+                     (test-jira-sandbox--as-shown test-jira-sandbox--three))))))
+
+(ert-deftest test-jira-sandbox-comments-show-the-newest-first-when-asked ()
+  "GIVEN an issue with three comments, AND the setting that asks for the
+newest comment first
+WHEN its page is opened
+THEN the comments stand with the newest first."
+  (let ((shipit-comments-order 'reverse-chronological))
+    (test-jira-sandbox--with-comments test-jira-sandbox--three page
+      (with-current-buffer page
+        (should (equal (reverse test-jira-sandbox--three)
+                       (test-jira-sandbox--as-shown test-jira-sandbox--three)))))))
+
+(ert-deftest test-jira-sandbox-the-order-of-the-comments-is-toggled-on-the-page ()
+  "GIVEN the page of an issue with three comments, the oldest first
+WHEN the order of the section is toggled with point on a comment
+THEN the comments stand with the newest first
+WHEN it is toggled again
+THEN the oldest is first again."
+  (test-jira-sandbox--with-comments test-jira-sandbox--three page
+    (with-current-buffer page
+      (dolist (expected (list (reverse test-jira-sandbox--three) test-jira-sandbox--three))
+        (goto-char (test-jira-sandbox--place-of "Second said"))
+        (shipit-toggle-section-order)
+        (test-jira-sandbox--wait-until-ready)
+        (should (equal expected (test-jira-sandbox--as-shown test-jira-sandbox--three)))))))
 
 (defconst test-jira-sandbox--five
   '("First said" "Second said" "Third said" "Fourth said" "Fifth said")
@@ -629,6 +667,29 @@ shipit keeps those that it does not show at first."
         (test-jira-sandbox--load-the-rest)
         (should (equal test-jira-sandbox--five
                        (test-jira-sandbox--shown test-jira-sandbox--five)))))))
+
+(ert-deftest test-jira-sandbox-paged-comments-keep-their-order ()
+  "GIVEN an issue with five comments, AND a page that shows the first and
+the last comment and loads the others when asked
+WHEN its page is opened with the oldest first, and then with the newest
+THEN the two comments stand in that order, with the line that loads the
+others between them
+WHEN the others are loaded
+THEN all five stand in that order."
+  (dolist (order '(chronological reverse-chronological))
+    (let* ((shipit-comments-order order)
+           (shipit-comments-initial-count 1)
+           (shipit-comments-tail-count 1)
+           (shipit-comments-pagination-threshold 2)
+           (five (if (eq order 'chronological)
+                     test-jira-sandbox--five
+                   (reverse test-jira-sandbox--five))))
+      (test-jira-sandbox--with-comments test-jira-sandbox--five page
+        (with-current-buffer page
+          (should (equal (list (car five) (car (last five)))
+                         (test-jira-sandbox--shown test-jira-sandbox--five)))
+          (test-jira-sandbox--load-the-rest)
+          (should (equal five (test-jira-sandbox--shown test-jira-sandbox--five))))))))
 
 (provide 'test-shipit-jira-sandbox)
 ;;; test-shipit-jira-sandbox.el ends here

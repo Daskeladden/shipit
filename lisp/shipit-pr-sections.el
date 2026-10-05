@@ -217,6 +217,13 @@ commits.")
 (defvar shipit--files-filter-text)
 (defvar shipit--files-filter-mode)
 
+(defun shipit--general-comment-roots (threads)
+  "The comments of THREADS that answer no other, in the order comments show in.
+THREADS is what `shipit--group-comments-by-api-replies' gives.
+`shipit-comments-order' says whether the oldest comes first or the
+newest.  The answers under a comment stay in order of time."
+  (shipit--comments-in-order (gethash 'root threads)))
+
 (defun shipit--insert-general-comments-section (repo pr-number)
   "Insert general comments section with caching logic."
   (if (and shipit--general-comments-fetched
@@ -254,7 +261,7 @@ commits.")
                                                shipit--cached-general-comments)
                                shipit--cached-general-comments))
                             (threads (shipit--group-comments-by-api-replies deduplicated-general-comments))
-                            (root-comments (gethash 'root threads)))
+                            (root-comments (shipit--general-comment-roots threads)))
                        (dolist (comment root-comments)
                          ;; Use hierarchical system properly - it handles replies recursively
                          (shipit--insert-status-hierarchical-comment comment threads nil nil 0 nil nil repo pr-number)))
@@ -306,7 +313,7 @@ commits.")
                                              shipit--cached-general-comments)
                              shipit--cached-general-comments))
                           (threads (shipit--group-comments-by-api-replies deduplicated-general-comments))
-                          (root-comments (gethash 'root threads)))
+                          (root-comments (shipit--general-comment-roots threads)))
                      (dolist (comment root-comments)
                        (shipit--insert-status-hierarchical-comment comment threads nil nil 0 nil nil repo pr-number)))
                      (insert "\n"))))))
@@ -437,7 +444,7 @@ Returns t on success, nil if section not found."
                                           shipit--cached-general-comments)
                           shipit--cached-general-comments))
                        (threads (shipit--group-comments-by-api-replies deduplicated-comments))
-                       (root-comments (gethash 'root threads)))
+                       (root-comments (shipit--general-comment-roots threads)))
                   (dolist (comment root-comments)
                     (shipit--insert-status-hierarchical-comment
                      comment threads nil nil 0 nil nil repo pr-number)))))
@@ -1574,7 +1581,7 @@ REPO is the repository, PR-NUMBER is the PR number, COMMENTS is the list of comm
                                                       comments)
                                       comments))
                                    (threads (shipit--group-comments-by-api-replies deduplicated-comments))
-                                   (root-comments (gethash 'root threads)))
+                                   (root-comments (shipit--general-comment-roots threads)))
                               ;; Cache comments AFTER threading analysis (includes reply-depth)
                               (setq shipit--cached-general-comments deduplicated-comments)
                               (setq shipit--general-comments-fetched t)

@@ -169,7 +169,6 @@ Each entry is (TYPE . VALUE).  Supported types:
 ;; from the menu of the page.
 (define-key shipit-issue-header-keymap (kbd "SPC") #'shipit-page-menu)
 
-
 ;;; Mode definition
 
 (defvar shipit-issue-mode-map
@@ -202,7 +201,8 @@ SPC closes the menu again."
    ["Comments"
     ("f" "Filter comments" shipit-issue-filter-comments)
     ("l" "Jump to Load more" shipit-issue-jump-to-load-more)
-    ("R" "Toggle load direction" shipit-issue--toggle-load-direction)]
+    ("R" "Toggle load direction" shipit-issue--toggle-load-direction)
+    ("O" "Toggle sort order" shipit-toggle-section-order)]
    ["Page"
     ("g" "Refresh" shipit-issue-buffer-refresh)
     ("L" "Toggle time format" shipit-toggle-timestamp-format)
@@ -233,6 +233,7 @@ Provides a read-only interface for viewing GitHub issues.
   (shipit--watch-videos)
   (setq-local shipit-page-url-function #'shipit-issue--browse-url)
   (setq-local shipit-page-menu-command #'shipit-issue-menu)
+  (setq-local shipit--comments-rerender-function #'shipit-issue--rerender-comments)
   (font-lock-mode 1)
   (shipit--enable-issue-ref-eldoc)
   (add-hook 'post-command-hook #'shipit-issue--update-comment-position nil t)
@@ -250,6 +251,71 @@ the buffer.")
 (defun shipit-issue-buffer-name (repo issue-number)
   "Generate buffer name for REPO and ISSUE-NUMBER."
   (format "*shipit-issue: %s#%s*" repo issue-number))
+
+(defun shipit-issue--fetch-comment-reactions (repo comments)
+  "Ask for the reactions of COMMENTS of REPO, through the backend of this buffer."
+  (let* ((shipit-current-repo repo)
+         (issue-backend (shipit-issue--get-backend))
+         (issue-reactions-fn (plist-get issue-backend :fetch-comment-reactions-batch)))
+    (cond
+     ((and comments issue-reactions-fn)
+      (funcall issue-reactions-fn (cdr (shipit-issue--resolve-for-repo repo))
+               repo comments nil))
+     ((and comments (shipit-issue--backend-has-reactions-p issue-backend))
+      (shipit-comment--fetch-reactions-batch comments repo nil)))))
+
+(defun shipit-issue--show-loaded-comments (repo issue-number result root-section)
+  "Draw RESULT, the first and last comments of ISSUE-NUMBER in REPO.
+ROOT-SECTION is the root of this buffer as it was when the comments
+were asked for.  Only the comments that show get their avatars and
+reactions asked for."
+  (let ((visible (append (plist-get result :head) (plist-get result :tail))))
+    ;; Prefetch avatars in parallel — sync avatar fetches were the
+    ;; dominant per-comment cost, writing each cache file up front lets
+    ;; the sync render path skip the HTTP roundtrip entirely.
+    (when (fboundp 'shipit--prefetch-avatars-async)
+      (shipit--prefetch-avatars-async visible))
+    (shipit-issue--fetch-comment-reactions repo visible)
+    (let ((magit-root-section (or magit-root-section root-section)))
+      (shipit-issue--replace-comments-with-paginated-content
+       repo issue-number result))
+    (run-hooks 'shipit-issue-buffer-ready-hook)))
+
+(defun shipit-issue--load-comments (repo issue-number)
+  "Ask for the comments of ISSUE-NUMBER in REPO and draw them in this buffer.
+The first and the last comments are asked for, as many as the settings
+of the paging say.  `shipit-issue-buffer-ready-hook' runs when they are
+drawn."
+  (let ((target-buffer (current-buffer))
+        (root-section magit-root-section))
+    (shipit-issues--fetch-comments-head-tail-async
+     repo issue-number
+     shipit-comments-load-more-default
+     shipit-comments-initial-count
+     shipit-comments-tail-count
+     (lambda (result)
+       (shipit--debug-log "Got head+tail for issue #%s, total=%d"
+                          issue-number (plist-get result :total))
+       (when (buffer-live-p target-buffer)
+         (with-current-buffer target-buffer
+           (shipit-issue--show-loaded-comments
+            repo issue-number result root-section)))))))
+
+(defun shipit-issue--rerender-comments ()
+  "Draw the comments of this issue again, in the order that is set.
+With filters, or with every comment loaded, they are drawn from what
+the buffer holds.  Otherwise the first and the last comments are asked
+for again, and the comments that were loaded between them go back
+behind the line that loads them."
+  (let ((repo shipit-issue-buffer-repo)
+        (issue-number shipit-issue-buffer-number))
+    (cond
+     (shipit-issue--active-filters (shipit-issue--apply-comment-filters))
+     (shipit-issue--all-comments
+      (shipit-issue--replace-comments-with-filtered-content
+       repo issue-number shipit-issue--all-comments
+       (length shipit-issue--all-comments)))
+     (t (shipit-issue--load-comments repo issue-number)))))
 
 ;;;###autoload
 (defun shipit-issues-open-buffer (issue-number &optional repo backend-id backend-config)
@@ -405,47 +471,9 @@ see `shipit-issue--backend-of-buffer-for'."
                       (shipit--debug-log
                        "PINNED-ERROR: %s\nBACKTRACE:\n%s"
                        (error-message-string err) backtrace)))))))))
-        ;; Fetch comments async
+        (shipit-issue--load-comments repo issue-number)
         (let ((target-buffer (current-buffer))
               (root-section magit-root-section))
-          (shipit-issues--fetch-comments-head-tail-async
-           repo issue-number
-           shipit-comments-load-more-default
-           shipit-comments-initial-count
-           shipit-comments-tail-count
-           (lambda (result)
-             (let ((total (plist-get result :total)))
-               (shipit--debug-log "Got head+tail for issue #%s, total=%d"
-                                  issue-number total)
-               (when (buffer-live-p target-buffer)
-                 (with-current-buffer target-buffer
-                   ;; Prefetch avatars in parallel — sync avatar fetches
-                   ;; were the dominant per-comment cost, writing each cache
-                   ;; file up front lets the sync render path skip the HTTP
-                   ;; roundtrip entirely.
-                   (when (fboundp 'shipit--prefetch-avatars-async)
-                     (shipit--prefetch-avatars-async
-                      (append (plist-get result :head)
-                              (plist-get result :tail))))
-                   ;; Fetch reactions only for visible head + tail comments
-                   (let* ((visible (append (plist-get result :head)
-                                           (plist-get result :tail)))
-                          (shipit-current-repo repo)
-                          (issue-backend (shipit-issue--get-backend))
-                          (issue-reactions-fn
-                           (plist-get issue-backend
-                                      :fetch-comment-reactions-batch)))
-                     (cond
-                      ((and visible issue-reactions-fn)
-                       (let ((config (cdr (shipit-issue--resolve-for-repo repo))))
-                         (funcall issue-reactions-fn config repo visible nil)))
-                      ((and visible
-                            (shipit-issue--backend-has-reactions-p issue-backend))
-                       (shipit-comment--fetch-reactions-batch visible repo nil))))
-                   (let ((magit-root-section (or magit-root-section root-section)))
-                     (shipit-issue--replace-comments-with-paginated-content
-                      repo issue-number result))
-                   (run-hooks 'shipit-issue-buffer-ready-hook))))))
           ;; Fetch child items async for epics
           (let ((issue-type (cdr (assq 'issue-type issue-data))))
             (when (and issue-type (string-equal-ignore-case issue-type "Epic"))
@@ -1044,6 +1072,18 @@ to follow the growing insertion point."
                  (zerop (mod counter chunk-size)))
         (shipit--render-yield)))))
 
+(defun shipit-issue--insert-comment-parts (repo issue-number parts)
+  "Insert PARTS of the comments of ISSUE-NUMBER in REPO, in the order set.
+PARTS is in order of time.  A part is a list of comments, or a function
+that inserts the line which loads the comments between two parts.
+`shipit-comments-order' says whether the oldest part and comment come
+first, or the newest."
+  (dolist (part (shipit--comments-in-order parts))
+    (if (functionp part)
+        (funcall part)
+      (shipit-issue--insert-comments-chunked
+       repo issue-number (shipit--comments-in-order part)))))
+
 (defun shipit-issue--insert-paginated-comments-body (repo issue-number result)
   "Insert only the BODY of the paginated comments section.
 RESULT has :head :tail :hidden-head :hidden-tail :total :unfetched :per-page.
@@ -1063,12 +1103,15 @@ section object during targeted body replacement)."
      ((= total 0)
       (insert (propertize "   No comments\n" 'font-lock-face 'font-lock-comment-face)))
      ((= hidden-count 0)
-      (shipit-issue--insert-comments-chunked repo issue-number (append head tail)))
+      (shipit-issue--insert-comment-parts repo issue-number (list (append head tail))))
      (t
-      (shipit-issue--insert-comments-chunked repo issue-number head)
-      (shipit-issue--insert-load-more-section
-       hidden-head repo issue-number unfetched per-page nil hidden-tail)
-      (shipit-issue--insert-comments-chunked repo issue-number tail)))
+      (shipit-issue--insert-comment-parts
+       repo issue-number
+       (list head
+             (lambda ()
+               (shipit-issue--insert-load-more-section
+                hidden-head repo issue-number unfetched per-page nil hidden-tail))
+             tail))))
     (insert "\n")))
 
 (defun shipit-issue--insert-paginated-comments-section (repo issue-number result)
@@ -1126,11 +1169,14 @@ pagination."
       (let ((head (seq-take comments head-n))
             (hidden (seq-subseq comments head-n (- total tail-n)))
             (tail (seq-subseq comments (- total tail-n))))
-        (shipit-issue--insert-comments-chunked repo issue-number head)
-        (shipit-issue--insert-load-more-section hidden repo issue-number)
-        (shipit-issue--insert-comments-chunked repo issue-number tail)))
+        (shipit-issue--insert-comment-parts
+         repo issue-number
+         (list head
+               (lambda ()
+                 (shipit-issue--insert-load-more-section hidden repo issue-number))
+               tail))))
      (t
-      (shipit-issue--insert-comments-chunked repo issue-number comments))))
+      (shipit-issue--insert-comment-parts repo issue-number (list comments)))))
   (insert "\n"))
 
 (defun shipit-issue--insert-comments-section (repo issue-number comments)
@@ -2304,22 +2350,21 @@ the API and adds it to the pool."
         (shipit-comment--fetch-reactions-batch to-load repo nil)))
     ;; Delete the load-more section
     (delete-region section-start section-end)
-    ;; Insert comments and new load-more in the correct order based on direction.
-    ;; Oldest-first: [comments] [load-more]  (gap is below new comments)
-    ;; Recent-first: [load-more] [comments]  (gap is above new comments)
+    ;; Insert the comments and the new load-more where they belong in
+    ;; time.  Loaded from the oldest end, the comments come before the
+    ;; gap that is left, and loaded from the newest end, after it.
     (save-excursion
       (goto-char section-start)
-      (let ((magit-insert-section--parent parent))
-        (if (eq direction 'recent)
-            (progn
-              (when (or remaining unfetched)
-                (shipit-issue--insert-load-more-section
-                 remaining repo issue-number unfetched per-page direction))
-              (shipit-issue--insert-comments-chunked repo issue-number to-load))
-          (shipit-issue--insert-comments-chunked repo issue-number to-load)
-          (when (or remaining unfetched)
-            (shipit-issue--insert-load-more-section
-             remaining repo issue-number unfetched per-page direction)))))
+      (let ((magit-insert-section--parent parent)
+            (gap (when (or remaining unfetched)
+                   (lambda ()
+                     (shipit-issue--insert-load-more-section
+                      remaining repo issue-number unfetched per-page direction)))))
+        (shipit-issue--insert-comment-parts
+         repo issue-number
+         (delq nil (if (eq direction 'recent)
+                       (list gap to-load)
+                     (list to-load gap))))))
     ;; Fix parent's children list: remove old load-more and sort by
     ;; buffer position so n/p navigation works correctly with the
     ;; newly inserted sections.
@@ -3001,7 +3046,7 @@ section context and the heading (which includes the \"N of M\"
 filter count)."
   (if (null comments)
       (insert (propertize "   No matching comments\n" 'font-lock-face 'font-lock-comment-face))
-    (shipit-issue--insert-comments-chunked repo issue-number comments))
+    (shipit-issue--insert-comment-parts repo issue-number (list comments)))
   (insert "\n"))
 
 (defun shipit-issue--insert-filtered-comments-section (repo issue-number comments total)

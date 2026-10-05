@@ -177,6 +177,22 @@ Another package can put a notification among those of shipit. It then stands in 
 
 A notification can say why it came, with `:reason` and a word as GitHub uses for its own. With `:reason "mention"` it is counted as a mention: at the `@` of the mode line and in the view of the mentions only.
 
+### Explore
+
+`M-x shipit-explore`, or `e` in the menu of shipit, shows what the people you follow and the repositories you watch do on GitHub: someone starred, forked or created a repository, a release came out, or a repository went public. Each has a line, the newest first, in the columns of the notifications buffer: the repository, who did what, the kind and the time. The lines that you have not seen before stand out. `RET` opens the page of the repository in shipit, or its releases at the tag for a release, `g` reads the feed again, and `L` switches the times between a date and how long ago.
+
+`SPC` or `f` opens a menu of what is shown, and `SPC` closes it again. With meow, Explore and the notifications buffer start in the insert state, because meow takes `SPC` in its motion state. The menu has a switch for each kind of entry. It also chooses whose repositories the entries are about: all repositories, only yours, or only those of others. With only yours, you see who starred or forked your work, and not what the people you follow star elsewhere.
+
+An entry of the feed is no notification of its own, because nothing waits for you there and GitHub keeps no read state for it. shipit can tell you of new entries with one notification instead:
+
+```elisp
+(setq shipit-explore-notify t)
+```
+
+The feed is then asked for each time shipit polls for notifications. The notification says how many entries are new, opens Explore with `RET`, and can be marked as read as any other. It comes back only when a newer entry arrives.
+
+A switch of the menu stays for the session. `shipit-explore-kinds` and `shipit-explore-about` hold the same choices for your configuration. GitHub hands an event out some minutes to some hours after it happened. It keeps the last 300 events of all that you can see, which the work in a busy repository fills in some hours, and the last 300 public events, which reach back some weeks. Explore reads both. It has no API for the repositories that it calls trending, so those are not in Explore.
+
 ## Configuration
 
 ```elisp

@@ -3119,11 +3119,29 @@ to the sync :notifications function."
          (shipit--debug-log "Backend notification poll failed for %s: %s"
                             backend-id (error-message-string err)))))))
 
+(defvar shipit-notifications-poll-hook nil
+  "Functions that run each time shipit polls its backends for notifications.
+It is for what is looked at along with the notifications and is no
+backend of them.")
+
+(defun shipit--run-poll-hook ()
+  "Run `shipit-notifications-poll-hook'.
+A function that fails is logged, and the others still run."
+  (run-hook-wrapped
+   'shipit-notifications-poll-hook
+   (lambda (function)
+     (condition-case err
+         (funcall function)
+       (error (shipit--debug-log "Poll hook %s failed: %s"
+                                 function (error-message-string err))))
+     nil)))
+
 (defun shipit--poll-backend-notifications ()
   "Poll configured backends that have :notifications and merge results.
 Each backend is scheduled on its own idle timer with a small
 stagger so a slow backend (Jira can take 3+ seconds) does not
-pile up with the others into one long UI freeze."
+pile up with the others into one long UI freeze.
+`shipit-notifications-poll-hook' runs after them."
   (when (featurep 'shipit-issue-backends)
     (let* ((since shipit--backend-last-poll-time)
            (all-entries (append shipit-issue-repo-backends
@@ -3139,7 +3157,8 @@ pile up with the others into one long UI freeze."
            (lambda ()
              (shipit--poll-one-backend entry-cell since-snapshot)
              (shipit--rerender-notifications-buffer-if-visible))))
-        (setq delay (+ delay 0.1))))))
+        (setq delay (+ delay 0.1)))))
+  (shipit--run-poll-hook))
 
 (defun shipit--merge-github-notifications (github-activities)
   "Merge GITHUB-ACTIVITIES into the global hash table.

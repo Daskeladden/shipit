@@ -201,6 +201,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
 (declare-function shipit-config "shipit-commands")
 (declare-function shipit-subscriptions "shipit-subscriptions-buffer")
 (declare-function shipit-open-repo-buffer "shipit-repo-buffer")
+(declare-function shipit-explore "shipit-explore-buffer")
 (declare-function shipit-help "shipit-core")
 (declare-function shipit-notifications-menu "shipit-notifications")
 (declare-function shipit-issues--quick-search "shipit-issues")
@@ -227,6 +228,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
    ("S" "Subscriptions" shipit-subscriptions)
    ("m" "Branch commit comments" shipit-branch-comments)
    ("n" "Notifications buffer" shipit--view-notifications)
+   ("e" "Explore" shipit-explore)
    ("A" "Atlassian dashboard" shipit-atlassian-dashboard
     :if shipit-atlassian-dashboard-available-p)]
   ["Issues" :if (lambda () shipit-issues-enabled)

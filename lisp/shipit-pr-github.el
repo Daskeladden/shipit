@@ -1140,6 +1140,142 @@ Returns alist with login and name fields or signals error."
         data
       (error "HTTP %s" status-code))))
 
+;;; Feed
+;; The events that the user receives: what the people that the user
+;; follows and the repositories that the user watches do.
+
+(defvar shipit-pr-github--login nil
+  "The login of the user, once GitHub has said it.")
+
+(defun shipit-pr-github--login ()
+  "The login of the user, asked of GitHub the first time."
+  (or shipit-pr-github--login
+      (setq shipit-pr-github--login (shipit-pr-github--get-current-username nil))
+      (error "GitHub did not say who the user is")))
+
+(defconst shipit-pr-github--feed-kinds
+  '(("WatchEvent" . "star")
+    ("ForkEvent" . "fork")
+    ("CreateEvent" . "create")
+    ("ReleaseEvent" . "release")
+    ("PublicEvent" . "public"))
+  "The events of the feed that are news, and the kind of entry that each is.
+A `WatchEvent' is a star.")
+
+(defun shipit-pr-github--event-field (event &rest keys)
+  "What EVENT holds under KEYS, one inside the other."
+  (dolist (key keys event)
+    (setq event (cdr (assq key event)))))
+
+(defun shipit-pr-github--feed-event-news-p (event)
+  "Whether EVENT of the feed is news.
+A new branch or tag is none, and neither is a release that was only
+drafted or changed."
+  (pcase (cdr (assq 'type event))
+    ("CreateEvent"
+     (equal "repository" (shipit-pr-github--event-field event 'payload 'ref_type)))
+    ("ReleaseEvent"
+     (equal "published" (shipit-pr-github--event-field event 'payload 'action)))
+    (type (assoc type shipit-pr-github--feed-kinds))))
+
+(defun shipit-pr-github--own-repo-p (repo)
+  "Whether REPO, as owner/name, belongs to the user."
+  (string-prefix-p (concat (shipit-pr-github--login) "/") repo))
+
+(defun shipit-pr-github--feed-entry (event)
+  "EVENT of the feed as an entry of a feed.
+The detail of a release is its tag, and that of a fork is the fork."
+  (let ((repo (shipit-pr-github--event-field event 'repo 'name))
+        (release (shipit-pr-github--event-field event 'payload 'release)))
+    `((id . ,(cdr (assq 'id event)))
+      (own . ,(shipit-pr-github--own-repo-p repo))
+      (kind . ,(cdr (assoc (cdr (assq 'type event)) shipit-pr-github--feed-kinds)))
+      (actor . ,(shipit-pr-github--event-field event 'actor 'login))
+      (repo . ,repo)
+      (detail . ,(or (cdr (assq 'tag_name release))
+                     (shipit-pr-github--event-field event 'payload 'forkee 'full_name)))
+      (title . ,(cdr (assq 'name release)))
+      (url . ,(or (cdr (assq 'html_url release))
+                  (concat "https://github.com/" repo)))
+      (time . ,(cdr (assq 'created_at event))))))
+
+(defun shipit-pr-github--newer-entry-p (entry other)
+  "Whether ENTRY of a feed is newer than OTHER."
+  (string> (cdr (assq 'time entry)) (cdr (assq 'time other))))
+
+(defun shipit-pr-github--same-event-p (event other)
+  "Whether EVENT and OTHER are one event, which two feeds can both hold."
+  (equal (cdr (assq 'id event)) (cdr (assq 'id other))))
+
+(defun shipit-pr-github--feed-entries (events)
+  "The entries of a feed with EVENTS, the newest first.
+An event that two feeds hold gives one entry.  GitHub gives the events
+of a feed in no order of time when the feed mixes the events of many
+repositories, so they are put in order here."
+  (sort (mapcar #'shipit-pr-github--feed-entry
+                (seq-uniq (seq-filter #'shipit-pr-github--feed-event-news-p events)
+                          #'shipit-pr-github--same-event-p))
+        #'shipit-pr-github--newer-entry-p))
+
+(defconst shipit-pr-github--feed-endpoints
+  '("/users/%s/received_events" "/users/%s/received_events/public")
+  "The feeds of GitHub that are read, with %s for the login of the user.
+The first holds the events of every repository that the user can see.
+The pushes and pull requests of a busy private repository fill it in
+some hours, and what the people that the user follows do falls out of
+it.  The second holds the public events only, and reaches back weeks.")
+
+(defconst shipit-pr-github--feed-pages 3
+  "How many pages GitHub gives of a feed: it keeps 300 events, 100 a page.
+It refuses a request for a later page.")
+
+(defun shipit-pr-github--feed-requests ()
+  "What to ask GitHub for the feeds in full: a list of (ENDPOINT . PAGE)."
+  (cl-loop for endpoint in shipit-pr-github--feed-endpoints
+           nconc (cl-loop for page from 1 to shipit-pr-github--feed-pages
+                          collect (cons (format endpoint (shipit-pr-github--login))
+                                        page))))
+
+(defun shipit-pr-github--feed-page-url (request)
+  "The address of REQUEST, an (ENDPOINT . PAGE) of a feed."
+  (format "%s%s?per_page=100&page=%d" shipit-api-url (car request) (cdr request)))
+
+(defun shipit-pr-github--feed-headers ()
+  "The headers of a request for a page of a feed.
+url.el keeps a copy of each answer on disk, and then asks only for what
+changed since.  GitHub answers that with no page at all when nothing
+did.  With `Pragma: no-cache' url.el asks for the page itself."
+  (list (or (shipit--get-auth-header) (error "GitHub token not found"))
+        '("Accept" . "application/vnd.github+json")
+        '("Pragma" . "no-cache")))
+
+(defun shipit-pr-github--fetch-feed-page (request callback)
+  "Call CALLBACK with the events of REQUEST, an (ENDPOINT . PAGE) of a feed.
+A page that GitHub refuses gives no event, and is logged.  The answer
+is not kept for a later request, as the answers of most requests are: a
+page of a feed is some hundred kilobytes, and changes with each event."
+  (shipit--url-retrieve-async
+   (shipit-pr-github--feed-page-url request) "GET" (shipit-pr-github--feed-headers) nil
+   callback
+   (lambda (refusal)
+     (shipit--debug-log "GitHub gave no page %d of %s: %s"
+                        (cdr request) (car request) refusal)
+     (funcall callback nil))))
+
+(defun shipit-pr-github--fetch-feed-async (_config callback)
+  "Call CALLBACK with the entries of the feed of the user, the newest first.
+GitHub hands an event out some minutes to some hours after it happened."
+  (let* ((requests (shipit-pr-github--feed-requests))
+         (waiting (length requests))
+         (events nil))
+    (dolist (request requests)
+      (shipit-pr-github--fetch-feed-page
+       request
+       (lambda (page)
+         (setq events (append page events))
+         (when (zerop (cl-decf waiting))
+           (funcall callback (shipit-pr-github--feed-entries events))))))))
+
 ;;; Async check operations
 ;; Async variants for the checks pipeline — used by shipit-checks.el
 ;; to avoid calling shipit--api-request (GitHub HTTP) directly.
@@ -1982,6 +2118,7 @@ data should pass it: this runs on every render of the section."
        :mark-notification-read #'shipit-pr-github--mark-notification-read
        :mark-notification-read-async #'shipit-pr-github--mark-notification-read-async
        :fetch-notifications #'shipit-pr-github--fetch-notifications
+       :fetch-feed-async #'shipit-pr-github--fetch-feed-async
        :browse-discussion-url #'shipit-pr-github--browse-discussion-url
        :fetch-user-teams #'shipit-pr-github--fetch-user-teams
        :fetch-repo-info #'shipit-pr-github--fetch-repo-info

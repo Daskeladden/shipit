@@ -56,6 +56,8 @@ Loading the files adds the functions back.")
     "shipit-actions-timeline.el"
     "shipit-notifications-rss.el"
     "shipit-notifications-external.el"
+    "shipit-explore.el"
+    "shipit-explore-buffer.el"
     "shipit-code-refs.el"
     "shipit-magit-worktrees.el"
     "shipit-debug.el" "shipit.el")

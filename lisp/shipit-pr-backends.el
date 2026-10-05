@@ -95,6 +95,13 @@
 ;; Notification operations:
 ;;   :mark-notification-read  — (config notification-id) → t on success
 ;;   :fetch-notifications     — (config params &optional force-fresh) → list
+;;   :fetch-feed-async        — (config callback) → calls CALLBACK with the
+;;                              entries of the feed of the user, the newest
+;;                              first: what the people that the user follows
+;;                              do.  An entry is an alist of id, kind (star,
+;;                              fork, create, release or public), actor, repo,
+;;                              own (whether the repository is the user's),
+;;                              detail, title, url and time
 ;;   :browse-discussion-url   — (config number) → URL string
 ;;   :fetch-user-teams        — (config) → list of team data alists
 ;;   :fetch-merge-methods     — (config) → list of allowed merge method strings

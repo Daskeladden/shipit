@@ -490,9 +490,13 @@ Returns a list of entries where each status group contains its workflow names."
 SECTION-START is the section start position (used for navigation).
 CHILD-NAMES should be a list of display name strings.
 SECTION-TYPE is the section type symbol (e.g., 'pr-files, 'general-comments).
-Each entry will be stored as (name . (parent-pos . name)) so the goto
-function can expand the parent and search for the child by name.
-This allows imenu to list children even when the section is collapsed."
+Each entry is stored as (NAME PARENT-POS FUNCTION NAME), the form of
+imenu for an entry that has a function of its own: imenu calls
+`shipit--imenu-goto-child', which unfolds the parent and finds the
+child by its name.  This allows imenu to list children even when the
+section is collapsed.  The other entries have a plain place, and imenu
+goes to them itself, which lets consult-imenu show them before one is
+chosen."
   (shipit--debug-log "IMENU-STORE: section-type=%s children-count=%s (backtrace: %s)"
                      section-type (length child-names)
                      (let ((frames nil))
@@ -506,8 +510,7 @@ This allows imenu to list children even when the section is collapsed."
     (unless shipit--imenu-children-cache
       (setq shipit--imenu-children-cache (make-hash-table :test 'eq)))
     (let ((entries (mapcar (lambda (name)
-                             ;; Store (display-name . (parent-pos . search-name))
-                             (cons name (cons section-start name)))
+                             (list name section-start #'shipit--imenu-goto-child name))
                            child-names)))
       ;; Store in hash table by section type
       (when section-type
@@ -515,42 +518,33 @@ This allows imenu to list children even when the section is collapsed."
       (shipit--debug-log "IMENU-STORE: stored %d children for section-type %s"
                          (length child-names) section-type))))
 
-(defun shipit--imenu-goto-function (name position &rest _rest)
-  "Go to the section at POSITION.
-Make sure it is visible, by showing its ancestors where necessary.
-If POSITION is a cons cell (parent-pos . child-name), expand the parent
-section and search for the child by name."
-  (if (consp position)
-      ;; Cached child entry - need to expand parent and find child
-      (let ((parent-pos (car position))
-            (child-name (cdr position)))
-        (goto-char parent-pos)
-        (let ((parent-section (magit-current-section)))
-          ;; Expand the parent section to create children
-          (when (and parent-section (oref parent-section hidden))
-            (magit-section-show parent-section))
-          ;; Now search for the child by name within the section's children
-          (let ((found nil))
-            (when (and parent-section (slot-boundp parent-section 'children))
-              (dolist (child (oref parent-section children))
-                (when (and (not found) (magit-section-p child))
-                  (let ((child-heading (shipit--imenu-get-heading child)))
-                    (when (and child-heading (string= child-heading child-name))
-                      (setq found (oref child start)))))))
-            (if found
-                (goto-char found)
-              ;; Fallback: search by text if section children don't match
-              (let ((section-end (oref parent-section end)))
-                (when section-end
-                  (save-excursion
-                    (goto-char parent-pos)
-                    (when (search-forward child-name section-end t)
-                      (setq found (match-beginning 0)))))
-                (when found
-                  (goto-char found)))))))
-    ;; Regular position - just go there
-    (goto-char position)
-    (shipit--imenu-unfold-around-point)))
+(defun shipit--imenu-child-start (parent child-name)
+  "Where the section in PARENT that CHILD-NAME heads starts, or nil."
+  (cl-loop for child in (oref parent children)
+           when (equal child-name (shipit--imenu-get-heading child))
+           return (oref child start)))
+
+(defun shipit--imenu-text-start (parent child-name)
+  "Where CHILD-NAME stands as text in the section PARENT, or nil."
+  (save-excursion
+    (goto-char (oref parent start))
+    (and (search-forward child-name (oref parent end) t)
+         (match-beginning 0))))
+
+(defun shipit--imenu-goto-child (_name position child-name)
+  "Go to the section that CHILD-NAME heads, in the section at POSITION.
+This is the function of an imenu entry for a section that was not drawn
+when the index was made: a folded section draws what is in it when it
+is unfolded.  So the section at POSITION is unfolded first.  CHILD-NAME
+comes with the entry, because a completion UI calls this with a name of
+its own making."
+  (goto-char position)
+  (let ((parent (magit-current-section)))
+    (when (oref parent hidden)
+      (magit-section-show parent))
+    (when-let* ((start (or (shipit--imenu-child-start parent child-name)
+                           (shipit--imenu-text-start parent child-name))))
+      (goto-char start))))
 
 ;;; Keymap
 
@@ -697,7 +691,7 @@ with focused context and optimized performance.
   (font-lock-mode 1)
   ;; Set up imenu for section navigation (following magit-mode pattern)
   (setq-local imenu-create-index-function #'shipit--imenu-create-index)
-  (setq-local imenu-default-goto-function #'shipit--imenu-goto-function)
+  (add-hook 'imenu-after-jump-hook #'shipit--imenu-unfold-around-point nil t)
   ;; Adjust magit-section-highlight to not conflict with code block backgrounds
   (shipit--update-section-highlight-face)
   ;; Suppress highlight on sections with colored content (labels, etc.)

@@ -11,6 +11,7 @@
 (require 'shipit-issues)
 (require 'shipit-sections)
 (require 'shipit-pr-github)
+(require 'shipit-issue-github)
 (require 'shipit-test-http)
 
 ;;; Work Item Column Renderer Tests
@@ -806,6 +807,89 @@ THEN no update is sent and the buffer is not refreshed."
         (shipit-issue--edit-title)
         (should-not updated)
         (should-not refreshed)))))
+
+(defmacro test-shipit-issue--in-github-issue (state &rest body)
+  "Run BODY in the buffer of issue 7 of acme/widget at GitHub, which is in STATE.
+The buffer has the backend and the configuration that opening it gives.
+What the reader types or picks is the first candidate, or else `typed'.
+The buffer is not drawn again: `refreshed' says that it was asked to be."
+  (declare (indent 1))
+  `(let ((refreshed nil) (typed nil)
+         (shipit-github-token "test-token")
+         (shipit-issue-repo-backends nil))
+     (ignore typed)
+     (with-temp-buffer
+       (setq-local shipit-issue-backend 'github
+                   shipit-issue-backend-config '(:repo "acme/widget")
+                   shipit-issue-buffer-repo "acme/widget"
+                   shipit-issue-buffer-number 7
+                   shipit-issue-buffer-data '((title . "Old title") (state . ,state)))
+       (cl-letf (((symbol-function 'read-string) (lambda (&rest _) typed))
+                 ((symbol-function 'completing-read)
+                  (lambda (_prompt candidates &rest _) (or typed (car candidates))))
+                 ((symbol-function 'shipit-issue-buffer-refresh)
+                  (lambda (&rest _) (setq refreshed t))))
+         (shipit-test-http-answering
+             '(("/repos/acme/widget/issues/7\\'" 200 ((number . 7) (state . ,state))))
+           ,@body)))))
+
+(defun test-shipit-issue--changes-sent ()
+  "The bodies of the changes sent to the forge, oldest first, each as an alist."
+  (mapcar (lambda (body) (json-parse-string body :object-type 'alist))
+          (delq nil (copy-sequence shipit-test-http-bodies))))
+
+(ert-deftest test-shipit-issue-the-title-of-a-github-issue-can-be-edited ()
+  "GIVEN the buffer of an issue at GitHub
+WHEN the reader edits its title
+THEN GitHub is sent the new title for that issue of that repository,
+AND the buffer is drawn again."
+  (test-shipit-issue--in-github-issue "open"
+    (setq typed "A better title")
+    (shipit-issue--edit-title)
+    (should (equal '(("PATCH" "https://api.github.com/repos/acme/widget/issues/7"))
+                   shipit-test-http-requests))
+    (should (equal '(((title . "A better title"))) (test-shipit-issue--changes-sent)))
+    (should refreshed)))
+
+(ert-deftest test-shipit-issue-the-state-of-a-github-issue-can-be-changed ()
+  "GIVEN the buffer of an open issue at GitHub
+WHEN the reader changes its status, AND picks the first choice
+THEN GitHub is sent that the issue is closed as completed, AND the
+buffer is drawn again."
+  (test-shipit-issue--in-github-issue "open"
+    (should (shipit-issue--transitions-available-p))
+    (shipit-issue--change-status)
+    (should (equal '(((state . "closed") (state_reason . "completed")))
+                   (test-shipit-issue--changes-sent)))
+    (should refreshed)))
+
+(ert-deftest test-shipit-issue-the-labels-of-a-github-issue-can-be-changed ()
+  "GIVEN the buffer of an issue at GitHub, in a repository with labels
+WHEN the reader changes its labels to two of them
+THEN GitHub is sent those two labels for the issue, AND the buffer is
+drawn again."
+  (test-shipit-issue--in-github-issue "open"
+    (cl-letf (((symbol-function 'shipit-issue-github--fetch-label-names)
+               (lambda (_config) '("bug" "docs" "idea")))
+              ((symbol-function 'completing-read-multiple)
+               (lambda (&rest _) '("bug" "docs"))))
+      (shipit-issue--change-labels))
+    (should (equal '(((labels . ["bug" "docs"]))) (test-shipit-issue--changes-sent)))
+    (should refreshed)))
+
+(ert-deftest test-shipit-issue-the-assignee-of-a-github-issue-can-be-changed ()
+  "GIVEN the buffer of an issue at GitHub, in a repository with a user
+who can be assigned
+WHEN the reader assigns the issue to that user
+THEN GitHub is sent that user as the assignee, AND the buffer is drawn
+again."
+  (test-shipit-issue--in-github-issue "open"
+    (setq typed "octo")
+    (cl-letf (((symbol-function 'shipit-issue-github--fetch-assignee-names)
+               (lambda (_config) '("octo"))))
+      (shipit-issue--change-assignee))
+    (should (equal '(((assignees . ["octo"]))) (test-shipit-issue--changes-sent)))
+    (should refreshed)))
 
 ;;; Icon Column Type Tests
 

@@ -9,6 +9,10 @@
 (require 'shipit-core)
 (require 'shipit-issue-backends)
 (require 'shipit-issue-github)
+(require 'shipit-pr-github)
+(require 'shipit-pr-actions)
+(require 'shipit-diff)
+(require 'shipit-test-http)
 
 ;;; Registration Tests
 
@@ -63,6 +67,121 @@ THEN it returns the GitHub issue URL."
          (config '(:repo "owner/repo")))
     (should (string= "https://github.com/owner/repo/issues/42"
                       (funcall browse-url-fn config 42)))))
+
+;;; The title and the state of an issue
+
+(defmacro test-shipit-issue-github--with-issue (state &rest body)
+  "Run BODY with issue 7 of acme/widget at GitHub, which is in STATE.
+A change of the issue is answered with the issue.  BODY sees the
+operations of the backend as `backend' and their configuration as
+`config'."
+  (declare (indent 1))
+  `(let ((backend (cdr (assq 'github shipit-issue-backends)))
+         (config '(:repo "acme/widget"))
+         (shipit-github-token "test-token"))
+     (ignore backend config)
+     (shipit-test-http-answering
+         `(("/repos/acme/widget/issues/7\\'" 200 ((number . 7) (state . ,,state))))
+       ,@body)))
+
+(defun test-shipit-issue-github--changes ()
+  "The changes sent to GitHub, oldest first, each as (METHOD . ALIST of the body)."
+  (delq nil (cl-mapcar (lambda (request body)
+                         (and body (cons (car request)
+                                         (json-parse-string body :object-type 'alist))))
+                       shipit-test-http-requests shipit-test-http-bodies)))
+
+(ert-deftest test-shipit-issue-github-the-title-of-an-issue-can-be-changed ()
+  "GIVEN an issue at GitHub
+WHEN its title is changed through the backend
+THEN GitHub is sent the new title for that issue, AND nothing else of it."
+  (test-shipit-issue-github--with-issue "open"
+    (funcall (plist-get backend :update-title) config 7 "A better title")
+    (should (equal '(("PATCH" (title . "A better title")))
+                   (test-shipit-issue-github--changes)))))
+
+(ert-deftest test-shipit-issue-github-an-open-issue-can-be-closed-in-two-ways ()
+  "GIVEN an open issue at GitHub
+WHEN the backend is asked what its state can change to
+THEN it can be closed as completed, AND as not planned."
+  (test-shipit-issue-github--with-issue "open"
+    (should (equal '("Close as completed" "Close as not planned")
+                   (mapcar (lambda (transition) (alist-get 'name transition))
+                           (funcall (plist-get backend :get-transitions) config 7))))))
+
+(ert-deftest test-shipit-issue-github-a-closed-issue-can-be-reopened ()
+  "GIVEN a closed issue at GitHub
+WHEN the backend is asked what its state can change to
+THEN it can be reopened, AND that is all."
+  (test-shipit-issue-github--with-issue "closed"
+    (should (equal '("Reopen")
+                   (mapcar (lambda (transition) (alist-get 'name transition))
+                           (funcall (plist-get backend :get-transitions) config 7))))))
+
+(ert-deftest test-shipit-issue-github-a-change-of-state-sends-the-state-and-its-reason ()
+  "GIVEN an issue at GitHub, open or closed
+WHEN one of the changes that the backend offers for it is made
+THEN GitHub is sent the new state with the reason that the change names."
+  (dolist (case '(("open" "Close as completed" ((state . "closed") (state_reason . "completed")))
+                  ("open" "Close as not planned" ((state . "closed") (state_reason . "not_planned")))
+                  ("closed" "Reopen" ((state . "open") (state_reason . "reopened")))))
+    (test-shipit-issue-github--with-issue (nth 0 case)
+      (let ((transition (seq-find (lambda (transition)
+                                    (equal (nth 1 case) (alist-get 'name transition)))
+                                  (funcall (plist-get backend :get-transitions) config 7))))
+        (funcall (plist-get backend :transition-status) config 7 (alist-get 'id transition))
+        (should (equal (list (cons "PATCH" (nth 2 case)))
+                       (test-shipit-issue-github--changes)))))))
+
+(ert-deftest test-shipit-issue-github-a-change-of-state-that-is-not-offered-is-an-error ()
+  "GIVEN an issue at GitHub
+WHEN a change of state is asked for that the backend does not know
+THEN it is an error, AND nothing is sent to GitHub."
+  (test-shipit-issue-github--with-issue "open"
+    (should-error (funcall (plist-get backend :transition-status) config 7 "merged"))
+    (should-not (test-shipit-issue-github--changes))))
+
+;;; The labels and the assignee of an issue
+
+(ert-deftest test-shipit-issue-github-the-labels-of-an-issue-can-be-set ()
+  "GIVEN an issue at GitHub
+WHEN its labels are set through the backend, to two labels AND to none
+THEN GitHub is sent the labels as a list each time, an empty list for
+none, AND not a null, which GitHub would refuse."
+  (test-shipit-issue-github--with-issue "open"
+    (funcall (plist-get backend :update-labels) config 7 '("bug" "docs"))
+    (funcall (plist-get backend :update-labels) config 7 nil)
+    (should (equal '(("PATCH" (labels . ["bug" "docs"]))
+                     ("PATCH" (labels . [])))
+                   (test-shipit-issue-github--changes)))))
+
+(ert-deftest test-shipit-issue-github-the-assignee-of-an-issue-can-be-set ()
+  "GIVEN an issue at GitHub
+WHEN it is assigned to a user through the backend, AND then to nobody
+THEN GitHub is sent that user as the only assignee, AND then none."
+  (test-shipit-issue-github--with-issue "open"
+    (funcall (plist-get backend :update-assignee) config 7 "octo")
+    (funcall (plist-get backend :update-assignee) config 7 nil)
+    (should (equal '(("PATCH" (assignees . ["octo"]))
+                     ("PATCH" (assignees . [])))
+                   (test-shipit-issue-github--changes)))))
+
+(ert-deftest test-shipit-issue-github-offers-the-labels-and-the-users-of-the-repository ()
+  "GIVEN a repository at GitHub with two labels AND one user who can be
+assigned
+WHEN the backend is asked what an issue can be labeled with, AND whom
+it can be assigned to
+THEN it gives the names of the labels, AND the name of the user."
+  (let ((backend (cdr (assq 'github shipit-issue-backends)))
+        (config '(:repo "acme/widget"))
+        (shipit-github-token "test-token")
+        (shipit-pr-backend 'github)
+        (shipit-pr-backend-config nil))
+    (shipit-test-http-answering
+        '(("/repos/acme/widget/labels" 200 [((name . "bug")) ((name . "docs"))])
+          ("/repos/acme/widget/assignees" 200 [((login . "octo"))]))
+      (should (equal '("bug" "docs") (funcall (plist-get backend :fetch-labels) config)))
+      (should (equal '("octo") (funcall (plist-get backend :fetch-assignable-users) config))))))
 
 ;;; Fetch Delegation Tests
 

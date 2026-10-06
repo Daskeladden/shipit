@@ -38,6 +38,10 @@
 (defvar shipit-test-http-requests nil
   "The requests answered, oldest first, as (METHOD ADDRESS).")
 
+(defvar shipit-test-http-bodies nil
+  "The body of each request answered, oldest first; nil for one without a body.
+In step with `shipit-test-http-requests'.")
+
 (defvar shipit-test-http--unanswered nil
   "The addresses asked for that no answer covered, newest first.")
 
@@ -85,7 +89,9 @@ Records ADDRESS and signals when none does."
          (answer (shipit-test-http--find answers address)))
     (setq shipit-test-http-requests
           (append shipit-test-http-requests
-                  (list (list (or url-request-method "GET") address))))
+                  (list (list (or url-request-method "GET") address)))
+          shipit-test-http-bodies
+          (append shipit-test-http-bodies (list url-request-data)))
     (shipit-test-http--response (nth 1 answer) (nth 2 answer))))
 
 (defun shipit-test-http--status (buffer)
@@ -132,6 +138,7 @@ response that is still alive when BODY ends fails the form too."
   (declare (indent 1))
   (let ((table (make-symbol "answers")))
     `(let ((shipit-test-http-requests nil)
+           (shipit-test-http-bodies nil)
            (shipit-test-http--unanswered nil)
            (,table ,answers))
        ;; A form that signalled left its responses: they are not of this one.

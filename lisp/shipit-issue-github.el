@@ -233,15 +233,70 @@ Returns the reaction alist."
     (shipit--debug-log "GitHub backend: toggling reaction %s on comment %s" reaction comment-id)
     (shipit--api-request-post endpoint data)))
 
+(defun shipit-issue-github--change (config issue-number data)
+  "Change issue ISSUE-NUMBER of the repository of CONFIG by DATA, an alist.
+CONFIG must contain :repo.  Returns the issue as GitHub has it after."
+  (let ((repo (plist-get config :repo)))
+    (shipit--debug-log "GitHub backend: changing %S of issue #%s in %s"
+                       (mapcar #'car data) issue-number repo)
+    (shipit--api-request-post (format "/repos/%s/issues/%s" repo issue-number) data "PATCH")))
+
 (defun shipit-issue-github--update-description (config issue-number body)
   "Update the description of issue ISSUE-NUMBER using CONFIG.
 CONFIG must contain :repo.  BODY is the new description text.
 Returns the updated issue alist."
-  (let* ((repo (plist-get config :repo))
-         (endpoint (format "/repos/%s/issues/%s" repo issue-number))
-         (data `((body . ,body))))
-    (shipit--debug-log "GitHub backend: updating description for issue #%s in %s" issue-number repo)
-    (shipit--api-request-post endpoint data "PATCH")))
+  (shipit-issue-github--change config issue-number `((body . ,body))))
+
+(defun shipit-issue-github--update-title (config issue-number title)
+  "Give issue ISSUE-NUMBER of the repository of CONFIG the title TITLE.
+Returns the updated issue alist."
+  (shipit-issue-github--change config issue-number `((title . ,title))))
+
+(defun shipit-issue-github--update-labels (config issue-number labels)
+  "Set the labels of issue ISSUE-NUMBER of CONFIG to LABELS, a list of names.
+No label is an empty list for GitHub, never a null, which it refuses.
+Returns the updated issue alist."
+  (shipit-issue-github--change config issue-number `((labels . ,(vconcat labels)))))
+
+(defun shipit-issue-github--update-assignee (config issue-number login)
+  "Assign issue ISSUE-NUMBER of CONFIG to the user LOGIN, or to nobody for nil.
+GitHub lets an issue have several assignees.  The issue buffer has one,
+so LOGIN takes the place of all that the issue had.
+Returns the updated issue alist."
+  (shipit-issue-github--change
+   config issue-number `((assignees . ,(if login (vector login) [])))))
+
+;;; The state of an issue
+
+(defconst shipit-issue-github--transitions
+  '(("open" . (((id . "completed") (name . "Close as completed") (to . ((name . "closed"))))
+               ((id . "not_planned") (name . "Close as not planned") (to . ((name . "closed"))))))
+    ("closed" . (((id . "reopened") (name . "Reopen") (to . ((name . "open")))))))
+  "The changes of state that an issue in each state offers, as GitHub names them.
+The id of a change is the reason that GitHub keeps with the new state.")
+
+(defun shipit-issue-github--get-transitions (config issue-number)
+  "The changes of state that issue ISSUE-NUMBER of CONFIG offers now."
+  (cdr (assoc (alist-get 'state (shipit-issue-github--fetch-issue config issue-number))
+              shipit-issue-github--transitions)))
+
+(defun shipit-issue-github--transition (transition-id)
+  "The change of state with TRANSITION-ID, or an error when GitHub has none."
+  (or (seq-some (lambda (state)
+                  (seq-find (lambda (transition)
+                              (equal transition-id (alist-get 'id transition)))
+                            (cdr state)))
+                shipit-issue-github--transitions)
+      (error "shipit: GitHub has no change of state %S" transition-id)))
+
+(defun shipit-issue-github--transition-status (config issue-number transition-id)
+  "Change the state of issue ISSUE-NUMBER of CONFIG as TRANSITION-ID says.
+Returns the updated issue alist."
+  (let ((transition (shipit-issue-github--transition transition-id)))
+    (shipit-issue-github--change
+     config issue-number
+     `((state . ,(alist-get 'name (alist-get 'to transition)))
+       (state_reason . ,transition-id)))))
 
 (defconst shipit-issue-github--timeline-event-types
   '("closed" "reopened" "labeled" "unlabeled" "assigned" "unassigned"
@@ -499,6 +554,13 @@ via the PR backend's mark-notification-read function."
        :edit-comment #'shipit-issue-github--edit-comment
        :toggle-reaction #'shipit-issue-github--toggle-reaction
        :update-description #'shipit-issue-github--update-description
+       :update-title #'shipit-issue-github--update-title
+       :fetch-labels #'shipit-issue-github--fetch-label-names
+       :update-labels #'shipit-issue-github--update-labels
+       :fetch-assignable-users #'shipit-issue-github--fetch-assignee-names
+       :update-assignee #'shipit-issue-github--update-assignee
+       :get-transitions #'shipit-issue-github--get-transitions
+       :transition-status #'shipit-issue-github--transition-status
        :fetch-reactions #'shipit-issue-github--fetch-reactions
        :fetch-reactions-async #'shipit-issue-github--fetch-reactions-async
        :add-reaction #'shipit-issue-github--add-reaction

@@ -505,6 +505,53 @@ THEN nothing of these lines is invisible."
     (shipit--hide-heading-hashes)
     (should-not (test-shipit-render--invisible-text))))
 
+;;; A horizontal rule
+
+(ert-deftest test-shipit-a-rule-of-dashes-is-drawn-as-a-line ()
+  "GIVEN markdown that is fontified as markdown-mode leaves it: a line
+of three dashes, AND one of stars with spaces, have the face of a rule
+WHEN the rules are drawn
+THEN each of the two lines is shown as a horizontal line, AND the text
+of the buffer is as it was."
+  (with-temp-buffer
+    (insert "above\n\n"
+            (propertize "---" 'face 'markdown-hr-face) "\n\n"
+            (propertize "* * *" 'face '(markdown-hr-face)) "\n"
+            "below\n")
+    (shipit--draw-horizontal-rules)
+    (dolist (rule '("---" "* * *"))
+      (goto-char (point-min))
+      (search-forward rule)
+      (let ((shown (get-text-property (match-beginning 0) 'display)))
+        (should (stringp shown))
+        (should (string-match-p "\\`\u2500+\\'" shown))
+        (should (equal shown (get-text-property (1- (match-end 0)) 'display)))))
+    (should (equal "above\n\n---\n\n* * *\nbelow\n"
+                   (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-shipit-dashes-that-are-no-rule-stay-as-text ()
+  "GIVEN three dashes that markdown-mode did not take for a rule: in a
+code block, AND under a line of text, where they make it a heading
+WHEN the rules are drawn
+THEN neither is shown as a line."
+  (with-temp-buffer
+    (insert (propertize "---\n" 'face 'markdown-pre-face)
+            "A title\n"
+            (propertize "---" 'face 'markdown-header-rule-face) "\n")
+    (shipit--draw-horizontal-rules)
+    (should-not (text-property-not-all (point-min) (point-max) 'display nil))))
+
+(ert-deftest test-shipit-an-html-rule-and-a-markdown-rule-are-the-same-line ()
+  "GIVEN an <hr> tag, which is turned into a line before the markdown
+is fontified, AND a rule of dashes, which is drawn after
+THEN both are the same line of the same length."
+  (with-temp-buffer
+    (insert (propertize "---" 'face 'markdown-hr-face) "\n")
+    (shipit--draw-horizontal-rules)
+    (should (equal (get-text-property (point-min) 'display)
+                   (string-trim-right
+                    (substring-no-properties (shipit--convert-inline-html "<hr>")))))))
+
 ;;; Inline HTML Stripping Tests
 
 (ert-deftest test-shipit--strip-inline-html-tags-kbd ()

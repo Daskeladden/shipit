@@ -2110,12 +2110,33 @@ heading still has its hashes."
                                        'markdown-header-delimiter-face)
           (put-text-property (match-beginning 1) (match-end 1) 'invisible t))))))
 
+(defun shipit--draw-horizontal-rules ()
+  "Show the rules of this buffer, fontified by markdown-mode, as lines.
+A rule is a line of three or more dashes, stars or underscores.  A
+forge draws a horizontal line for it.  The text stays in the buffer,
+so a copy of it is still markdown.
+
+Dashes under a line of text are no rule: they make that line a
+heading.  markdown-mode knows which is which, and gives only a rule
+the face that is asked for here."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward
+            "^ \\{0,3\\}\\(\\([-*_]\\)\\(?:[ \t]*\\2\\)\\{2,\\}\\)[ \t]*$" nil t)
+      (when (shipit--markdown-face-p (match-beginning 1) 'markdown-hr-face)
+        (put-text-property (match-beginning 1) (match-end 1) 'display
+                           (propertize (shipit--horizontal-rule) 'face 'shadow))))))
+
 (defun shipit--strip-inline-html-tags (text)
   "Strip safe inline HTML tags from TEXT, preserving their content.
 Only removes <kbd> tags which have no markdown equivalent and add noise
 in text buffers.  Other formatting tags (<b>, <em>, <del>, etc.) are
 preserved since they carry meaningful emphasis or semantic information."
   (replace-regexp-in-string "</?kbd>" "" text))
+
+(defun shipit--horizontal-rule ()
+  "The characters that a horizontal rule is drawn with."
+  (make-string 40 ?\x2500))
 
 (defun shipit--convert-inline-html (text)
   "Convert inline HTML tags in TEXT to markdown equivalents.
@@ -2124,7 +2145,7 @@ Process <a> first so <em>/<strong> can wrap the converted links."
   (let ((result text))
     ;; <hr /> or <hr> -> markdown horizontal rule
     (setq result (replace-regexp-in-string
-                  "<hr[[:space:]]*/?>\\s-*" (concat (propertize (make-string 40 ?\x2500) 'font-lock-face 'shadow) "\n") result))
+                  "<hr[[:space:]]*/?>\\s-*" (concat (propertize (shipit--horizontal-rule) 'font-lock-face 'shadow) "\n") result))
     ;; <br /> or <br> -> newline
     (setq result (replace-regexp-in-string
                   "<br[[:space:]]*/?>\\s-*" "\n" result))
@@ -4968,6 +4989,7 @@ This is the actual rendering implementation; callers should use
               (delay-mode-hooks (markdown-mode))
               (font-lock-ensure)
               (shipit--hide-heading-hashes)
+              (shipit--draw-horizontal-rules)
               ;; Note: Code block backgrounds are applied via overlays AFTER
               ;; text is inserted into the final buffer (see shipit--apply-code-block-backgrounds-in-region)
               ;; because overlays don't transfer with buffer-string

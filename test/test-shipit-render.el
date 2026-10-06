@@ -465,6 +465,46 @@ THEN the text is the same."
   (let ((text "### What\n\nAdd a thing\n\n- [x] None\n"))
     (should (equal text (shipit--strip-html-comments text)))))
 
+;;; The hashes of a heading
+
+(defun test-shipit-render--invisible-text ()
+  "The text of this buffer that is invisible, each run as a string."
+  (let ((runs nil) (pos (point-min)))
+    (while (< pos (point-max))
+      (let ((next (next-single-property-change pos 'invisible nil (point-max))))
+        (when (get-text-property pos 'invisible)
+          (push (buffer-substring-no-properties pos next) runs))
+        (setq pos next)))
+    (nreverse runs)))
+
+(ert-deftest test-shipit-the-hashes-of-a-heading-are-hidden ()
+  "GIVEN markdown that is fontified as markdown-mode leaves it: the
+hashes of a heading have the face of a heading delimiter
+WHEN the hashes of the headings are hidden
+THEN the hashes in front of each heading, with the space after them,
+are invisible, AND so are the hashes that close a heading, AND the text
+of the heading is not."
+  (with-temp-buffer
+    (insert (propertize "###" 'face 'markdown-header-delimiter-face) " What\n"
+            "Add a thing\n"
+            (propertize "##" 'face '(markdown-header-delimiter-face bold)) " Why "
+            (propertize "##" 'face 'markdown-header-delimiter-face) "\n")
+    (shipit--hide-heading-hashes)
+    (should (equal '("### " "## " " ##") (test-shipit-render--invisible-text)))
+    (should (equal "### What\nAdd a thing\n## Why ##\n"
+                   (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-shipit-hashes-that-are-no-heading-stay ()
+  "GIVEN hashes at the start of a line that markdown-mode did not take
+for a heading: a comment in a code block, an issue number
+WHEN the hashes of the headings are hidden
+THEN nothing of these lines is invisible."
+  (with-temp-buffer
+    (insert (propertize "# a comment in code\n" 'face 'markdown-pre-face)
+            "#123 is the issue\n")
+    (shipit--hide-heading-hashes)
+    (should-not (test-shipit-render--invisible-text))))
+
 ;;; Inline HTML Stripping Tests
 
 (ert-deftest test-shipit--strip-inline-html-tags-kbd ()

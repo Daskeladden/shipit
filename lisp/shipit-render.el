@@ -2088,6 +2088,28 @@ One that is never closed hides the rest, as a forge shows it."
            start (if (search-forward "-->" nil t) (point) (point-max))))))
     (buffer-string)))
 
+(defun shipit--markdown-face-p (position face)
+  "Whether markdown-mode gave POSITION of this buffer FACE."
+  (let ((faces (get-text-property position 'face)))
+    (memq face (if (listp faces) faces (list faces)))))
+
+(defun shipit--hide-heading-hashes ()
+  "Hide the hashes of the headings of this buffer, fontified by markdown-mode.
+A forge shows a heading by its look alone.  The hashes in front of a
+heading go with the space after them, and those that close one with
+the space before them.  The text stays in the buffer, so a copy of a
+heading still has its hashes."
+  (save-excursion
+    (dolist (hashes '("^ \\{0,3\\}\\(#\\{1,6\\}[ \t]+\\)" "\\([ \t]+#+\\)[ \t]*$"))
+      (goto-char (point-min))
+      (while (re-search-forward hashes nil t)
+        (when (shipit--markdown-face-p (save-excursion
+                                         (goto-char (match-beginning 1))
+                                         (skip-chars-forward " \t")
+                                         (point))
+                                       'markdown-header-delimiter-face)
+          (put-text-property (match-beginning 1) (match-end 1) 'invisible t))))))
+
 (defun shipit--strip-inline-html-tags (text)
   "Strip safe inline HTML tags from TEXT, preserving their content.
 Only removes <kbd> tags which have no markdown equivalent and add noise
@@ -4945,6 +4967,7 @@ This is the actual rendering implementation; callers should use
                 (insert numbered))
               (delay-mode-hooks (markdown-mode))
               (font-lock-ensure)
+              (shipit--hide-heading-hashes)
               ;; Note: Code block backgrounds are applied via overlays AFTER
               ;; text is inserted into the final buffer (see shipit--apply-code-block-backgrounds-in-region)
               ;; because overlays don't transfer with buffer-string

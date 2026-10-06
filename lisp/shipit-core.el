@@ -342,7 +342,16 @@ Set to the symbol `inherit' to follow the global magit default instead."
 Call from the body of each shipit mode derived from `magit-section-mode'."
   (unless (eq shipit-section-visibility-indicators 'inherit)
     (setq-local magit-section-visibility-indicators
-                shipit-section-visibility-indicators)))
+                shipit-section-visibility-indicators))
+  ;; What:  font-lock leaves the faces of the text alone.
+  ;; Why:   `magit-section-mode' sets `font-lock-defaults', so font-lock
+  ;;        runs over every buffer of it, and font-lock takes the `face'
+  ;;        property off the text it runs over.  Rendered markdown has
+  ;;        its faces in that property, so its headings, bold text and
+  ;;        code showed as plain text.
+  ;; Note:  no keyword fontifies these buffers, so font-lock has no
+  ;;        face of its own to take off.
+  (setq-local font-lock-unfontify-region-function #'ignore))
 
 (defvar meow-mode-state-list)
 

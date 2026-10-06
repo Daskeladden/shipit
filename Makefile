@@ -166,6 +166,7 @@ test-unit: compile
 		-l test/test-shipit-imenu.el \
 		-l test/test-shipit-local-clone.el \
 		-l test/test-shipit-buffer-repo.el \
+		-l test/test-shipit-font-lock.el \
 		-l test/test-shipit-actions-timestamps.el \
 		-l test/test-shipit-run-steps.el \
 		-l test/test-shipit-merge.el \

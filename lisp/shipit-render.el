@@ -2049,6 +2049,45 @@ window-body-width) applies."
         (shipit--debug-log "IMAGE-DISPLAY: Download failed for %s" url))
       (format "[Image: %s - Download failed]" alt-text))))
 
+(defun shipit--in-markdown-code-p (position)
+  "Whether POSITION of this buffer, which holds markdown, is in code.
+In a fenced code block, or in a code span of its line."
+  (save-excursion
+    (goto-char position)
+    (let ((fences (how-many "^ \\{0,3\\}\\(?:```\\|~~~\\)" (point-min) (line-beginning-position)))
+          (ticks (how-many "`" (line-beginning-position) position)))
+      (or (cl-oddp fences) (cl-oddp ticks)))))
+
+(defun shipit--delete-html-comment (start end)
+  "Delete the HTML comment from START to END of this buffer.
+A comment that fills its lines takes the lines with it, so that no
+blank line stands where it was.  One inside a line leaves one space
+between the words around it."
+  (let ((alone (and (save-excursion (goto-char start) (skip-chars-backward " \t") (bolp))
+                    (save-excursion (goto-char end) (skip-chars-forward " \t") (eolp)))))
+    (if alone
+        (delete-region (save-excursion (goto-char start) (line-beginning-position))
+                       (save-excursion (goto-char end) (min (point-max) (1+ (line-end-position)))))
+      (delete-region start end)
+      (goto-char start)
+      (when (and (eq ?\s (char-before)) (eq ?\s (char-after)))
+        (delete-char 1)))))
+
+(defun shipit--strip-html-comments (text)
+  "Return markdown TEXT without its HTML comments, which a forge does not show.
+A pull request template has them as hints under its headings.  A
+comment in a fenced code block or in a code span is text, and stays.
+One that is never closed hides the rest, as a forge shows it."
+  (with-temp-buffer
+    (insert text)
+    (goto-char (point-min))
+    (while (search-forward "<!--" nil t)
+      (let ((start (match-beginning 0)))
+        (unless (shipit--in-markdown-code-p start)
+          (shipit--delete-html-comment
+           start (if (search-forward "-->" nil t) (point) (point-max))))))
+    (buffer-string)))
+
 (defun shipit--strip-inline-html-tags (text)
   "Strip safe inline HTML tags from TEXT, preserving their content.
 Only removes <kbd> tags which have no markdown equivalent and add noise
@@ -4889,13 +4928,14 @@ This is the actual rendering implementation; callers should use
 
         (if (featurep 'markdown-mode)
             (progn
-              ;; Step 1: Normalize CRLF
+              ;; Step 1: Normalize CRLF, and take out the HTML comments
               ;; Step 2: Strip inline HTML tags (e.g., <kbd>) before alignment
               ;; Step 3: Align tables with pandoc
               ;; Step 4: Escape mid-word underscores (e.g., file_name.py)
               ;; Note: Don't process images yet - they'll be done after markdown rendering
               (let* ((normalized (replace-regexp-in-string "\r" "" text))
-                     (refs-resolved (shipit--resolve-reference-style-images normalized))
+                     (uncommented (shipit--strip-html-comments normalized))
+                     (refs-resolved (shipit--resolve-reference-style-images uncommented))
                      (links-resolved (shipit--rewrite-relative-markdown-links refs-resolved))
                      (html-stripped (shipit--strip-inline-html-tags links-resolved))
                      (html-converted (shipit--convert-inline-html html-stripped))

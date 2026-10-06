@@ -409,6 +409,62 @@ THEN browse-url is NOT called (no hardcoded fallback)."
       ;; THEN browse-url was NOT called since no :browse-issue-url registered
       (should-not browse-url-called))))
 
+;;; HTML comments
+
+(ert-deftest test-shipit-html-comment-on-its-own-line-goes-with-the-line ()
+  "GIVEN markdown with an HTML comment on a line of its own, as a pull
+request template has under each heading
+WHEN the HTML comments are taken out
+THEN the line is gone too, AND no blank line stands in its place."
+  (should (equal "### What\nAdd a thing\n"
+                 (shipit--strip-html-comments
+                  "### What\n<!-- A short summary -->\nAdd a thing\n"))))
+
+(ert-deftest test-shipit-html-comment-over-several-lines-goes-with-its-lines ()
+  "GIVEN an HTML comment that fills three lines
+WHEN the HTML comments are taken out
+THEN all three lines are gone."
+  (should (equal "### Evidence\nIt works.\n"
+                 (shipit--strip-html-comments
+                  "### Evidence\n<!-- Screenshots.\nThe goal is to show it.\nSee above -->\nIt works.\n"))))
+
+(ert-deftest test-shipit-html-comment-inside-a-line-leaves-the-rest ()
+  "GIVEN an HTML comment between two words of a line
+WHEN the HTML comments are taken out
+THEN the words stand with one space between them."
+  (should (equal "before after\n"
+                 (shipit--strip-html-comments "before <!-- hidden --> after\n"))))
+
+(ert-deftest test-shipit-html-comment-in-code-is-text ()
+  "GIVEN an HTML comment in a fenced code block, AND one in a code span
+WHEN the HTML comments are taken out
+THEN both stay: there they are text that the author shows."
+  (dolist (text '("```html\n<!-- kept -->\n```\n"
+                  "~~~\n<!-- kept -->\n~~~\n"
+                  "Write `<!-- kept -->` to hide a hint.\n"))
+    (should (equal text (shipit--strip-html-comments text)))))
+
+(ert-deftest test-shipit-html-comment-after-a-code-block-is-taken-out ()
+  "GIVEN an HTML comment after a fenced code block that is closed
+WHEN the HTML comments are taken out
+THEN the comment goes, AND the code block stays as it is."
+  (should (equal "```\ncode\n```\ntext\n"
+                 (shipit--strip-html-comments "```\ncode\n```\n<!-- gone -->\ntext\n"))))
+
+(ert-deftest test-shipit-html-comment-that-never-ends-hides-the-rest ()
+  "GIVEN an HTML comment that is opened and never closed
+WHEN the HTML comments are taken out
+THEN the text from there on is gone, as a forge shows it."
+  (should (equal "shown\n"
+                 (shipit--strip-html-comments "shown\n<!-- not closed\nhidden\n"))))
+
+(ert-deftest test-shipit-text-without-html-comments-is-left-as-it-is ()
+  "GIVEN markdown without an HTML comment, with blank lines in it
+WHEN the HTML comments are taken out
+THEN the text is the same."
+  (let ((text "### What\n\nAdd a thing\n\n- [x] None\n"))
+    (should (equal text (shipit--strip-html-comments text)))))
+
 ;;; Inline HTML Stripping Tests
 
 (ert-deftest test-shipit--strip-inline-html-tags-kbd ()

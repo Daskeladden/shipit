@@ -415,11 +415,54 @@ ACTION and CONTEXT are passed to the post-action hook."
      nil)))
 
 
+(defun shipit--cut-at-unopened-parenthesis (url)
+  "Return URL up to its first closing parenthesis that has no opening one.
+A URL that opens each parenthesis that it closes comes back whole."
+  (let ((depth 0)
+        (index 0)
+        (end nil))
+    (while (and (not end) (< index (length url)))
+      (pcase (aref url index)
+        (?\( (setq depth (1+ depth)))
+        (?\) (if (zerop depth)
+                 (setq end index)
+               (setq depth (1- depth)))))
+      (setq index (1+ index)))
+    (substring url 0 end)))
+
+(defun shipit--thing-at-point-url ()
+  "Return the URL that `thing-at-point' finds at point, or nil."
+  ;; What: cut the URL at a closing parenthesis that it did not open.
+  ;; Why: a terminal buffer can read the parenthesis that closes a
+  ;;      markdown link, [TEXT](URL), and the text after it, as a part
+  ;;      of the URL.
+  (when-let* ((url (thing-at-point 'url t)))
+    (shipit--cut-at-unopened-parenthesis url)))
+
+(defun shipit--markdown-link-url (url-start written)
+  "Return the URL of a markdown link, which the buffer shows as WRITTEN.
+The URL starts at URL-START."
+  ;; What: for a URL that the end of a row cuts, ask the buffer.
+  ;; Why: a terminal cuts a long URL at the end of a row, knows the
+  ;;      whole of it, and tells `thing-at-point'.
+  ;; Note: the answer counts only when it is more than the first row
+  ;;       shows.  The first row alone can be the URL of another page.
+  (let* ((first-row (car (split-string written "\n")))
+         (known (and (not (equal first-row written))
+                     (save-excursion
+                       (goto-char url-start)
+                       (shipit--thing-at-point-url)))))
+    (if (and known
+             (string-prefix-p first-row known)
+             (> (length known) (length first-row)))
+        known
+      written)))
+
 (defun shipit--url-at-point ()
   "Return URL at point, or nil if none.
 Checks for plain URLs and markdown-style [text](url) links.
 Handles wrapped/indented text by searching nearby context."
-  (or (thing-at-point 'url)
+  (or (shipit--thing-at-point-url)
       ;; Check if we're inside a markdown link [text](url)
       ;; Search in a region around point to handle wrapped text
       (save-excursion
@@ -432,7 +475,8 @@ Handles wrapped/indented text by searching nearby context."
             (while (re-search-forward "\\[\\([^]]*\\)\\](\\([^)]+\\))" search-end t)
               (when (and (<= (match-beginning 0) pos)
                          (>= (match-end 0) pos))
-                (throw 'found (match-string 2))))
+                (throw 'found (shipit--markdown-link-url (match-beginning 2)
+                                                         (match-string 2)))))
             nil)))))
 
 (defun shipit--description-dwim-actions ()

@@ -481,5 +481,159 @@ THEN no classification or browsing occurs."
       (shipit-open-url)
       (should (null classified-called)))))
 
+;;; The URL at point as a target of embark
+
+(defvar embark-target-finders)
+(defvar embark-keymap-alist)
+
+(defmacro test-open-url--at (text &rest body)
+  "Run BODY in a buffer that holds TEXT, with point where TEXT has a bar.
+The bar itself is taken out.  No repository has an issue backend of its
+own, so only the forges answer for a URL."
+  (declare (indent 1))
+  `(let ((shipit-issue-repo-backends nil))
+     (require 'shipit-commands)
+     (require 'shipit-pr-actions)
+     (with-temp-buffer
+       (insert ,text)
+       (goto-char (point-min))
+       (search-forward "|")
+       (delete-char -1)
+       ,@body)))
+
+(ert-deftest test-open-url-target-from-the-text-of-a-markdown-link ()
+  "GIVEN a markdown link to a GitHub pull request, with point in its text
+WHEN embark asks shipit for a target
+THEN the target is the URL of the link, of the kind `shipit-url'."
+  (test-open-url--at "See [PR |#42](https://github.com/owner/repo/pull/42) for it."
+    (let ((target (shipit-embark-url-target)))
+      (should (eq 'shipit-url (car target)))
+      (should (equal "https://github.com/owner/repo/pull/42" (cadr target))))))
+
+(ert-deftest test-open-url-target-from-the-text-of-a-gitlab-link ()
+  "GIVEN a markdown link to a GitLab merge request, with point in its text
+WHEN embark asks shipit for a target
+THEN the target is the URL of the link."
+  (require 'shipit-pr-gitlab)
+  (test-open-url--at "[the |change](https://gitlab.com/group/project/-/merge_requests/5)"
+    (should (equal "https://gitlab.com/group/project/-/merge_requests/5"
+                   (cadr (shipit-embark-url-target))))))
+
+(ert-deftest test-open-url-target-from-the-url-of-a-markdown-link ()
+  "GIVEN a markdown link to a GitHub pull request, with point on its URL
+WHEN embark asks shipit for a target
+THEN the target is that URL
+AND its bounds hold the URL without the parenthesis that closes the link."
+  (test-open-url--at "See [PR #42](https://github.com/owner/|repo/pull/42) for it."
+    (pcase-let ((`(,_kind ,url ,start . ,end) (shipit-embark-url-target)))
+      (should (equal "https://github.com/owner/repo/pull/42" url))
+      (should (equal url (buffer-substring start end))))))
+
+(ert-deftest test-open-url-target-from-a-bare-url ()
+  "GIVEN a sentence that ends in the URL of a GitHub issue, with point on it
+WHEN embark asks shipit for a target
+THEN the target is the URL without the period of the sentence."
+  (test-open-url--at "Look at https://github.com/owner/|repo/issues/7."
+    (should (equal "https://github.com/owner/repo/issues/7"
+                   (cadr (shipit-embark-url-target))))))
+
+(ert-deftest test-open-url-target-is-the-link-that-point-is-in ()
+  "GIVEN two markdown links on one line, with point in the text of the second
+WHEN embark asks shipit for a target
+THEN the target is the URL of the second link."
+  (test-open-url--at (concat "[one](https://github.com/owner/repo/pull/1) and "
+                             "[t|wo](https://github.com/owner/repo/pull/2)")
+    (should (equal "https://github.com/owner/repo/pull/2"
+                   (cadr (shipit-embark-url-target))))))
+
+(ert-deftest test-open-url-no-target-between-two-links ()
+  "GIVEN two markdown links on one line, with point in the words between them
+WHEN embark asks shipit for a target
+THEN there is none."
+  (test-open-url--at (concat "[one](https://github.com/owner/repo/pull/1) a|nd "
+                             "[two](https://github.com/owner/repo/pull/2)")
+    (should-not (shipit-embark-url-target))))
+
+(ert-deftest test-open-url-no-target-in-brackets-that-are-no-link ()
+  "GIVEN brackets that are no link, before a markdown link on the same line,
+with point in those brackets
+WHEN embark asks shipit for a target
+THEN there is none."
+  (test-open-url--at "[no|te] see [two](https://github.com/owner/repo/pull/2)"
+    (should-not (shipit-embark-url-target))))
+
+(ert-deftest test-open-url-no-target-for-a-url-that-no-backend-knows ()
+  "GIVEN a markdown link to a page that is no forge, with point in its text
+WHEN embark asks shipit for a target
+THEN there is none, so embark offers what it offers without shipit."
+  (test-open-url--at "[the |guide](https://example.com/guide)"
+    (should-not (shipit-embark-url-target))))
+
+(defun test-open-url--terminal-tells (told)
+  "Make the buffer a terminal that tells `thing-at-point' TOLD for a URL.
+As a terminal does, it tells that on the rows that show the URL of the
+markdown link, and nothing in the text of the link before them.  A
+terminal joins the rows of a URL that a row end cuts, and it reads the
+parenthesis that closes the link as a part of the URL."
+  (let ((url-start (save-excursion
+                     (goto-char (point-min))
+                     (search-forward "](")
+                     (point))))
+    (setq-local thing-at-point-provider-alist
+                (list (cons 'url (lambda ()
+                                   (and (>= (point) url-start) told)))))))
+
+(ert-deftest test-open-url-target-asks-the-buffer-for-a-cut-url ()
+  "GIVEN a terminal buffer that cuts the URL of a markdown link at the end
+of a row, and that knows the whole URL
+WHEN embark asks shipit for a target, with point in the text of the link
+THEN the target is the whole URL, not the part on the first row."
+  (test-open-url--at "[PR |#4242](https://github.com/owner/repo/pull/42\n  42)"
+    (test-open-url--terminal-tells "https://github.com/owner/repo/pull/4242)")
+    (should (equal "https://github.com/owner/repo/pull/4242"
+                   (cadr (shipit-embark-url-target))))))
+
+(ert-deftest test-open-url-target-without-what-a-terminal-adds ()
+  "GIVEN a terminal buffer with a bold markdown link, where the terminal
+reads the parenthesis and the stars after the URL as a part of it
+WHEN embark asks shipit for a target, with point on the URL
+THEN the target is the URL as the link gives it."
+  (test-open-url--at "**[PR #42](https://github.com/owner/|repo/pull/42)**"
+    (test-open-url--terminal-tells "https://github.com/owner/repo/pull/42)**")
+    (should (equal "https://github.com/owner/repo/pull/42"
+                   (cadr (shipit-embark-url-target))))))
+
+(ert-deftest test-open-url-target-keeps-the-parentheses-of-a-url ()
+  "GIVEN the URL of a file whose name has parentheses, with point on it
+WHEN embark asks shipit for a target
+THEN the target is the URL with both parentheses."
+  (test-open-url--at "See https://github.com/owner/|repo/blob/main/notes_(old).md now."
+    (should (equal "https://github.com/owner/repo/blob/main/notes_(old).md"
+                   (cadr (shipit-embark-url-target))))))
+
+(ert-deftest test-open-url-no-target-for-a-cut-url-that-nothing-joins ()
+  "GIVEN a buffer that cuts the URL of a markdown link at the end of a row,
+and that knows no more of the URL than the first row shows
+WHEN embark asks shipit for a target, with point in the text of the link
+THEN there is none, so pull request 42 is not opened for number 4242."
+  (test-open-url--at "[PR |#4242](https://github.com/owner/repo/pull/42\n  42)"
+    (should-not (shipit-embark-url-target))))
+
+(ert-deftest test-open-url-target-opens-in-shipit-by-default ()
+  "GIVEN embark with its own target finder and keymap for a URL
+WHEN shipit registers its target
+THEN embark asks shipit first
+AND RET and o on a `shipit-url' target run `shipit-open-url'
+AND the URL actions of embark stay on that target."
+  (require 'shipit-commands)
+  (let ((embark-target-finders (list 'embark-target-url-at-point))
+        (embark-keymap-alist (list '(url . embark-url-map))))
+    (shipit--embark-register-url-target)
+    (should (eq 'shipit-embark-url-target (car embark-target-finders)))
+    (should (equal '(shipit-embark-url-map embark-url-map)
+                   (alist-get 'shipit-url embark-keymap-alist)))
+    (should (eq 'shipit-open-url (lookup-key shipit-embark-url-map (kbd "RET"))))
+    (should (eq 'shipit-open-url (lookup-key shipit-embark-url-map (kbd "o"))))))
+
 (provide 'test-shipit-open-url)
 ;;; test-shipit-open-url.el ends here

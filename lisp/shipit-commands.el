@@ -55,6 +55,7 @@
 (declare-function shipit--classify-url "shipit-render")
 (declare-function shipit-jira-columns-transient "shipit-issue-jira")
 (declare-function shipit--open-classified-url "shipit-render")
+(declare-function shipit--url-at-point "shipit-pr-actions")
 
 ;; Forward declarations for variables from other modules
 (defvar last-query-parts)
@@ -1901,6 +1902,38 @@ Unrecognized URLs offer a browser fallback."
           (message "URL not recognized by any shipit backend: %s" url)
           (when (y-or-n-p "Open in browser instead? ")
             (browse-url url)))))))
+
+;;;
+;;; The URL at point as a target of embark
+;;;
+
+(defun shipit-embark-url-target ()
+  "Embark target finder: the URL at point, when shipit can open it.
+Point is on the URL, or in the text of a markdown link to it.  The kind
+of the target is `shipit-url' and its value is the URL."
+  (when-let* ((url (shipit--url-at-point))
+              ((shipit--classify-url url)))
+    `(shipit-url ,(substring-no-properties url)
+                 . ,(bounds-of-thing-at-point 'url))))
+
+(defvar shipit-embark-url-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'shipit-open-url)
+    (define-key map (kbd "o") #'shipit-open-url)
+    map)
+  "Embark actions on a URL that shipit can open.")
+
+(defvar embark-target-finders)  ; Silence byte-compiler
+
+(defun shipit--embark-register-url-target ()
+  "Make embark offer `shipit-embark-url-map' on a URL that shipit can open.
+The URL actions of embark stay, after those of shipit."
+  (add-to-list 'embark-target-finders #'shipit-embark-url-target)
+  (add-to-list 'embark-keymap-alist
+               '(shipit-url shipit-embark-url-map embark-url-map)))
+
+(with-eval-after-load 'embark
+  (shipit--embark-register-url-target))
 
 ;;;
 ;;; File Viewed State

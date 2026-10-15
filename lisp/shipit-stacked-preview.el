@@ -291,13 +291,16 @@ misses included, so redrawing the list does not ask again."
           (push name (alist-get sha tips nil nil #'equal)))))
     tips))
 
-(defun shipit-stacked-preview--detect-base (repo default)
+(defun shipit-stacked-preview--detect-base (repo default &optional own)
   "Return the ref the stack sits on: DEFAULT, unless a pull request says else.
 A commit below HEAD that is the tip of a remote branch with an open
 pull request is already on its way to DEFAULT, and stacking it again
 would raise it twice.  The nearest such branch becomes the base, so
 the buffer holds only work no pull request carries yet.  The newest
 commit never does: a base at HEAD would leave a stack of nothing.
+A branch named in OWN is a layer of this stack, and its pull request
+is one the stack made, so it does not move the base either: a stack
+opened again after its layers were submitted still holds all of them.
 With REPO nil, or no such branch, DEFAULT stands."
   (or (when repo
         (let ((tips (shipit-stacked-preview--remote-tips))
@@ -308,6 +311,7 @@ With REPO nil, or no such branch, DEFAULT stands."
               (lambda (ref)
                 (let ((name (shipit-stacked-preview--base-name ref)))
                   (and (not (equal name current))
+                       (not (member name own))
                        (not (equal ref default))
                        (shipit-stack-plan--pr-for-branch repo name)
                        ref)))
@@ -1010,10 +1014,15 @@ instead of measuring from the default branch, for a stack raised
 against a release branch."
   (interactive "P")
   (let* ((repo (shipit--get-repo-from-remote))
+         ;; Read before the base: the branches already dividing this
+         ;; branch are the stack's own layers, and their pull requests
+         ;; must not pull the base up to the layer below the top.
+         (existing (shipit-stacked-preview--from-existing-stack))
          (base (if choose-base
                    (shipit-stacked-preview--read-base)
                  (shipit-stacked-preview--detect-base
-                  repo (shipit-stack--base-ref))))
+                  repo (shipit-stack--base-ref)
+                  (mapcar #'cdr (cdr existing)))))
          (branch (shipit-stack--current-branch))
          (commits (shipit--commits-in-range (format "%s..HEAD" base))))
     (unless branch (user-error "Not on a branch"))
@@ -1025,12 +1034,11 @@ against a release branch."
         (setq shipit-stacked-preview--repo repo
               shipit-stacked-preview--base base
               shipit-stacked-preview--branch branch
-              shipit-stacked-preview--commits commits)
-        (let ((existing (shipit-stacked-preview--from-existing-stack)))
-          (setq shipit-stacked-preview--boundaries
-                (or (car existing)
-                    (shipit-stacked-preview--proposed-boundaries commits))
-                shipit-stacked-preview--names (cdr existing)))
+              shipit-stacked-preview--commits commits
+              shipit-stacked-preview--boundaries
+              (or (car existing)
+                  (shipit-stacked-preview--proposed-boundaries commits))
+              shipit-stacked-preview--names (cdr existing))
         (shipit-stacked-preview--render))
       (switch-to-buffer buffer))))
 

@@ -925,6 +925,25 @@ nothing."
                             "o/r" "origin/main")))))
       (delete-directory root t))))
 
+(ert-deftest test-shipit-stacked-preview-base-skips-the-stacks-own-layers ()
+  "GIVEN a layer of this stack: a local branch below HEAD, pushed, with
+an open pull request
+WHEN the base is detected with that branch among the stack's own
+THEN the default stands: a stack opened again after its layers were
+submitted still holds every layer."
+  (require 'shipit-sandbox)
+  (let ((root (make-temp-file "shipit-base-test-" t)))
+    (unwind-protect
+        (let ((default-directory (file-name-as-directory
+                                  (shipit-sandbox-build root))))
+          (shipit-sandbox--git "branch" "part-one" "work~3")
+          (shipit-sandbox--git "push" "-q" "origin" "part-one")
+          (test-stacked-preview--with-pr-backend "part-one"
+            (should (equal "origin/main"
+                           (shipit-stacked-preview--detect-base
+                            "o/r" "origin/main" '("part-one"))))))
+      (delete-directory root t))))
+
 (ert-deftest test-shipit-stacked-preview-rename-layer-takes-the-new-name ()
   "GIVEN a divided stack in a repository
 WHEN a layer with only a derived name is renamed

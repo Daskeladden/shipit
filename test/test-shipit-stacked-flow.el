@@ -83,7 +83,16 @@ git half real and only the remote's API standing in."
         (shipit-stacked-preview--render)
         (should (equal '("PR #100" "PR #101")
                        (mapcar #'shipit-stacked-preview--layer-status
-                               (shipit-stacked-preview--current-layers))))))))
+                               (shipit-stacked-preview--current-layers))))
+
+        ;; opened again, the stack is still the whole of it: the pull
+        ;; requests of its own layers do not make the top layer a
+        ;; stack of one
+        (shipit-stacked-preview)
+        (should (equal "origin/main" shipit-stacked-preview--base))
+        (should (equal branches
+                       (shipit-stacked-preview--branch-names
+                        (shipit-stacked-preview--current-layers))))))))
 
 (provide 'test-shipit-stacked-flow)
 ;;; test-shipit-stacked-flow.el ends here

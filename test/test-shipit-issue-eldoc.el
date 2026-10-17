@@ -216,7 +216,7 @@ WHEN shipit-code-refs--eldoc-function is called
 THEN it returns a formatted string with the title."
   (let ((shipit--issue-title-cache (make-hash-table :test 'equal)))
     (puthash '("acme/repo" . "PRJ-100")
-             '(:status fresh :title "Camera drops frames"
+             '(:status fresh :title "Player drops frames"
                        :state "In Progress" :assignee "bob")
              shipit--issue-title-cache)
     (cl-letf (((symbol-function 'shipit-code-refs--current-repo)
@@ -228,7 +228,7 @@ THEN it returns a formatted string with the title."
         (let ((result (shipit-code-refs--eldoc-function #'ignore)))
           (should (stringp result))
           (should (string-match-p "PRJ-100" result))
-          (should (string-match-p "Camera drops frames" result))
+          (should (string-match-p "Player drops frames" result))
           (should (string-match-p "In Progress" result)))))))
 
 (ert-deftest test-shipit-code-refs-eldoc-cache-miss-triggers-fetch ()

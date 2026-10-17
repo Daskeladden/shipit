@@ -16,11 +16,11 @@
 (require 'shipit-preview)
 
 (defconst test-stacked-preview--commits
-  '((:sha "a1" :first-line "fpga: conventions")
-    (:sha "a2" :first-line "fpga: point tests at the skill")
-    (:sha "b1" :first-line "uoe: abort path")
-    (:sha "b2" :first-line "uoe: tx mux")
-    (:sha "c1" :first-line "zhit: formal"))
+  '((:sha "a1" :first-line "docs: conventions")
+    (:sha "a2" :first-line "docs: point tests at the skill")
+    (:sha "b1" :first-line "net: abort path")
+    (:sha "b2" :first-line "net: tx mux")
+    (:sha "c1" :first-line "lint: format"))
   "Five commits across three areas, oldest first.")
 
 (ert-deftest test-shipit-stacked-preview-proposes-a-division-where-the-area-changes ()
@@ -53,7 +53,7 @@ already."
     (should (equal 3 (length layers)))
     (should (equal '(2 2 1)
                    (mapcar (lambda (l) (length (cdr (assq 'commits l)))) layers)))
-    (should (equal '("work-fpga" "work-uoe" "work")
+    (should (equal '("work-docs" "work-net" "work")
                    (mapcar (lambda (l) (cdr (assq 'branch l))) layers)))
     (should (equal '("a2" "b2" "c1")
                    (mapcar (lambda (l) (cdr (assq 'tip l))) layers)))
@@ -76,9 +76,9 @@ was before anyone divided it."
 WHEN it is named
 THEN the name says which, so the branch and the pull request it
 becomes are recognisable."
-  (should (equal "work-uoe"
+  (should (equal "work-net"
                  (shipit-stacked-preview--layer-name
-                  "work" '((:sha "b1" :first-line "uoe: abort path"))))))
+                  "work" '((:sha "b1" :first-line "net: abort path"))))))
 
 (ert-deftest test-shipit-stacked-preview-keeps-the-names-branches-already-have ()
   "GIVEN layers already marked by branches
@@ -103,7 +103,7 @@ commits, so dividing further does not rename what is already there."
   (let ((layers (shipit-stacked-preview--layers
                  test-stacked-preview--commits '("a2" "b2") "work"
                  '(("a2" . "already-here")))))
-    (should (equal '("already-here" "work-uoe" "work")
+    (should (equal '("already-here" "work-net" "work")
                    (mapcar (lambda (l) (cdr (assq 'branch l))) layers)))))
 
 (ert-deftest test-shipit-stacked-preview-commits-line-up-under-their-layer ()

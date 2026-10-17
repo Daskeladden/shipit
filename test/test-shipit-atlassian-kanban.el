@@ -68,7 +68,7 @@
     (columns . (((name . "Open")
                  (statuses . ("Open"))
                  (issues . (((key . "WORD-1")
-                             (title . "Recalibrate the stereo projector immediately after every firmware flash, including downgrades")
+                             (title . "Rebuild the search indexes right away after every database migration, including the rollbacks")
                              (state . "Open") (issue-type . "Bug"))
                             ((key . "WORD-2")
                              (title . "shipit--atlassian-dashboard-refresh-data misreports pagination")
@@ -186,7 +186,7 @@ THEN it breaks after a hyphen rather than mid-word, and every piece fits.
 A Jira summary often carries a test name or an identifier.  Keeping
 such a word whole would widen the column it sits in, and a column of a
 hundred cards is not worth widening for one of them."
-  (let* ((word "test-upgrade-carbon-camera-while-cutting-its-power")
+  (let* ((word "test-upgrade-cache-servers-while-cutting-its-power")
          (lines (split-string
                  (shipit-atlassian-kanban--wrap word #'test-kanban--measure 140)
                  "\n")))

@@ -15,13 +15,13 @@
 ;;; Tests for shipit--build-github-query
 
 (ert-deftest test-pr-search-dynamic--plain-text-adds-in-title ()
-  "GIVEN a parsed query with plain text filter 'fpga' and no field
+  "GIVEN a parsed query with plain text filter 'cache' and no field
 WHEN building the GitHub query
 THEN the query includes 'in:title' qualifier."
-  (let* ((parsed '((field . nil) (filter . "fpga")))
+  (let* ((parsed '((field . nil) (filter . "cache")))
          (query (shipit--build-github-query "owner/repo" parsed)))
     (should (string-match-p "in:title" query))
-    (should (string-match-p "fpga" query))
+    (should (string-match-p "cache" query))
     (should (string-match-p "is:pr" query))))
 
 (ert-deftest test-pr-search-dynamic--empty-filter-no-in-title ()
@@ -54,12 +54,12 @@ THEN the repo qualifier is always present."
 ;;; Tests for shipit--parse-search-query
 
 (ert-deftest test-pr-search-dynamic--parse-plain-text ()
-  "GIVEN a plain text query 'fpga'
+  "GIVEN a plain text query 'cache'
 WHEN parsing the search query
-THEN field is nil and filter is 'fpga'."
-  (let ((parsed (shipit--parse-search-query "fpga")))
+THEN field is nil and filter is 'cache'."
+  (let ((parsed (shipit--parse-search-query "cache")))
     (should (null (cdr (assq 'field parsed))))
-    (should (equal "fpga" (cdr (assq 'filter parsed))))))
+    (should (equal "cache" (cdr (assq 'filter parsed))))))
 
 (ert-deftest test-pr-search-dynamic--parse-empty-string ()
   "GIVEN an empty string
@@ -90,20 +90,20 @@ THEN field is (author . alice) and filter is nil."
   "GIVEN initial PR results from API
 WHEN shipit--select-pr builds candidates
 THEN all PRs appear as formatted candidates in the completion list."
-  (let* ((prs (list (test-pr-search-dynamic--make-pr 100 "Add FPGA support")
+  (let* ((prs (list (test-pr-search-dynamic--make-pr 100 "Add Cache support")
                     (test-pr-search-dynamic--make-pr 99 "Fix CI pipeline")))
          (candidates (mapcar #'shipit--format-pr-choice prs)))
     (should (= 2 (length candidates)))
     (should (string-match-p "#100" (nth 0 candidates)))
-    (should (string-match-p "Add FPGA support" (nth 0 candidates)))
+    (should (string-match-p "Add Cache support" (nth 0 candidates)))
     (should (string-match-p "#99" (nth 1 candidates)))))
 
 (ert-deftest test-pr-search-dynamic--dynamic-requery-merges-results ()
   "GIVEN initial candidates and a dynamic API search returning new PRs
 WHEN the completion function is called with a 3+ char query
 THEN new candidates are merged into the all-candidates list."
-  (let* ((initial-prs (list (test-pr-search-dynamic--make-pr 100 "Add FPGA support")))
-         (search-prs (list (test-pr-search-dynamic--make-pr 50 "FPGA reset fix")))
+  (let* ((initial-prs (list (test-pr-search-dynamic--make-pr 100 "Add Cache support")))
+         (search-prs (list (test-pr-search-dynamic--make-pr 50 "Cache reset fix")))
          (pr-lookup-table (make-hash-table :test 'equal))
          (all-candidates '())
          (search-cache (make-hash-table :test 'equal)))
@@ -130,7 +130,7 @@ THEN new candidates are merged into the all-candidates list."
   "GIVEN initial candidates that already contain a PR
 WHEN the dynamic search returns the same PR again
 THEN the duplicate is not added to candidates."
-  (let* ((pr (test-pr-search-dynamic--make-pr 100 "Add FPGA support"))
+  (let* ((pr (test-pr-search-dynamic--make-pr 100 "Add Cache support"))
          (pr-lookup-table (make-hash-table :test 'equal))
          (all-candidates '()))
     ;; Build initial candidate
@@ -152,11 +152,11 @@ THEN no new API call is made (search-cache prevents it)."
   (let ((search-cache (make-hash-table :test 'equal))
         (api-call-count 0))
     ;; First query - not cached
-    (should-not (gethash "fpga" search-cache))
-    (puthash "fpga" t search-cache)
+    (should-not (gethash "cache" search-cache))
+    (puthash "cache" t search-cache)
     (setq api-call-count (1+ api-call-count))
     ;; Second query - already cached
-    (when (not (gethash "fpga" search-cache))
+    (when (not (gethash "cache" search-cache))
       (setq api-call-count (1+ api-call-count)))
     (should (= 1 api-call-count))))
 

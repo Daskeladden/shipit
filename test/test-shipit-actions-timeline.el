@@ -22,14 +22,14 @@
 (shipit-canvas-available-p)
 
 (defconst test-timeline--run
-  '((id . 100) (workflow_id . 1) (run_number . 5868) (name . "FPGA Diamond")
-    (display_title . "DiamondWorkbench: Reintroduce denoise")
+  '((id . 100) (workflow_id . 1) (run_number . 5868) (name . "Build and test")
+    (display_title . "Dashboard: Reintroduce the cache")
     (status . "completed") (conclusion . "failure") (head_branch . "master")
     (html_url . "https://github.com/owner/repo/actions/runs/100")
     (created_at . "2026-09-14T10:00:00Z") (updated_at . "2026-09-14T10:20:00Z"))
   "A finished run whose jobs overlap in time.")
 
-(defconst test-timeline--buffer-name "*shipit-timeline: FPGA Diamond #5868*"
+(defconst test-timeline--buffer-name "*shipit-timeline: Build and test #5868*"
   "The name of the timeline buffer of the fixture run.")
 
 (defun test-timeline--at (clock)
@@ -69,7 +69,7 @@ one with steps, and one that never started."
                                   (test-timeline--step 2 "Run tests" "success" "10:00:25" "10:01:05")
                                   (test-timeline--step 3 "Upload results" "skipped" nil nil)))
         (test-timeline--job 202 "Code Analysis" "success" "10:00:20" "10:17:34")
-        (test-timeline--job 203 "Run Diamond camera tests" "failure" "10:05:00" "10:09:12")
+        (test-timeline--job 203 "Run integration tests" "failure" "10:05:00" "10:09:12")
         (test-timeline--job 204 "Deploy" nil nil nil)))
 
 (defun test-timeline--spans (items)
@@ -87,7 +87,7 @@ has no place."
   (let ((rows (shipit-actions-timeline--rows (test-timeline--jobs)
                                              (test-timeline--seconds "10:30:00"))))
     (should (equal '("Initial Setup" "Run host unit tests" "Code Analysis"
-                     "Run Diamond camera tests")
+                     "Run integration tests")
                    (mapcar (lambda (row) (cdr (assq 'name (plist-get row :job)))) rows)))
     (should (equal '((0.0 . 20.0) (20.0 . 65.0) (20.0 . 1054.0) (300.0 . 552.0))
                    (test-timeline--spans rows)))
@@ -190,15 +190,15 @@ its job started and as wide as it ran, right of a column of names."
     (let ((setup (test-timeline--node nodes "Initial Setup"))
           (host (test-timeline--node nodes "Run host unit tests"))
           (code (test-timeline--node nodes "Code Analysis"))
-          (camera (test-timeline--node nodes "Run Diamond camera tests")))
+          (device (test-timeline--node nodes "Run integration tests")))
       (should (equal 4 (length nodes)))
       (should (> (canvas-diagram-node-x setup) 0))
       (should (= (canvas-diagram-node-x host) (canvas-diagram-node-x code)))
-      (should (= 300 (round (- (canvas-diagram-node-x camera) (canvas-diagram-node-x setup)))))
+      (should (= 300 (round (- (canvas-diagram-node-x device) (canvas-diagram-node-x setup)))))
       (should (= 1034 (round (canvas-diagram-node-w code))))
-      (should (= 252 (round (canvas-diagram-node-w camera))))
+      (should (= 252 (round (canvas-diagram-node-w device))))
       (should (< (canvas-diagram-node-y setup) (canvas-diagram-node-y host)
-                 (canvas-diagram-node-y code) (canvas-diagram-node-y camera))))))
+                 (canvas-diagram-node-y code) (canvas-diagram-node-y device))))))
 
 (ert-deftest test-timeline-fills-a-job-by-its-result ()
   "GIVEN a run with jobs that passed and one that failed
@@ -208,7 +208,7 @@ results in use."
   (test-timeline--with-layout nodes diagram
     (should (equal (canvas-diagram-rgb "#cb2431")
                    (shipit-actions-timeline--node-rgb
-                    diagram (test-timeline--node nodes "Run Diamond camera tests"))))
+                    diagram (test-timeline--node nodes "Run integration tests"))))
     (should (equal '("success" "failure")
                    (mapcar #'car (shipit-actions-timeline--legend diagram))))))
 
@@ -253,7 +253,7 @@ THEN the keyboard is on that job."
   (test-timeline--with-buffer buffer 203
     (should (equal test-timeline--buffer-name (buffer-name buffer)))
     (should (derived-mode-p 'shipit-actions-timeline-mode))
-    (should (equal "Run Diamond camera tests"
+    (should (equal "Run integration tests"
                    (canvas-diagram-node-label (canvas-diagram-selected))))))
 
 (ert-deftest test-timeline-ret-opens-the-job-in-the-run-viewer ()
@@ -265,7 +265,7 @@ THEN the run viewer opens on that run with the job expanded."
       (cl-letf (((symbol-function 'shipit-open-actions-run)
                  (lambda (&rest args) (setq opened args))))
         (test-timeline--press (kbd "RET"))
-        (should (equal '("owner/repo" 100 "Run Diamond camera tests") opened))))))
+        (should (equal '("owner/repo" 100 "Run integration tests") opened))))))
 
 (ert-deftest test-timeline-g-reads-the-jobs-again ()
   "GIVEN a timeline
@@ -307,7 +307,7 @@ Point starts on the run's line, with the run expanded."
          (with-current-buffer buf
            (shipit-actions-list-mode)
            (setq shipit-actions-list--repo "owner/repo"
-                 shipit-actions-list--workflows '(((id . 1) (name . "FPGA Diamond")
+                 shipit-actions-list--workflows '(((id . 1) (name . "Build and test")
                                                    (state . "active")))
                  shipit-actions-list--all-runs (list test-timeline--run)
                  shipit-actions-list--runners nil)
@@ -332,13 +332,13 @@ WHEN v is pressed
 THEN the run's timeline opens with the keyboard on that job."
   (skip-unless (shipit-canvas-available-p))
   (test-timeline--in-actions-list
-    (search-forward "Run Diamond camera tests")
+    (search-forward "Run integration tests")
     (beginning-of-line)
     (unwind-protect
         (progn
           (call-interactively #'shipit-actions-list-timeline)
           (with-current-buffer test-timeline--buffer-name
-            (should (equal "Run Diamond camera tests"
+            (should (equal "Run integration tests"
                            (canvas-diagram-node-label (canvas-diagram-selected))))))
       (when (get-buffer test-timeline--buffer-name)
         (kill-buffer test-timeline--buffer-name)))))

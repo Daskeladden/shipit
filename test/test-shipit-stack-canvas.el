@@ -43,9 +43,9 @@
 
 (defun test-stack-canvas--two-layers ()
   "Return a stack of two layers, bottom first."
-  (list (test-stack-canvas--layer "one" "fpga: conventions"
-                                  "fpga: point tests at the skill")
-        (test-stack-canvas--layer "two" "uoe: abort path")))
+  (list (test-stack-canvas--layer "one" "docs: conventions"
+                                  "docs: point tests at the skill")
+        (test-stack-canvas--layer "two" "net: abort path")))
 
 (defun test-stack-canvas--seen (branch state &rest subjects)
   "Return what the canvas reads of a layer on BRANCH in STATE with SUBJECTS."
@@ -103,7 +103,7 @@ first, as the preview lists them."
         (should (equal "two" (plist-get spec :name)))
         (should (equal "two" (plist-get spec :start)))
         (should (equal '("two" "one" "master") (mapcar #'car nodes)))
-        (should (equal '("fpga: point tests at the skill" "fpga: conventions")
+        (should (equal '("docs: point tests at the skill" "docs: conventions")
                        (plist-get (cdr (assoc "one" nodes)) :rows)))
         (should-not (plist-get (cdr (assoc "master" nodes)) :rows))
         (should (equal '(("two" "one") ("one" "master"))
@@ -165,11 +165,11 @@ WHEN it becomes a row
 THEN it is cut to the row width and ends in an ellipsis.  A box is as
 wide as its widest row."
   (let* ((shipit-stack-canvas-row-width 50)
-         (row (shipit-stack-canvas--row (concat "fpga: " (make-string 66 ?x)))))
+         (row (shipit-stack-canvas--row (concat "docs: " (make-string 66 ?x)))))
     (should (equal 50 (string-width row)))
     (should (string-suffix-p "…" row)))
   (let ((shipit-stack-canvas-row-width 50))
-    (should (equal "uoe: abort path" (shipit-stack-canvas--row "uoe: abort path")))))
+    (should (equal "net: abort path" (shipit-stack-canvas--row "net: abort path")))))
 
 ;;;; Colours and words
 
@@ -257,7 +257,7 @@ THEN it names those two classes and no others, with filled swatches."
 WHEN its header and its card are shown
 THEN both say the state in words, and the card holds the subject whole."
   (skip-unless (shipit-canvas-available-p 'canvas-graph))
-  (let* ((subject (concat "fpga: " (make-string 66 ?x)))
+  (let* ((subject (concat "docs: " (make-string 66 ?x)))
          (diagram (test-stack-canvas--built
                    (shipit-stack-canvas--spec
                     (list (test-stack-canvas--seen

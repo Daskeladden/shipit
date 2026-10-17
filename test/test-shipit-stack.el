@@ -228,11 +228,11 @@ THEN each run of one prefix becomes a layer, in order, because that is
 how the work was already grouped by whoever wrote the messages."
   (test-stack--with-repo
     (test-stack--git "checkout" "-q" "-b" "work")
-    (dolist (s '("fpga: conventions" "fpga: point tests"
-                 "uoe: abort path" "uoe: tx mux" "uoe: reset"))
+    (dolist (s '("docs: conventions" "docs: point tests"
+                 "net: abort path" "net: tx mux" "net: reset"))
       (test-stack--commit s))
     (let ((layers (cdr (assq 'layers (shipit-stack-split-proposal)))))
-      (should (equal '("fpga" "uoe")
+      (should (equal '("docs" "net")
                      (mapcar (lambda (l) (cdr (assq 'prefix l))) layers)))
       (should (equal '(2 3)
                      (mapcar (lambda (l) (length (cdr (assq 'commits l)))) layers))))))
@@ -244,14 +244,14 @@ THEN each name is derived from its prefix and is usable as a branch
 name, since it becomes the head of a pull request."
   (test-stack--with-repo
     (test-stack--git "checkout" "-q" "-b" "work")
-    (test-stack--commit "FPGA Core: conventions")
-    (test-stack--commit "uoe: abort path")
-    (test-stack--commit "zhit: formal")
+    (test-stack--commit "Docs Site: conventions")
+    (test-stack--commit "net: abort path")
+    (test-stack--commit "lint: format")
     (let ((names (mapcar (lambda (l) (cdr (assq 'branch l)))
                          (cdr (assq 'layers (shipit-stack-split-proposal))))))
       ;; The top layer keeps the branch already checked out; the work is
       ;; there and it needs no new pointer.
-      (should (equal '("work-fpga-core" "work-uoe" "work") names)))))
+      (should (equal '("work-docs-site" "work-net" "work") names)))))
 
 (ert-deftest test-shipit-stack-split-declines-when-nothing-groups ()
   "GIVEN commits with no prefixes to group by
@@ -286,7 +286,7 @@ the checked-out branch is untouched and still the top, and no commit
 has moved: splitting is naming, not rewriting."
   (test-stack--with-repo
     (test-stack--git "checkout" "-q" "-b" "work")
-    (dolist (s '("fpga: one" "fpga: two" "uoe: three"))
+    (dolist (s '("docs: one" "docs: two" "net: three"))
       (test-stack--commit s))
     (let* ((head-before (test-stack--git "rev-parse" "HEAD"))
            (proposal (shipit-stack-split-proposal)))
@@ -295,7 +295,7 @@ has moved: splitting is naming, not rewriting."
       (should (equal "work" (test-stack--git "rev-parse" "--abbrev-ref" "HEAD")))
       ;; the lower layer now has a branch of its own, at its last commit
       (should (equal (test-stack--git "rev-parse" "HEAD~1")
-                     (test-stack--git "rev-parse" "work-fpga"))))))
+                     (test-stack--git "rev-parse" "work-docs"))))))
 
 (ert-deftest test-shipit-stack-split-is-detected-as-a-stack-afterwards ()
   "GIVEN a branch that has been split
@@ -304,13 +304,13 @@ THEN it is a stack, which is the whole point: the split feeds the same
 detection everything else already uses."
   (test-stack--with-repo
     (test-stack--git "checkout" "-q" "-b" "work")
-    (dolist (s '("fpga: one" "uoe: two" "zhit: three"))
+    (dolist (s '("docs: one" "net: two" "lint: three"))
       (test-stack--commit s))
     (shipit-stack-split-apply (shipit-stack-split-proposal))
     (let ((stack (shipit-stack-detect)))
       (should stack)
       (should (equal 3 (cdr (assq 'size stack))))
-      (should (equal '("work-fpga" "work-uoe" "work")
+      (should (equal '("work-docs" "work-net" "work")
                      (mapcar (lambda (l) (cdr (assq 'branch l)))
                              (cdr (assq 'layers stack))))))))
 
@@ -322,12 +322,12 @@ meant to be safe to repeat, so that a failure part way can be resumed
 rather than unwound."
   (test-stack--with-repo
     (test-stack--git "checkout" "-q" "-b" "work")
-    (dolist (s '("fpga: one" "uoe: two")) (test-stack--commit s))
+    (dolist (s '("docs: one" "net: two")) (test-stack--commit s))
     (let ((proposal (shipit-stack-split-proposal)))
       (shipit-stack-split-apply proposal)
-      (let ((first (test-stack--git "rev-parse" "work-fpga")))
+      (let ((first (test-stack--git "rev-parse" "work-docs")))
         (shipit-stack-split-apply proposal)
-        (should (equal first (test-stack--git "rev-parse" "work-fpga")))))))
+        (should (equal first (test-stack--git "rev-parse" "work-docs")))))))
 
 ;;;; Whether branches form a stack at all
 

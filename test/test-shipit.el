@@ -1811,8 +1811,8 @@ THEN backend :edit-comment is called with is-inline=t."
 
 (ert-deftest test-shipit--escape-mid-word-underscores-skip-backticks ()
   "Test that underscores inside backticks are NOT escaped."
-  (let ((input "`final_point_cloud.size()`")
-        (expected "`final_point_cloud.size()`"))
+  (let ((input "`final_result_set.size()`")
+        (expected "`final_result_set.size()`"))
     (should (string= (shipit--escape-mid-word-underscores input) expected))))
 
 (ert-deftest test-shipit--escape-mid-word-underscores-mixed ()
@@ -1823,8 +1823,8 @@ THEN backend :edit-comment is called with is-inline=t."
 
 (ert-deftest test-shipit--escape-mid-word-underscores-code-blocks ()
   "Test that underscores inside code blocks are NOT escaped."
-  (let ((input "Text before\n```python\nfinal_point_cloud.size()\nanother_variable\n```\nText after with some_var")
-        (expected "Text before\n```python\nfinal_point_cloud.size()\nanother_variable\n```\nText after with some\\_var"))
+  (let ((input "Text before\n```python\nfinal_result_set.size()\nanother_variable\n```\nText after with some_var")
+        (expected "Text before\n```python\nfinal_result_set.size()\nanother_variable\n```\nText after with some\\_var"))
     (should (string= (shipit--escape-mid-word-underscores input) expected))))
 
 (ert-deftest test-shipit--escape-mid-word-underscores-multiple-inline-code ()

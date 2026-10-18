@@ -4404,9 +4404,14 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
     (_ "⚪")))
 
 ;;; Child frame for PR preview
-(defun shipit--create-pr-preview-frame (pr-number pr-data)
-  "Create a child frame displaying PR information next to the cursor."
+(defun shipit--create-pr-preview-frame (pr-number pr-data &optional anchor no-focus)
+  "Create a child frame displaying PR information next to the cursor.
+ANCHOR, a (WINDOW . POSITION), puts it next to POSITION of WINDOW
+instead, and NO-FOCUS leaves the keyboard where it is, for a preview
+that the mouse opens.  Return the frame."
   (let* ((original-window (selected-window))
+         (anchor-window (or (car anchor) (selected-window)))
+         (anchor-frame (window-frame anchor-window))
          (buffer (generate-new-buffer " *shipit-pr-preview*"))
          (width 80)
          ;; Define preview actions - each action is one line
@@ -4426,26 +4431,26 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
          (num-actions (length preview-actions))
          (header-footer-lines (+ 5 4 1 1 1 num-actions 1))  ; header + activity + desc-header + sep + actions-header + items + padding
          ;; Calculate available vertical space (up to 80% of screen)
-         (screen-height (frame-height (selected-frame)))
+         (screen-height (frame-height anchor-frame))
          (available-height (truncate (* screen-height 0.8)))
          (height (max 15 (min available-height (+ body-lines header-footer-lines))))
          ;; Get cursor position in pixels relative to current window
-         (cursor-pos (posn-x-y (posn-at-point)))
+         (cursor-pos (posn-x-y (if anchor (posn-at-point (cdr anchor) anchor-window) (posn-at-point))))
          (cursor-x (car cursor-pos))
          (cursor-y (cdr cursor-pos))
          ;; Get window position within the frame (accounts for splits)
-         (window-edges (window-pixel-edges))
+         (window-edges (window-pixel-edges anchor-window))
          (window-left (nth 0 window-edges))
          (window-top (nth 1 window-edges))
          ;; Get frame position on screen
-         (frame-pos (frame-position))
+         (frame-pos (frame-position anchor-frame))
          (frame-x (car frame-pos))
          (frame-y (cdr frame-pos))
          ;; Calculate absolute cursor position (frame pos + window pos + cursor pos)
          (abs-cursor-x (+ frame-x window-left cursor-x))
          (abs-cursor-y (+ frame-y window-top cursor-y))
          ;; Get screen dimensions for boundary checking
-         (frame-edges-rect (frame-edges (selected-frame)))
+         (frame-edges-rect (frame-edges anchor-frame))
          (frame-width (- (nth 2 frame-edges-rect) (nth 0 frame-edges-rect)))
          (frame-height (- (nth 3 frame-edges-rect) (nth 1 frame-edges-rect)))
          ;; Convert popup height from lines to pixels (approximately 20 pixels per line)
@@ -4467,7 +4472,8 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
                      popup-x-right
                    popup-x-left))
          (frame (make-frame
-                 `((parent-frame . ,(selected-frame))
+                 `((parent-frame . ,anchor-frame)
+                   ,@(when no-focus '((no-focus-on-map . t)))
                    (name . "shipit-pr-preview")
                    (width . ,width)
                    (height . ,height)
@@ -4760,21 +4766,26 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
       (setq cursor-type nil))
 
     ;; Show buffer in the frame and give it focus
-    (set-frame-parameter frame 'default-minibuffer-frame (selected-frame))
+    (set-frame-parameter frame 'default-minibuffer-frame anchor-frame)
     (set-window-buffer (frame-selected-window frame) buffer)
-    (select-frame-set-input-focus frame)
+    (unless no-focus
+      (select-frame-set-input-focus frame))
     frame))
 
 (defun shipit--show-pr-preview (pr-number repo)
   "Show PR preview in a child frame with action keybindings."
   (let ((pr-data (shipit-get-pull-request pr-number repo)))
     (if pr-data
-        (progn
-          ;; Store data for keybinding handlers
-          (setq shipit--current-pr-preview-data (list pr-number repo pr-data))
-          ;; Create and display child frame
-          (shipit--create-pr-preview-frame pr-number pr-data))
+        (shipit--show-pr-preview-data pr-number repo pr-data)
       (message "Could not fetch PR #%d from %s" pr-number repo))))
+
+(defun shipit--show-pr-preview-data (pr-number repo pr-data &optional anchor no-focus)
+  "Show PR-DATA, pull request PR-NUMBER of REPO, in a child frame.
+The frame has action keybindings.  ANCHOR and NO-FOCUS are those of
+`shipit--create-pr-preview-frame'.  Return the frame."
+  ;; Store data for keybinding handlers
+  (setq shipit--current-pr-preview-data (list pr-number repo pr-data))
+  (shipit--create-pr-preview-frame pr-number pr-data anchor no-focus))
 
 (defvar shipit--current-issue-preview-data nil
   "Stores (issue-number repo issue-data) for the current issue preview.")

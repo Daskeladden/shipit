@@ -59,6 +59,7 @@ Loading the files adds the functions back.")
     "shipit-explore.el"
     "shipit-explore-buffer.el"
     "shipit-code-refs.el"
+    "shipit-pr-mouse-preview.el"
     "shipit-magit-worktrees.el"
     "shipit-debug.el" "shipit.el")
   "The files of shipit that `shipit-reload' loads, in dependency order.

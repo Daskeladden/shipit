@@ -895,6 +895,7 @@ INC-FOUND and INC-OVERLAY are thunks called to increment counters."
             (overlay-put ov 'face 'markdown-plain-url-face)
             (overlay-put ov 'keymap keymap)
             (overlay-put ov 'evaporate t)
+            (overlay-put ov 'shipit-pr-link (cons ref-num-int url-repo-copy))
             (overlay-put ov 'help-echo (format "PR %s#%s - RET: actions, M-?: preview" url-repo ref-num))
             (when (fboundp 'shipit--debug-log)
               (shipit--debug-log "Created overlay for PR URL %s/pull/%s at %d-%d" url-repo ref-num start end)))))))

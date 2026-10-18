@@ -36,6 +36,8 @@
 (require 'shipit-http)       ; API functions, GitHub integration
 (require 'shipit-cache)      ; Cache utilities
 
+(declare-function shipit-pr-mouse-preview-mode "shipit-pr-mouse-preview")
+
 ;; HEAVY MODULES - Autoloaded on demand
 ;; shipit-pr-sections - Complex UI rendering, magit integration
 ;; shipit-checks   - CI API calls, external process management
@@ -143,6 +145,12 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   (require 'shipit-code-refs)
   (when shipit-code-refs-auto-enable
     (global-shipit-code-refs-mode 1))
+
+  ;; The PR preview on mouse-over (opt-out via
+  ;; `shipit-pr-mouse-preview-auto-enable').
+  (require 'shipit-pr-mouse-preview)
+  (when shipit-pr-mouse-preview-auto-enable
+    (shipit-pr-mouse-preview-mode 1))
 
   (run-hooks 'shipit-init-hook)
   (message "Shipit initialized successfully"))

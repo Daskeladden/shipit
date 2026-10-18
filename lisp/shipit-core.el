@@ -278,6 +278,14 @@ to enable the mode manually or per buffer."
   :type 'boolean
   :group 'shipit)
 
+(defcustom shipit-pr-mouse-preview-auto-enable t
+  "When non-nil, `shipit-init' enables `shipit-pr-mouse-preview-mode'.
+
+The mode opens the preview of a pull request when the mouse rests on
+its link in a shipit buffer."
+  :type 'boolean
+  :group 'shipit)
+
 (defcustom shipit-pr-fontify-hunks t
   "Whether to apply language syntax highlighting inside PR diff hunks.
 

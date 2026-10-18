@@ -548,7 +548,7 @@ Open diff for files."
                               (shipit--render-body shipit-preview--description)
                             shipit-preview--description))
                 (body-start (point)))
-            (dolist (line (split-string rendered "\n"))
+            (dolist (line (split-string (shipit--wrap-text rendered 80 0) "\n"))
               (insert (format "   %s\n" line)))
             (shipit--apply-code-block-backgrounds-in-region body-start (point)))
         (let ((start (point)))

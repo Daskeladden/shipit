@@ -45,5 +45,62 @@ AND every word of the paragraph is still there."
           (should (<= (apply #'max (mapcar #'string-width lines)) 83))
           (should (equal words (split-string (string-join (cdr lines) " ")))))))))
 
+(defmacro test-shipit-preview-description--with-section (description &rest body)
+  "Run BODY in a buffer with the description section of a preview of
+DESCRIPTION.  `shipit-preview--edit-description' and `browse-url' only
+note their calls, in `edits' and `opened'."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (magit-section-mode)
+     (let ((inhibit-read-only t)
+           (shipit-render-markdown t)
+           (edits 0)
+           (opened nil))
+       (setq-local shipit-preview--description ,description)
+       (magit-insert-section (root)
+         (shipit-preview--insert-description-section))
+       (cl-letf (((symbol-function 'shipit-preview--edit-description)
+                  (lambda () (cl-incf edits)))
+                 ((symbol-function 'browse-url)
+                  (lambda (url &rest _) (push url opened))))
+         ,@body))))
+
+(ert-deftest test-shipit-preview-ret-on-a-description-line-edits ()
+  "GIVEN a preview description, and point on a line of its text with no link
+WHEN RET runs the dwim of the preview
+THEN the description editor opens, AND the section stays open."
+  (test-shipit-preview-description--with-section "Some text of the change.\n"
+    (goto-char (point-min))
+    (search-forward "text of")
+    (shipit-preview--dwim)
+    (should (= 1 edits))
+    (should-not (oref (magit-current-section) hidden))))
+
+(ert-deftest test-shipit-preview-ret-on-a-description-link-offers-the-url ()
+  "GIVEN a preview description with a markdown link, and point on the link
+WHEN RET runs the dwim of the preview, and Open URL is chosen
+THEN the menu offers Open URL and Edit description, AND the link opens."
+  (test-shipit-preview-description--with-section
+      "See [the guide](https://example.com/guide) first.\n"
+    (goto-char (point-min))
+    (search-forward "the gu")
+    (let ((offered nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt choices &rest _) (setq offered choices) "Open URL")))
+        (shipit-preview--dwim))
+      (should (equal '("Open URL" "Edit description") offered))
+      (should (equal '("https://example.com/guide") opened))
+      (should (= 0 edits)))))
+
+(ert-deftest test-shipit-preview-ret-on-the-description-heading-edits ()
+  "GIVEN a preview description, and point on the heading of its section
+WHEN RET runs the dwim of the preview
+THEN the description editor opens, as before."
+  (test-shipit-preview-description--with-section "Some text of the change.\n"
+    (goto-char (point-min))
+    (search-forward "Description")
+    (shipit-preview--dwim)
+    (should (= 1 edits))))
+
 (provide 'test-shipit-preview-description)
 ;;; test-shipit-preview-description.el ends here

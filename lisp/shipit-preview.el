@@ -487,8 +487,8 @@ Open diff for files."
   (cond
    ((get-text-property (point) 'shipit-preview-title)
     (shipit-preview--edit-title))
-   ((get-text-property (point) 'shipit-preview-description)
-    (shipit-preview--edit-description))
+   ((magit-section-match '(preview-description))
+    (shipit-preview--description-actions))
    ((get-text-property (point) 'shipit-preview-labels)
     (shipit-preview--select-labels))
    ((get-text-property (point) 'shipit-preview-reviewers)
@@ -506,6 +506,18 @@ Open diff for files."
    (t
     ;; Fall back to magit section toggle
     (magit-section-toggle (magit-current-section)))))
+
+(defun shipit-preview--description-actions ()
+  "Act on the description of the preview from any line of its section.
+On a link, a menu offers to open it or to edit the description, as the
+description of a PR buffer does.  Elsewhere the editor opens at once."
+  (let ((url (shipit--url-at-point)))
+    (if (not url)
+        (shipit-preview--edit-description)
+      (pcase (completing-read "Choose action: " '("Open URL" "Edit description") nil t)
+        ("Open URL" (browse-url url))
+        ("Edit description" (shipit-preview--edit-description))
+        (_ (message "No action selected"))))))
 
 (defun shipit-preview--insert-title-section ()
   "Insert the PR title section."

@@ -546,9 +546,11 @@ Open diff for files."
                                    shipit-render-markdown
                                    (fboundp 'shipit--render-body))
                               (shipit--render-body shipit-preview--description)
-                            shipit-preview--description)))
+                            shipit-preview--description))
+                (body-start (point)))
             (dolist (line (split-string rendered "\n"))
-              (insert (format "   %s\n" line))))
+              (insert (format "   %s\n" line)))
+            (shipit--apply-code-block-backgrounds-in-region body-start (point)))
         (let ((start (point)))
           (insert (propertize "   Click here or press RET to add a description\n"
                               'font-lock-face 'font-lock-comment-face))

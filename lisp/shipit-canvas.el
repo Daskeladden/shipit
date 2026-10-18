@@ -53,6 +53,13 @@ without it never tries to load a canvas library at all."
        (shipit-canvas--load (or library 'canvas-diagram))
        t))
 
+(defun shipit-canvas-library-available-p (library)
+  "Return non-nil when LIBRARY, a canvas library, loads.
+For a picture that LIBRARY draws into a file.  Such a picture needs no
+canvas image type, so unlike `shipit-canvas-available-p' this does not
+ask for one: an Emacs without it, such as a batch one, still draws."
+  (and (shipit-canvas--load library) t))
+
 (defun shipit-canvas-require (view fallback &optional library)
   "Signal unless this Emacs can draw on a canvas.
 VIEW names what wants the canvas, FALLBACK the command that shows the

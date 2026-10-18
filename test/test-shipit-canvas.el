@@ -143,6 +143,19 @@ canvas-diagram, so one answer covers both."
       (should (shipit-canvas-available-p 'canvas-graph))
       (should (equal '(canvas-graph) loaded)))))
 
+(ert-deftest test-canvas-library-loads-without-the-canvas-image-type ()
+  "GIVEN an Emacs without the canvas image type, and a library that loads
+WHEN asking whether the library is there for a picture
+THEN the answer is yes, AND the canvas image type was not needed."
+  (cl-letf (((symbol-function 'image-type-available-p) (lambda (_type) nil)))
+    (should (shipit-canvas-library-available-p 'cl-lib))))
+
+(ert-deftest test-canvas-library-that-is-missing-is-not-available ()
+  "GIVEN a library that is on no load path
+WHEN asking whether it is there for a picture
+THEN the answer is no, with no error."
+  (should-not (shipit-canvas-library-available-p 'shipit-test-no-such-canvas-library)))
+
 (ert-deftest test-canvas-require-names-emacs-32-and-the-fallback ()
   "GIVEN an Emacs that cannot draw on a canvas
 WHEN a canvas view insists on it

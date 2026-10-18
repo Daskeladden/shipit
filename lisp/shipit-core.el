@@ -1477,14 +1477,16 @@ to cap further if your machine still struggles."
 
 (defcustom shipit-render-mermaid t
   "Whether to render mermaid diagrams inline.
-Requires `mmdc' (mermaid-cli) to be installed.
-Install via: npm install -g @mermaid-js/mermaid-cli"
+canvas-mermaid draws them when it loads, on Emacs 32.  Else `mmdc'
+(mermaid-cli) draws them when it is installed.
+Install mmdc via: npm install -g @mermaid-js/mermaid-cli"
   :type 'boolean
   :group 'shipit)
 
 (defcustom shipit-mermaid-theme "dark"
   "Mermaid diagram theme.
-Passed to mmdc via the -t flag."
+Passed to mmdc via the -t flag.  canvas-mermaid takes the colors of the
+Emacs theme instead."
   :type '(choice (const "default")
                  (const "dark")
                  (const "forest")
@@ -1493,7 +1495,8 @@ Passed to mmdc via the -t flag."
 
 (defcustom shipit-mermaid-background "transparent"
   "Background color for mermaid diagram PNGs.
-Passed to mmdc via the -b flag.
+Passed to mmdc via the -b flag.  canvas-mermaid takes the background of
+the Emacs theme instead.
 Examples: \"transparent\", \"white\", \"#1e1e1e\"."
   :type 'string
   :group 'shipit)

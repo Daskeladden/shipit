@@ -10,6 +10,7 @@
 (require 'shipit-core)
 (require 'shipit-render)
 (require 'shipit-pr-backends)
+(require 'shipit-canvas)
 
 ;;; Auto-increment Ordered Lists Tests
 
@@ -139,6 +140,186 @@ THEN cached result is returned without re-checking."
   (let ((shipit--mmdc-available t))
     ;; THEN returns t without calling executable-find
     (should (shipit--mmdc-available-p))))
+
+(defun test-shipit-render--image-count ()
+  "The number of pictures in the current buffer: runs of a `display'
+property whose value is an image."
+  (let ((pos (point-min))
+        (count 0))
+    (while (< pos (point-max))
+      (when (eq (car-safe (get-text-property pos 'display)) 'image)
+        (cl-incf count))
+      (setq pos (next-single-property-change pos 'display nil (point-max))))
+    count))
+
+(defvar canvas-diagram-font)
+
+(defun test-shipit-render--draw-mermaid (text)
+  "Insert TEXT in the current buffer and run the mermaid pass on it, on a
+frame that counts as graphic, as no batch frame does.
+canvas-diagram then believes the frame too, and asks it for its font,
+which a batch frame does not have, so the font is given."
+  (insert text)
+  (let ((canvas-diagram-font "Sans 12px"))
+    (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
+      (shipit--render-mermaid-blocks-in-region (point-min) (point-max)))))
+
+(defconst test-shipit-render--png
+  (base64-decode-string "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+  "A PNG of one pixel, for a stand-in of mmdc to write.")
+
+(ert-deftest test-shipit-render-mermaid-draws-with-canvas-mermaid ()
+  "GIVEN a mermaid block, canvas-mermaid that loads, and no mmdc
+WHEN the mermaid pass runs
+THEN the block shows one picture, its text is gone, AND both fence lines stay."
+  (skip-unless (shipit-canvas-library-available-p 'canvas-mermaid))
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available nil))
+    (with-temp-buffer
+      (test-shipit-render--draw-mermaid "```mermaid\nflowchart TD\n  A --> B\n```\n")
+      (should (= 1 (test-shipit-render--image-count)))
+      (should-not (string-match-p "flowchart TD" (buffer-string)))
+      (should (string-prefix-p "```mermaid\n" (buffer-string)))
+      (should (string-suffix-p "\n```\n" (buffer-string))))))
+
+(ert-deftest test-shipit-render-mermaid-prefers-canvas-mermaid-to-mmdc ()
+  "GIVEN a mermaid block, and both canvas-mermaid and mmdc there
+WHEN the mermaid pass runs
+THEN canvas-mermaid draws the one picture, AND mmdc is not called."
+  (skip-unless (shipit-canvas-library-available-p 'canvas-mermaid))
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available t)
+        (calls nil))
+    (cl-letf (((symbol-function 'shipit--mmdc-call)
+               (lambda (&rest args) (push args calls) 0)))
+      (with-temp-buffer
+        (test-shipit-render--draw-mermaid "```mermaid\nflowchart TD\n  A --> B\n```\n")
+        (should (= 1 (test-shipit-render--image-count)))
+        (should-not calls)))))
+
+(ert-deftest test-shipit-render-mermaid-uses-mmdc-without-canvas-mermaid ()
+  "GIVEN a mermaid block, mmdc there, and canvas-mermaid not there
+WHEN the mermaid pass runs
+THEN mmdc draws the one picture, with the theme of `shipit-mermaid-theme'."
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available t)
+        (calls nil))
+    (cl-letf (((symbol-function 'shipit-canvas-library-available-p)
+               (lambda (library) (not (eq library 'canvas-mermaid))))
+              ((symbol-function 'shipit--mmdc-call)
+               (lambda (_input output &rest args)
+                 (push args calls)
+                 (let ((coding-system-for-write 'binary))
+                   (write-region test-shipit-render--png nil output nil 'silent))
+                 0)))
+      (with-temp-buffer
+        (test-shipit-render--draw-mermaid "```mermaid\nflowchart TD\n  A --> B\n```\n")
+        (should (= 1 (test-shipit-render--image-count)))
+        (should (equal shipit-mermaid-theme (cadr (member "-t" (car calls)))))))))
+
+(ert-deftest test-shipit-render-mermaid-keeps-a-bad-block-as-code-and-draws-the-next ()
+  "GIVEN a mermaid block that canvas-mermaid cannot read, and a good block
+after it
+WHEN the mermaid pass runs
+THEN the bad block stays code, the message of the reader is on the line
+before its closing fence in the error face, AND the good block shows one
+picture."
+  (skip-unless (shipit-canvas-library-available-p 'canvas-mermaid))
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available nil))
+    (with-temp-buffer
+      (test-shipit-render--draw-mermaid
+       "```mermaid\nflowchart TD\n  subgraph\n  end\n```\n\n```mermaid\nflowchart TD\n  A --> B\n```\n")
+      (should (string-match "  subgraph\n  end\n\\(canvas-mermaid: a subgraph with no name\\)\n```\n"
+                            (buffer-string)))
+      (should (eq 'error (get-text-property (1+ (match-beginning 1)) 'font-lock-face)))
+      (should (= 1 (test-shipit-render--image-count))))))
+
+(ert-deftest test-shipit-render-mermaid-keeps-a-kind-it-cannot-draw-as-code ()
+  "GIVEN a mermaid pie, a kind that canvas-mermaid has no layout for
+WHEN the mermaid pass runs
+THEN the block stays code, AND the message of the reader is on the line
+before its closing fence."
+  (skip-unless (shipit-canvas-library-available-p 'canvas-mermaid))
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available nil))
+    (with-temp-buffer
+      (test-shipit-render--draw-mermaid "```mermaid\npie\n  \"a\" : 1\n```\n")
+      (should (string-suffix-p "```mermaid\npie\n  \"a\" : 1\ncanvas-mermaid: a pie has no layout to draw it yet\n```\n"
+                               (buffer-string)))
+      (should (= 0 (test-shipit-render--image-count))))))
+
+(ert-deftest test-shipit-render-mermaid-draws-an-indented-block-with-front-matter ()
+  "GIVEN a mermaid block with front matter, every line indented by the
+three spaces of the preview
+WHEN the mermaid pass runs
+THEN the block shows one picture."
+  (skip-unless (shipit-canvas-library-available-p 'canvas-mermaid))
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available nil))
+    (with-temp-buffer
+      (test-shipit-render--draw-mermaid
+       "   ```mermaid\n   ---\n   title: T\n   ---\n   flowchart TD\n     A --> B\n   ```\n")
+      (should (= 1 (test-shipit-render--image-count))))))
+
+(ert-deftest test-shipit-render-mermaid-draws-each-of-two-blocks ()
+  "GIVEN two mermaid blocks that canvas-mermaid can draw
+WHEN the mermaid pass runs
+THEN each block shows a picture."
+  (skip-unless (shipit-canvas-library-available-p 'canvas-mermaid))
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available nil))
+    (with-temp-buffer
+      (test-shipit-render--draw-mermaid
+       "```mermaid\nflowchart TD\n  A --> B\n```\n\nText.\n\n```mermaid\nflowchart TD\n  C --> D\n```\n")
+      (should (= 2 (test-shipit-render--image-count))))))
+
+(ert-deftest test-shipit-render-mermaid-message-stays-once-in-the-editor-preview ()
+  "GIVEN a description draft that ends at the closing fence of a mermaid
+block that canvas-mermaid cannot read, and the live preview of the editor
+WHEN the preview draws the draft again at two pauses
+THEN the preview holds the message of the reader once."
+  (skip-unless (shipit-canvas-library-available-p 'canvas-mermaid))
+  (require 'shipit-editor)
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available nil)
+        (canvas-diagram-font "Sans 12px"))
+    (with-temp-buffer
+      (let ((source (current-buffer)))
+        (insert "Title\n")
+        (let ((overlay (make-overlay (point) (point))))
+          (with-temp-buffer
+            (insert "```mermaid\npie\n```")
+            (setq-local shipit-editor--type 'description)
+            (setq-local shipit-editor--source-buffer source)
+            (setq-local shipit-editor--preview-overlay overlay)
+            (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t)))
+              (shipit-editor--update-preview (current-buffer))
+              (shipit-editor--update-preview (current-buffer))))
+          (should (= 1 (how-many "canvas-mermaid: a pie has no layout" (point-min) (point-max)))))))))
+
+(ert-deftest test-shipit-render-mermaid-leaves-an-empty-block-alone ()
+  "GIVEN an empty mermaid block
+WHEN the mermaid pass runs
+THEN the text stays as it is, with no message line."
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available nil))
+    (with-temp-buffer
+      (test-shipit-render--draw-mermaid "```mermaid\n```\n")
+      (should (equal "```mermaid\n```\n" (buffer-string))))))
+
+(ert-deftest test-shipit-render-mermaid-changes-nothing-without-a-graphic-frame ()
+  "GIVEN a mermaid block that canvas-mermaid can draw, on a frame that is
+not graphic
+WHEN the mermaid pass runs
+THEN the text stays as it is."
+  (let ((shipit-render-mermaid t)
+        (shipit--mmdc-available nil))
+    (with-temp-buffer
+      (insert "```mermaid\nflowchart TD\n  A --> B\n```\n")
+      (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+        (shipit--render-mermaid-blocks-in-region (point-min) (point-max)))
+      (should (equal "```mermaid\nflowchart TD\n  A --> B\n```\n" (buffer-string))))))
 
 ;;; Mermaid Defcustom Default Tests
 

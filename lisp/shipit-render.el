@@ -30,6 +30,7 @@
 (require 'shipit-issue-backends)  ; For backend reference patterns
 (require 'shipit-issue-titles)  ; For shared eldoc title cache/fetcher
 (require 'shipit-pr-backends)  ; For PR backend dispatch in #NNN routing
+(require 'shipit-canvas)  ; For canvas-mermaid, which draws mermaid pictures
 
 ;; Forward declarations for variables from shipit-core
 (defvar shipit-inline-comment-icon-style)
@@ -3184,16 +3185,70 @@ Chrome dependency is missing."
         (shipit--debug-log "MERMAID: probe result=%s" shipit--mmdc-available))))
   shipit--mmdc-available)
 
+(declare-function canvas-mermaid-export-text "canvas-mermaid" (text out))
+
+(defun shipit--mermaid-tool ()
+  "The tool that draws mermaid pictures here, or nil for none.
+`canvas-mermaid' when it loads, else `mmdc' when it works."
+  (cond ((shipit-canvas-library-available-p 'canvas-mermaid) 'canvas-mermaid)
+        ((shipit--mmdc-available-p) 'mmdc)))
+
+(defun shipit--mermaid-png (content tool)
+  "The PNG that TOOL draws of CONTENT, a mermaid diagram, as a unibyte string.
+TOOL is `canvas-mermaid' or `mmdc'.  A TOOL that makes no PNG is an
+error, with the message of the tool when it has one."
+  (let* ((input (make-temp-file "shipit-mermaid-" nil ".mmd"))
+         (output (concat (file-name-sans-extension input) ".png")))
+    (unwind-protect
+        (progn
+          (pcase-exhaustive tool
+            ('canvas-mermaid (canvas-mermaid-export-text content output))
+            ('mmdc
+             (with-temp-file input
+               (insert content))
+             (let ((exit-code (shipit--mmdc-call input output
+                                                 "-t" shipit-mermaid-theme
+                                                 "-b" shipit-mermaid-background)))
+               (unless (= exit-code 0)
+                 (error "mmdc exited with %d" exit-code)))))
+          (unless (file-exists-p output)
+            (error "%s wrote no picture" tool))
+          (with-temp-buffer
+            (set-buffer-multibyte nil)
+            (insert-file-contents-literally output)
+            (buffer-string)))
+      (dolist (file (list input output))
+        (when (file-exists-p file)
+          (delete-file file))))))
+
+(defun shipit--insert-mermaid-message (content-end indent err end)
+  "Put the message of ERR on a line of its own at CONTENT-END, where the
+closing fence of the block starts.  So the message stays inside the
+block, and inside an overlay or a section that ends at the fence, which
+the live preview of the editor draws again at each pause.  INDENT is the
+indent of the block.  Return END, the end of the region that is drawn,
+moved past the inserted text."
+  (goto-char content-end)
+  (let ((inhibit-read-only t)
+        (line (concat indent (propertize (error-message-string err) 'font-lock-face 'error) "\n")))
+    (insert line)
+    (+ end (length line))))
+
 (defun shipit--render-mermaid-blocks-in-region (start end)
   "Render mermaid code blocks as inline images between START and END.
-Requires `mmdc' (mermaid-cli).  Replaces the code block content
-with the rendered diagram image, keeping the ``` markers as a heading."
-  (when (and shipit-render-mermaid
-             (display-graphic-p)
-             (shipit--mmdc-available-p))
+canvas-mermaid draws them when it loads, else `mmdc' (mermaid-cli).
+Replaces the code block content with the rendered diagram image,
+keeping the ``` markers as a heading.  A block that canvas-mermaid
+cannot draw stays code, with its message on the line before its closing
+fence, so the other blocks still get their pictures.  A failure of
+`mmdc' turns `mmdc' off for the session, as a broken mmdc would block
+the UI on each block."
+  (let ((tool (and shipit-render-mermaid
+                   (display-graphic-p)
+                   (shipit--mermaid-tool))))
     (save-excursion
       (goto-char start)
-      (while (and shipit--mmdc-available
+      (while (and tool
                   (re-search-forward "^\\([ \t]*\\)```[ \t]*mermaid[ \t]*\n" end t))
         (let* ((content-start (point))
                (indent (match-string 1))
@@ -3205,40 +3260,20 @@ with the rendered diagram image, keeping the ``` markers as a heading."
                           (buffer-substring-no-properties content-start content-end))))
           (when (and content (not (string-empty-p (string-trim content))))
             (condition-case err
-                (let* ((tmp-input (make-temp-file "shipit-mermaid-" nil ".mmd"))
-                       (tmp-output (concat (file-name-sans-extension tmp-input) ".png")))
-                  (unwind-protect
-                      (progn
-                        (with-temp-file tmp-input
-                          (insert content))
-                        (let ((exit-code (shipit--mmdc-call
-                                         tmp-input tmp-output
-                                         "-t" shipit-mermaid-theme
-                                         "-b" shipit-mermaid-background)))
-                          (if (and (= exit-code 0) (file-exists-p tmp-output))
-                              (let* ((image-data (with-temp-buffer
-                                                   (set-buffer-multibyte nil)
-                                                   (insert-file-contents-literally tmp-output)
-                                                   (buffer-string)))
-                                     (image (create-image image-data 'png t
-                                                          :max-width shipit-mermaid-max-width)))
-                                (when image
-                                  (let ((inhibit-read-only t))
-                                    (delete-region content-start content-end)
-                                    (goto-char content-start)
-                                    (insert-image image "[mermaid diagram]")
-                                    (insert "\n")
-                                    (setq end (+ end (- (point) content-end))))))
-                            ;; mmdc failed — stop trying
-                            (shipit--debug-log "MERMAID: mmdc exit %d, disabling" exit-code)
-                            (setq shipit--mmdc-available nil))))
-                    (when (file-exists-p tmp-input)
-                      (delete-file tmp-input))
-                    (when (file-exists-p tmp-output)
-                      (delete-file tmp-output))))
+                (let ((image (create-image (shipit--mermaid-png content tool) 'png t
+                                           :max-width shipit-mermaid-max-width))
+                      (inhibit-read-only t))
+                  (delete-region content-start content-end)
+                  (goto-char content-start)
+                  (insert-image image "[mermaid diagram]")
+                  (insert "\n")
+                  (setq end (+ end (- (point) content-end))))
               (error
-               (shipit--debug-log "Mermaid render failed: %s" err)
-               (setq shipit--mmdc-available nil)))))))))
+               (shipit--debug-log "MERMAID: %s failed: %s" tool (error-message-string err))
+               (if (eq tool 'mmdc)
+                   (setq shipit--mmdc-available nil
+                         tool nil)
+                 (setq end (shipit--insert-mermaid-message content-end indent err end)))))))))))
 
 (defun shipit--create-pr-reference-overlays (repo pr-number &optional body-start body-end)
   "Create overlays for PR references (#\\d+) in comment body.

@@ -13,9 +13,14 @@ AUTOLOADS_FILE = $(PACKAGE_NAME)-autoloads.el
 # without them the canvas tests skip themselves and the rest of shipit
 # is unaffected.  A missing one skips the canvas tests silently, so a
 # run that skips many more than usual is worth a look.
+# canvas-mermaid draws the pictures of mermaid blocks, and it needs
+# canvas-sequence and canvas-mindmap.  These three are optional too.
 CANVAS_DIAGRAM = ../canvas-diagram
 CANVAS_GRAPH = ../canvas-graph
 CANVAS_KEYS = ../canvas-keys
+CANVAS_MERMAID = ../canvas-mermaid
+CANVAS_SEQUENCE = ../canvas-sequence
+CANVAS_MINDMAP = ../canvas-mindmap
 
 .PHONY: all compile clean test test-older install autoloads package
 
@@ -38,6 +43,9 @@ compile: $(LISP_FILES)
 		-L $(CANVAS_DIAGRAM) \
 		-L $(CANVAS_GRAPH) \
 		-L $(CANVAS_KEYS) \
+		-L $(CANVAS_MERMAID) \
+		-L $(CANVAS_SEQUENCE) \
+		-L $(CANVAS_MINDMAP) \
 		-f batch-byte-compile $(LISP_FILES)
 
 # Generate autoloads
@@ -81,6 +89,9 @@ test-unit: compile
 		-L $(CANVAS_DIAGRAM) \
 		-L $(CANVAS_GRAPH) \
 		-L $(CANVAS_KEYS) \
+		-L $(CANVAS_MERMAID) \
+		-L $(CANVAS_SEQUENCE) \
+		-L $(CANVAS_MINDMAP) \
 		-l test/test-shipit.el \
 		-l test/test-shipit-editor.el \
 		-l test/test-shipit-magit-requires.el \
@@ -231,7 +242,10 @@ test-older:
 	(cd "$$tree" && $(MAKE) test EMACS=$(OLDER_EMACS) \
 		CANVAS_DIAGRAM=$(abspath $(CANVAS_DIAGRAM)) \
 		CANVAS_GRAPH=$(abspath $(CANVAS_GRAPH)) \
-		CANVAS_KEYS=$(abspath $(CANVAS_KEYS))); \
+		CANVAS_KEYS=$(abspath $(CANVAS_KEYS)) \
+		CANVAS_MERMAID=$(abspath $(CANVAS_MERMAID)) \
+		CANVAS_SEQUENCE=$(abspath $(CANVAS_SEQUENCE)) \
+		CANVAS_MINDMAP=$(abspath $(CANVAS_MINDMAP))); \
 	status=$$?; git worktree remove --force "$$tree"; exit $$status
 
 # Install locally for testing

@@ -116,6 +116,9 @@
 ;;   :get-thread-subscription — (config repo type number) → state string or nil
 ;;   :set-thread-subscription — (config repo type number subscribed) → t on success
 ;;   :set-pr-draft            — (config number draft-p) → non-nil on success
+;;   :fetch-pr-async          — (config number callback) → fetches in the
+;;                              background, then calls CALLBACK with the
+;;                              PR alist, or with nil when it is no PR
 ;;
 ;; Stacked pull requests.  Only GitHub reports these; a backend without
 ;; the operation makes the Stack section elide rather than render empty:
@@ -324,6 +327,18 @@ draws nothing in either case."
          (config (cdr resolved))
          (fn (plist-get backend :fetch-stack)))
     (when fn (funcall fn config number pr-data))))
+
+(defun shipit-pr--fetch-pr-async (repo number callback)
+  "Fetch pull request NUMBER of REPO in the background.
+CALLBACK then gets the alist of the pull request, or nil when NUMBER
+is no pull request.  Resolved through the active backend's optional
+:fetch-pr-async operation.  Return non-nil when the fetch started, and
+nil when the backend has no such operation."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (fn (plist-get (car resolved) :fetch-pr-async)))
+    (when fn
+      (funcall fn (cdr resolved) number callback)
+      t)))
 
 (defun shipit-pr--fetch-stack-statuses (repo numbers)
   "Return (NUMBER . STATUSES) for each pull request of NUMBERS.

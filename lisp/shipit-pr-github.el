@@ -46,6 +46,16 @@ CONFIG must contain :repo.  Uses ETag caching for performance."
            (json-data (plist-get result :json)))
       json-data)))
 
+(defun shipit-pr-github--fetch-pr-async (config number callback)
+  "Fetch PR NUMBER using CONFIG in the background, then call CALLBACK.
+CALLBACK gets the PR alist, or nil when the request fails, as it does
+for the number of an issue.  Uses the same ETag cache as
+`shipit-pr-github--fetch-pr'."
+  (shipit-gh-etag-get-json-async
+   (format "/repos/%s/pulls/%s" (plist-get config :repo) number)
+   nil shipit-github-token
+   (lambda (result) (funcall callback (plist-get result :json)))))
+
 (defun shipit-pr-github--normalize-search-args (args)
   "Return ARGS as the transient strings the query builders take.
 Callers hand over either raw transient arguments or a plist; the
@@ -2036,6 +2046,7 @@ data should pass it: this runs on every render of the section."
        :icon-fallback-text "GH"
        :editor-reference-hints "#: PR"
        :fetch-pr #'shipit-pr-github--fetch-pr
+       :fetch-pr-async #'shipit-pr-github--fetch-pr-async
        :search #'shipit-pr-github--search
        :create-pr #'shipit-pr-github--create-pr
        :merge-pr #'shipit-pr-github--merge-pr

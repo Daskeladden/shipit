@@ -129,6 +129,7 @@ test-unit: compile
 		-l test/test-shipit-stack-render.el \
 		-l test/test-shipit-preview-defaults.el \
 		-l test/test-shipit-preview-description.el \
+		-l test/test-shipit-pr-mouse-preview.el \
 		-l test/test-shipit-issues.el \
 		-l test/test-shipit-issue-backends.el \
 		-l test/test-shipit-issue-github.el \

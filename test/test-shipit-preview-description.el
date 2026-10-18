@@ -10,6 +10,7 @@
 (require 'magit-section)
 (require 'shipit-render)
 (require 'shipit-preview)
+(require 'shipit-pr-github)
 
 (ert-deftest test-shipit-preview-description-gets-code-block-backgrounds ()
   "GIVEN a draft description with a fenced code block
@@ -22,6 +23,7 @@ and the pass makes no overlay without one."
     (let ((inhibit-read-only t)
           (shipit-render-markdown t)
           (shipit-code-block-background "#303030"))
+      (setq-local shipit-preview--repo "o/r")
       (setq-local shipit-preview--description "Intro\n\n```elisp\n(+ 1 2)\n```\n")
       (magit-insert-section (root)
         (shipit-preview--insert-description-section))
@@ -101,6 +103,23 @@ THEN the description editor opens, as before."
     (search-forward "Description")
     (shipit-preview--dwim)
     (should (= 1 edits))))
+
+(ert-deftest test-shipit-preview-description-gets-link-overlays ()
+  "GIVEN a draft description of o/r with the reference #7 and the URL of
+pull request 12
+WHEN the preview inserts its description section
+THEN the reference and the URL have the link overlays of a PR buffer."
+  (with-temp-buffer
+    (magit-section-mode)
+    (let ((inhibit-read-only t)
+          (shipit-render-markdown t))
+      (setq-local shipit-preview--repo "o/r")
+      (setq-local shipit-preview--description "See #7 and https://github.com/o/r/pull/12 now.\n")
+      (magit-insert-section (root)
+        (shipit-preview--insert-description-section))
+      (let ((overlays (overlays-in (point-min) (point-max))))
+        (should (cl-some (lambda (ov) (eql 7 (overlay-get ov 'shipit-issue-id))) overlays))
+        (should (cl-some (lambda (ov) (equal '(12 . "o/r") (overlay-get ov 'shipit-pr-link))) overlays))))))
 
 (provide 'test-shipit-preview-description)
 ;;; test-shipit-preview-description.el ends here

@@ -562,7 +562,7 @@ description of a PR buffer does.  Elsewhere the editor opens at once."
                 (body-start (point)))
             (dolist (line (split-string (shipit--wrap-text rendered 80 0) "\n"))
               (insert (format "   %s\n" line)))
-            (shipit--apply-code-block-backgrounds-in-region body-start (point)))
+            (shipit--decorate-description shipit-preview--repo nil body-start (point)))
         (let ((start (point)))
           (insert (propertize "   Click here or press RET to add a description\n"
                               'font-lock-face 'font-lock-comment-face))

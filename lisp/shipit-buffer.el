@@ -912,6 +912,33 @@ Falls back to \"Pull Request\" when the backend has no :pr-type-label."
                                               
                                               help-echo "s: select different PR, M-;: shipit-dwim")))))
 
+;; Create overlays for PR references, commit SHAs, user mentions, and code blocks in description
+(defun shipit--decorate-description (repo pr-number start end)
+  "Give the description between START and END its link overlays and faces.
+REPO and PR-NUMBER are those of the pull request, and PR-NUMBER is nil
+in the preview of a pull request that does not exist yet.  The code
+block pass can insert pictures, so a marker follows END for the pass
+after it.  The passes get the positions as numbers, as their debug
+lines format them with %d."
+  (let ((end-after-pictures (copy-marker end)))
+    (when (fboundp 'shipit--create-pr-reference-overlays)
+      (shipit--create-pr-reference-overlays repo pr-number start end))
+    (when (fboundp 'shipit--create-commit-sha-overlays)
+      (shipit--create-commit-sha-overlays repo start end))
+    (when (fboundp 'shipit--create-user-mention-overlays)
+      (shipit--create-user-mention-overlays repo start end))
+    (when (fboundp 'shipit--create-jira-mention-overlays)
+      (shipit--create-jira-mention-overlays start end))
+    (when (fboundp 'shipit--create-custom-url-overlays)
+      (shipit--create-custom-url-overlays start end))
+    (when (fboundp 'shipit--create-generic-url-overlays)
+      (shipit--create-generic-url-overlays start end))
+    (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
+      (shipit--apply-code-block-backgrounds-in-region start end))
+    (when (fboundp 'shipit--apply-strikethrough-faces)
+      (shipit--apply-strikethrough-faces start (marker-position end-after-pictures)))
+    (set-marker end-after-pictures nil)))
+
 (defun shipit--insert-pr-description-section (repo pr-data pr-number)
   "Insert the PR description section using original magit integration logic.
 REPO is the repository name (owner/repo format)."
@@ -958,23 +985,7 @@ REPO is the repository name (owner/repo format)."
                                             (shipit--wrap-text rendered-body 80 0)  ; expand tabs from col 0
                                           rendered-body)))
               (insert (concat "   " (replace-regexp-in-string "\n" "\n   " wrapped-description) "\n")))))
-        ;; Create overlays for PR references, commit SHAs, user mentions, and code blocks in description
-        (when (fboundp 'shipit--create-pr-reference-overlays)
-          (shipit--create-pr-reference-overlays repo pr-number description-start (point)))
-        (when (fboundp 'shipit--create-commit-sha-overlays)
-          (shipit--create-commit-sha-overlays repo description-start (point)))
-        (when (fboundp 'shipit--create-user-mention-overlays)
-          (shipit--create-user-mention-overlays repo description-start (point)))
-        (when (fboundp 'shipit--create-jira-mention-overlays)
-          (shipit--create-jira-mention-overlays description-start (point)))
-        (when (fboundp 'shipit--create-custom-url-overlays)
-          (shipit--create-custom-url-overlays description-start (point)))
-        (when (fboundp 'shipit--create-generic-url-overlays)
-          (shipit--create-generic-url-overlays description-start (point)))
-        (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
-          (shipit--apply-code-block-backgrounds-in-region description-start (point)))
-        (when (fboundp 'shipit--apply-strikethrough-faces)
-          (shipit--apply-strikethrough-faces description-start (point)))
+        (shipit--decorate-description repo pr-number description-start (point))
         (add-text-properties description-start (point)
                              `(shipit-pr-description t
                                                      shipit-pr-number ,pr-number

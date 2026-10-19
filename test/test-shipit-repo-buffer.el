@@ -189,6 +189,33 @@ THEN the buffer contains the rendered README content."
         (should (string-match-p "README" content))
         (should (string-match-p "Hello World" content))))))
 
+(ert-deftest test-repo-buffer-readme-shows-the-cells-of-a-table-row-side-by-side ()
+  "GIVEN a README whose rendered text has, below a heading, a table row
+of two marked cells
+WHEN inserting the readme section with a fill column of 80
+THEN one line of the buffer has the text of both cells with a bar
+between them, AND the bar starts at column 39 after the indent of the
+line."
+  (require 'shipit-repo-buffer)
+  (require 'shipit-render)
+  (cl-letf (((symbol-function 'shipit--render-body)
+             (lambda (&rest _)
+               (concat "# Title\n\n"
+                       (propertize "left" 'shipit-cell '(1 . 0)) "\n\n"
+                       (propertize "right" 'shipit-cell '(1 . 1)) "\n"))))
+    (with-temp-buffer
+      (let ((inhibit-read-only t)
+            (shipit-render-markdown t)
+            (shipit-readme-fill-column 80))
+        (shipit-repo-buffer--insert-readme-section
+         (list :filename "README.md" :content "x"))
+        (goto-char (point-min))
+        (should (re-search-forward "^\\( +\\)left │ right$" nil t))
+        (let ((indent (length (match-string 1)))
+              (gap (text-property-not-all (point-min) (point-max) 'shipit-column nil)))
+          (should (equal `(space :align-to ,(+ indent 39))
+                         (get-text-property gap 'display))))))))
+
 (ert-deftest test-repo-buffer-readme-org-uses-org-renderer ()
   "GIVEN a README plist with a .org filename
 WHEN inserting the readme section

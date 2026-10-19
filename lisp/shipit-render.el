@@ -2184,28 +2184,666 @@ preserved since they carry meaningful emphasis or semantic information."
   "The characters that a horizontal rule is drawn with."
   (make-string 40 ?\x2500))
 
+(defconst shipit--html-tag-regexp
+  "<\\(/\\)?\\([a-zA-Z][a-zA-Z0-9]*\\)\\(\\(?:[ \t\n][^<>]*\\)?\\)>"
+  "Regexp matching an HTML tag.
+Group 1 is the slash of a closing tag, 2 the name of the tag, and 3
+its attributes.")
+
+(defconst shipit--html-tag-converters
+  '(("strong" shipit--html-mark "**")
+    ("b" shipit--html-mark "**")
+    ("em" shipit--html-mark "*")
+    ("i" shipit--html-mark "*")
+    ("span" shipit--html-mark "")
+    ("sub" shipit--html-mark "")
+    ("sup" shipit--html-mark "")
+    ("picture" shipit--html-mark "")
+    ("source" shipit--html-mark "")
+    ("p" shipit--html-block "")
+    ("div" shipit--html-block "")
+    ("center" shipit--html-block "")
+    ("h1" shipit--html-block "# ")
+    ("h2" shipit--html-block "## ")
+    ("h3" shipit--html-block "### ")
+    ("h4" shipit--html-block "#### ")
+    ("h5" shipit--html-block "##### ")
+    ("h6" shipit--html-block "###### ")
+    ("br" shipit--html-line-break)
+    ("hr" shipit--html-rule)
+    ("a" shipit--html-link)
+    ("ul" shipit--html-list)
+    ("ol" shipit--html-list)
+    ("li" shipit--html-list-item)
+    ("blockquote" shipit--html-quote)
+    ("code" shipit--html-code)
+    ("del" shipit--html-mark "~~")
+    ("s" shipit--html-mark "~~")
+    ("ins" shipit--html-mark "")
+    ("u" shipit--html-mark ""))
+  "What each HTML tag in markdown becomes.
+An element is (NAME FUNCTION ARGUMENT...).  FUNCTION is called at the
+place where a tag NAME stood, after the tag is deleted.  It gets the
+name of the tag, whether it is a closing tag, the attributes of the
+tag, and each ARGUMENT.  A tag that is not named here stays as text.")
+
+(defvar shipit--html-link-targets nil
+  "The addresses of the <a> tags that are open, the last one first.
+An <a> tag without an address has nil here.  Bound while the HTML tags
+of a text are converted.")
+
+(defun shipit--html-attribute (attributes name)
+  "Return the value that the attribute NAME has in ATTRIBUTES, or nil.
+ATTRIBUTES is the text of a tag after its name."
+  (when (string-match (concat "[ \t\n]" name
+                              "[ \t\n]*=[ \t\n]*\\(?:\"\\([^\"]*\\)\"\\|'\\([^']*\\)'\\)")
+                      attributes)
+    (or (match-string 1 attributes) (match-string 2 attributes))))
+
+(defun shipit--html-mark (_name _closing _attributes mark)
+  "Put MARK, the markdown of an HTML tag, where the tag stood."
+  (insert mark))
+
+(defun shipit--html-delete-white-space-after ()
+  "Delete the white space after point, the ends of lines too."
+  (delete-region (point) (progn (skip-chars-forward " \t\n") (point))))
+
+(defun shipit--html-line-break (&rest _)
+  "Start a new line where a <br> tag stood."
+  (shipit--html-delete-white-space-after)
+  (insert "\n"))
+
+(defun shipit--html-rule (&rest _)
+  "Draw a horizontal line where an <hr> tag stood."
+  (shipit--html-delete-white-space-after)
+  (insert (propertize (shipit--horizontal-rule) 'font-lock-face 'shadow) "\n"))
+
+(defun shipit--html-link (_name closing attributes)
+  "Put a part of a markdown link where an <a> tag stood.
+An <a> tag without an address, which only names a place in the text,
+leaves nothing."
+  (if closing
+      (when-let* ((target (pop shipit--html-link-targets)))
+        (insert "](" target ")"))
+    (let ((target (shipit--html-attribute attributes "href")))
+      (push target shipit--html-link-targets)
+      (when target
+        (insert "[")))))
+
+(defun shipit--html-content-end (name)
+  "Return the place of the next closing tag NAME after point, or nil."
+  (save-excursion
+    (when (re-search-forward (format "</%s[ \t\n]*>" name) nil t)
+      (match-beginning 0))))
+
+(defun shipit--html-join-lines (start end)
+  "Make each run of white space from START to END one space.
+A browser shows the text of an element that way.  The text stays as it
+is when it has a blank line, because then it is markdown, and when it
+has a <pre> element."
+  (unless (string-match-p "\n[ \t]*\n\\|<pre\\b" (buffer-substring start end))
+    (save-excursion
+      (save-restriction
+        (narrow-to-region start end)
+        (goto-char (point-min))
+        (while (re-search-forward "[ \t\n]+" nil t)
+          (replace-match " " t t))))))
+
+(defun shipit--html-white-space-end ()
+  "Return the end of the white space after point.
+The indent of a later line is no part of it: there it can make the
+line a code block."
+  (save-excursion
+    (skip-chars-forward " \t")
+    (when (eolp)
+      (skip-chars-forward " \t\n")
+      (unless (eobp)
+        (skip-chars-backward " \t")))
+    (point)))
+
+(defun shipit--html-paragraph-break ()
+  "Put one blank line at point, in place of the white space around it.
+At the start and at the end of the buffer no line is put."
+  (let ((end (shipit--html-white-space-end)))
+    (skip-chars-backward " \t\n")
+    (delete-region (point) end)
+    (unless (or (bobp) (eobp))
+      (insert "\n\n"))))
+
+(defconst shipit--center-open "<shipit-center>"
+  "The marker that starts centered text in markdown that is made ready.")
+
+(defconst shipit--center-close "</shipit-center>"
+  "The marker that ends centered text in markdown that is made ready.")
+
+(defconst shipit--row-marker "<shipit-row>"
+  "The marker that starts a table row in markdown that is made ready.")
+
+(defconst shipit--cell-open "<shipit-cell>"
+  "The marker that starts a table cell in markdown that is made ready.")
+
+(defconst shipit--cell-close "</shipit-cell>"
+  "The marker that ends a table cell in markdown that is made ready.")
+
+(defconst shipit--layout-marker-regexp "<\\(/\\)?shipit-\\(center\\|row\\|cell\\)>"
+  "Regexp matching a marker of the layout of markdown that is made ready.
+Group 1 is the slash of a marker that ends a part, and 2 is the kind of
+the part.")
+
+(defvar shipit--html-open-blocks nil
+  "The block elements that are open, the last one first.
+An element is (NAME . CENTERED).  Bound while the HTML tags of a text
+are converted.")
+
+(defun shipit--html-centered-p (name attributes)
+  "Whether the tag NAME with ATTRIBUTES asks for centered text."
+  (or (equal name "center")
+      (equal "center" (downcase (or (shipit--html-attribute attributes "align") "")))))
+
+(defun shipit--html-insert-paragraph (text)
+  "Put TEXT at point as a paragraph of its own."
+  (shipit--html-paragraph-break)
+  (unless (or (bobp) (bolp))
+    (insert "\n\n"))
+  (insert text)
+  (shipit--html-paragraph-break))
+
+(defun shipit--html-open-block (name attributes lead)
+  "Start a paragraph where the opening tag NAME with ATTRIBUTES stood.
+LEAD is the markdown that starts the paragraph, such as the hashes of
+a heading."
+  ;; What: a centered element gets a marker and no text property.
+  ;; Why:  pandoc writes the whole text again when it aligns a table,
+  ;;       and a text property is lost there.  A marker comes through.
+  (when-let* ((end (shipit--html-content-end name)))
+    (shipit--html-join-lines (point) end))
+  (let ((centered (shipit--html-centered-p name attributes))
+        (heading (shipit--html-take-heading-lead)))
+    (push (cons name centered) shipit--html-open-blocks)
+    (if centered
+        (shipit--html-insert-paragraph shipit--center-open)
+      (shipit--html-paragraph-break))
+    (insert heading lead)))
+
+(defun shipit--html-take-heading-lead ()
+  "Delete the marks of a heading that stand alone before point; return them.
+An enclosing heading put them there, and a block that opens at the start
+of the heading takes them before its own text.  Without them, return
+the empty string."
+  (if (looking-back "^#\\{1,6\\} " (line-beginning-position))
+      (prog1 (match-string 0)
+        (delete-region (match-beginning 0) (match-end 0)))
+    ""))
+
+(defun shipit--html-close-block (name)
+  "End a paragraph where the closing tag NAME stood.
+An element that was opened after NAME and not closed ends here too.
+Each of them that was centered gets the marker that ends centered text."
+  (let* ((entry (assoc name shipit--html-open-blocks))
+         (closed (and entry (seq-take shipit--html-open-blocks
+                                      (1+ (seq-position shipit--html-open-blocks entry #'eq)))))
+         (centered (cl-count-if #'cdr closed)))
+    (when entry
+      (setq shipit--html-open-blocks (cdr (memq entry shipit--html-open-blocks))))
+    (if (= centered 0)
+        (shipit--html-paragraph-break)
+      (dotimes (_ centered)
+        (shipit--html-insert-paragraph shipit--center-close)))))
+
+(defun shipit--html-block (name closing attributes lead)
+  "Make the element NAME, a tag of which stood at point, a paragraph.
+CLOSING tells which tag it was.  ATTRIBUTES and LEAD are as
+`shipit--html-open-block' takes them."
+  (if closing
+      (shipit--html-close-block name)
+    (shipit--html-open-block name attributes lead)))
+
+(defvar shipit--html-open-lists nil
+  "The HTML lists that are open, the innermost first.
+An element is the number of the last item of a numbered list, or nil
+for a list with bullets.  Bound while the HTML tags of a text are
+converted.")
+
+(defvar shipit--html-open-quotes nil
+  "The starts of the HTML quotes that are open, the innermost first.
+Bound while the HTML tags of a text are converted.")
+
+(defun shipit--html-new-line ()
+  "Start a new line at point, in place of the white space around it.
+A blank line before point stays."
+  (delete-region (point) (shipit--html-white-space-end))
+  (delete-region (point) (progn (skip-chars-backward " \t") (point)))
+  (unless (bolp)
+    (insert "\n")))
+
+(defun shipit--html-list (name closing _attributes)
+  "Start or end a list where a tag NAME of a <ul> or an <ol> stood.
+CLOSING tells which tag it was.  A list in an item of another list
+starts on the next line, and any other list stands between blank
+lines."
+  (let ((outer (if closing (cdr shipit--html-open-lists) shipit--html-open-lists)))
+    (if closing
+        (pop shipit--html-open-lists)
+      (push (and (equal name "ol") 0) shipit--html-open-lists))
+    (if outer
+        (shipit--html-new-line)
+      (shipit--html-paragraph-break))))
+
+(defun shipit--html-list-item-lead ()
+  "Return the start of the next item of the innermost open list.
+It is the bullet or the number of the item, after the indent that puts
+it under the text of the item of each list around it."
+  (let ((indent (apply #'+ (mapcar (lambda (number) (if number 3 2))
+                                   (cdr shipit--html-open-lists)))))
+    (concat (make-string indent ?\s)
+            (if (car shipit--html-open-lists)
+                (format "%d. " (cl-incf (car shipit--html-open-lists)))
+              "- "))))
+
+(defun shipit--html-list-item (_name closing _attributes)
+  "Start a list item on a line of its own where an <li> tag stood.
+The closing tag, CLOSING, leaves nothing: the next item or the end of
+the list starts the next line."
+  (unless closing
+    (shipit--html-new-line)
+    (insert (shipit--html-list-item-lead))
+    (shipit--html-delete-white-space-after)))
+
+(defun shipit--html-quote (_name closing _attributes)
+  "Start or end a quote where a <blockquote> tag stood.
+CLOSING tells which tag it was.  At its end, each line of the quote
+gets the mark of a markdown quote, as the text in it is markdown by
+then."
+  (shipit--html-paragraph-break)
+  (if closing
+      (when-let* ((start (pop shipit--html-open-quotes)))
+        (shipit--html-mark-quote-lines start))
+    (push (point-marker) shipit--html-open-quotes)))
+
+(defun shipit--html-mark-quote-lines (start)
+  "Put the mark of a markdown quote before each line from START to point.
+The blank lines at the ends are no part of the quote.  START can be at
+the end of the paragraph before the quote: the paragraph break of the
+first element in the quote puts its blank line after START."
+  (save-excursion
+    (let ((end (copy-marker (progn (skip-chars-backward " \t\n") (point)))))
+      (goto-char start)
+      (skip-chars-forward " \t\n")
+      (beginning-of-line)
+      (while (< (point) end)
+        (insert (if (looking-at "[ \t]*$") ">" "> "))
+        (forward-line 1))
+      (set-marker end nil))))
+
+(defconst shipit--html-entity-regexp
+  "&\\(?:#[0-9]+\\|#[xX][0-9a-fA-F]+\\|[a-zA-Z][a-zA-Z0-9]*\\);"
+  "Regexp matching an HTML entity, such as &lt; or &#39;.")
+
+(defun shipit--html-text (html)
+  "Return the text that the HTML shows, as libxml reads it."
+  (with-temp-buffer
+    (insert html)
+    (apply #'concat (seq-filter #'stringp (flatten-tree (libxml-parse-html-region
+                                                         (point-min) (point-max)))))))
+
+(defun shipit--html-entity-text (entity)
+  "Return the text that the HTML ENTITY, such as \"&lt;\", stands for.
+Return nil when HTML does not know ENTITY, or when Emacs has no
+libxml to ask.  A no-break space becomes a plain space: Emacs shows a
+no-break space with a face of its own, see `nobreak-char-display'."
+  (cond
+   ((equal entity "&nbsp;") " ")
+   ((libxml-available-p)
+    (let ((text (shipit--html-text entity)))
+      (unless (equal text entity)
+        text)))))
+
+(defun shipit--decode-html-entities (start end &optional in-code)
+  "Put the text of each HTML entity from START to END in its place.
+Unless IN-CODE, an entity in markdown code stays, as a forge shows it
+there.  The text of a <code> element is HTML, so there it goes."
+  (save-excursion
+    (let ((end (copy-marker end t)))
+      (goto-char start)
+      (while (re-search-forward shipit--html-entity-regexp end t)
+        (let ((from (match-beginning 0))
+              (entity (match-string 0)))
+          (unless (and (not in-code) (shipit--in-markdown-code-p from))
+            (when-let* ((text (shipit--html-entity-text entity)))
+              (delete-region from (point))
+              (insert text)))))
+      (set-marker end nil))))
+
+(defun shipit--html-code (_name closing _attributes)
+  "Make the text of a <code> element a code span, where its tag stood.
+Both of its tags become backticks when the first one is converted, as
+a lone backtick makes the rest of the line code, so the tags after
+the element would stay.  CLOSING tells which tag it was."
+  (unless closing
+    (insert "`")
+    (when-let* ((end (shipit--html-content-end "code")))
+      (save-excursion
+        (let ((end (copy-marker end t)))
+          (shipit--decode-html-entities (point) end t)
+          (goto-char end)
+          (when (looking-at "</code[ \t\n]*>")
+            (replace-match "`" t t))
+          (set-marker end nil))))))
+
+(defvar shipit--layout-open-parts nil
+  "The parts of the layout that are open, the last one first.
+An element is (KIND . START).  Bound while layout markers are applied.")
+
+(defvar shipit--layout-next-cell nil
+  "The mark that the next table cell gets, (ROW . PLACE).
+Bound while layout markers are applied.")
+
+(defun shipit--layout-open-part (kind)
+  "Take note that a part of the layout of KIND starts at point.
+A table row has no end of its own.  It starts the count of its cells."
+  (if (equal kind "row")
+      (setq shipit--layout-next-cell (cons (1+ (car shipit--layout-next-cell)) 0))
+    (push (cons kind (point)) shipit--layout-open-parts)))
+
+(defun shipit--layout-mark-cell (start end)
+  "Mark the text from START to END as the next cell of its table row."
+  (put-text-property start end 'shipit-cell shipit--layout-next-cell)
+  (setq shipit--layout-next-cell (cons (car shipit--layout-next-cell)
+                                       (1+ (cdr shipit--layout-next-cell)))))
+
+(defun shipit--layout-close-part (kind)
+  "Mark the text from the start of the open part of KIND to point.
+A part that was opened after it and not closed ends here too.  A part
+without text gets no mark."
+  (when-let* ((entry (assoc kind shipit--layout-open-parts)))
+    (setq shipit--layout-open-parts (cdr (memq entry shipit--layout-open-parts)))
+    (let ((start (cdr entry))
+          (end (save-excursion (skip-chars-backward " \t\n") (point))))
+      (cond
+       ((>= start end))
+       ((equal kind "center") (put-text-property start end 'shipit-align 'center))
+       (t (shipit--layout-mark-cell start end))))))
+
+(defun shipit--apply-layout-markers (text)
+  "Return TEXT without its markers of the layout.
+The text between the two markers of centered text gets the text
+property `shipit-align', with the value `center'.  The text between the
+two markers of a table cell gets the text property `shipit-cell', with
+the value (ROW . PLACE): the number of its table row in TEXT, counted
+from 1, and its place in that row, counted from 0."
+  (with-temp-buffer
+    (insert text)
+    (goto-char (point-min))
+    (let ((shipit--layout-open-parts nil)
+          (shipit--layout-next-cell (cons 0 0)))
+      (while (re-search-forward shipit--layout-marker-regexp nil t)
+        (let ((closing (match-beginning 1))
+              (kind (match-string 2)))
+          (replace-match "" t t)
+          (shipit--html-paragraph-break)
+          (if closing
+              (shipit--layout-close-part kind)
+            (shipit--layout-open-part kind)))))
+    (buffer-string)))
+
+(defun shipit--line-text-start (end)
+  "Return the place where the text of the line at point starts, up to END.
+The white space in front of the text is the indent of the line.  A
+space that shows a picture is text."
+  (save-excursion
+    (while (and (< (point) end)
+                (memq (char-after) '(?\s ?\t))
+                (not (get-text-property (point) 'display)))
+      (forward-char))
+    (point)))
+
+(defun shipit--center-line (start end width)
+  "Draw the line from START to END in the middle of a column.
+The column starts after the indent of the line and is WIDTH pixels
+wide.  A line that fills the column stays where it is."
+  (let* ((text-start (save-excursion
+                       (goto-char start)
+                       (shipit--line-text-start end)))
+         (room (- width (string-pixel-width (buffer-substring text-start end)))))
+    (when (> room 1)
+      (put-text-property start end 'line-prefix
+                         `(space :width (,(/ room 2)))))))
+
+(defun shipit--center-aligned-lines-in-region (start end width)
+  "Center each line from START to END that is marked as centered.
+WIDTH is the width in pixels of the column that the text stands in."
+  (save-excursion
+    (goto-char start)
+    (while (< (point) end)
+      (let ((line-end (min end (line-end-position))))
+        (when (text-property-any (point) line-end 'shipit-align 'center)
+          (shipit--center-line (point) line-end width)))
+      (forward-line 1))))
+
+(defconst shipit--table-gutter-width 3
+  "The columns between two table cells that stand side by side.
+They hold a space, a bar and a space.")
+
+(defconst shipit--table-cell-min-width 20
+  "The fewest columns that a table cell needs to stand beside another.
+`shipit--wrap-line' fills no text to fewer columns.")
+
+(defun shipit--marked-table-cells ()
+  "Return the marked table cells of this buffer, the last one first.
+A cell is (ROW START . END), with ROW the number of its table row."
+  (let ((cells nil) (pos (point-min)))
+    (while (< pos (point-max))
+      (let ((mark (get-text-property pos 'shipit-cell))
+            (next (next-single-property-change pos 'shipit-cell nil (point-max))))
+        (when mark
+          (push (cons (car mark) (cons pos next)) cells))
+        (setq pos next)))
+    cells))
+
+(defun shipit--marked-table-rows ()
+  "Return the marked table rows of this buffer, the last one first.
+A row is the list of its cells in the order of the text, each
+\(START . END)."
+  (let ((rows nil) (row nil))
+    (dolist (cell (shipit--marked-table-cells))
+      (if (and rows (eql row (car cell)))
+          (push (cdr cell) (car rows))
+        (push (list (cdr cell)) rows))
+      (setq row (car cell)))
+    (nreverse rows)))
+
+(defun shipit--table-cell-text (text)
+  "Return TEXT, the text of a table cell, as it stands in the lines of its row."
+  ;; What: the hidden hashes that start a heading go.
+  ;; Why:  a line of a row that starts with hashes is taken for a
+  ;;       heading of the document.
+  (replace-regexp-in-string
+   "^#\\{1,6\\}[ \t]+"
+   (lambda (hashes) (if (get-text-property 0 'invisible hashes) "" hashes))
+   text t t))
+
+(defun shipit--table-cell-lines (cell width)
+  "Return the lines of the table CELL of this buffer, wrapped to WIDTH.
+CELL is (START . END)."
+  (split-string
+   (shipit--wrap-text
+    (shipit--table-cell-text (buffer-substring (car cell) (cdr cell))) width)
+   "\n"))
+
+(defun shipit--table-column-gap (column)
+  "Return the text between two table cells in a line of their row.
+It is a space, a bar and a space.  The bar must start at COLUMN of the
+row.  The first space is marked with that column, for
+`shipit--align-table-columns-in-region' to show it as wide as that needs."
+  (concat (propertize " " 'shipit-column column)
+          (propertize "│" 'face 'shadow)
+          " "))
+
+(defun shipit--table-row-line (texts cell-width)
+  "Return one line of a table row: TEXTS, one for each cell, side by side.
+Each cell is CELL-WIDTH columns wide."
+  (let ((line (car texts))
+        (column (1+ cell-width)))
+    (dolist (text (cdr texts))
+      (setq line (concat line (shipit--table-column-gap column) text))
+      (setq column (+ column cell-width shipit--table-gutter-width)))
+    ;; A centered line gets its place from the start of the line, and
+    ;; a cell does not start there.  So no text of a cell is centered.
+    (propertize line 'shipit-no-wrap t 'shipit-align nil)))
+
+(defun shipit--table-row-text (columns cell-width)
+  "Return the text of a table row whose cells have the lines COLUMNS.
+COLUMNS has one list of lines for each cell, CELL-WIDTH columns wide."
+  (mapconcat (lambda (index)
+               (shipit--table-row-line
+                (mapcar (lambda (lines) (or (nth index lines) "")) columns)
+                cell-width))
+             (number-sequence 0 (1- (apply #'max (mapcar #'length columns))))
+             "\n"))
+
+(defun shipit--lay-out-table-row (cells width)
+  "Put the CELLS of a table row of this buffer side by side in WIDTH columns.
+CELLS is a list of (START . END).  A row of one cell stays as it is,
+and so does a row whose cells get too narrow."
+  (let* ((count (length cells))
+         (cell-width (/ (- width (* shipit--table-gutter-width (1- count)))
+                        count)))
+    (when (and (> count 1) (>= cell-width shipit--table-cell-min-width))
+      (let ((columns (mapcar (lambda (cell)
+                               (shipit--table-cell-lines cell cell-width))
+                             cells)))
+        (goto-char (caar cells))
+        (delete-region (point) (cdar (last cells)))
+        (insert (shipit--table-row-text columns cell-width))))))
+
+(defun shipit--lay-out-table-rows (text width)
+  "Return TEXT with the cells of each of its table rows side by side.
+The cells are marked with the text property `shipit-cell'.  WIDTH is
+the number of columns that a row can take.  Each cell gets the same
+share of them, and its text is wrapped to that.  A line of a row has
+the text property `shipit-no-wrap'."
+  (with-temp-buffer
+    (insert text)
+    (dolist (row (shipit--marked-table-rows))
+      (shipit--lay-out-table-row row width))
+    (buffer-string)))
+
+(defun shipit--align-table-columns-in-region (start end)
+  "Put each bar between two table cells from START to END at its column.
+The space before such a bar is marked with the column of the row where
+the bar must start."
+  ;; What: the space is shown as wide as it takes to reach that column,
+  ;;       counted from the indent of the line.
+  ;; Why:  the text of a cell can be drawn in a font of another width,
+  ;;       as a heading is, and can hold hidden text.  Then a count of
+  ;;       its characters does not tell where it ends.
+  (save-excursion
+    (let ((pos start))
+      (while (setq pos (text-property-not-all pos end 'shipit-column nil))
+        (goto-char pos)
+        (let ((indent (- (text-property-any (line-beginning-position) (1+ pos)
+                                            'shipit-no-wrap t)
+                         (line-beginning-position))))
+          (put-text-property
+           pos (1+ pos) 'display
+           `(space :align-to ,(+ indent (get-text-property pos 'shipit-column)))))
+        (setq pos (1+ pos))))))
+
+(defun shipit--convert-html-tag-at-match ()
+  "Convert the HTML tag that `shipit--html-tag-regexp' just matched.
+A tag in a fenced code block or in a code span is text, and stays."
+  (let* ((start (match-beginning 0))
+         (end (match-end 0))
+         (name (downcase (match-string 2)))
+         (closing (and (match-beginning 1) t))
+         (attributes (match-string 3))
+         (converter (cdr (assoc name shipit--html-tag-converters))))
+    (when (and converter (not (shipit--in-markdown-code-p start)))
+      (delete-region start end)
+      (apply (car converter) name closing attributes (cdr converter)))))
+
+(defconst shipit--html-table-tag-regexp
+  "<\\(/\\)?\\(table\\|thead\\|tbody\\|tfoot\\|tr\\|td\\|th\\)\\(?:[ \t\n][^<>]*\\)?>"
+  "Regexp matching a tag of an HTML table: the table, a row or a cell.
+Group 1 is the slash of a closing tag, and 2 is the name of the tag.")
+
+(defun shipit--html-table-end ()
+  "Return the end of the HTML table that point is in, or nil."
+  (save-excursion
+    (when (re-search-forward "</table[ \t\n]*>" nil t)
+      (point))))
+
+(defun shipit--html-table-marker (name closing)
+  "Return the layout marker that stands for the table tag NAME, or nil.
+CLOSING tells whether it is a closing tag."
+  (pcase name
+    ("tr" (unless closing shipit--row-marker))
+    ((or "td" "th") (if closing shipit--cell-close shipit--cell-open))))
+
+(defun shipit--html-unwrap-table (start end side-by-side)
+  "Put a paragraph break for each tag of the HTML table from START to END.
+With SIDE-BY-SIDE, a layout marker also stands where each row started,
+and where each cell started and ended."
+  ;; The marker moves with the text that is put at it.  The break for
+  ;; the last tag is put there, and the search must not end before point.
+  (let ((end (copy-marker end t)))
+    (goto-char start)
+    (while (re-search-forward shipit--html-table-tag-regexp end t)
+      (let ((marker (and side-by-side
+                         (shipit--html-table-marker (downcase (match-string 2))
+                                                    (match-beginning 1)))))
+        (replace-match "")
+        (if marker
+            (shipit--html-insert-paragraph marker)
+          (shipit--html-paragraph-break))))
+    (set-marker end nil)))
+
+(defun shipit--html-table-side-by-side-p (table)
+  "Whether the cells of TABLE, the text of an HTML table, can stand side by side."
+  ;; What: a table with a picture or a fenced code block cannot.
+  ;; Why:  a picture can be wider than the column of its cell, and the
+  ;;       background of a code block is drawn over whole lines.
+  (not (string-match-p "<img\\b\\|!\\[\\|^[ \t]*\\(?:```\\|~~~\\)" table)))
+
+(defun shipit--html-unwrap-layout-tables ()
+  "Take the tags out of each HTML table of this buffer that holds markdown.
+Such a table has a blank line in it.  A forge shows its cells side by
+side.  Here the markdown of each cell stays, and layout markers tell
+where each row and each cell is.  A table without a blank line holds
+rows of data, and stays."
+  (goto-char (point-min))
+  (while (re-search-forward "<table\\(?:[ \t\n][^<>]*\\)?>" nil t)
+    (let* ((start (match-beginning 0))
+           (end (shipit--html-table-end))
+           (table (and end (buffer-substring start end))))
+      (when (and table
+                 (not (shipit--in-markdown-code-p start))
+                 (string-match-p "\n[ \t]*\n" table))
+        (shipit--html-unwrap-table
+         start end (shipit--html-table-side-by-side-p table))))))
+
+(defun shipit--convert-html-tags ()
+  "Convert the HTML tags of this buffer as `shipit--html-tag-converters' says."
+  (goto-char (point-min))
+  (let ((shipit--html-link-targets nil)
+        (shipit--html-open-blocks nil)
+        (shipit--html-open-lists nil)
+        (shipit--html-open-quotes nil))
+    (while (re-search-forward shipit--html-tag-regexp nil t)
+      (shipit--convert-html-tag-at-match))))
+
 (defun shipit--convert-inline-html (text)
-  "Convert inline HTML tags in TEXT to markdown equivalents.
-Handles <hr>, <em>, <a href>, <strong>, and <br> tags.
-Process <a> first so <em>/<strong> can wrap the converted links."
-  (let ((result text))
-    ;; <hr /> or <hr> -> markdown horizontal rule
-    (setq result (replace-regexp-in-string
-                  "<hr[[:space:]]*/?>\\s-*" (concat (propertize (shipit--horizontal-rule) 'font-lock-face 'shadow) "\n") result))
-    ;; <br /> or <br> -> newline
-    (setq result (replace-regexp-in-string
-                  "<br[[:space:]]*/?>\\s-*" "\n" result))
-    ;; <a href> FIRST so <em>/<strong> can wrap the converted links
-    (setq result (replace-regexp-in-string
-                  "<a[[:space:]]+href=['\"]\\([^'\"]*\\)['\"][^>]*>\\([^<]*\\)</a>"
-                  "[\\2](\\1)" result))
-    ;; <strong>text</strong> -> **text** (may contain converted links)
-    (setq result (replace-regexp-in-string
-                  "<strong>\\(\\(?:.\\|\n\\)*?\\)</strong>" "**\\1**" result))
-    ;; <em>text</em> -> *text* (may contain converted links)
-    (setq result (replace-regexp-in-string
-                  "<em>\\(\\(?:.\\|\n\\)*?\\)</em>" "*\\1*" result))
-    result))
+  "Return markdown TEXT with its HTML tags as markdown.
+`shipit--html-tag-converters' names the tags and what each becomes.
+Each HTML entity becomes the text it stands for, after the tags, so
+that an entity such as &lt;b&gt; is no tag."
+  (with-temp-buffer
+    (insert text)
+    (let ((case-fold-search t))
+      (shipit--html-unwrap-layout-tables)
+      (shipit--convert-html-tags))
+    (shipit--decode-html-entities (point-min) (point-max))
+    (buffer-string)))
 
 (defun shipit--escape-underscores-in-table-cells (text)
   "Escape underscores in markdown table cells to prevent emphasis rendering."
@@ -2423,6 +3061,19 @@ text)."
              "" result)))
     result))
 
+(defmacro shipit--with-alignment-of (source &rest body)
+  "Return the string that BODY makes, with the alignment of the text SOURCE.
+BODY runs with the match data saved.  The string takes the place of
+SOURCE in a text, and SOURCE can be marked as centered."
+  (declare (indent 1))
+  (let ((text (make-symbol "text"))
+        (align (make-symbol "align")))
+    `(let ((,text (save-match-data ,@body))
+           (,align (get-text-property 0 'shipit-align ,source)))
+       (if ,align
+           (propertize ,text 'shipit-align ,align)
+         ,text))))
+
 (defun shipit--process-inline-images (text)
   "Process inline images in TEXT and replace them with image displays.
 Handles both HTML <img> tags and markdown ![alt](url) syntax."
@@ -2435,7 +3086,7 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
             (replace-regexp-in-string
              "<img[^>]+>"
              (lambda (img-tag)
-               (save-match-data
+               (shipit--with-alignment-of img-tag
                  (let ((src (when (string-match "src=\"\\([^\"]+\\)\"" img-tag)
                               (match-string 1 img-tag)))
                        (alt (when (string-match "alt=\"\\([^\"]*\\)\"" img-tag)
@@ -2456,7 +3107,7 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
             (replace-regexp-in-string
              "\\[!\\[\\([^]]*\\)\\](\\([^)]+\\))\\](\\([^)]+\\))"
              (lambda (match)
-               (save-match-data
+               (shipit--with-alignment-of match
                  (string-match "\\[!\\[\\([^]]*\\)\\](\\([^)]+\\))\\](\\([^)]+\\))" match)
                  (let ((alt (match-string 1 match))
                        (url (match-string 2 match)))
@@ -2468,7 +3119,7 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
             (replace-regexp-in-string
              "!\\[\\([^]]*\\)\\](\\([^)]+\\))"
              (lambda (match)
-               (save-match-data
+               (shipit--with-alignment-of match
                  (string-match "!\\[\\([^]]*\\)\\](\\([^)]+\\))" match)
                  (let ((alt (match-string 1 match))
                        (url (match-string 2 match)))
@@ -5050,6 +5701,28 @@ Value is the propertized rendered string.  Size capped by
   (interactive)
   (clrhash shipit--markdown-render-cache))
 
+(defun shipit--prepare-markdown (text)
+  "Return markdown TEXT as markdown-mode gets it to fontify."
+  ;; Step 1: Normalize CRLF, and take out the HTML comments
+  ;; Step 2: Convert HTML tags (e.g., <strong>) to markdown, before alignment
+  ;; Step 3: Give each link to a file of the repository its whole address.
+  ;;         This comes after step 2: a link from an <a> tag needs one too.
+  ;; Step 4: Align tables with pandoc
+  ;; Step 5: Escape mid-word underscores (e.g., file_name.py)
+  ;; Step 6: Mark the text that step 2 put between layout markers: centered
+  ;;         text and table cells.  This comes last: step 4 loses a text
+  ;;         property.
+  (let* ((normalized (replace-regexp-in-string "\r" "" text))
+         (uncommented (shipit--strip-html-comments normalized))
+         (refs-resolved (shipit--resolve-reference-style-images uncommented))
+         (html-stripped (shipit--strip-inline-html-tags refs-resolved))
+         (html-converted (shipit--convert-inline-html html-stripped))
+         (links-resolved (shipit--rewrite-relative-markdown-links html-converted))
+         (aligned (shipit--align-markdown-tables-with-pandoc links-resolved))
+         (escaped (shipit--escape-mid-word-underscores aligned))
+         (numbered (shipit--auto-increment-ordered-lists escaped)))
+    (shipit--apply-layout-markers numbered)))
+
 (defun shipit--render-markdown-uncached (text)
   "Render markdown TEXT without consulting the cache.
 This is the actual rendering implementation; callers should use
@@ -5062,21 +5735,8 @@ This is the actual rendering implementation; callers should use
 
         (if (featurep 'markdown-mode)
             (progn
-              ;; Step 1: Normalize CRLF, and take out the HTML comments
-              ;; Step 2: Strip inline HTML tags (e.g., <kbd>) before alignment
-              ;; Step 3: Align tables with pandoc
-              ;; Step 4: Escape mid-word underscores (e.g., file_name.py)
               ;; Note: Don't process images yet - they'll be done after markdown rendering
-              (let* ((normalized (replace-regexp-in-string "\r" "" text))
-                     (uncommented (shipit--strip-html-comments normalized))
-                     (refs-resolved (shipit--resolve-reference-style-images uncommented))
-                     (links-resolved (shipit--rewrite-relative-markdown-links refs-resolved))
-                     (html-stripped (shipit--strip-inline-html-tags links-resolved))
-                     (html-converted (shipit--convert-inline-html html-stripped))
-                     (aligned (shipit--align-markdown-tables-with-pandoc html-converted))
-                     (escaped (shipit--escape-mid-word-underscores aligned))
-                     (numbered (shipit--auto-increment-ordered-lists escaped)))
-                (insert numbered))
+              (insert (shipit--prepare-markdown text))
               (delay-mode-hooks (markdown-mode))
               (font-lock-ensure)
               (shipit--hide-heading-hashes)

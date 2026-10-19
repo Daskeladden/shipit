@@ -2371,8 +2371,9 @@ The lines of a quote start with the marks of the quote."
 (defun shipit--wrap-text (text width &optional code-block-indent)
   "Wrap TEXT to WIDTH, preserving word boundaries and intentional newlines.
 Lines inside code blocks (fenced with ```) are preserved exactly without
-wrapping.  CODE-BLOCK-INDENT is the indent that will be added to lines
-later (used to expand tabs correctly; default 0).
+wrapping.  So is a line with the text property `shipit-no-wrap', which
+is laid out already.  CODE-BLOCK-INDENT is the indent that will be
+added to lines later (used to expand tabs correctly; default 0).
 
 Uses the persistent `shipit--wrap-text-scratch-buffer' so repeated
 calls — common when a caller wraps a long comment body one line at a
@@ -2392,6 +2393,8 @@ every subsequent call reuses it via `erase-buffer'."
           (push (shipit--expand-tabs-to-spaces line indent) result))
          ((string-empty-p line)
           (push "" result))
+         ((get-text-property 0 'shipit-no-wrap line)
+          (push line result))
          ;; A row of a table.  Inside a list item it starts with
          ;; spaces, and filled as a paragraph it would lose the
          ;; padding that lines its columns up.

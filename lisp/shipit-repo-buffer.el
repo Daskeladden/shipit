@@ -40,6 +40,9 @@
 (declare-function shipit--create-avatar-display "shipit-render")
 (declare-function shipit--insert-body-with-details "shipit-render")
 (declare-function shipit--convert-html-tables-to-markdown "shipit-render")
+(declare-function shipit--center-aligned-lines-in-region "shipit-render")
+(declare-function shipit--lay-out-table-rows "shipit-render")
+(declare-function shipit--align-table-columns-in-region "shipit-render")
 (declare-function shipit--convert-html-lists-to-markdown "shipit-render")
 (declare-function shipit--generic-url-action-menu "shipit-render")
 (declare-function shipit--classify-url "shipit-render")
@@ -616,6 +619,17 @@ still picks org when the body has org markers like `#+TITLE:')."
       (shipit--detect-body-format text))
      (t (or by-filename 'markdown)))))
 
+(defun shipit-repo-buffer--fill-readme (rendered)
+  "Return RENDERED, the text of a README, filled to `shipit-readme-fill-column'.
+The cells of each table row that is marked in it are put side by side
+first, each filled to its own column."
+  (let ((width shipit-readme-fill-column))
+    (shipit--strip-face-on-whitespace
+     (shipit--wrap-text (if (fboundp 'shipit--lay-out-table-rows)
+                            (shipit--lay-out-table-rows rendered width)
+                          rendered)
+                        width 0))))
+
 (defun shipit-repo-buffer--insert-readme-section (readme)
   "Insert README section.
 README is either nil, a plain string of README content, or a plist
@@ -656,9 +670,7 @@ with :filename and :content keys (the format returned by backend
                      (wrapped (cond
                                ((and (numberp shipit-readme-fill-column)
                                      (fboundp 'shipit--wrap-text))
-                                (shipit--strip-face-on-whitespace
-                                 (shipit--wrap-text
-                                  rendered shipit-readme-fill-column 0)))
+                                (shipit-repo-buffer--fill-readme rendered))
                                (t rendered))))
                 (cond
                  ((eq format 'org)
@@ -674,7 +686,12 @@ with :filename and :content keys (the format returned by backend
             (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
               (shipit--apply-code-block-backgrounds-in-region readme-start (point)))
             (when (fboundp 'shipit--animate-images-in-region)
-              (shipit--animate-images-in-region readme-start (point))))))
+              (shipit--animate-images-in-region readme-start (point)))
+            (when (fboundp 'shipit--center-aligned-lines-in-region)
+              (shipit--center-aligned-lines-in-region
+               readme-start (point) shipit--image-target-width))
+            (when (fboundp 'shipit--align-table-columns-in-region)
+              (shipit--align-table-columns-in-region readme-start (point))))))
       (insert "\n"))))
 
 (defun shipit-repo-buffer--pr-type-label ()

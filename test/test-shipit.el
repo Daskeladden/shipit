@@ -443,6 +443,18 @@ THEN the mark of each line is shown as that bar."
     (dolist (line lines)
       (should (equal "|" (get-text-property 0 'display line))))))
 
+(ert-deftest test-shipit--wrap-text-leaves-a-line-that-is-marked-to-stay ()
+  "GIVEN a line longer than the wrap width that is marked as a line not
+to wrap, between two long lines that are not
+WHEN the text is wrapped
+THEN the marked line is as it was, AND the lines around it are wrapped."
+  (let* ((long "Split the image into layers that are built on one another.")
+         (kept (propertize long 'shipit-no-wrap t))
+         (lines (split-string (shipit--wrap-text (concat long "\n" kept "\n" long) 40)
+                              "\n")))
+    (should (equal 5 (length lines)))
+    (should (equal long (nth 2 lines)))))
+
 ;;; Integration Tests
 
 (ert-deftest test-shipit-magit-integration-setup ()
@@ -1904,6 +1916,25 @@ leaves nothing in the image cache."
   (let ((shipit-render-images nil)
         (input "![screenshot](https://example.com/screenshot.png)"))
     (should (string= (shipit--process-inline-images input) input))))
+
+(ert-deftest test-shipit-an-image-keeps-the-alignment-of-its-text ()
+  "GIVEN an <img> tag, AND a markdown image, each marked as centered,
+AND a markdown image that is not marked
+WHEN the images of the text are processed
+THEN what stands in place of each of the first two is marked as
+centered, AND what stands in place of the third is not."
+  (let ((shipit-render-images t))
+    (dolist (input '("<img src=\"https://example.com/logo.png\" alt=\"logo\">"
+                     "![logo](https://example.com/logo.png)"))
+      (let ((result (test-shipit--without-images
+                      (shipit--process-inline-images
+                       (propertize input 'shipit-align 'center)))))
+        (should (string-match-p "\\[Image: logo" result))
+        (should (eq 'center (get-text-property 0 'shipit-align result)))))
+    (let ((result (test-shipit--without-images
+                    (shipit--process-inline-images
+                     "![logo](https://example.com/logo.png)"))))
+      (should-not (get-text-property 0 'shipit-align result)))))
 
 (ert-deftest test-shipit--process-inline-images-mixed ()
   "Test processing both HTML and markdown images in same text."

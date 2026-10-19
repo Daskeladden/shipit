@@ -847,6 +847,598 @@ THEN the table pipe structure is preserved and tags are removed."
     (should (string= "| Feature | key |\n|---------|-----|\n| Chat: clear | C-c C-l |"
                       result))))
 
+;;; HTML tags
+
+(ert-deftest test-shipit-html-emphasis-with-attributes-becomes-markdown ()
+  "GIVEN markdown with <strong> and <em> tags that have attributes, AND
+with <b> and <i> tags
+WHEN the HTML tags are converted
+THEN each is the emphasis of markdown, AND no tag is left."
+  (should (equal "**Bold** and *soft*, **b** and *i*"
+                 (shipit--convert-inline-html
+                  (concat "<strong align=\"center\">Bold</strong> and "
+                          "<em class=\"x\">soft</em>, <b>b</b> and <i>i</i>")))))
+
+(ert-deftest test-shipit-html-link-around-an-image-becomes-a-markdown-link ()
+  "GIVEN an <a> tag with an image in it, as the badge of a README is
+WHEN the HTML tags are converted
+THEN it is a markdown link around the image."
+  (should (equal "[<img src=\"https://example.com/badge.svg\" alt=\"License\">](LICENSE)"
+                 (shipit--convert-inline-html
+                  (concat "<a href=\"LICENSE\">"
+                          "<img src=\"https://example.com/badge.svg\" alt=\"License\">"
+                          "</a>")))))
+
+(ert-deftest test-shipit-html-link-takes-its-address-from-any-place-in-the-tag ()
+  "GIVEN an <a> tag with an attribute before its address, AND the
+address in single quotes
+WHEN the HTML tags are converted
+THEN it is a markdown link to that address."
+  (should (equal "[Docs](docs/a.md)"
+                 (shipit--convert-inline-html
+                  "<a title=\"The docs\" href='docs/a.md'>Docs</a>"))))
+
+(ert-deftest test-shipit-html-link-without-an-address-goes ()
+  "GIVEN an <a> tag that only names a place in the text
+WHEN the HTML tags are converted
+THEN the tag is gone, AND the text around it stays."
+  (should (equal "Usage"
+                 (shipit--convert-inline-html "<a name=\"usage\"></a>Usage"))))
+
+(ert-deftest test-shipit-html-paragraphs-are-paragraphs-of-markdown ()
+  "GIVEN two <p> elements with no blank line between them, and text
+after them, as the head of a README has
+WHEN the HTML tags are converted
+THEN each is a paragraph, with one blank line between them, AND no <p>
+tag is left."
+  (should (equal (concat "<img src=\"./logo.png\" width=\"140\" />\n\n"
+                         "**Tagline**\n\n"
+                         "## Install\n")
+                 (shipit--convert-inline-html
+                  (concat "<p dir=\"auto\">\n"
+                          "  <img src=\"./logo.png\" width=\"140\" />\n"
+                          "</p>\n"
+                          "<p dir=\"auto\">\n"
+                          "  <strong align=\"center\">Tagline</strong>\n"
+                          "</p>\n"
+                          "\n\n"
+                          "## Install\n")))))
+
+(ert-deftest test-shipit-html-paragraph-lines-are-one-line ()
+  "GIVEN a <p> element with one link on each of its lines
+WHEN the HTML tags are converted
+THEN the links stand on one line with one space between them, as a
+browser shows them."
+  (should (equal "[A](a.md) · [B](b.md)"
+                 (shipit--convert-inline-html
+                  (concat "<p dir=\"auto\">\n"
+                          "  <a href=\"a.md\" title=\"A\">A</a> ·\n"
+                          "  <a href=\"b.md\" title=\"B\">B</a>\n"
+                          "</p>")))))
+
+(ert-deftest test-shipit-html-heading-with-a-centered-block-is-a-centered-heading ()
+  "GIVEN an <h2> element with a <center> tag at the start of its text,
+which the end of the heading also ends, as the title of a README can be
+WHEN the HTML tags are converted
+THEN the title is one heading line, its marks before its text, AND it
+stands between the markers of centered text, which end with the
+heading."
+  (should (equal "<shipit-center>\n\n## Cup of tea\n\n</shipit-center>\n\nText"
+                 (shipit--convert-inline-html "<h2><center>Cup of tea</h2>\n\nText"))))
+
+(ert-deftest test-shipit-html-line-break-starts-a-new-line ()
+  "GIVEN <br> tags in a line, in each way that they are written, AND
+one in a <p> element
+WHEN the HTML tags are converted
+THEN the text after each starts a new line."
+  (should (equal "one\ntwo\nthree"
+                 (shipit--convert-inline-html "one<br />  two<BR>three")))
+  (should (equal "one\ntwo"
+                 (shipit--convert-inline-html "<p>one<br>\n  two</p>"))))
+
+(ert-deftest test-shipit-html-block-with-markdown-keeps-its-lines ()
+  "GIVEN a <div> element with blank lines in it, which holds markdown
+WHEN the HTML tags are converted
+THEN the tags are gone, AND the lines of the markdown stay as they are."
+  (should (equal "# Title\nline one\nline two\n\nafter"
+                 (shipit--convert-inline-html
+                  (concat "<div class=\"head\">\n\n"
+                          "# Title\nline one\nline two\n\n"
+                          "</div>\nafter")))))
+
+(ert-deftest test-shipit-html-block-with-preformatted-text-keeps-its-lines ()
+  "GIVEN a <div> element with a <pre> element in it
+WHEN the HTML tags are converted
+THEN the lines of the preformatted text stay as they are."
+  (should (equal "<pre>\na\n  b\n</pre>"
+                 (shipit--convert-inline-html
+                  "<div>\n<pre>\na\n  b\n</pre>\n</div>"))))
+
+(ert-deftest test-shipit-html-heading-becomes-a-markdown-heading ()
+  "GIVEN an <h2> element with an attribute, AND text on the next line
+WHEN the HTML tags are converted
+THEN it is a markdown heading of the second level, with a blank line
+after it."
+  (should (equal "## Title\n\ntext"
+                 (shipit--convert-inline-html
+                  "<h2 id=\"title\">Title</h2>\ntext"))))
+
+(ert-deftest test-shipit-html-tags-without-a-look-go ()
+  "GIVEN tags that only group or place their text: <span>, <sub>, AND
+<picture> with a <source>
+WHEN the HTML tags are converted
+THEN the tags are gone, AND their text and the image stay."
+  (should (equal "a H2O <img src=\"light.png\">"
+                 (shipit--convert-inline-html
+                  (concat "<span class=\"x\">a</span> H<sub>2</sub>O "
+                          "<picture><source srcset=\"dark.png\">"
+                          "<img src=\"light.png\"></picture>")))))
+
+(ert-deftest test-shipit-html-tags-in-code-are-text ()
+  "GIVEN HTML tags in a fenced code block, AND in a code span
+WHEN the HTML tags are converted
+THEN they stay: there they are text that the author shows."
+  (dolist (text '("```html\n<p align=\"center\">\n  <strong>x</strong>\n</p>\n```\n"
+                  "Write `<br>` for a new line and `<a href=\"x\">y</a>` for a link.\n"))
+    (should (equal text (shipit--convert-inline-html text)))))
+
+(ert-deftest test-shipit-html-tags-that-are-not-known-stay ()
+  "GIVEN text in angle brackets that is no tag that shipit converts: a
+type, a place to fill in, a <details> element
+WHEN the HTML tags are converted
+THEN the text is the same."
+  (let ((text "Vec<T> of <your-name>\n<details><summary>More</summary>\nbody\n</details>\n"))
+    (should (equal text (shipit--convert-inline-html text)))))
+
+(ert-deftest test-shipit-html-list-becomes-a-markdown-list ()
+  "GIVEN an HTML list with bullets, each item on a line of its own, AND
+a numbered list with its items on one line
+WHEN the HTML tags are converted
+THEN each is a markdown list, one item to a line, with bullets or
+numbers."
+  (should (equal "- Alpha\n- Beta"
+                 (shipit--convert-inline-html
+                  "<ul>\n  <li>Alpha</li>\n  <li>Beta</li>\n</ul>")))
+  (should (equal "1. One\n2. Two"
+                 (shipit--convert-inline-html "<ol><li>One</li><li>Two</li></ol>"))))
+
+(ert-deftest test-shipit-html-list-in-a-list-stands-under-its-item ()
+  "GIVEN an HTML list in an item of a list with bullets, AND one in an
+item of a numbered list
+WHEN the HTML tags are converted
+THEN its items stand under that item, indented as far as the text of
+the item."
+  (should (equal "- Fruit\n  - Apple\n- Tea"
+                 (shipit--convert-inline-html
+                  "<ul><li>Fruit<ul><li>Apple</li></ul></li><li>Tea</li></ul>")))
+  (should (equal "1. Fruit\n   - Apple"
+                 (shipit--convert-inline-html
+                  "<ol><li>Fruit<ul><li>Apple</li></ul></li></ol>"))))
+
+(ert-deftest test-shipit-html-list-stands-between-paragraphs ()
+  "GIVEN an HTML list between two lines of text
+WHEN the HTML tags are converted
+THEN a blank line stands before and after the list, so that the text
+is no part of the list."
+  (should (equal "Intro\n\n- A\n\nAfter"
+                 (shipit--convert-inline-html "Intro\n<ul><li>A</li></ul>\nAfter"))))
+
+(ert-deftest test-shipit-html-quote-becomes-a-markdown-quote ()
+  "GIVEN an HTML quote of two paragraphs, AND text after it
+WHEN the HTML tags are converted
+THEN each line of the quote starts with the mark of a markdown quote,
+the blank line too, AND the text after it is no part of it."
+  (should (equal "> Quoted\n>\n> More\n\nAfter"
+                 (shipit--convert-inline-html
+                  "<blockquote>\n<p>Quoted</p>\n<p>More</p>\n</blockquote>\nAfter"))))
+
+(ert-deftest test-shipit-html-quote-after-a-paragraph-starts-on-its-own-line ()
+  "GIVEN a paragraph, AND after it an HTML quote that starts with a
+heading, as the release notes in a dependency update do
+WHEN the HTML tags are converted
+THEN the paragraph has no mark of a quote, AND the quote starts at its
+heading, a blank line below the paragraph."
+  (should (equal "Intro\n\n> ## Title\n>\n> Text"
+                 (shipit--convert-inline-html
+                  "<p>Intro</p>\n<blockquote>\n<h2>Title</h2>\n<p>Text</p>\n</blockquote>"))))
+
+(ert-deftest test-shipit-html-code-and-changes-become-markdown ()
+  "GIVEN code, deleted text, struck text, inserted text AND underlined
+text in HTML tags
+WHEN the HTML tags are converted
+THEN the code is a code span, the deleted and the struck text are struck
+through, AND the tags of the inserted and the underlined text are gone."
+  (should (equal "Run `make`, ~~old~~ ~~gone~~ new and fine"
+                 (shipit--convert-inline-html
+                  (concat "Run <code>make</code>, <del>old</del> <s>gone</s> "
+                          "<ins>new</ins> and <u>fine</u>")))))
+
+(ert-deftest test-shipit-html-entities-become-their-characters ()
+  "GIVEN HTML entities with a name, with a number, AND an escaped one
+WHEN the HTML of the text is converted
+THEN each is the character it stands for, AND the escaped one shows
+the entity it escapes, as a forge shows them."
+  (skip-unless (libxml-available-p))
+  (should (equal "a <b> \"c\" & d's — e &lt;"
+                 (shipit--convert-inline-html
+                  "a &lt;b&gt; &quot;c&quot; &amp; d&#39;s &mdash; e &amp;lt;"))))
+
+(ert-deftest test-shipit-html-entity-of-a-space-is-a-plain-space ()
+  "GIVEN a no-break space as an entity, AND an entity that HTML does not
+know
+WHEN the HTML of the text is converted
+THEN the no-break space is a plain space, which Emacs shows without
+the face it gives a no-break space, AND the unknown entity stays."
+  (skip-unless (libxml-available-p))
+  (should (equal "Tea • Coffee &cupcake;"
+                 (shipit--convert-inline-html "Tea&nbsp;&bull;&nbsp;Coffee &cupcake;"))))
+
+(ert-deftest test-shipit-html-entities-in-markdown-code-stay ()
+  "GIVEN an HTML entity in a code span, AND one in a fenced code block
+WHEN the HTML of the text is converted
+THEN both stay: in markdown code a forge shows the entity."
+  (let ((text "Write `&lt;` here.\n```\n&lt;tag&gt;\n```\n"))
+    (should (equal text (shipit--convert-inline-html text)))))
+
+(ert-deftest test-shipit-html-entities-in-a-code-element-become-characters ()
+  "GIVEN an HTML <code> element with entities, as the release notes in
+a dependency update have
+WHEN the HTML of the text is converted
+THEN the code span shows the characters: the text of the element is
+HTML, not markdown."
+  (skip-unless (libxml-available-p))
+  (should (equal "Add `#[command(defer = <bool>)]` and `\"x\".f()`"
+                 (shipit--convert-inline-html
+                  (concat "Add <code>#[command(defer = &lt;bool&gt;)]</code> "
+                          "and <code>&quot;x&quot;.f()</code>")))))
+
+(ert-deftest test-shipit-html-link-to-a-file-of-the-repo-gets-its-address ()
+  "GIVEN markdown of the repository owner/repo with an <a> tag to a
+file of that repository
+WHEN the markdown is made ready for markdown-mode
+THEN the link has the whole address of the file, which makes it a link
+that can be followed."
+  (let ((shipit--image-base-repo "owner/repo"))
+    (should (equal "[Docs](https://github.com/owner/repo/blob/HEAD/docs/a.md)"
+                   (shipit--prepare-markdown "<a href=\"docs/a.md\">Docs</a>")))))
+
+(ert-deftest test-shipit-html-table-with-markdown-has-its-cells-between-markers ()
+  "GIVEN an HTML table with two cells, each with a markdown heading and
+a quote between blank lines, as a README has to show two texts side by
+side
+WHEN the HTML tags are converted
+THEN no tag of the table is left, AND a marker of a table row stands
+where the row started, AND the markdown of each cell stands between the
+two markers of a cell, AND each marker is a paragraph of its own."
+  (should (equal (concat "## What changes\n\n"
+                         "<shipit-row>\n\n"
+                         "<shipit-cell>\n\n## Before\n\n> long\n\n</shipit-cell>\n\n"
+                         "<shipit-cell>\n\n## After\n\n> short\n\n</shipit-cell>\n\n"
+                         "## The rules\n")
+                 (shipit--convert-inline-html
+                  (concat "## What changes\n\n\n"
+                          "<table>\n<tr>\n<td width=\"50%\">\n\n"
+                          "## Before\n\n> long\n\n"
+                          "</td>\n\n<td width=\"50%\">\n\n"
+                          "## After\n\n> short\n\n"
+                          "</td>\n</tr>\n</table>\n\n\n"
+                          "## The rules\n")))))
+
+(ert-deftest test-shipit-html-table-with-a-picture-or-code-has-no-cell-marker ()
+  "GIVEN an HTML table with markdown in its two cells, the first of
+which holds a picture, written as markdown or as a tag, or a fenced
+code block
+WHEN the HTML tags are converted
+THEN no tag of the table and no marker is left, AND the markdown of
+the first cell stands above that of the second."
+  (dolist (cell '("![shot](shot.png)" "<img src=\"shot.png\">" "```sh\nmake\n```"))
+    (should (equal (concat cell "\n\ntext")
+                   (shipit--convert-inline-html
+                    (concat "<table>\n<tr>\n<td>\n\n" cell "\n\n</td>\n"
+                            "<td>\n\ntext\n\n</td>\n</tr>\n</table>\n"))))))
+
+(ert-deftest test-shipit-html-table-without-markdown-stays ()
+  "GIVEN an HTML table with no blank line in it, which holds rows of
+data, AND an HTML table with blank lines in a fenced code block
+WHEN the HTML tags are converted
+THEN each table is the same."
+  (dolist (text '("<table>\n<tr><th>Name</th></tr>\n<tr><td>one</td></tr>\n</table>\n"
+                  "```html\n<table>\n\n<tr><td>x</td></tr>\n\n</table>\n```\n"))
+    (should (equal text (shipit--convert-inline-html text)))))
+
+;;; Centered text
+
+(defun test-shipit-render--centered-text (text)
+  "The parts of the string TEXT that are marked as centered, each a string."
+  (let ((runs nil) (pos 0))
+    (while (< pos (length text))
+      (let ((next (or (next-single-property-change pos 'shipit-align text)
+                      (length text))))
+        (when (eq 'center (get-text-property pos 'shipit-align text))
+          (push (substring-no-properties text pos next) runs))
+        (setq pos next)))
+    (nreverse runs)))
+
+(ert-deftest test-shipit-html-centered-block-stands-between-markers ()
+  "GIVEN a <p> element that asks for centered text, AND a <center>
+element after a line of text
+WHEN the HTML tags are converted
+THEN the text of each stands between the two markers of centered
+text, AND each marker is a paragraph of its own."
+  (should (equal "<shipit-center>\n\n**Tagline**\n\n</shipit-center>\n\ntext"
+                 (shipit--convert-inline-html
+                  "<p align=\"center\">\n  <strong>Tagline</strong>\n</p>\ntext")))
+  (should (equal "before\n\n<shipit-center>\n\nmiddle\n\n</shipit-center>"
+                 (shipit--convert-inline-html "before\n<CENTER>middle</CENTER>"))))
+
+(ert-deftest test-shipit-html-block-with-another-alignment-has-no-marker ()
+  "GIVEN a <p> element that asks for text at the left
+WHEN the HTML tags are converted
+THEN no marker of centered text is put."
+  (should (equal "text"
+                 (shipit--convert-inline-html "<p align=\"left\">text</p>"))))
+
+(ert-deftest test-shipit-alignment-markers-become-a-mark-on-the-text ()
+  "GIVEN markdown with two lines between the markers of centered text
+WHEN the markers are applied
+THEN the markers are gone, with one blank line where each stood, AND
+the two lines are marked as centered, AND no other text is."
+  (let ((text (shipit--apply-layout-markers
+               (concat "before\n\n<shipit-center>\n\n**Tagline**\nsecond\n\n"
+                       "</shipit-center>\n\nafter"))))
+    (should (equal "before\n\n**Tagline**\nsecond\n\nafter" text))
+    (should (equal '("**Tagline**\nsecond")
+                   (test-shipit-render--centered-text text)))))
+
+(ert-deftest test-shipit-alignment-markers-inside-each-other-mark-all-the-text ()
+  "GIVEN a pair of markers of centered text inside another pair
+WHEN the markers are applied
+THEN no marker is left, AND all the text of the outer pair is marked."
+  (let ((text (shipit--apply-layout-markers
+               (concat "<shipit-center>\n\n<shipit-center>\n\nx\n\n"
+                       "</shipit-center>\n\ny\n\n</shipit-center>"))))
+    (should (equal "x\n\ny" text))
+    (should (equal '("x\n\ny") (test-shipit-render--centered-text text)))))
+
+(ert-deftest test-shipit-alignment-marker-without-its-end-marks-nothing ()
+  "GIVEN a marker that starts centered text, AND no marker that ends it
+WHEN the markers are applied
+THEN the marker is gone, AND no text is marked."
+  (let ((text (shipit--apply-layout-markers "<shipit-center>\n\nx\n")))
+    (should (equal "x\n" text))
+    (should-not (test-shipit-render--centered-text text))))
+
+(ert-deftest test-shipit-centered-html-is-marked-in-the-markdown-to-fontify ()
+  "GIVEN markdown with two centered <p> elements and a heading after
+them, as the head of a README has
+WHEN the markdown is made ready for markdown-mode
+THEN no tag and no marker is left, AND the text of the two elements is
+marked as centered, AND the heading is not."
+  (let ((text (shipit--prepare-markdown
+               (concat "<p align=\"center\">\n"
+                       "  <img src=\"./logo.png\" width=\"140\" />\n"
+                       "</p>\n"
+                       "<p align=\"center\">\n"
+                       "  <strong>Tagline</strong>\n"
+                       "</p>\n\n"
+                       "## Install\n"))))
+    (should (equal "<img src=\"./logo.png\" width=\"140\" />\n\n**Tagline**\n\n## Install\n"
+                   text))
+    (should (equal '("<img src=\"./logo.png\" width=\"140\" />" "**Tagline**")
+                   (test-shipit-render--centered-text text)))))
+
+(ert-deftest test-shipit-centered-html-stays-marked-next-to-a-markdown-table ()
+  "GIVEN markdown with a centered <p> element and a markdown table,
+which pandoc aligns by writing the whole text again
+WHEN the markdown is made ready for markdown-mode
+THEN the text of the element is still marked as centered."
+  (skip-unless (executable-find "pandoc"))
+  (let ((text (shipit--prepare-markdown
+               "<p align=\"center\">Tagline</p>\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")))
+    (should (equal '("Tagline") (test-shipit-render--centered-text text)))
+    (should-not (string-match-p "shipit-center" text))))
+
+(ert-deftest test-shipit-a-centered-line-starts-at-half-of-the-room-left ()
+  "GIVEN a buffer with an indented line of 4 characters that is marked
+as centered, AND a line that is not marked
+WHEN the lines are centered in a column that is 20 wide
+THEN the marked line is drawn 8 further in, half of the room that its
+text leaves, AND the other line is drawn where it was."
+  (with-temp-buffer
+    (insert "   " (propertize "abcd" 'shipit-align 'center) "\n   plain\n")
+    (shipit--center-aligned-lines-in-region (point-min) (point-max) 20)
+    (should (equal '(space :width (8))
+                   (get-text-property (point-min) 'line-prefix)))
+    (forward-line -1)
+    (should-not (get-text-property (point) 'line-prefix))))
+
+(ert-deftest test-shipit-a-centered-line-is-measured-as-it-is-shown ()
+  "GIVEN a centered line with 2 characters to see and hidden markup
+around them, AND a centered line whose first character is a space that
+shows a picture 3 wide
+WHEN the lines are centered in a column that is 20 wide
+THEN the first is drawn 9 further in, AND the second 8: hidden text
+takes no room, AND the space of a picture is no indent."
+  (with-temp-buffer
+    (insert "   "
+            (propertize "[" 'invisible t 'shipit-align 'center)
+            (propertize "ab" 'shipit-align 'center)
+            (propertize "](https://example.com/a)" 'invisible t 'shipit-align 'center)
+            "\n   "
+            (propertize " " 'display "PIC" 'shipit-align 'center)
+            "\n")
+    (shipit--center-aligned-lines-in-region (point-min) (point-max) 20)
+    (goto-char (point-min))
+    (should (equal '(space :width (9)) (get-text-property (point) 'line-prefix)))
+    (forward-line 1)
+    (should (equal '(space :width (8)) (get-text-property (point) 'line-prefix)))))
+
+(ert-deftest test-shipit-a-centered-line-that-fills-the-column-stays ()
+  "GIVEN a centered line that is 30 wide
+WHEN the lines are centered in a column that is 20 wide
+THEN the line is drawn where it was."
+  (with-temp-buffer
+    (insert (propertize (make-string 30 ?x) 'shipit-align 'center) "\n")
+    (shipit--center-aligned-lines-in-region (point-min) (point-max) 20)
+    (should-not (get-text-property (point-min) 'line-prefix))))
+
+;;; Table cells side by side
+
+(defun test-shipit-render--table-cells (text)
+  "The table cells that are marked in the string TEXT, each as (ROW PLACE TEXT)."
+  (let ((cells nil) (pos 0))
+    (while (< pos (length text))
+      (let ((mark (get-text-property pos 'shipit-cell text))
+            (next (or (next-single-property-change pos 'shipit-cell text)
+                      (length text))))
+        (when mark
+          (push (list (car mark) (cdr mark) (substring-no-properties text pos next))
+                cells))
+        (setq pos next)))
+    (nreverse cells)))
+
+(defun test-shipit-render--cell (row place text)
+  "TEXT marked as the cell at PLACE of the table row ROW."
+  (propertize text 'shipit-cell (cons row place)))
+
+(defun test-shipit-render--row-lines (text)
+  "The lines of the string TEXT that are lines of a table row."
+  (seq-filter (lambda (line)
+                (and (not (string-empty-p line))
+                     (get-text-property 0 'shipit-no-wrap line)))
+              (split-string text "\n")))
+
+(ert-deftest test-shipit-cell-markers-become-a-mark-on-each-cell ()
+  "GIVEN markdown with the markers of two table rows, the first of two
+cells and the second of one
+WHEN the markers are applied
+THEN the markers are gone, with one blank line where each stood, AND
+the text of each cell is marked with its row and its place in the row."
+  (let ((text (shipit--apply-layout-markers
+               (concat "<shipit-row>\n\n"
+                       "<shipit-cell>\n\na\n\n</shipit-cell>\n\n"
+                       "<shipit-cell>\n\nb\nc\n\n</shipit-cell>\n\n"
+                       "<shipit-row>\n\n"
+                       "<shipit-cell>\n\nd\n\n</shipit-cell>\n\nafter"))))
+    (should (equal "a\n\nb\nc\n\nd\n\nafter" text))
+    (should (equal '((1 0 "a") (1 1 "b\nc") (2 0 "d"))
+                   (test-shipit-render--table-cells text)))))
+
+(ert-deftest test-shipit-html-table-cells-are-marked-in-the-markdown-to-fontify ()
+  "GIVEN markdown with an HTML table of two cells that hold markdown
+WHEN the markdown is made ready for markdown-mode
+THEN no tag and no marker is left, AND the markdown of each cell is
+marked as a cell of the same row."
+  (let ((text (shipit--prepare-markdown
+               (concat "<table>\n<tr>\n<td width=\"50%\">\n\n"
+                       "## Before\n\n> long\n\n"
+                       "</td>\n\n<td width=\"50%\">\n\n"
+                       "## After\n\n> short\n\n"
+                       "</td>\n</tr>\n</table>\n\n\n"
+                       "## The rules\n"))))
+    (should (equal "## Before\n\n> long\n\n## After\n\n> short\n\n## The rules\n" text))
+    (should (equal '((1 0 "## Before\n\n> long") (1 1 "## After\n\n> short"))
+                   (test-shipit-render--table-cells text)))))
+
+(ert-deftest test-shipit-the-cells-of-a-table-row-stand-side-by-side ()
+  "GIVEN a text with a table row of two marked cells between two
+paragraphs: the first cell has one line AND the second has two
+WHEN the table rows are laid out in 43 columns, 20 for each cell
+THEN the row has two lines, each with the line of the first cell, a
+bar, and the line of the second, AND the place where the bar must
+start, column 21, is marked on the space before it, AND the paragraphs
+around the row are as they were."
+  (let* ((text (concat "above\n\n"
+                       (test-shipit-render--cell 1 0 "one") "\n\n"
+                       (test-shipit-render--cell 1 1 "two\nthree")
+                       "\n\nbelow"))
+         (result (shipit--lay-out-table-rows text 43)))
+    (should (equal "above\n\none │ two\n │ three\n\nbelow"
+                   (substring-no-properties result)))
+    (should (equal '("one │ two" " │ three")
+                   (mapcar #'substring-no-properties
+                           (test-shipit-render--row-lines result))))
+    (should (equal 21 (get-text-property (string-search " │ two" result)
+                                         'shipit-column result)))
+    (should (equal 21 (get-text-property (string-search " │ three" result)
+                                         'shipit-column result)))))
+
+(ert-deftest test-shipit-a-table-cell-is-wrapped-to-its-column ()
+  "GIVEN a table row of two marked cells, the first of which is one
+line of 59 characters
+WHEN the table rows are laid out in 43 columns, 20 for each cell
+THEN the text of the first cell takes more than one line, AND no line
+of it is wider than 20, AND the text of the second cell stands on the
+first line of the row."
+  (let* ((text (concat (test-shipit-render--cell
+                        1 0 "one two three four five six seven eight nine ten eleven one")
+                       "\n\n"
+                       (test-shipit-render--cell 1 1 "right")))
+         (lines (mapcar #'substring-no-properties
+                        (test-shipit-render--row-lines
+                         (shipit--lay-out-table-rows text 43)))))
+    (should (> (length lines) 1))
+    (should (string-suffix-p " │ right" (car lines)))
+    (dolist (line lines)
+      (should (<= (string-search " │ " line) 20)))))
+
+(ert-deftest test-shipit-a-heading-in-a-table-cell-loses-its-hidden-hashes ()
+  "GIVEN a table row of two marked cells that each start with a heading
+whose hashes are hidden
+WHEN the table rows are laid out
+THEN the first line of the row has the two titles and no hash: a line
+that starts with hashes is taken for a heading of the document."
+  (let* ((heading (lambda (title)
+                    (concat (propertize "## " 'invisible t) title "\n\ntext")))
+         (text (concat (test-shipit-render--cell 1 0 (funcall heading "Before"))
+                       "\n\n"
+                       (test-shipit-render--cell 1 1 (funcall heading "After"))))
+         (lines (test-shipit-render--row-lines
+                 (shipit--lay-out-table-rows text 43))))
+    (should (equal "Before │ After" (substring-no-properties (car lines))))))
+
+(ert-deftest test-shipit-text-in-a-table-cell-is-not-marked-as-centered ()
+  "GIVEN a table row of two marked cells, the first of which is marked
+as centered text
+WHEN the table rows are laid out
+THEN no text of the row is marked as centered: a centered line gets its
+place from the start of the line, and that moves both cells."
+  (let* ((text (concat (propertize (test-shipit-render--cell 1 0 "one")
+                                   'shipit-align 'center)
+                       "\n\n"
+                       (test-shipit-render--cell 1 1 "two")))
+         (result (shipit--lay-out-table-rows text 43)))
+    (should (equal "one │ two" (substring-no-properties result)))
+    (should-not (test-shipit-render--centered-text result))))
+
+(ert-deftest test-shipit-a-table-row-that-does-not-fit-stays ()
+  "GIVEN a table row of one marked cell, AND a table row of three
+WHEN the table rows are laid out in 43 columns, where each of three
+cells gets fewer than the 20 columns that a cell needs
+THEN the text is as it was."
+  (let ((text (concat (test-shipit-render--cell 1 0 "alone") "\n\n"
+                      (test-shipit-render--cell 2 0 "a") "\n\n"
+                      (test-shipit-render--cell 2 1 "b") "\n\n"
+                      (test-shipit-render--cell 2 2 "c"))))
+    (should (equal "alone\n\na\n\nb\n\nc"
+                   (substring-no-properties (shipit--lay-out-table-rows text 43))))))
+
+(ert-deftest test-shipit-a-table-column-starts-at-its-place-after-the-indent ()
+  "GIVEN a buffer with a line of a table row after an indent of 5: the
+space before its bar is marked with column 21, AND a plain line
+WHEN the table columns are put in their places
+THEN that space is shown as room up to column 26, AND nothing of the
+plain line is shown differently."
+  (with-temp-buffer
+    (insert "     "
+            (propertize (concat "one" (propertize " " 'shipit-column 21) "│ two")
+                        'shipit-no-wrap t)
+            "\n     plain\n")
+    (shipit--align-table-columns-in-region (point-min) (point-max))
+    (should (equal '(space :align-to 26) (get-text-property 9 'display)))
+    (should (equal 9 (text-property-not-all (point-min) (point-max) 'display nil)))
+    (should-not (text-property-not-all 10 (point-max) 'display nil))))
+
 ;;; Pandoc table alignment guard tests
 
 (ert-deftest test-shipit--align-markdown-tables-skips-when-no-table ()

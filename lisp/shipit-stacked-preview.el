@@ -85,6 +85,9 @@ entry; a boundary is a division, and the top of the pile is not one.")
   "Commit SHA to the branch already marking that layer.
 A stack divided before keeps the names it was given.")
 
+(defvar-local shipit-stacked-preview--fetch-problem nil
+  "Why the last fetch from the remote failed, or nil when it did not.")
+
 (defvar-local shipit-stacked-preview--states-shown nil
   "The state of each layer the rows were last drawn with, by branch.
 Working out a state asks git and the forge.  The stack canvas reads
@@ -183,34 +186,87 @@ Nil when they stand on the same commit, or when the remote has none."
   (and (shipit-stack--rev (concat "origin/" branch))
        (shipit-stacked-preview--ahead-behind (concat "origin/" branch) branch)))
 
-(defun shipit-stacked-preview--with-drift (status drift)
+(defun shipit-stacked-preview--base-under (ref)
+  "Return the commit REF stands on over the stack\='s base, or nil."
+  (and shipit-stacked-preview--base
+       (car (shipit-stack--git-lines "merge-base" ref shipit-stacked-preview--base))))
+
+(defun shipit-stacked-preview--remote-base-moved (branch)
+  "Return where the copy of BRANCH on the remote stands over the stack\='s
+base, when that is beyond where BRANCH stands; nil otherwise.
+A bot that rebases the stack after the pull request under it merges
+moves the copies this way, and a copy rebased there is followed with a
+rebase here, not pulled."
+  (let ((here (shipit-stacked-preview--base-under branch))
+        (there (shipit-stacked-preview--base-under (concat "origin/" branch))))
+    (and here there (not (equal here there))
+         (shipit-stack--ancestor-p here there)
+         there)))
+
+(defun shipit-stacked-preview--remote-movement (branch)
+  "Return what the copy of BRANCH on the remote did that this one has not.
+`rebased\=' when it stands on a newer base, `new-commits\=' when it only
+gained commits, nil when it did nothing or when which side moved cannot
+be told: two sides that both gained commits say nothing about who
+rewrote what."
+  (cond ((shipit-stacked-preview--remote-base-moved branch) 'rebased)
+        ((pcase-let ((`(,ahead . ,behind)
+                      (shipit-stacked-preview--ahead-behind-counts
+                       (concat "origin/" branch) branch)))
+           (and behind (> behind 0) (zerop ahead)))
+         'new-commits)))
+
+(defun shipit-stacked-preview--merged-p (tip)
+  "Return non-nil when every commit up to TIP is on the stack\='s base.
+By patch rather than by id: a rebase merge puts the commits on the base
+under new ids, and a layer merged that way is still listed over the
+base with its branch gone from the remote, looking like one never sent."
+  (and shipit-stacked-preview--base
+       (let ((lines (shipit-stack--git-lines
+                     "cherry" shipit-stacked-preview--base tip)))
+         (and lines (seq-every-p (lambda (line) (string-prefix-p "-" line)) lines)))))
+
+(defun shipit-stacked-preview--movement-words (moved)
+  "Return the words for MOVED, what the copy on the remote did, or nil."
+  (pcase moved
+    ('rebased "rebased on the remote")
+    ('new-commits "new commits on the remote")))
+
+(defun shipit-stacked-preview--with-drift (status drift &optional moved)
   "Return STATUS with DRIFT, how far the branch left the remote, appended.
 A branch rewritten since it was pushed still has its remote copy, so
 without this it would read as pushed while the remote holds the old
-version of the stack."
-  (if drift
-      (concat status "  " (propertize drift 'font-lock-face 'font-lock-comment-face))
-    status))
+version of the stack.  MOVED says what the copy on the remote did when
+the drift is its doing, since the counts alone do not say which side
+moved, and the answer differs: a copy rebased onto a newer base is
+followed with a rebase here, one that gained commits is pulled."
+  (let ((words (delq nil (list drift (shipit-stacked-preview--movement-words moved)))))
+    (if words
+        (concat status "  " (propertize (string-join words ", ")
+                                        'font-lock-face 'font-lock-comment-face))
+      status)))
 
 (defun shipit-stacked-preview--remote-state (branch statuses)
   "Return the state of a layer whose BRANCH is on the remote.
 STATUSES maps pull request numbers to their check rollup and review
 decision."
   (let ((number (shipit-stacked-preview--pr-number branch))
-        (drift (shipit-stacked-preview--drift branch)))
+        (drift (shipit-stacked-preview--drift branch))
+        (moved (shipit-stacked-preview--remote-movement branch)))
     (if number
         (let ((status (cdr (assq number statuses))))
           (list :state 'pull-request :number number
                 :checks (cdr (assq 'checks status))
                 :review (cdr (assq 'review status))
-                :drift drift))
-      (list :state (if drift 'drifted 'pushed) :drift drift))))
+                :drift drift :moved moved))
+      (list :state (if drift 'drifted 'pushed) :drift drift :moved moved))))
 
 (defun shipit-stacked-preview--layer-state (layer &optional statuses)
   "Return where LAYER has got to, as a plist.
-`:state' is `sending', `no-branch', `not-pushed', `pushed', `drifted' or
-`pull-request'.  A layer on the remote also carries `:drift', the words
-for how far its copy there came apart from this one, or nil.  A pull
+`:state' is `sending', `merged', `no-branch', `not-pushed', `pushed',
+`drifted' or `pull-request'.  A layer on the remote also carries
+`:drift', the words for how far its copy there came apart from this
+one, or nil, and `:moved', what that copy did to come apart.  A pull
 request carries `:number', and `:checks' and `:review' from STATUSES,
 which maps pull request numbers to their check rollup and review
 decision.  The row and the stack canvas both draw from this, so the
@@ -218,6 +274,8 @@ two cannot disagree about a layer."
   (let ((branch (cdr (assq 'branch layer))))
     (cond
      ((shipit-stacked-preview--sending-p branch) (list :state 'sending))
+     ((shipit-stacked-preview--merged-p (cdr (assq 'tip layer)))
+      (list :state 'merged))
      ((not (or (cdr (assq 'existing layer)) (shipit-stack--rev branch)))
       (list :state 'no-branch))
      ((not (shipit-stack--rev (concat "origin/" branch)))
@@ -238,16 +296,22 @@ two cannot disagree about a layer."
   "Return the status text of a layer in STATE, coloured by how far it got.
 Dim while the layer is still only local, orange while it is on its way,
 green once it is on the remote, and the branch colour once it has a
-pull request of its own.  A layer on the remote also says how far its
-copy there has fallen behind this one, and a layer with a pull request
-wears its glyphs behind the number."
+pull request of its own; green with the name of the base once it is
+merged into it.  A layer on the remote also says how far its copy there
+came apart from this one and what that copy did, and a layer with a
+pull request wears its glyphs behind the number."
   (pcase (plist-get state :state)
     ('sending (propertize "sending…" 'font-lock-face 'warning))
+    ('merged (propertize (format "merged into %s"
+                                 (shipit-stacked-preview--base-name
+                                  shipit-stacked-preview--base))
+                         'font-lock-face 'success))
     ('no-branch (propertize "no branch yet" 'font-lock-face 'font-lock-comment-face))
     ('not-pushed (propertize "not pushed" 'font-lock-face 'font-lock-comment-face))
     (_ (shipit-stacked-preview--with-drift
         (shipit-stacked-preview--remote-status state)
-        (plist-get state :drift)))))
+        (plist-get state :drift)
+        (plist-get state :moved)))))
 
 (defun shipit-stacked-preview--layer-status (layer &optional statuses)
   "Return the status text of LAYER, as its row draws it.
@@ -450,7 +514,8 @@ within a layer history grows upward too."
 
 (defconst shipit-stacked-preview--key-columns
   '((("RET" . "open layer") ("s" . "divide here") ("u" . "undo"))
-    (("c" . "create branches") ("P" . "push") ("R" . "register stack"))
+    (("c" . "create branches") ("P" . "push") ("R" . "register stack")
+     ("b" . "rebase onto remote base"))
     (("r" . "rename layer") ("a" . "suggest name") ("v" . "draw on canvas"))
     (("g" . "refresh") ("q" . "quit") ("$" . "process log")))
   "The keys this buffer offers, a list per column.
@@ -497,20 +562,25 @@ columns line up on rows where one has run out."
               "\n"))
     (insert "\n")))
 
-(defun shipit-stacked-preview--ahead-behind (upstream &optional local)
-  "Return \"N ahead, M behind\" of LOCAL against UPSTREAM, or nil.
-LOCAL defaults to HEAD.  A count of zero is left out; nil when the two
-are level."
+(defun shipit-stacked-preview--ahead-behind-counts (upstream &optional local)
+  "Return (AHEAD . BEHIND): the commits LOCAL has over UPSTREAM, and the reverse.
+LOCAL defaults to HEAD.  Nil when git cannot compare the two."
   (when-let* ((counts (car (shipit-stack--git-lines
                             "rev-list" "--left-right" "--count"
                             (format "%s...%s" upstream (or local "HEAD")))))
               (parts (split-string counts)))
-    (let* ((behind (string-to-number (car parts)))
-           (ahead (string-to-number (cadr parts)))
-           (words (delq nil
-                        (list (and (> ahead 0) (format "%d ahead" ahead))
-                              (and (> behind 0)
-                                   (format "%d behind" behind))))))
+    (cons (string-to-number (cadr parts)) (string-to-number (car parts)))))
+
+(defun shipit-stacked-preview--ahead-behind (upstream &optional local)
+  "Return \"N ahead, M behind\" of LOCAL against UPSTREAM, or nil.
+LOCAL defaults to HEAD.  A count of zero is left out; nil when the two
+are level."
+  (pcase-let ((`(,ahead . ,behind)
+               (shipit-stacked-preview--ahead-behind-counts upstream local)))
+    (let ((words (delq nil
+                       (list (and ahead (> ahead 0) (format "%d ahead" ahead))
+                             (and behind (> behind 0)
+                                  (format "%d behind" behind))))))
       (and words (string-join words ", ")))))
 
 (defun shipit-stacked-preview--insert-refs ()
@@ -571,6 +641,7 @@ STATUSES are the pull request statuses of the stack."
     (erase-buffer)
     (magit-insert-section (shipit-stack-root)
       (shipit-stacked-preview--insert-header)
+      (shipit-stacked-preview--insert-fetch-problem)
       (shipit-stacked-preview--insert-problems)
       ;; Newest at the top and the base at the bottom, which is the way
       ;; a stack is drawn and the way the commits actually sit.
@@ -953,13 +1024,101 @@ elsewhere."
     (shipit-stacked-preview--group numbers)
     (shipit-stacked-preview--render)))
 
-(defun shipit-stacked-preview-refresh ()
-  "Read the commits and each layer\='s pull request again, and redraw."
+(defun shipit-stacked-preview--fetch ()
+  "Bring the remote-tracking refs up to date, pruned; return nil or why not.
+The rows say where each layer\='s copy on the remote stands, and a bot
+that rebases a stack after the pull request under it merges moves those
+copies without anyone here hearing of it.  A branch deleted there, as
+after a merge, goes too.  Every branch rather than the stack\='s own: a
+fetch of a branch the remote no longer has fails outright, and the
+names a stack will take are not known until it is divided.  A failure
+is returned rather than signalled: the refs still here draw a stack
+that is only as stale as it was, and the buffer says so."
+  (pcase-let ((`(,exit . ,output)
+               (shipit--run-git "fetch" "--prune" "--quiet" "origin")))
+    (unless (zerop exit)
+      (format "Fetch from origin failed: %s"
+              (or (car (split-string output "\n" t)) "no reason given")))))
+
+(defun shipit-stacked-preview--insert-fetch-problem ()
+  "Say that the last fetch failed, when it did."
+  (when shipit-stacked-preview--fetch-problem
+    (insert (propertize (format "   %s\n\n" shipit-stacked-preview--fetch-problem)
+                        'font-lock-face 'font-lock-warning-face))))
+
+(defun shipit-stacked-preview--new-base ()
+  "Return the commit the stack should move onto, or nil.
+Where the copy on the remote of the lowest layer whose copy was rebased
+stands over the stack\='s base.  The lowest, since the copies above it
+were rebased with it, and the layers below it have nothing to follow."
+  (seq-some (lambda (layer)
+              (shipit-stacked-preview--remote-base-moved
+               (cdr (assq 'branch layer))))
+            (shipit-stacked-preview--current-layers)))
+
+(defun shipit-stacked-preview--redraw-after-magit (buffer)
+  "Redraw BUFFER the next time magit refreshes, and only then.
+Magit refreshes when the rebase it runs ends, finished or stopped on a
+conflict, and either is worth seeing here."
+  (letrec ((redraw (lambda ()
+                     (remove-hook 'magit-post-refresh-hook redraw)
+                     (when (buffer-live-p buffer)
+                       (with-current-buffer buffer
+                         (shipit-stacked-preview-refresh))))))
+    (add-hook 'magit-post-refresh-hook redraw)))
+
+(defun shipit-stacked-preview-rebase-onto-remote-base ()
+  "Move the stack onto the base its copies on the remote stand on.
+After the pull request under a stack merges, a bot rebases the copies
+on the remote onto the base that now holds it, and a stack rewritten
+here in the meantime has to go the same way before it can be pushed.
+The commits over the stack\='s base are rebased onto the commit the
+lowest rebased copy stands on, with every layer\='s branch following
+and uncommitted work stashed around it.  Commits the base already
+holds, as a merged layer\='s do, are dropped by git as it goes.  Magit
+runs the rebase, so a conflict lands in its usual flow, and this buffer
+redraws once magit has."
   (interactive)
+  (let ((newbase (shipit-stacked-preview--new-base)))
+    (unless newbase
+      (user-error "No layer's copy on the remote stands on a newer base -- nothing to rebase onto"))
+    (unless (equal (shipit-stack--current-branch) shipit-stacked-preview--branch)
+      (user-error "Check out %s first; the rebase moves the checked-out branch"
+                  shipit-stacked-preview--branch))
+    (require 'magit-sequence)
+    (shipit-stacked-preview--redraw-after-magit (current-buffer))
+    (magit-rebase-subset newbase shipit-stacked-preview--base
+                         (list "--update-refs" "--autostash"))))
+
+(defun shipit-stacked-preview--divisions-stale-p ()
+  "Return non-nil when a division no longer names one of the commits.
+A rebase gives every commit a new id, and the divisions are ids."
+  (let ((shas (mapcar (lambda (commit) (plist-get commit :sha))
+                      shipit-stacked-preview--commits)))
+    (seq-some (lambda (sha) (not (member sha shas)))
+              shipit-stacked-preview--boundaries)))
+
+(defun shipit-stacked-preview--follow-the-rebase ()
+  "Divide the commits again when a rebase gave them new ids.
+The layer branches moved with the rebase, so they say where the
+divisions are; without branches the subjects propose them again."
+  (when (shipit-stacked-preview--divisions-stale-p)
+    (let ((existing (shipit-stacked-preview--from-existing-stack)))
+      (setq shipit-stacked-preview--boundaries
+            (or (car existing)
+                (shipit-stacked-preview--proposed-boundaries
+                 shipit-stacked-preview--commits))
+            shipit-stacked-preview--names (cdr existing)))))
+
+(defun shipit-stacked-preview-refresh ()
+  "Fetch, read the commits and each layer\='s pull request again, and redraw."
+  (interactive)
+  (setq shipit-stacked-preview--fetch-problem (shipit-stacked-preview--fetch))
   (shipit-stacked-preview--forget-layer-prs)
   (setq shipit-stacked-preview--commits
         (shipit--commits-in-range
          (format "%s..HEAD" shipit-stacked-preview--base)))
+  (shipit-stacked-preview--follow-the-rebase)
   (shipit-stacked-preview--render))
 
 (defun shipit-stacked-preview-canvas ()
@@ -982,6 +1141,7 @@ leaves the buffer as it is; the canvas file is not loaded until then."
     (define-key map (kbd "RET") #'shipit-stacked-preview-visit-layer)
     (define-key map (kbd "P") #'shipit-stacked-preview-push)
     (define-key map (kbd "R") #'shipit-stacked-preview-register)
+    (define-key map (kbd "b") #'shipit-stacked-preview-rebase-onto-remote-base)
     (define-key map (kbd "r") #'shipit-stacked-preview-rename-layer)
     (define-key map (kbd "a") #'shipit-stacked-preview-suggest-name)
     (define-key map (kbd "v") #'shipit-stacked-preview-canvas)
@@ -1014,6 +1174,11 @@ instead of measuring from the default branch, for a stack raised
 against a release branch."
   (interactive "P")
   (let* ((repo (shipit--get-repo-from-remote))
+         ;; The buffer runs git where it was opened.  One opened before
+         ;; from another directory, for a branch of the same name, would
+         ;; otherwise keep running it there.
+         (directory default-directory)
+         (fetch-problem (shipit-stacked-preview--fetch))
          ;; Read before the base: the branches already dividing this
          ;; branch are the stack's own layers, and their pull requests
          ;; must not pull the base up to the layer below the top.
@@ -1031,7 +1196,9 @@ against a release branch."
                    (format "*shipit-stacked-preview: %s*" branch))))
       (with-current-buffer buffer
         (shipit-stacked-preview-mode)
-        (setq shipit-stacked-preview--repo repo
+        (setq default-directory directory
+              shipit-stacked-preview--repo repo
+              shipit-stacked-preview--fetch-problem fetch-problem
               shipit-stacked-preview--base base
               shipit-stacked-preview--branch branch
               shipit-stacked-preview--commits commits

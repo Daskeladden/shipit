@@ -95,6 +95,7 @@ itself, which the text may not read on."
 
 (defcustom shipit-stack-canvas-state-faces
   '((sending . warning)
+    (merged . success)
     (no-branch . shadow)
     (not-pushed . font-lock-comment-face)
     (pushed . success)
@@ -104,13 +105,14 @@ itself, which the text may not read on."
     (checks-failing . error))
   "The face whose foreground colours a layer's box, by the layer's class.
 A class is how far the layer has got, with a pull request told apart by
-its checks: `sending', `no-branch', `not-pushed', `pushed', `drifted',
-`pull-request', `checks-pending' and `checks-failing'."
+its checks: `sending', `merged', `no-branch', `not-pushed', `pushed',
+`drifted', `pull-request', `checks-pending' and `checks-failing'."
   :type '(alist :key-type symbol :value-type face)
   :group 'shipit-stack-canvas)
 
 (defconst shipit-stack-canvas--class-names
   '((sending . "sending")
+    (merged . "merged into the base")
     (no-branch . "no branch yet")
     (not-pushed . "not pushed")
     (pushed . "pushed")

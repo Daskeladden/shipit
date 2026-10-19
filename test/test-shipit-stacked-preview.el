@@ -141,6 +141,7 @@ moment one does."
   "Return layers named BRANCHES, bottom first, each holding one commit."
   (mapcar (lambda (branch)
             (list (cons 'branch branch)
+                  (cons 'tip "abc1234")
                   (cons 'commits (list (list :sha "abc1234" :first-line "x")))))
           branches))
 
@@ -752,6 +753,7 @@ request made anywhere, on the web page included, shows up."
       (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
                  (lambda () layers))
                 ((symbol-function 'shipit--commits-in-range) (lambda (_) nil))
+                ((symbol-function 'shipit-stacked-preview--fetch) #'ignore)
                 ((symbol-function 'shipit-stacked-preview--render) #'ignore))
         (shipit-stacked-preview-refresh))
       (should (eq 'absent (gethash (shipit-cache-branch-pr-key "owner/repo" "one")
@@ -1175,7 +1177,7 @@ both draw from."
                 ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) nil))
                 ((symbol-function 'shipit-stack-plan--pr-for-branch)
                  (lambda (&rest _) nil)))
-        (should (equal '(:state pushed :drift nil)
+        (should (equal '(:state pushed :drift nil :moved nil)
                        (shipit-stacked-preview--layer-state layer)))))))
 
 (ert-deftest test-shipit-stacked-preview-state-of-a-branch-on-its-way ()
@@ -1199,7 +1201,7 @@ THEN it is drifted, and says how far the two copies came apart."
               ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) '("1 2")))
               ((symbol-function 'shipit-stack-plan--pr-for-branch)
                (lambda (&rest _) nil)))
-      (should (equal '(:state drifted :drift "2 ahead, 1 behind")
+      (should (equal '(:state drifted :drift "2 ahead, 1 behind" :moved nil)
                      (shipit-stacked-preview--layer-state
                       (car (test-stacked--layers "one"))))))))
 
@@ -1215,7 +1217,7 @@ THEN it carries the number, the checks and the review."
               ((symbol-function 'shipit-stack-plan--pr-for-branch)
                (lambda (&rest _) 4471)))
       (should (equal '(:state pull-request :number 4471 :checks "failure"
-                              :review "approved" :drift nil)
+                              :review "approved" :drift nil :moved nil)
                      (shipit-stacked-preview--layer-state
                       (car (test-stacked--layers "one"))
                       '((4471 . ((checks . "failure") (review . "approved"))))))))))
@@ -1286,6 +1288,177 @@ THEN it says the view needs Emacs 32, and signals nothing."
                  (lambda (fmt &rest args) (setq said (apply #'format-message fmt args)))))
         (shipit-stacked-preview-canvas)
         (should (string-match-p "Emacs 32" said))))))
+
+;;;; What the remote did since the last fetch
+
+(require 'shipit-sandbox)
+
+(defun test-stacked--other-clone (root)
+  "Clone the origin under ROOT to a second working directory and return it.
+Where a colleague, or a bot on the remote, does its work: a push from
+there moves the remote and leaves what `work\=' knows of it stale, the
+way a push from this directory would not."
+  (let ((other (expand-file-name "other" root)))
+    (let ((default-directory (file-name-as-directory root)))
+      (shipit-sandbox--git "clone" "-q" (expand-file-name "origin.git" root) other))
+    (let ((default-directory (file-name-as-directory other)))
+      (shipit-sandbox--git "config" "user.email" "other@example.invalid")
+      (shipit-sandbox--git "config" "user.name" "Other"))
+    (file-name-as-directory other)))
+
+(defun test-stacked--open-pushed-stack ()
+  "Open the sandbox stack, give its layers branches and push them.
+Returns the preview buffer."
+  (shipit-stacked-preview)
+  (with-current-buffer (format "*shipit-stacked-preview: %s*" "work")
+    (shipit-stacked-preview-create-branches)
+    (shipit-stacked-preview--push-through
+     (car (last (shipit-stacked-preview--current-layers))) nil)
+    (current-buffer)))
+
+(defun test-stacked--rebase-the-stack-on-the-remote (root)
+  "Advance main and rebase the pushed stack onto it, from a second clone.
+What a bot does on the remote when the pull request under a stack
+merges.  Returns the commit the stack stands on there afterwards."
+  (let ((default-directory (test-stacked--other-clone root)))
+    (shipit-sandbox--git "checkout" "-q" "main")
+    (shipit-sandbox--commit "merged below the stack")
+    (shipit-sandbox--git "push" "-q" "origin" "main")
+    (shipit-sandbox--git "checkout" "-q" "work-parser")
+    (shipit-sandbox--git "checkout" "-q" "work")
+    (shipit-sandbox--git "rebase" "-q" "--update-refs" "main")
+    (shipit-sandbox--git "push" "-q" "--force" "origin" "work-parser" "work")
+    (car (shipit-stack--git-lines "rev-parse" "main"))))
+
+(ert-deftest test-shipit-stacked-preview-refresh-fetches-what-the-remote-holds ()
+  "GIVEN a pushed stack, and a commit pushed to its top layer from elsewhere
+WHEN the preview is refreshed
+THEN the top row says the remote has a commit this branch has not, so a
+push from elsewhere is seen without a fetch by hand.  Before the refresh
+the row still reads as pushed: the refs here are what the last fetch
+left."
+  (shipit-sandbox-with-repo
+    (let ((buffer (test-stacked--open-pushed-stack)))
+      (let ((default-directory (test-stacked--other-clone root)))
+        (shipit-sandbox--git "checkout" "-q" "work")
+        (shipit-sandbox--commit "from a reviewer")
+        (shipit-sandbox--git "push" "-q" "origin" "work"))
+      (with-current-buffer buffer
+        (let ((top (shipit-stacked-preview--layer-named "work")))
+          (should (equal "pushed" (shipit-stacked-preview--layer-status top)))
+          (shipit-stacked-preview-refresh)
+          (should (string-match-p "1 behind, new commits on the remote"
+                                  (shipit-stacked-preview--layer-status top))))))))
+
+(ert-deftest test-shipit-stacked-preview-says-when-the-remote-copies-were-rebased ()
+  "GIVEN a pushed stack whose copies on the remote were rebased onto a newer base
+WHEN the preview is refreshed
+THEN each row says so beside how far the copies drifted: the remote did
+not merely gain commits, it moved the stack, and the answer is to move
+this one the same way rather than to pull."
+  (shipit-sandbox-with-repo
+    (let ((buffer (test-stacked--open-pushed-stack)))
+      (test-stacked--rebase-the-stack-on-the-remote root)
+      (with-current-buffer buffer
+        (shipit-stacked-preview-refresh)
+        (dolist (branch '("work-parser" "work"))
+          (should (string-match-p "behind, rebased on the remote"
+                                  (shipit-stacked-preview--layer-status
+                                   (shipit-stacked-preview--layer-named branch)))))))))
+
+(ert-deftest test-shipit-stacked-preview-rebases-onto-where-the-remote-copies-stand ()
+  "GIVEN a stack whose copies on the remote were rebased onto a newer base
+WHEN b is pressed
+THEN magit is asked to rebase the commits over the stack\='s base onto the
+commit the copies stand on, with every layer\='s branch following and
+uncommitted work stashed around it, so the stack lands where the remote
+put it.  A conflict is magit\='s to show, and this buffer redraws once
+magit has refreshed after the rebase, and only that once."
+  (shipit-sandbox-with-repo
+    (let* ((buffer (test-stacked--open-pushed-stack))
+           (new-base (test-stacked--rebase-the-stack-on-the-remote root))
+           (hooks-before (length magit-post-refresh-hook))
+           (ran nil)
+           (redrawn 0))
+      (with-current-buffer buffer
+        (shipit-stacked-preview-refresh)
+        (cl-letf (((symbol-function 'magit-run-git-sequencer)
+                   (lambda (&rest args) (setq ran (flatten-tree args)))))
+          (shipit-stacked-preview-rebase-onto-remote-base))
+        (should (equal (list "rebase" "--onto" new-base "origin/main"
+                             "--update-refs" "--autostash")
+                       ran))
+        (cl-letf (((symbol-function 'shipit-stacked-preview-refresh)
+                   (lambda () (setq redrawn (1+ redrawn)))))
+          (run-hooks 'magit-post-refresh-hook)
+          (run-hooks 'magit-post-refresh-hook))
+        (should (equal 1 redrawn))
+        (should (equal hooks-before (length magit-post-refresh-hook)))))))
+
+(ert-deftest test-shipit-stacked-preview-keeps-its-layers-through-the-rebase ()
+  "GIVEN a stack whose copies on the remote were rebased onto a newer base
+WHEN the stack is rebased onto that base with every layer\='s branch
+following, as b has magit do, and the preview is refreshed
+THEN the preview still shows both layers, divided where the branches now
+stand, although every commit has a new id."
+  (shipit-sandbox-with-repo
+    (let* ((buffer (test-stacked--open-pushed-stack))
+           (new-base (test-stacked--rebase-the-stack-on-the-remote root)))
+      (with-current-buffer buffer
+        (shipit-stacked-preview-refresh)
+        (shipit-sandbox--git "rebase" "-q" "--onto" new-base "origin/main"
+                             "--update-refs" "--autostash")
+        (shipit-stacked-preview-refresh)
+        (should (equal '("work-parser" "work")
+                       (mapcar (lambda (layer) (cdr (assq 'branch layer)))
+                               (shipit-stacked-preview--current-layers))))))))
+
+(ert-deftest test-shipit-stacked-preview-refuses-to-rebase-with-nowhere-to-go ()
+  "GIVEN a stack whose copies on the remote stand where it does
+WHEN b is pressed
+THEN it says there is nothing to rebase onto and runs no rebase."
+  (shipit-sandbox-with-repo
+    (with-current-buffer (test-stacked--open-pushed-stack)
+      (cl-letf (((symbol-function 'magit-run-git-sequencer)
+                 (lambda (&rest _) (error "A rebase ran"))))
+        (should-error (shipit-stacked-preview-rebase-onto-remote-base)
+                      :type 'user-error)))))
+
+(ert-deftest test-shipit-stacked-preview-says-when-a-layer-merged ()
+  "GIVEN a pushed stack whose bottom layer was merged by rebasing it onto the
+base, its branch deleted on the remote with the merge
+WHEN the preview is refreshed
+THEN the bottom row says merged, not \"not pushed\": its commits are on
+the base under other ids, which is what a rebase merge leaves, and the
+layer is done rather than waiting to be sent."
+  (shipit-sandbox-with-repo
+    (let ((buffer (test-stacked--open-pushed-stack)))
+      (let ((default-directory (test-stacked--other-clone root)))
+        (shipit-sandbox--git "checkout" "-q" "main")
+        (shipit-sandbox--git "cherry-pick" "main..origin/work-parser")
+        (shipit-sandbox--git "push" "-q" "origin" "main" ":work-parser"))
+      (with-current-buffer buffer
+        (shipit-stacked-preview-refresh)
+        (should (string-match-p "merged into main"
+                                (shipit-stacked-preview--layer-status
+                                 (shipit-stacked-preview--layer-named "work-parser"))))
+        (should (equal "pushed"
+                       (shipit-stacked-preview--layer-status
+                        (shipit-stacked-preview--layer-named "work"))))))))
+
+(ert-deftest test-shipit-stacked-preview-says-when-the-fetch-fails ()
+  "GIVEN a remote that cannot be reached
+WHEN the preview is refreshed
+THEN the buffer says the fetch failed and still draws the stack from the
+refs it has, so working away from the remote is no worse than before,
+only said."
+  (shipit-sandbox-with-repo
+    (let ((buffer (test-stacked--open-pushed-stack)))
+      (shipit-sandbox--git "remote" "set-url" "origin" (expand-file-name "gone.git" root))
+      (with-current-buffer buffer
+        (shipit-stacked-preview-refresh)
+        (should (string-match-p "Fetch from origin failed" (buffer-string)))
+        (should (shipit-stacked-preview--layer-named "work"))))))
 
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

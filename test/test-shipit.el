@@ -407,6 +407,42 @@ the text of the item, past the marker."
       (dolist (line (cdr lines))
         (should (string-match-p (concat "\\`" (cdr case) "[^ ]") line))))))
 
+(ert-deftest test-shipit--wrap-text-keeps-the-mark-of-a-quote-on-each-line ()
+  "GIVEN a quote whose one line is longer than the wrap width: a plain
+quote, a quote inside a quote, AND a list item inside a quote
+WHEN the text is wrapped
+THEN the first line is as it started, AND each line after it starts
+with the marks of the quote, and under the text of the list item, AND
+no line is wider than the wrap width."
+  (dolist (case '(("> " . "> ") ("> > " . "> > ") ("> 1. " . ">    ")))
+    (let ((lines (split-string
+                  (shipit--wrap-text
+                   (concat (car case) "Split the image into layers that are built on one"
+                           " another, so that a job takes only what it needs.")
+                   40)
+                  "\n")))
+      (should (> (length lines) 1))
+      (should (string-prefix-p (concat (car case) "Split") (car lines)))
+      (dolist (line (cdr lines))
+        (should (string-match-p (concat "\\`" (cdr case) "[^ >]") line))
+        (should (<= (string-width line) 40))))))
+
+(ert-deftest test-shipit--wrap-text-keeps-how-the-mark-of-a-quote-is-shown ()
+  "GIVEN a quote whose one line is longer than the wrap width, AND whose
+mark is shown as a bar
+WHEN the text is wrapped
+THEN the mark of each line is shown as that bar."
+  (let ((lines (split-string
+                (shipit--wrap-text
+                 (concat (propertize ">" 'display "|")
+                         " Split the image into layers that are built on one"
+                         " another, so that a job takes only what it needs.")
+                 40)
+                "\n")))
+    (should (> (length lines) 1))
+    (dolist (line lines)
+      (should (equal "|" (get-text-property 0 'display line))))))
+
 ;;; Integration Tests
 
 (ert-deftest test-shipit-magit-integration-setup ()

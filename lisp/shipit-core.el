@@ -2329,18 +2329,27 @@ thread-safe, but Emacs is single-threaded for buffer work.")
             (get-buffer-create " *shipit-wrap-text*"))))
 
 (defconst shipit--wrap-lead-regexp
-  "\\`[ \t]*\\(?:\\(?:[-*+]\\|[0-9]+[.)]\\)[ \t]+\\)?"
+  "\\`[ \t]*\\(?:\\(?:>[ \t]?\\)+[ \t]*\\)?\\(?:\\(?:[-*+]\\|[0-9]+[.)]\\)[ \t]+\\)?"
   "Matches what a line has before its text.
-That is its indent, and the marker of a list item if it has one.")
+That is its indent, the marks of a quote if it is in one, and the
+marker of a list item if it has one.")
+
+(defun shipit--wrap-hang (lead)
+  "Return what the lines after the first start with, when the first has LEAD.
+It is as wide as LEAD.  The marks of a quote stay, shown as they are in
+LEAD, because each line of a quote has them.  The rest is spaces."
+  (replace-regexp-in-string
+   "[^>]+" (lambda (other) (make-string (string-width other) ?\s)) lead t t))
 
 (defun shipit--wrap-line (line width)
   "Fill LINE to WIDTH in the current buffer, which it empties; the result.
 The lines after the first start where the text of LINE starts: under
 the indent of a line inside a list item, and past the marker of a list
-item.  Without that the rest of a paragraph leaves the item it is in."
+item.  Without that the rest of a paragraph leaves the item it is in.
+The lines of a quote start with the marks of the quote."
   (string-match shipit--wrap-lead-regexp line)
   (let* ((lead (match-string 0 line))
-         (hang (make-string (string-width lead) ?\s))
+         (hang (shipit--wrap-hang lead))
          (fill-column (max 20 (- width (string-width lead)))))
     (erase-buffer)
     (insert (substring line (length lead)))

@@ -2128,6 +2128,51 @@ the face that is asked for here."
         (put-text-property (match-beginning 1) (match-end 1) 'display
                            (propertize (shipit--horizontal-rule) 'face 'shadow))))))
 
+(defconst shipit--quote-bar "▎"
+  "The character that the mark of a quote is shown as.")
+
+(defun shipit--draw-quote-bars-between (start end)
+  "Show each `>' from START to END of this buffer as a bar."
+  (save-excursion
+    (goto-char start)
+    (while (search-forward ">" end t)
+      (put-text-property (1- (point)) (point) 'display
+                         (propertize shipit--quote-bar 'face 'shadow)))))
+
+(defun shipit--draw-quote-bars ()
+  "Show the marks of the quotes of this buffer as bars.
+The buffer is fontified by markdown-mode.  A line of a quote starts
+with `>'.  A forge draws a bar at the left of a quote.  A quote inside
+a quote has two marks, and gets two bars.  The text stays in the
+buffer, so a copy of a quote still has its marks.
+
+A `>' that starts a line of a code block is no mark of a quote.
+markdown-mode knows which is which, and gives only the first mark of a
+quote the face that is asked for here."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^ \\{0,3\\}\\(\\(?:>[ \t]?\\)+\\)" nil t)
+      (when (shipit--markdown-face-p (match-beginning 1) 'markdown-markup-face)
+        (shipit--draw-quote-bars-between (match-beginning 1) (match-end 1))))))
+
+(defun shipit--draw-quoted-headings ()
+  "Show each heading in a quote of this buffer as a heading.
+The buffer is fontified by markdown-mode, which makes no heading of a
+line in a quote, such as `> ## Notes'.  A forge does, so the hashes
+and the space after them are hidden, and the text gets the face of a
+heading of its level.  The text stays in the buffer, so a copy of the
+heading still has its hashes.  Only the first mark of a real quote has
+the face of markup, as `shipit--draw-quote-bars' says."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward
+            "^ \\{0,3\\}\\(\\(?:>[ \t]?\\)+\\)\\(\\(#\\{1,6\\}\\)[ \t]+\\)\\(.+\\)$" nil t)
+      (when (shipit--markdown-face-p (match-beginning 1) 'markdown-markup-face)
+        (put-text-property (match-beginning 2) (match-end 2) 'invisible t)
+        (add-face-text-property
+         (match-beginning 4) (match-end 4)
+         (intern (format "markdown-header-face-%d" (length (match-string 3)))))))))
+
 (defun shipit--strip-inline-html-tags (text)
   "Strip safe inline HTML tags from TEXT, preserving their content.
 Only removes <kbd> tags which have no markdown equivalent and add noise
@@ -5036,6 +5081,8 @@ This is the actual rendering implementation; callers should use
               (font-lock-ensure)
               (shipit--hide-heading-hashes)
               (shipit--draw-horizontal-rules)
+              (shipit--draw-quote-bars)
+              (shipit--draw-quoted-headings)
               ;; Note: Code block backgrounds are applied via overlays AFTER
               ;; text is inserted into the final buffer (see shipit--apply-code-block-backgrounds-in-region)
               ;; because overlays don't transfer with buffer-string

@@ -733,6 +733,88 @@ THEN both are the same line of the same length."
                    (string-trim-right
                     (substring-no-properties (shipit--convert-inline-html "<hr>")))))))
 
+;;; The marks of a quote
+
+(defun test-shipit-render--bar-places ()
+  "The places of this buffer, counted from 0, where a quote bar is shown."
+  (let ((places nil))
+    (dotimes (place (buffer-size))
+      (when (equal shipit--quote-bar (get-text-property (1+ place) 'display))
+        (push place places)))
+    (nreverse places)))
+
+(ert-deftest test-shipit-the-mark-of-a-quote-is-drawn-as-a-bar ()
+  "GIVEN markdown that is fontified as markdown-mode leaves it: the
+first mark of a quote has the face of markup, AND a quote inside a
+quote has its second mark in the text of the first
+WHEN the marks of the quotes are drawn
+THEN each of the three marks is shown as a bar, AND nothing else is,
+AND the text of the buffer is as it was."
+  (with-temp-buffer
+    (insert (propertize ">" 'face '(markdown-markup-face markdown-blockquote-face))
+            (propertize " one" 'face 'markdown-blockquote-face) "\n"
+            (propertize ">" 'face '(markdown-markup-face markdown-blockquote-face))
+            (propertize " > two" 'face 'markdown-blockquote-face) "\n")
+    (shipit--draw-quote-bars)
+    (should (equal '(0 6 8) (test-shipit-render--bar-places)))
+    (should (equal "> one\n> > two\n"
+                   (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-shipit-a-mark-that-starts-no-quote-stays ()
+  "GIVEN a `>' at the start of a line that markdown-mode did not take
+for a quote: the prompt of a shell in a code block
+WHEN the marks of the quotes are drawn
+THEN nothing is shown as a bar."
+  (with-temp-buffer
+    (insert (propertize "> ls\n" 'face 'markdown-pre-face))
+    (shipit--draw-quote-bars)
+    (should-not (test-shipit-render--bar-places))))
+
+(ert-deftest test-shipit-a-heading-in-a-quote-is-a-heading ()
+  "GIVEN markdown that is fontified as markdown-mode leaves it: a quote
+with a heading of the second level, as release notes have, AND a line
+of text, which markdown-mode gives the face of a quote
+WHEN the headings in quotes are drawn
+THEN the hashes of the heading and the space after them are hidden,
+the heading has the face of a heading of the second level, the line of
+text has none, AND the text of the buffer is as it was."
+  (with-temp-buffer
+    (insert (propertize ">" 'face '(markdown-markup-face markdown-blockquote-face))
+            (propertize " ## v1.3" 'face 'markdown-blockquote-face) "\n"
+            (propertize ">" 'face '(markdown-markup-face markdown-blockquote-face))
+            (propertize " Boil faster" 'face 'markdown-blockquote-face) "\n")
+    (shipit--draw-quoted-headings)
+    (should (equal '("## ") (test-shipit-render--invisible-text)))
+    (should (shipit--markdown-face-p 6 'markdown-header-face-2))
+    (should-not (shipit--markdown-face-p 14 'markdown-header-face-2))
+    (should (equal "> ## v1.3\n> Boil faster\n"
+                   (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-shipit-a-heading-after-a-mark-that-starts-no-quote-stays ()
+  "GIVEN a line that looks like a heading in a quote, in a code block
+WHEN the headings in quotes are drawn
+THEN nothing is hidden, AND the line gets no face of a heading."
+  (with-temp-buffer
+    (insert (propertize "> ## v1.3\n" 'face 'markdown-pre-face))
+    (shipit--draw-quoted-headings)
+    (should-not (test-shipit-render--invisible-text))
+    (should-not (shipit--markdown-face-p 6 'markdown-header-face-2))))
+
+(ert-deftest test-shipit-rendered-quote-shows-its-heading-as-a-heading ()
+  "GIVEN markdown with a quote that starts with a heading of the third
+level, as the release notes in a dependency update have
+WHEN it is rendered
+THEN the hashes are hidden, AND the heading has the face of a heading
+of the third level."
+  (skip-unless (and (require 'markdown-mode nil t) (boundp 'markdown-mode-version)))
+  (let* ((shipit--markdown-render-cache (make-hash-table :test 'equal))
+         (rendered (shipit--render-markdown "> ### Features\n>\n> - Boil faster\n"))
+         (start (string-match "Features" rendered)))
+    (with-temp-buffer
+      (insert rendered)
+      (should (equal '("### ") (test-shipit-render--invisible-text)))
+      (should (shipit--markdown-face-p (1+ start) 'markdown-header-face-3)))))
+
 ;;; Inline HTML Stripping Tests
 
 (ert-deftest test-shipit--strip-inline-html-tags-kbd ()

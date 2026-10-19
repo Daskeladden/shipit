@@ -39,6 +39,7 @@
 ;;
 ;; Optional plist keys:
 ;;   :fetch-general-comments-async — (config number callback) → calls callback with comments
+;;   :fetch-review-comments   — (config number review-id) → the inline comments that review made
 ;;   :fetch-reactions-batch   — (config comments is-inline) → populates shipit--reaction-cache
 ;;   :reply-to-inline         — (config number parent-id body file-path) → comment alist
 ;;   :delete-reaction         — (config comment-id reaction-id &optional is-inline) → t

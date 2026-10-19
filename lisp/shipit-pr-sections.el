@@ -3891,7 +3891,11 @@ INDENT is optional parent section indent in columns (default 0)."
         ;; Event already contains user-obj with avatar_url
         (shipit--insert-activity-item icon actor-login
                                       (format "%s this PR" state)
-                                      timestamp body event repo pr-number indent)))
+                                      timestamp body event repo pr-number indent
+                                      (when review-id
+                                        (lambda ()
+                                          (shipit--insert-review-text
+                                           body review-id repo pr-number indent))))))
 
      ;; Comment events (both general and inline comments)
      ((string= event-type "commented")
@@ -4404,6 +4408,72 @@ expanded."
      "📝" actor "edited the description" timestamp nil event repo pr-number indent
      (lambda () (shipit--insert-word-diff from to (make-string (+ (or indent 0) 3) ?\s))))))
 
+(defun shipit--insert-activity-body (body indent repo pr-number)
+  "Insert BODY, the markdown text of an activity row.
+INDENT is the indent of the row's parent, and REPO and PR-NUMBER are
+the pull request that links in BODY are read against."
+  (let ((body-start (point)))
+    (shipit--insert-body-with-details body (+ (or indent 0) 3))
+    ;; Apply the same decorations comment bodies get -- blockquote /
+    ;; strikethrough faces, code-block backgrounds, PR / commit /
+    ;; user-mention / Jira / URL overlays.  Without this the activity
+    ;; body renders as raw text (no `>'-line styling, no link
+    ;; overlays).
+    (shipit--apply-comment-body-decorations body-start (point) repo pr-number)))
+
+(defun shipit--review-line-comments (repo pr-number review-id)
+  "Return the comments on lines that review REVIEW-ID made.
+REPO and PR-NUMBER name the pull request.  A backend that cannot list
+them gives none."
+  (let* ((resolved (shipit-comment--resolve-for-repo repo))
+         (fetch (plist-get (car resolved) :fetch-review-comments)))
+    (when fetch
+      (funcall fetch (cdr resolved) pr-number review-id))))
+
+(defun shipit--review-comment-place (comment)
+  "Return the file and line of COMMENT, as FILE:LINE.
+An outdated comment has no line in the diff of today, so it gets the
+line it was made on."
+  (let ((path (cdr (assq 'path comment)))
+        (line (or (cdr (assq 'line comment))
+                  (cdr (assq 'original_line comment)))))
+    (if line (format "%s:%s" path line) path)))
+
+(defun shipit--insert-review-line-comment (comment indent repo pr-number)
+  "Insert COMMENT, a comment on a line, below its file and line.
+INDENT, REPO and PR-NUMBER are as in `shipit--insert-activity-body'."
+  (insert (make-string (+ (or indent 0) 3) ?\s)
+          (propertize (shipit--review-comment-place comment)
+                      'font-lock-face 'shipit-filename-face)
+          "\n")
+  (shipit--insert-activity-body (cdr (assq 'body comment)) indent repo pr-number))
+
+(defun shipit--insert-review-line-comments (review-id indent repo pr-number)
+  "Insert the comments on lines of review REVIEW-ID.
+Return non-nil when there was one.  INDENT, REPO and PR-NUMBER are as
+in `shipit--insert-activity-body'."
+  (let ((comments (shipit--review-line-comments repo pr-number review-id)))
+    (dolist (comment comments)
+      (shipit--insert-review-line-comment comment indent repo pr-number))
+    comments))
+
+(defun shipit--insert-review-text (body review-id repo pr-number indent)
+  "Insert the text of review REVIEW-ID: its BODY, then its line comments.
+A review that only commented on lines has an empty BODY.  REPO,
+PR-NUMBER and INDENT are as in `shipit--insert-activity-body'."
+  (let ((margin (make-string (+ (or indent 0) 3) ?\s))
+        (has-body (and body (not (string-empty-p body)))))
+    (when has-body
+      (shipit--insert-activity-body body indent repo pr-number))
+    ;; Signalling out of a washer abandons the render and leaves the
+    ;; section tree without its children, so the reason goes in the
+    ;; section instead.
+    (condition-case err
+        (unless (or (shipit--insert-review-line-comments review-id indent repo pr-number)
+                    has-body)
+          (insert margin (propertize "No comments" 'font-lock-face 'shadow) "\n"))
+      (error (insert margin (error-message-string err) "\n")))))
+
 (defun shipit--insert-activity-item (icon actor action timestamp body event repo pr-number &optional indent body-fn)
   "Insert a single activity timeline item.
 ICON is the emoji/symbol for the event type.
@@ -4526,14 +4596,7 @@ This function adds 3 to create child indent (default 0 → margin 3)."
           ;; Insert activity body with support for markdown tables and GFM details blocks
           (if body-fn
               (funcall body-fn)
-            (let ((body-start (point)))
-              (shipit--insert-body-with-details body (+ (or indent 0) 3))
-            ;; Apply the same decorations comment bodies get -- blockquote /
-            ;; strikethrough faces, code-block backgrounds, PR / commit /
-            ;; user-mention / Jira / URL overlays.  Without this the activity
-            ;; body renders as raw text (no `>'-line styling, no link
-            ;; overlays).
-              (shipit--apply-comment-body-decorations body-start (point) repo pr-number)))))
+            (shipit--insert-activity-body body indent repo pr-number))))
 
       ;; Add text properties for navigation
       (add-text-properties start (point)

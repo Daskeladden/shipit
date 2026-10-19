@@ -46,6 +46,15 @@ Returns combined issue comments and review comments."
     (shipit--debug-log "GitHub comment backend: fetching inline comments for PR #%s" number)
     (shipit--api-request-paginated endpoint)))
 
+(defun shipit-comment-github--fetch-review-comments (config number review-id)
+  "Fetch the comments on lines that review REVIEW-ID made on PR NUMBER.
+CONFIG names the repository.  They are picked from all inline comments
+of the pull request, because GitHub's list for one review leaves out
+the line of each comment."
+  (seq-filter (lambda (comment)
+                (equal (cdr (assq 'pull_request_review_id comment)) review-id))
+              (shipit-comment-github--fetch-inline-comments config number)))
+
 (defun shipit-comment-github--add-general-comment (config number body)
   "Add general comment BODY to PR NUMBER using CONFIG."
   (let* ((repo (plist-get config :repo))
@@ -458,6 +467,7 @@ REPO and PR-NUMBER identify the PR."
  (list :name "GitHub"
        :fetch-general-comments #'shipit-comment-github--fetch-general-comments
        :fetch-inline-comments #'shipit-comment-github--fetch-inline-comments
+       :fetch-review-comments #'shipit-comment-github--fetch-review-comments
        :add-general-comment #'shipit-comment-github--add-general-comment
        :add-inline-comment #'shipit-comment-github--add-inline-comment
        :reply-to-comment #'shipit-comment-github--reply-to-comment

@@ -413,7 +413,8 @@ DEPTH tracks nesting level for list indentation (default 0)."
           (let ((children (mapconcat
                            (lambda (c) (shipit-issue-jira--adf-to-text c depth))
                            (append content nil) "")))
-            (concat "```\n" children "\n```\n")))
+            (concat "```" (or (cdr (assq 'language attrs)) "") "\n"
+                    children "\n```\n")))
          (content
           (let ((children (mapconcat
                            (lambda (c) (shipit-issue-jira--adf-to-text c depth))

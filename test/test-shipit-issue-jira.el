@@ -624,6 +624,32 @@ space, and its bar is escaped, so it does not end the cell."
     (should (equal "\n| Order |\n| --- |\n| Milk \\| sugar No ice |\n\n"
                    (shipit-issue-jira--adf-to-text adf)))))
 
+;;; ADF Code Block Tests
+
+(defun test-shipit-issue-jira--code-block (code &optional language)
+  "Return an ADF document of one code block of CODE, in LANGUAGE if given."
+  `((type . "doc")
+    (version . 1)
+    (content . [((type . "codeBlock")
+                 (attrs . ,(when language `((language . ,language))))
+                 (content . [((type . "text") (text . ,code))]))])))
+
+(ert-deftest test-shipit-issue-jira-adf-code-block-names-its-language ()
+  "GIVEN an ADF code block that Jira marks as Python
+WHEN converting to text
+THEN its fence names the language, so shipit colors the code as Jira does."
+  (should (equal "```python\nprint(\"latte\")\n```\n"
+                 (shipit-issue-jira--adf-to-text
+                  (test-shipit-issue-jira--code-block "print(\"latte\")" "python")))))
+
+(ert-deftest test-shipit-issue-jira-adf-code-block-without-language ()
+  "GIVEN an ADF code block with no language
+WHEN converting to text
+THEN its fence names no language, so the code shows uncolored."
+  (should (equal "```\nGrind the beans\n```\n"
+                 (shipit-issue-jira--adf-to-text
+                  (test-shipit-issue-jira--code-block "Grind the beans")))))
+
 ;;; ADF Text Mark Tests
 
 (defun test-shipit-issue-jira--text (text &rest marks)

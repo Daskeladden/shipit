@@ -395,6 +395,8 @@ DEPTH tracks nesting level for list indentation (default 0)."
           (shipit-issue-jira--adf-list-item content depth))
          ((equal type "table")
           (shipit-issue-jira--adf-table content))
+         ((equal type "blockquote")
+          (shipit-issue-jira--adf-blockquote content depth))
          ((equal type "heading")
           (let* ((level (or (cdr (assq 'level attrs)) 1))
                  (prefix (make-string level ?#))
@@ -419,7 +421,7 @@ DEPTH tracks nesting level for list indentation (default 0)."
           (let ((children (mapconcat
                            (lambda (c) (shipit-issue-jira--adf-to-text c depth))
                            (append content nil) "")))
-            (if (member type '("paragraph" "blockquote" "taskList" "mediaSingle" "mediaGroup"))
+            (if (member type '("paragraph" "taskList" "mediaSingle" "mediaGroup"))
                 (concat children "\n")
               children)))
          (t "")))))))
@@ -470,6 +472,19 @@ Concatenates child paragraphs and nested lists."
                                 "\n")
                                "\n")))))
     result))
+
+(defun shipit-issue-jira--adf-blockquote (content depth)
+  "Render ADF blockquote CONTENT at nesting DEPTH as a markdown quote.
+Each line starts with the mark of a quote.  A blank line goes before
+and after it, as around a list."
+  (let ((body (string-trim-right
+               (mapconcat (lambda (child) (shipit-issue-jira--adf-to-text child depth))
+                          (append content nil) "")
+               "\n")))
+    (concat "\n"
+            (mapconcat (lambda (line) (if (string-empty-p line) ">" (concat "> " line)))
+                       (split-string body "\n") "\n")
+            "\n\n")))
 
 (defun shipit-issue-jira--adf-table-cell (cell)
   "Render the ADF table CELL as the text of a markdown table cell.

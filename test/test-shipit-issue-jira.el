@@ -624,6 +624,29 @@ space, and its bar is escaped, so it does not end the cell."
     (should (equal "\n| Order |\n| --- |\n| Milk \\| sugar No ice |\n\n"
                    (shipit-issue-jira--adf-to-text adf)))))
 
+;;; ADF Quote Tests
+
+(ert-deftest test-shipit-issue-jira-adf-blockquote ()
+  "GIVEN an ADF quote of two paragraphs, the second with a line break
+WHEN converting to text
+THEN each line of the quote starts with the mark of a quote, so shipit
+draws the bar of a quote at its left, as Jira does."
+  (let ((adf `((type . "doc")
+               (version . 1)
+               (content . [((type . "paragraph")
+                            (content . [((type . "text") (text . "Order:"))]))
+                           ((type . "blockquote")
+                            (content . [((type . "paragraph")
+                                         (content . [((type . "text") (text . "Latte"))]))
+                                        ((type . "paragraph")
+                                         (content . [((type . "text") (text . "Mocha"))
+                                                     ((type . "hardBreak"))
+                                                     ((type . "text") (text . "Tea"))]))]))
+                           ((type . "paragraph")
+                            (content . [((type . "text") (text . "Thanks"))]))]))))
+    (should (equal "Order:\n\n> Latte\n> Mocha\n> Tea\n\nThanks\n"
+                   (shipit-issue-jira--adf-to-text adf)))))
+
 ;;; ADF Code Block Tests
 
 (defun test-shipit-issue-jira--code-block (code &optional language)

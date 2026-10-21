@@ -1635,6 +1635,26 @@ THEN no syntax highlighting is applied."
       ;; Code text should have no face properties since highlighting was skipped
       (should-not (get-text-property 5 'face)))))
 
+;;; Color names in a CSS code block
+
+(ert-deftest test-shipit-css-code-block-paints-no-color-names ()
+  "GIVEN a fenced CSS code block that names the color white
+WHEN shipit colors the code block in the buffer
+THEN the color name gets no box and no background of its own, because
+the background of the code block covers that background and leaves
+only the box, while the property name keeps its CSS color."
+  (with-temp-buffer
+    (let ((shipit-code-block-background "#202020"))
+      (insert "```css\n.cup { color: white; }\n```\n")
+      (shipit--apply-code-block-backgrounds-in-region 1 (point-max))
+      (let ((white (flatten-tree (get-text-property
+                                  (1+ (string-search "white" (buffer-string))) 'face)))
+            (color (flatten-tree (get-text-property
+                                  (1+ (string-search "color" (buffer-string))) 'face))))
+        (should-not (memq :box white))
+        (should-not (memq :background white))
+        (should (memq 'css-property color))))))
+
 ;;; Org rendering tests
 
 (ert-deftest test-shipit-detect-body-format-empty ()

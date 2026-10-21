@@ -3271,12 +3271,18 @@ Only adds indent to non-empty lines to preserve original text length."
                    (concat indent-str line)))
                lines "\n")))
 
+(defvar css-fontify-colors)
+
 (defun shipit--fontify-code-string (code-string language)
   "Fontify CODE-STRING using the major mode for LANGUAGE.
 Returns the fontified string with face properties.
 Strips common leading indentation before fontifying to ensure
 language modes (especially diff-mode) work correctly."
-  (let ((mode (cdr (assoc (downcase language) shipit--language-mode-alist))))
+  (let ((mode (cdr (assoc (downcase language) shipit--language-mode-alist)))
+        ;; css-mode paints a color name with that color as background
+        ;; and a box.  The code block background covers the color, so
+        ;; only the box would show.
+        (css-fontify-colors nil))
     (if (and mode (shipit--mode-available-p mode))
         (let* ((stripped-result (shipit--strip-common-indent code-string))
                (stripped-code (car stripped-result))

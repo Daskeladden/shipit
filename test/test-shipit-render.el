@@ -1655,6 +1655,52 @@ only the box, while the property name keeps its CSS color."
         (should-not (memq :background white))
         (should (memq 'css-property color))))))
 
+;;; Quotes, mentions and commits inside other text
+
+(defun test-shipit-render--overlay-texts (property)
+  "Return the text under each overlay of this buffer that has PROPERTY."
+  (sort (mapcar (lambda (ov) (buffer-substring-no-properties
+                              (overlay-start ov) (overlay-end ov)))
+                (seq-filter (lambda (ov) (overlay-get ov property))
+                            (overlays-in (point-min) (point-max))))
+        #'string<))
+
+(ert-deftest test-shipit-arrow-in-a-line-is-no-quote ()
+  "GIVEN a comment line with an arrow, and two quote lines, one indented
+WHEN the quote face is applied to the comment
+THEN only the lines that start with the mark of a quote get it, so
+a line that holds `->' keeps its own look."
+  (with-temp-buffer
+    (insert "Pour milk -> cup\n> Hot\n   > Cold\n")
+    (shipit--apply-blockquote-faces (point-min) (point-max))
+    (should-not (get-text-property 1 'font-lock-face))
+    (should (memq 'shipit-blockquote-face
+                  (ensure-list (get-text-property (string-search "Hot" (buffer-string))
+                                                  'font-lock-face))))
+    (should (memq 'shipit-blockquote-face
+                  (ensure-list (get-text-property (string-search "Cold" (buffer-string))
+                                                  'font-lock-face))))))
+
+(ert-deftest test-shipit-at-sign-inside-a-word-is-no-mention ()
+  "GIVEN a comment with an address that holds an at sign, and a mention
+WHEN the mentions of the comment are made into links
+THEN only the at sign that starts a word is a mention, as on GitHub."
+  (with-temp-buffer
+    (let ((shipit--cached-current-user "nobody"))
+      (insert "Mail barista@cafe or the tray@2 and ask @kim\n")
+      (shipit--create-user-mention-overlays "acme/widget" (point-min) (point-max))
+      (should (equal '("@kim") (test-shipit-render--overlay-texts 'help-echo))))))
+
+(ert-deftest test-shipit-hex-in-a-path-is-no-commit ()
+  "GIVEN a comment with a hex part of a file path, and a commit
+WHEN the commits of the comment are made into links
+THEN only the commit that stands by itself is a link, not the part of
+the path."
+  (with-temp-buffer
+    (insert "See /kitchen/c0ffee1234.grinder/beans, fixed in abc1234.\n")
+    (shipit--create-commit-sha-overlays "acme/widget" (point-min) (point-max))
+    (should (equal '("abc1234") (test-shipit-render--overlay-texts 'shipit-commit-sha)))))
+
 ;;; Org rendering tests
 
 (ert-deftest test-shipit-detect-body-format-empty ()

@@ -506,7 +506,8 @@ Returns content with tables converted, or original content if no tables found."
     (insert "\n")))
 
 (defun shipit--apply-blockquote-faces (start end)
-  "Apply blockquote styling to lines containing > in region START to END.
+  "Apply blockquote styling to lines that start with > in region START to END.
+A > later in a line, as in an arrow ->, marks no quote.
 Writes the blue color to `font-lock-face' (via
 `shipit--prepend-font-lock-face') so magit-section's
 `font-lock-mode' doesn't strip it on refontification --
@@ -518,7 +519,7 @@ and clears."
       (let ((line-start (point))
             (line-text (thing-at-point 'line t))
             (line-end (progn (end-of-line) (point))))
-        (when (and line-text (string-match ">+" line-text))
+        (when (and line-text (string-match-p "\\`[ \t]*>" line-text))
           (shipit--prepend-font-lock-face
            line-start line-end 'shipit-blockquote-face))
         (forward-line 1)))))
@@ -4402,6 +4403,18 @@ properties planted by `shipit--create-commit-sha-overlays'."
       ("w" "URL"             shipit-commit-sha-copy-url)
       ("s" "SHA"             shipit-commit-sha-copy-sha)]]))
 
+(defun shipit--hex-run-in-a-name-p (start end)
+  "Whether the hex run from START to END is a part of a path or a dotted name.
+A / or a . that joins it to a letter or a digit, as in
+/kitchen/c0ffee1234.grinder, makes it a part of a longer name.  A . or a /
+with a space beyond it, as at the end of a sentence, does not, and
+neither do the two dots of a range of commits."
+  (save-excursion
+    (or (progn (goto-char start)
+               (looking-back "[[:alnum:]_-][/.]" (max (point-min) (- start 2))))
+        (progn (goto-char end)
+               (looking-at "[/.][[:alnum:]_-]")))))
+
 (defun shipit--create-commit-sha-overlays (repo &optional body-start body-end)
   "Highlight 7-40-char hex runs as commit SHAs in REPO.
 Applies `magit-hash' face to each match and binds RET / mouse-2
@@ -4409,7 +4422,7 @@ to open the commit in a magit-revision buffer via
 `shipit--view-commit-in-magit' (which fetches from origin if
 the commit isn't available locally).  Skips runs that are pure
 digits (line numbers / dates) since real SHAs contain at least
-one [a-f]."
+one [a-f], and runs that are a part of a path or a dotted name."
   (when repo
     (let ((search-start (or body-start (point)))
           (search-limit (or body-end (point-max))))
@@ -4419,7 +4432,8 @@ one [a-f]."
           (let* ((sha (match-string-no-properties 0))
                  (start (match-beginning 0))
                  (end (match-end 0)))
-            (when (string-match-p "[a-f]" sha)
+            (when (and (string-match-p "[a-f]" sha)
+                       (not (shipit--hex-run-in-a-name-p start end)))
               (let ((ov (make-overlay start end))
                     (keymap (make-sparse-keymap)))
                 (set-keymap-parent keymap (current-local-map))
@@ -4575,10 +4589,13 @@ BODY-START and BODY-END define the region to search."
         (save-excursion
           (goto-char search-start)
           ;; Match @username - GitHub usernames can contain alphanumeric and hyphens
-          ;; but cannot start with a hyphen
-          (while (re-search-forward "@\\([a-zA-Z0-9][a-zA-Z0-9-]*\\)" search-limit t)
+          ;; but cannot start with a hyphen.  An @ after a letter or a
+          ;; digit is part of an address, as in barista@cafe, and no
+          ;; mention on GitHub.
+          (while (re-search-forward "\\(?:^\\|[^[:alnum:]_]\\)@\\([a-zA-Z0-9][a-zA-Z0-9-]*\\)"
+                                    search-limit t)
             (let* ((username (match-string 1))
-                   (start (match-beginning 0))
+                   (start (1- (match-beginning 1)))
                    (end (match-end 0))
                    (backtick-count 0))
               ;; Check if in code block by counting backticks on this line

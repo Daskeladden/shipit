@@ -38,6 +38,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'shipit-core)
+(require 'shipit-issue-backends)
 (require 'shipit-atlassian-board)
 (require 'shipit-atlassian-history)
 (require 'shipit-canvas)
@@ -2922,6 +2923,70 @@ It opens in the window of the board rather than in the short list."
     (with-current-buffer board
       (shipit-atlassian-kanban--open-issue key))))
 
+(defun shipit-atlassian-kanban--change-url ()
+  "Return the web address of the issue whose move point is in."
+  (shipit-issue--url-for
+   (buffer-local-value 'shipit-atlassian-kanban--repo
+                       (shipit-atlassian-kanban--changes-board-buffer))
+   (shipit-atlassian-kanban--change-key)))
+
+(defun shipit-atlassian-kanban--copy (text)
+  "Put TEXT on the kill ring, and say so."
+  (kill-new text)
+  (message "Copied: %s" text))
+
+(defun shipit-atlassian-kanban-changes-browse ()
+  "Open in the browser the issue moved on this line."
+  (interactive)
+  (browse-url (shipit-atlassian-kanban--change-url)))
+
+(defun shipit-atlassian-kanban-changes-copy-url ()
+  "Copy the web address of the issue moved on this line."
+  (interactive)
+  (shipit-atlassian-kanban--copy (shipit-atlassian-kanban--change-url)))
+
+(defun shipit-atlassian-kanban-changes-copy-key ()
+  "Copy the key of the issue moved on this line."
+  (interactive)
+  (shipit-atlassian-kanban--copy (shipit-atlassian-kanban--change-key)))
+
+;;; Embark on the line of a move
+
+(defun shipit-atlassian-kanban-changes-embark-target ()
+  "Embark target finder: the issue of the move whose line point is on.
+The kind of the target is `shipit-kanban-change' and its value is the
+key of the issue.  The details of an opened move are no part of it, so
+a link there keeps its own target."
+  (when-let* (((derived-mode-p 'shipit-atlassian-kanban-changes-mode))
+              (section (magit-current-section))
+              ((eq (oref section type) 'shipit-kanban-change))
+              ((< (point) (oref section content))))
+    `(shipit-kanban-change ,(plist-get (oref section value) :key)
+                           ,(line-beginning-position) . ,(line-end-position))))
+
+(defvar shipit-atlassian-kanban-changes-embark-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'shipit-atlassian-kanban-changes-visit)
+    (define-key map (kbd "o") #'shipit-atlassian-kanban-changes-visit)
+    (define-key map (kbd "b") #'shipit-atlassian-kanban-changes-browse)
+    (define-key map (kbd "u") #'shipit-atlassian-kanban-changes-copy-url)
+    (define-key map (kbd "w") #'shipit-atlassian-kanban-changes-copy-key)
+    map)
+  "Embark actions on the line of a move in the list of changes.
+The letters are those of the actions on an issue key in code.")
+
+(defvar embark-target-finders)
+(defvar embark-keymap-alist)
+
+(defun shipit-atlassian-kanban--embark-register ()
+  "Make embark offer `shipit-atlassian-kanban-changes-embark-map' on a move."
+  (add-to-list 'embark-target-finders #'shipit-atlassian-kanban-changes-embark-target)
+  (add-to-list 'embark-keymap-alist
+               '(shipit-kanban-change . shipit-atlassian-kanban-changes-embark-map)))
+
+(with-eval-after-load 'embark
+  (shipit-atlassian-kanban--embark-register))
+
 (defvar shipit-atlassian-kanban-changes-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'shipit-atlassian-kanban-changes-visit)
@@ -2936,6 +3001,8 @@ activity of its issue.  \\[shipit-atlassian-kanban-changes-visit] opens the issu
 \\[shipit-atlassian-kanban-changes-show-card] shows its card on the board.
 The board follows point as well: moving onto a move puts the keyboard
 of the board on its card, and of the board of now beside it.
+With embark, the line of a move is a target, with the actions of
+`shipit-atlassian-kanban-changes-embark-map'.
 
 \\{shipit-atlassian-kanban-changes-mode-map}"
   (add-hook 'post-command-hook #'shipit-atlassian-kanban--follow-point nil t))

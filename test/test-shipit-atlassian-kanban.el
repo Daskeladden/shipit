@@ -2671,5 +2671,106 @@ THEN the drawing completes, ghost and arrow included."
           (should (> (file-attribute-size (file-attributes file)) 0)))
       (delete-file file))))
 
+;;; Embark on the line of a move
+
+(defvar embark-target-finders)
+(defvar embark-keymap-alist)
+
+(defconst test-kanban--on-jira
+  '(("owner/repo" :backend jira :base-url "https://jira.example.com"))
+  "The issue backends of a fixture board whose repository is on Jira.")
+
+(ert-deftest test-kanban-change-line-is-an-embark-target ()
+  "GIVEN the changes since a day ago listed, point at the start of a line
+WHEN embark asks for a target
+THEN the target is the key of the issue that moved, over the whole line."
+  (test-kanban--a-day-ago buffer
+    (test-kanban--on-the-change changes "PROJ-3"
+      (beginning-of-line)
+      (should (equal `(shipit-kanban-change "PROJ-3"
+                                            ,(line-beginning-position)
+                                            . ,(line-end-position))
+                     (shipit-atlassian-kanban-changes-embark-target))))))
+
+(ert-deftest test-kanban-change-heading-and-board-are-no-embark-target ()
+  "GIVEN the changes since a day ago listed
+WHEN embark asks for a target on the heading of the list, and on the board
+THEN the list offers none in either place."
+  (test-kanban--a-day-ago buffer
+    (should-not (shipit-atlassian-kanban-changes-embark-target))
+    (test-kanban--on-the-change changes "PROJ-3"
+      (goto-char (point-min))
+      (should-not (shipit-atlassian-kanban-changes-embark-target)))))
+
+(ert-deftest test-kanban-change-details-keep-their-own-embark-targets ()
+  "GIVEN a move opened on its issue
+WHEN embark asks for a target on the blank line that starts the details,
+and in the description
+THEN the list offers none, so a link in the details keeps its own target."
+  (test-kanban--a-day-ago buffer
+    (let ((shipit-issue-repo-backends test-kanban--on-jira))
+      (cl-letf (((symbol-function 'shipit-issue-jira--api-request)
+                 (lambda (_config _path) (test-kanban--raw-jira-issue))))
+        (test-kanban--on-the-change changes "PROJ-3"
+          (magit-section-show (magit-current-section))
+          (forward-line 1)
+          (should-not (shipit-atlassian-kanban-changes-embark-target))
+          (re-search-forward "Parse the whole file")
+          (should-not (shipit-atlassian-kanban-changes-embark-target)))))))
+
+(ert-deftest test-kanban-change-copies-the-url-of-its-issue ()
+  "GIVEN the changes since a day ago listed, for a repository on Jira
+WHEN the URL of a move is copied, with point at the start of its line
+THEN the kill ring holds the address of the issue on Jira."
+  (test-kanban--a-day-ago buffer
+    (let ((shipit-issue-repo-backends test-kanban--on-jira)
+          (kill-ring nil))
+      (test-kanban--on-the-change changes "PROJ-3"
+        (beginning-of-line)
+        (shipit-atlassian-kanban-changes-copy-url))
+      (should (equal "https://jira.example.com/browse/PROJ-3" (car kill-ring))))))
+
+(ert-deftest test-kanban-change-opens-its-issue-in-the-browser ()
+  "GIVEN the changes since a day ago listed, for a repository on Jira
+WHEN a move is opened in the browser
+THEN the browser gets the address of the issue on Jira."
+  (test-kanban--a-day-ago buffer
+    (let ((shipit-issue-repo-backends test-kanban--on-jira)
+          (browsed nil))
+      (cl-letf (((symbol-function 'browse-url)
+                 (lambda (url &rest _) (setq browsed url))))
+        (test-kanban--on-the-change changes "PROJ-3"
+          (shipit-atlassian-kanban-changes-browse)))
+      (should (equal "https://jira.example.com/browse/PROJ-3" browsed)))))
+
+(ert-deftest test-kanban-change-copies-the-key-of-its-issue ()
+  "GIVEN the changes since a day ago listed
+WHEN the key of a move is copied, with point at the end of its line
+THEN the kill ring holds the key of the issue."
+  (test-kanban--a-day-ago buffer
+    (let ((kill-ring nil))
+      (test-kanban--on-the-change changes "PROJ-3"
+        (end-of-line)
+        (shipit-atlassian-kanban-changes-copy-key))
+      (should (equal "PROJ-3" (car kill-ring))))))
+
+(ert-deftest test-kanban-change-actions-are-offered-by-embark ()
+  "GIVEN embark with a target finder of its own
+WHEN the list of changes registers its target
+THEN embark asks the list first
+AND on a move RET and o open its issue as RET in the list does, b opens
+it in the browser, u copies its URL and w copies its key."
+  (let ((embark-target-finders (list 'embark-target-url-at-point))
+        (embark-keymap-alist nil))
+    (shipit-atlassian-kanban--embark-register)
+    (should (eq 'shipit-atlassian-kanban-changes-embark-target
+                (car embark-target-finders)))
+    (let ((map (symbol-value (alist-get 'shipit-kanban-change embark-keymap-alist))))
+      (should (eq 'shipit-atlassian-kanban-changes-visit (lookup-key map (kbd "RET"))))
+      (should (eq 'shipit-atlassian-kanban-changes-visit (lookup-key map (kbd "o"))))
+      (should (eq 'shipit-atlassian-kanban-changes-browse (lookup-key map (kbd "b"))))
+      (should (eq 'shipit-atlassian-kanban-changes-copy-url (lookup-key map (kbd "u"))))
+      (should (eq 'shipit-atlassian-kanban-changes-copy-key (lookup-key map (kbd "w")))))))
+
 (provide 'test-shipit-atlassian-kanban)
 ;;; test-shipit-atlassian-kanban.el ends here

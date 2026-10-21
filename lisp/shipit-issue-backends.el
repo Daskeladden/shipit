@@ -212,6 +212,11 @@ sets it when it opens."
     (setq-local shipit-issue-backend (car (rassq (car resolved) shipit-issue-backends)))
     (setq-local shipit-issue-backend-config (cdr resolved))))
 
+(defun shipit-issue--url-for (repo id)
+  "Return the web address of issue ID of REPO, as REPO\='s issue backend gives it."
+  (let ((resolved (shipit-issue--resolve-for-repo repo)))
+    (funcall (plist-get (car resolved) :browse-url) (cdr resolved) id)))
+
 (defun shipit-issue--key-project (key)
   "The project prefix of issue KEY: PRJ for PRJ-123."
   (car (split-string key "-")))

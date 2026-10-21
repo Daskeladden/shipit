@@ -624,6 +624,94 @@ space, and its bar is escaped, so it does not end the cell."
     (should (equal "\n| Order |\n| --- |\n| Milk \\| sugar No ice |\n\n"
                    (shipit-issue-jira--adf-to-text adf)))))
 
+;;; ADF Text Mark Tests
+
+(defun test-shipit-issue-jira--text (text &rest marks)
+  "Return an ADF text node of TEXT with MARKS, each a mark type or a mark."
+  `((type . "text")
+    (text . ,text)
+    (marks . ,(vconcat (mapcar (lambda (mark)
+                                 (if (stringp mark) `((type . ,mark)) mark))
+                               marks)))))
+
+(defun test-shipit-issue-jira--paragraph (&rest nodes)
+  "Return an ADF document of one paragraph of the text NODES."
+  `((type . "doc")
+    (version . 1)
+    (content . [((type . "paragraph") (content . ,(vconcat nodes)))])))
+
+(ert-deftest test-shipit-issue-jira-adf-marks-become-markdown ()
+  "GIVEN an ADF paragraph with text marked as strong, em, strike and code
+WHEN converting to text
+THEN each marked text is wrapped in its markdown delimiters, so shipit
+shows it bold, italic, struck through or as code."
+  (let ((adf (test-shipit-issue-jira--paragraph
+              (test-shipit-issue-jira--text "Order a ")
+              (test-shipit-issue-jira--text "large" "strong")
+              (test-shipit-issue-jira--text " ")
+              (test-shipit-issue-jira--text "oat" "em")
+              (test-shipit-issue-jira--text " latte, ")
+              (test-shipit-issue-jira--text "no sugar" "strike")
+              (test-shipit-issue-jira--text ", size ")
+              (test-shipit-issue-jira--text "L" "code"))))
+    (should (equal "Order a **large** *oat* latte, ~~no sugar~~, size `L`\n"
+                   (shipit-issue-jira--adf-to-text adf)))))
+
+(ert-deftest test-shipit-issue-jira-adf-marks-leave-spaces-outside ()
+  "GIVEN an ADF text marked strong that starts and ends with a space
+WHEN converting to text
+THEN the delimiters go inside the spaces, because markdown shows no
+bold whose delimiter has a space on its inner side."
+  (let ((adf (test-shipit-issue-jira--paragraph
+              (test-shipit-issue-jira--text "A")
+              (test-shipit-issue-jira--text " hot " "strong")
+              (test-shipit-issue-jira--text "tea"))))
+    (should (equal "A **hot** tea\n" (shipit-issue-jira--adf-to-text adf)))))
+
+(ert-deftest test-shipit-issue-jira-adf-blank-marked-text-stays-plain ()
+  "GIVEN an ADF text of only a space, marked strong
+WHEN converting to text
+THEN it stays a space, since markdown has no bold of nothing."
+  (let ((adf (test-shipit-issue-jira--paragraph
+              (test-shipit-issue-jira--text "milk")
+              (test-shipit-issue-jira--text " " "strong")
+              (test-shipit-issue-jira--text "foam"))))
+    (should (equal "milk foam\n" (shipit-issue-jira--adf-to-text adf)))))
+
+(ert-deftest test-shipit-issue-jira-adf-code-with-a-backtick ()
+  "GIVEN ADF texts marked as code that hold backticks
+WHEN converting to text
+THEN each code span is fenced by more backticks than it holds in a row,
+with a space inside when it starts or ends with a backtick, so its
+backticks do not end the span."
+  (let ((adf (test-shipit-issue-jira--paragraph
+              (test-shipit-issue-jira--text "a`b" "code")
+              (test-shipit-issue-jira--text " and ")
+              (test-shipit-issue-jira--text "``x" "code"))))
+    (should (equal "``a`b`` and ``` ``x ```\n"
+                   (shipit-issue-jira--adf-to-text adf)))))
+
+(ert-deftest test-shipit-issue-jira-adf-link-goes-around-other-marks ()
+  "GIVEN an ADF text marked both strong and as a link
+WHEN converting to text
+THEN the link goes around the bold text, so the bold text links."
+  (let ((adf (test-shipit-issue-jira--paragraph
+              (test-shipit-issue-jira--text
+               "menu" '((type . "link") (attrs . ((href . "https://example.com/menu"))))
+               "strong"))))
+    (should (equal "[**menu**](https://example.com/menu)\n"
+                   (shipit-issue-jira--adf-to-text adf)))))
+
+(ert-deftest test-shipit-issue-jira-adf-mark-without-markdown-stays-plain ()
+  "GIVEN an ADF text marked as underlined and with a text color
+WHEN converting to text
+THEN it shows as plain text, since markdown has no form for either."
+  (let ((adf (test-shipit-issue-jira--paragraph
+              (test-shipit-issue-jira--text
+               "decaf" "underline"
+               '((type . "textColor") (attrs . ((color . "#ff0000"))))))))
+    (should (equal "decaf\n" (shipit-issue-jira--adf-to-text adf)))))
+
 ;;; JQL @me Placeholder Tests
 
 (ert-deftest test-shipit-issue-jira-build-jql-assignee-at-me ()

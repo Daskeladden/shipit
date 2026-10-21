@@ -298,18 +298,61 @@ Jira\='s format gives it as the card\='s url, or in its data."
   (let ((url (shipit-issue-jira--adf-card-url attrs)))
     (if url (concat url "\n") "")))
 
+(defconst shipit-issue-jira--adf-style-delimiters
+  '(("em" . "*") ("strong" . "**") ("strike" . "~~"))
+  "The markdown delimiters of the ADF marks that style text.
+A mark that is not here or code, such as underline or a text color, has
+no form in markdown, so its text shows plain.")
+
+(defun shipit-issue-jira--adf-inside-spaces (text wrap)
+  "Return TEXT with the function WRAP applied to it inside its outer spaces.
+Markdown shows no emphasis whose delimiter has a space on its inner
+side, and none of a text that is only spaces."
+  (let ((core (string-trim text)))
+    (if (string-empty-p core)
+        text
+      (let ((start (string-search core text)))
+        (concat (substring text 0 start)
+                (funcall wrap core)
+                (substring text (+ start (length core))))))))
+
+(defun shipit-issue-jira--adf-code-span (text)
+  "Return TEXT as a markdown code span.
+The fence has one backtick more than the longest run of backticks in
+TEXT, so they do not end the span, and a space goes inside the fence
+when TEXT starts or ends with a backtick."
+  (let* ((runs (mapcar #'length (split-string text "[^`]+" t)))
+         (fence (make-string (1+ (apply #'max 0 runs)) ?`))
+         (pad (if (string-match-p "\\``\\|`\\'" text) " " "")))
+    (concat fence pad text pad fence)))
+
+(defun shipit-issue-jira--adf-apply-styles (text types)
+  "Return TEXT in the markdown of the ADF mark TYPES that style it."
+  (let ((result (if (member "code" types)
+                    (shipit-issue-jira--adf-inside-spaces
+                     text #'shipit-issue-jira--adf-code-span)
+                  text)))
+    (pcase-dolist (`(,type . ,delimiter) shipit-issue-jira--adf-style-delimiters)
+      (when (member type types)
+        (setq result (shipit-issue-jira--adf-inside-spaces
+                      result (lambda (core) (concat delimiter core delimiter))))))
+    result))
+
 (defun shipit-issue-jira--adf-apply-marks (text node)
   "Apply ADF marks from NODE to TEXT.
-Handles link marks by formatting as [text](url)."
+Code, em, strong and strike become their markdown, and a link mark
+goes around them as [text](url)."
   (let* ((marks (append (cdr (assq 'marks node)) nil))
+         (types (mapcar (lambda (m) (cdr (assq 'type m))) marks))
+         (styled (shipit-issue-jira--adf-apply-styles text types))
          (link-mark (cl-find-if (lambda (m) (equal (cdr (assq 'type m)) "link"))
                                 marks)))
     (if link-mark
         (let ((href (cdr (assq 'href (cdr (assq 'attrs link-mark))))))
           (if href
-              (format "[%s](%s)" text href)
-            text))
-      text)))
+              (format "[%s](%s)" styled href)
+            styled))
+      styled)))
 
 (defun shipit-issue-jira--adf-to-text (node &optional depth)
   "Convert an Atlassian Document Format NODE to plain text.

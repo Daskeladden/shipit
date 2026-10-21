@@ -583,6 +583,47 @@ THEN each item is numbered sequentially."
     (let ((result (shipit-issue-jira--adf-to-text adf)))
       (should (equal "\n1. First\n2. Second\n3. Third\n\n" result)))))
 
+(defun test-shipit-issue-jira--cell (type &rest paragraphs)
+  "Return an ADF table cell of TYPE, a paragraph for each of PARAGRAPHS."
+  `((type . ,type)
+    (content . ,(vconcat (mapcar (lambda (text)
+                                   `((type . "paragraph")
+                                     (content . [((type . "text") (text . ,text))])))
+                                 paragraphs)))))
+
+(defun test-shipit-issue-jira--table (&rest rows)
+  "Return an ADF document of one table with ROWS, each a list of cells."
+  `((type . "doc")
+    (version . 1)
+    (content . [((type . "table")
+                 (content . ,(vconcat (mapcar (lambda (cells)
+                                                `((type . "tableRow")
+                                                  (content . ,(vconcat cells))))
+                                              rows))))])))
+
+(ert-deftest test-shipit-issue-jira-adf-table ()
+  "GIVEN an ADF table of a header row and a data row
+WHEN converting to text
+THEN it becomes a markdown table, so shipit draws its cells in columns."
+  (let ((adf (test-shipit-issue-jira--table
+              (list (test-shipit-issue-jira--cell "tableHeader" "Drink")
+                    (test-shipit-issue-jira--cell "tableHeader" "Size"))
+              (list (test-shipit-issue-jira--cell "tableCell" "Latte")
+                    (test-shipit-issue-jira--cell "tableCell" "Large")))))
+    (should (equal "\n| Drink | Size |\n| --- | --- |\n| Latte | Large |\n\n"
+                   (shipit-issue-jira--adf-to-text adf)))))
+
+(ert-deftest test-shipit-issue-jira-adf-table-cell-stays-on-its-row ()
+  "GIVEN an ADF table cell of two paragraphs, one of them with a bar
+WHEN converting to text
+THEN the cell stays on the line of its row, its paragraphs joined by a
+space, and its bar is escaped, so it does not end the cell."
+  (let ((adf (test-shipit-issue-jira--table
+              (list (test-shipit-issue-jira--cell "tableHeader" "Order"))
+              (list (test-shipit-issue-jira--cell "tableCell" "Milk | sugar" "No ice")))))
+    (should (equal "\n| Order |\n| --- |\n| Milk \\| sugar No ice |\n\n"
+                   (shipit-issue-jira--adf-to-text adf)))))
+
 ;;; JQL @me Placeholder Tests
 
 (ert-deftest test-shipit-issue-jira-build-jql-assignee-at-me ()

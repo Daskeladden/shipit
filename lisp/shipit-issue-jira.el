@@ -350,6 +350,8 @@ DEPTH tracks nesting level for list indentation (default 0)."
           (shipit-issue-jira--adf-ordered-list content depth))
          ((equal type "listItem")
           (shipit-issue-jira--adf-list-item content depth))
+         ((equal type "table")
+          (shipit-issue-jira--adf-table content))
          ((equal type "heading")
           (let* ((level (or (cdr (assq 'level attrs)) 1))
                  (prefix (make-string level ?#))
@@ -424,6 +426,35 @@ Concatenates child paragraphs and nested lists."
                                 "\n")
                                "\n")))))
     result))
+
+(defun shipit-issue-jira--adf-table-cell (cell)
+  "Render the ADF table CELL as the text of a markdown table cell.
+Its paragraphs are joined by a space and a bar in it is escaped, since
+a markdown cell ends at a bar and its row at the end of the line."
+  (string-replace
+   "|" "\\|"
+   (string-join (split-string (shipit-issue-jira--adf-to-text cell) "\n" t "[ \t]+")
+                " ")))
+
+(defun shipit-issue-jira--adf-table-row (row)
+  "Render the ADF table ROW as a line of a markdown table."
+  (concat "| "
+          (mapconcat #'shipit-issue-jira--adf-table-cell
+                     (append (cdr (assq 'content row)) nil) " | ")
+          " |\n"))
+
+(defun shipit-issue-jira--adf-table (rows)
+  "Render the ADF table of ROWS as a markdown table.
+A markdown table starts with its header, so the first row is the
+header, whether Jira marks its cells as headers or not.  A blank line
+goes before and after it, as around a list."
+  (let* ((rows (append rows nil))
+         (columns (length (cdr (assq 'content (car rows))))))
+    (concat "\n"
+            (shipit-issue-jira--adf-table-row (car rows))
+            "|" (apply #'concat (make-list columns " --- |")) "\n"
+            (mapconcat #'shipit-issue-jira--adf-table-row (cdr rows) "")
+            "\n")))
 
 ;;; Normalization — Jira → shipit alist format
 

@@ -451,6 +451,30 @@ THEN there are none, and no error."
                (lambda () (list :name "Plain"))))
       (should-not (shipit-issue--linked-prs-from-remote "PRJ-9")))))
 
+(ert-deftest test-shipit-issue-searched-linked-prs-name-the-repo-searched ()
+  "GIVEN an issue of the tracker project PRJ, and a directory whose git
+remote is the GitHub repository foo/bar
+WHEN the pull requests that name the issue are searched
+THEN each one found names foo/bar as its repository, where the search
+found it, and not the project of the tracker."
+  (let ((shipit-pr-backend 'github)
+        (shipit-pr-backend-config nil)
+        (searched nil))
+    (cl-letf (((symbol-function 'shipit--get-repo-from-remote)
+               (lambda () "foo/bar"))
+              ((symbol-function 'shipit--api-request)
+               (lambda (endpoint &rest _)
+                 (setq searched endpoint)
+                 '((items . [((number . 42)
+                              (title . "PRJ-9: Grind the beans finer")
+                              (state . "open"))])))))
+      (let ((found (shipit-issue--search-linked-prs "PRJ-9" "PRJ")))
+        (should (string-match-p "repo:foo/bar" searched))
+        (should (equal '(("foo/bar" . 42))
+                       (mapcar (lambda (plist)
+                                 (cons (plist-get plist :repo) (plist-get plist :number)))
+                               found)))))))
+
 (ert-deftest test-shipit-issue-link-pull-request-picks-and-links ()
   "GIVEN the user picks a PR from the repo's pull requests
 WHEN linking it to the current issue

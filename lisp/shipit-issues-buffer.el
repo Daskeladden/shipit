@@ -1879,6 +1879,8 @@ defcustom.  Empty on error or when the backend lacks `:search-raw'."
   ;; Jira project key (e.g. "PRJ"), not a GitHub "owner/name".  GitHub's
   ;; search requires `repo:OWNER/NAME', so fall back to the working
   ;; directory's git remote when REPO doesn't already look like one.
+  ;; A pull request found names the repository searched, so RET on it
+  ;; opens it there.
   (let* ((gh-repo (if (string-match-p "/" (or repo ""))
                       repo
                     (ignore-errors (shipit--get-repo-from-remote))))
@@ -1910,11 +1912,11 @@ defcustom.  Empty on error or when the backend lacks `:search-raw'."
                   (when (string-match-p pattern text)
                     (cl-incf matched)
                     (push (shipit-issue--linked-pr-plist-from-search-item
-                           item repo)
+                           item gh-repo)
                           results)))))
             (shipit--debug-log
              "LINKED-PRS: searched %d candidates, text-matched %d for key %s in %s"
-             total matched issue-key repo))
+             total matched issue-key gh-repo))
         (error
          (shipit--debug-log "LINKED-PRS: search error: %S"
                             (error-message-string err)))))

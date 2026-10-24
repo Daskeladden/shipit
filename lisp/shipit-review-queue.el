@@ -348,9 +348,9 @@ id so callers can later remove the same entry."
 (defun shipit-review-queue-at-point ()
   "Return the queue entry at point, or nil.
 Looks first at the `shipit-review-queue-id' text property (set
-by `--insert-pending-section' on the heading of a draft magit
-section), then falls back to any overlay carrying the same id
-(legacy after-string drafts from before the section conversion).
+on each line of a draft magit section), then falls back to any
+overlay carrying the same id (legacy after-string drafts from
+before the section conversion).
 Useful for `RET' / transient handlers that want to act on the
 draft under point."
   (let ((id (or (get-text-property (point) 'shipit-review-queue-id)
@@ -597,7 +597,8 @@ The rounded-pill background is applied separately by
 `shipit-review-queue--insert-pending-section' via
 `shipit-rounded--apply-bg', so this just emits the indented body
 + hint as plain text -- no embedded SVG, no markdown font-lock
-(so suggestion fences stay visible)."
+(so suggestion fences stay visible).  The text carries the id of
+the draft, so `c' and `k' act on the draft from any of its lines."
   (let* ((body (or (plist-get entry :body) ""))
          (hint (propertize "press `c' on the draft to edit / remove"
                            'font-lock-face 'shipit-review-queue-draft-face))
@@ -609,7 +610,8 @@ The rounded-pill background is applied separately by
                  (when (not (string-empty-p body-text))
                    (split-string body-text "\n"))
                  (list (concat "        " hint)))))
-    (mapconcat #'identity lines "\n")))
+    (propertize (mapconcat #'identity lines "\n")
+                'shipit-review-queue-id (plist-get entry :id))))
 
 (defun shipit-review-queue--render ()
   "Insert pending-comment magit sections under matching diff lines.
@@ -1075,100 +1077,65 @@ worktree files happen to be open."
                       (propertize preview 'font-lock-face
                                   'shipit-review-queue-draft-face))))))
 
-(defun shipit-review-queue--collect-context-line (lines-acc)
-  "Append the current line (with text properties) to LINES-ACC.
-Helper for `shipit-review-queue--code-context' so the walker stays
-short and readable.  Returns the updated accumulator.  Properties
-are preserved so diff-hunk faces and font-lock survive into the
-Pending Review snippet."
-  (cons (buffer-substring
-         (line-beginning-position) (line-end-position))
-        lines-acc))
+(defun shipit-review-queue--diff-line-p ()
+  "Whether the line at point is a line of the diff in Files Changed.
+A posted comment or a draft shown below a diff line is not one, so the
+code that the Pending Review shows above a draft holds the diff alone."
+  (let ((start (line-beginning-position))
+        (end (line-end-position)))
+    (and (text-property-not-all start end 'shipit-pr-file nil)
+         (not (text-property-not-all start end 'shipit-comment nil))
+         (not (text-property-not-all start end 'shipit-review-queue-id nil)))))
 
-(defun shipit-review-queue--at-pending-section-p ()
-  "Return non-nil if point is inside a pending-comment magit section.
-We use this to skip past the inline draft sections we ourselves
-inserted into the Files Changed area -- otherwise the code-context
-capture would replay the draft's PENDING heading + body inside the
-Pending Review summary, producing a doubled entry."
-  (let ((sec (and (fboundp 'magit-current-section)
-                  (magit-current-section))))
-    (and sec
-         (slot-boundp sec 'type)
-         (eq (oref sec type) 'shipit-pending-comment))))
+(defun shipit-review-queue--diff-lines-near (target direction count limit)
+  "Return up to COUNT diff lines next to the line at TARGET, with faces.
+DIRECTION is 1 for the lines below that line and -1 for the lines above
+it, and the walk stops at the position LIMIT.  The lines come in the
+order of the buffer."
+  (save-excursion
+    (goto-char target)
+    (let ((lines nil))
+      (while (and (< (length lines) count)
+                  (zerop (forward-line direction))
+                  (if (> direction 0) (< (point) limit) (>= (point) limit)))
+        (when (shipit-review-queue--diff-line-p)
+          (push (buffer-substring (line-beginning-position) (line-end-position))
+                lines)))
+      (if (> direction 0) (nreverse lines) lines))))
 
 (defun shipit-review-queue--code-context (file line &optional radius)
   "Return a short snippet of the diff at FILE/LINE, or nil.
-Looks up the line in the buffer's pr-files section and captures
-RADIUS lines on each side so the user can see what the draft is
-commenting on without leaving the Pending Review section.
-Defaults RADIUS to 2.  Walks line-by-line and skips any inline
-pending-comment sections (the ones the queue itself inserted just
-under the target line) so the captured snippet shows the diff
-only, not a replay of the draft."
-  (let ((radius (or radius 2)))
-    (let ((pr-files (shipit--find-files-section)))
-      (when pr-files
-        (let* ((hit (shipit--find-file-in-files-section file pr-files))
-               (file-pos (car-safe hit))
-               (matched-path (cdr-safe hit)))
-          (when file-pos
-            (let ((file-section
-                   (save-excursion
-                     (goto-char file-pos)
-                     (magit-current-section))))
-              (when (and file-section
-                         (eq (oref file-section type) 'pr-file))
-                (shipit--call-with-section-shown
-                 file-section
-                 (lambda ()
-                   (let ((target (shipit--find-diff-line-in-file-section
-                                  matched-path line file-section)))
-                     (when target
-                       (let (before after target-line)
-                         (save-excursion
-                           (goto-char target)
-                           (setq target-line
-                                 (buffer-substring
-                                  (line-beginning-position)
-                                  (line-end-position))))
-                         ;; Collect RADIUS lines BEFORE target, skipping pending sections.
-                         (save-excursion
-                           (goto-char target)
-                           (let ((collected 0))
-                             (while (< collected radius)
-                               (forward-line -1)
-                               (when (bobp) (setq collected radius))
-                               (unless (shipit-review-queue--at-pending-section-p)
-                                 (setq before
-                                       (shipit-review-queue--collect-context-line
-                                        before))
-                                 (setq collected (1+ collected))))))
-                         ;; Collect RADIUS lines AFTER target, skipping
-                         ;; inline pending-comment sections by jumping
-                         ;; past their end markers when we land on one.
-                         (save-excursion
-                           (goto-char target)
-                           (let ((collected 0))
-                             (while (< collected radius)
-                               (forward-line 1)
-                               (when (eobp) (setq collected radius))
-                               (cond
-                                ((shipit-review-queue--at-pending-section-p)
-                                 (let ((sec (magit-current-section)))
-                                   (when (and sec (slot-boundp sec 'end))
-                                     (goto-char (oref sec end)))))
-                                (t
-                                 (push (buffer-substring
-                                        (line-beginning-position)
-                                        (line-end-position))
-                                       after)
-                                 (setq collected (1+ collected)))))))
-                         (mapconcat #'identity
-                                    (append (nreverse before)
-                                            (list target-line)
-                                            (nreverse after))
-                                    "\n"))))))))))))))
+Looks up the line in the buffer's pr-files section and takes RADIUS
+diff lines on each side, 2 by default, so the user can see what the
+draft is commenting on without leaving the Pending Review section."
+  (let ((radius (or radius 2))
+        (pr-files (shipit--find-files-section)))
+    (when pr-files
+      (let* ((hit (shipit--find-file-in-files-section file pr-files))
+             (file-pos (car-safe hit))
+             (matched-path (cdr-safe hit))
+             (file-section (when file-pos
+                             (save-excursion
+                               (goto-char file-pos)
+                               (magit-current-section)))))
+        (when (and file-section (eq (oref file-section type) 'pr-file))
+          (shipit--call-with-section-shown
+           file-section
+           (lambda ()
+             (let ((target (shipit--find-diff-line-in-file-section
+                            matched-path line file-section)))
+               (when target
+                 (mapconcat
+                  #'identity
+                  (append (shipit-review-queue--diff-lines-near
+                           target -1 radius (oref file-section content))
+                          (list (save-excursion
+                                  (goto-char target)
+                                  (buffer-substring (line-beginning-position)
+                                                    (line-end-position))))
+                          (shipit-review-queue--diff-lines-near
+                           target 1 radius (oref file-section end)))
+                  "\n"))))))))))
 
 (defun shipit-review-queue--insert-section-at-point ()
   "Insert the Pending Review section tree at point.

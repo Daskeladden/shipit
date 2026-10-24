@@ -80,6 +80,44 @@ THEN it gets the diff lines around line 2."
       (should context)
       (should (string-match-p "(read-header)" context)))))
 
+(ert-deftest test-review-queue-the-code-of-a-draft-leaves-out-the-draft ()
+  "GIVEN a draft comment on line 2 of a file, shown under that line
+WHEN the Pending Review section asks for the code around it
+THEN it gets the diff lines around line 2 without the text of the draft,
+so the Pending Review shows that text once, below the code."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (let ((context (shipit-review-queue--code-context "src/parser.el" 2)))
+      (should (string-match-p "(read-header)" context))
+      (should (string-match-p "(read-body)" context))
+      (should-not (string-match-p "Read the header only once" context)))))
+
+(ert-deftest test-review-queue-the-code-of-a-draft-keeps-the-order-of-the-diff ()
+  "GIVEN a draft comment on line 2 of a file
+WHEN the Pending Review section asks for the code around it
+THEN it gets two diff lines above line 2, the line and two below, in
+the order of the diff."
+  (test-review-queue--in-pr-buffer
+    (should (equal '("@@ -1,3 +1,4 @@" "(defun parse ()" "+  (read-header)"
+                     "(read-body))" ";; end")
+                   (mapcar #'string-trim
+                           (split-string (shipit-review-queue--code-context
+                                          "src/parser.el" 2)
+                                         "\n"))))))
+
+(ert-deftest test-review-queue-each-line-of-a-draft-is-the-draft ()
+  "GIVEN a draft comment shown under its line
+WHEN point is on the text of the draft, below its heading
+THEN the draft at point is that draft, so `c' and `k' act on it there
+too, as the hint below the draft says."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (goto-char (point-min))
+    (search-forward "Read the header only once")
+    (should (equal 1 (plist-get (shipit-review-queue-at-point) :id)))))
+
 (ert-deftest test-review-queue-a-long-draft-wraps-in-pending-review ()
   "GIVEN a draft comment longer than a line
 WHEN the Pending Review section is drawn

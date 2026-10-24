@@ -3094,6 +3094,17 @@ SOURCE in a text, and SOURCE can be marked as centered."
            (propertize ,text 'shipit-align ,align)
          ,text))))
 
+(defconst shipit--img-width-regexp
+  "\\bwidth[ \t]*=[ \t]*[\"']?\\([0-9]+\\)\\(?:px\\)?\\(?:[\"'[:space:]/>]\\|\\'\\)"
+  "Regexp matching the width of an <img> tag in pixels; group 1 is the number.
+The number can have `px' after it, and quotes and spaces around it.  A
+share in percent does not match.")
+
+(defun shipit--img-tag-width (tag)
+  "Return the width in pixels that the <img> TAG asks for, or nil."
+  (when (string-match shipit--img-width-regexp tag)
+    (string-to-number (match-string 1 tag))))
+
 (defun shipit--process-inline-images (text)
   "Process inline images in TEXT and replace them with image displays.
 Handles both HTML <img> tags and markdown ![alt](url) syntax."
@@ -3115,8 +3126,7 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
                        ;; `<img width="N">' on issue/PR screenshots.
                        ;; Honor it so shipit doesn't upscale to fill the
                        ;; column when the author asked for a smaller size.
-                       (width (when (string-match "width=\"\\([0-9]+\\)\"" img-tag)
-                                (string-to-number (match-string 1 img-tag)))))
+                       (width (shipit--img-tag-width img-tag)))
                    (if src
                        (shipit--create-image-display src (or alt "image") width)
                      img-tag))))

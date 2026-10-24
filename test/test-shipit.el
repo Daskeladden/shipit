@@ -1974,6 +1974,21 @@ leaves nothing in the image cache."
         (input "![screenshot](https://example.com/screenshot.png)"))
     (should (string= (shipit--process-inline-images input) input))))
 
+(ert-deftest test-shipit-the-width-of-an-img-tag-is-read-in-each-form ()
+  "GIVEN <img> tags whose width is a number, a number of pixels with
+`px', a number with spaces around the equals sign, a number in single
+quotes, a share in percent, AND no width
+WHEN the width of each tag is read
+THEN each number of pixels is its width, AND a share or no width gives
+none, because a share is no number of pixels."
+  (dolist (case '(("<img src=\"cup.png\" width=\"140\">" . 140)
+                  ("<img src=\"cup.png\" width=\"320px\"/>" . 320)
+                  ("<img src=\"cup.svg\" alt=\"logo\"  width = \"128px\">" . 128)
+                  ("<img width='90' src='cup.png'>" . 90)
+                  ("<img src=\"cup.png\" width=\"50%\">" . nil)
+                  ("<img src=\"cup.png\">" . nil)))
+    (should (equal (cdr case) (shipit--img-tag-width (car case))))))
+
 (ert-deftest test-shipit-an-image-keeps-the-alignment-of-its-text ()
   "GIVEN an <img> tag, AND a markdown image, each marked as centered,
 AND a markdown image that is not marked

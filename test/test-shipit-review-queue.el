@@ -179,5 +179,79 @@ THEN the heading of the file is marked as having a draft."
     (test-review-queue--open-files)
     (should (= 1 (length shipit-review-queue--badge-overlays)))))
 
+(defun test-review-queue--press-k (answer)
+  "Press `k' at point and give ANSWER to the question it asks."
+  (let ((shipit-review-queue-persistence-file nil))
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (_prompt) answer)))
+      (call-interactively (key-binding (kbd "k"))))))
+
+(defun test-review-queue--goto-draft-text ()
+  "Put point on the first text of the draft in this buffer."
+  (goto-char (point-min))
+  (search-forward "Read the header only once"))
+
+(ert-deftest test-review-queue-the-hint-below-a-draft-names-k ()
+  "GIVEN a draft comment shown under its line
+WHEN the user reads the hint below it
+THEN the hint says that `c' edits the draft and `k' removes it."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (should (string-match-p "`c' to edit the draft, `k' to remove it"
+                            (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-review-queue-k-on-a-draft-removes-it ()
+  "GIVEN a draft comment shown under its line
+WHEN `k' is pressed on the text of the draft, and the question answered yes
+THEN the draft leaves the queue and the buffer."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (test-review-queue--goto-draft-text)
+    (test-review-queue--press-k t)
+    (should-not shipit-review-queue)
+    (should (= 0 (test-review-queue--draft-count)))))
+
+(ert-deftest test-review-queue-k-on-a-draft-answered-no-keeps-it ()
+  "GIVEN a draft comment shown under its line
+WHEN `k' is pressed on the text of the draft, and the question answered no
+THEN the draft stays, and `k' looks for no posted comment there."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (test-review-queue--goto-draft-text)
+    (test-review-queue--press-k nil)
+    (should (= 1 (length shipit-review-queue)))
+    (should (= 1 (test-review-queue--draft-count)))))
+
+(ert-deftest test-review-queue-k-in-pending-review-removes-the-draft ()
+  "GIVEN a draft comment shown in the Pending Review section
+WHEN `k' is pressed on the text of the draft there, and the question
+answered yes
+THEN the draft leaves the queue and the buffer."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (goto-char (point-max))
+      (let ((magit-insert-section--parent magit-root-section))
+        (shipit-review-queue--insert-section-at-point)))
+    (test-review-queue--goto-draft-text)
+    (test-review-queue--press-k t)
+    (should-not shipit-review-queue)
+    (should (= 0 (test-review-queue--draft-count)))))
+
+(ert-deftest test-review-queue-k-beside-a-draft-removes-nothing ()
+  "GIVEN a draft comment shown under its line
+WHEN `k' is pressed on the diff line above the draft
+THEN it says there is no comment at point, and the draft stays."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (goto-char (point-min))
+    (search-forward "(read-header)")
+    (should (equal "No comment at point"
+                   (cadr (should-error (test-review-queue--press-k t)
+                                       :type 'user-error))))
+    (should (= 1 (length shipit-review-queue)))))
+
 (provide 'test-shipit-review-queue)
 ;;; test-shipit-review-queue.el ends here

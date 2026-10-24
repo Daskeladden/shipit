@@ -1440,13 +1440,22 @@ Returns 0 if not found."
       ;; shipit--delete-comment triggers targeted refresh for file comments
       (shipit--delete-comment comment-id is-inline-comment file-path))))
 
+(defvar shipit-delete-at-point-functions nil
+  "Functions that `shipit-delete-comment-at-point' calls first.
+Each takes no argument.  A function that finds its own kind of text at
+point deletes it and returns non-nil, and the command then looks for no
+posted comment.  Other packages add here what they draw in the buffer.")
+
 (defun shipit-delete-comment-at-point ()
-  "Delete the comment at point."
+  "Delete the comment at point.
+A function of `shipit-delete-at-point-functions' can delete other text
+at point instead."
   (interactive)
-  (let ((comment-id (get-text-property (point) 'shipit-comment-id)))
-    (if comment-id
-        (shipit--delete-comment-interactive comment-id)
-      (user-error "No comment at point"))))
+  (unless (run-hook-with-args-until-success 'shipit-delete-at-point-functions)
+    (let ((comment-id (get-text-property (point) 'shipit-comment-id)))
+      (if comment-id
+          (shipit--delete-comment-interactive comment-id)
+        (user-error "No comment at point")))))
 
 (defun shipit--add-general-comment-directly ()
   "Add a general comment to the PR directly without cycle mode.

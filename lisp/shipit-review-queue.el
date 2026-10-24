@@ -374,6 +374,11 @@ draft under point."
                   (lines))
 (defvar shipit-rounded-section-bg-color)
 
+(defun shipit-review-queue--draft-hint ()
+  "Return the hint below a draft, on the keys that act on it."
+  (propertize "press `c' to edit the draft, `k' to remove it"
+              'font-lock-face 'shipit-review-queue-draft-face))
+
 (defun shipit-review-queue--overlay-text (entry)
   "Render the body of a draft overlay for ENTRY.
 Wraps the heading + body + hint with the same rounded-pill SVG
@@ -392,8 +397,7 @@ displays."
                ((and file line) (format " · %s:%s" file line))
                (file (format " · %s" file))
                (t "")))
-         (hint (propertize "press `c' on the draft to edit / remove"
-                           'font-lock-face 'shipit-review-queue-draft-face))
+         (hint (shipit-review-queue--draft-hint))
          (heading-text
           (concat "  📝 " label
                   (propertize " · local · won't publish"
@@ -608,8 +612,7 @@ The rounded-pill background is applied separately by
 (so suggestion fences stay visible).  The text carries the id of
 the draft, so `c' and `k' act on the draft from any of its lines."
   (let* ((body (or (plist-get entry :body) ""))
-         (hint (propertize "press `c' on the draft to edit / remove"
-                           'font-lock-face 'shipit-review-queue-draft-face))
+         (hint (shipit-review-queue--draft-hint))
          (body-text
           (cond
            ((string-empty-p (string-trim body)) "")
@@ -816,6 +819,21 @@ the same queue entry (no new entry is created)."
       (user-error "No queued draft at point"))
     (shipit-review-queue-remove (plist-get entry :id))
     (message "Removed draft comment")))
+
+(defun shipit-review-queue--delete-at-point ()
+  "Remove the draft at point when the user agrees, for `k'.
+Return non-nil on a draft, also when the answer is no, so that `k'
+looks for no posted comment there."
+  (let ((entry (shipit-review-queue-at-point)))
+    (when entry
+      (when (y-or-n-p (format "Really remove this draft (%s)? "
+                              (truncate-string-to-width
+                               (car (split-string (plist-get entry :body) "\n"))
+                               50 nil nil "...")))
+        (shipit-review-queue-remove-at-point))
+      t)))
+
+(add-hook 'shipit-delete-at-point-functions #'shipit-review-queue--delete-at-point)
 
 (declare-function shipit-register-dwim-handler "shipit-pr-actions"
                   (name matcher action))

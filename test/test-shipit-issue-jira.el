@@ -499,7 +499,7 @@ THEN the Authorization header uses Basic auth."
 (ert-deftest test-shipit-issue-jira-adf-heading ()
   "GIVEN an ADF heading with level 3
 WHEN converting to text
-THEN it renders as '### Heading text' with trailing blank line."
+THEN it renders as '### Heading text'."
   (let ((adf `((type . "doc")
                (version . 1)
                (content . [((type . "heading")
@@ -507,7 +507,7 @@ THEN it renders as '### Heading text' with trailing blank line."
                             (content . [((type . "text")
                                          (text . "Necessary parameters:"))]))]))))
     (let ((result (shipit-issue-jira--adf-to-text adf)))
-      (should (equal "\n### Necessary parameters:\n\n" result)))))
+      (should (equal "### Necessary parameters:\n" result)))))
 
 (ert-deftest test-shipit-issue-jira-adf-heading-level-1 ()
   "GIVEN an ADF heading with level 1
@@ -520,7 +520,7 @@ THEN it renders as '# Heading text'."
                             (content . [((type . "text")
                                          (text . "Title"))]))]))))
     (let ((result (shipit-issue-jira--adf-to-text adf)))
-      (should (equal "\n# Title\n\n" result)))))
+      (should (equal "# Title\n" result)))))
 
 ;;; ADF List Rendering Tests
 
@@ -540,7 +540,7 @@ THEN each item is prefixed with '- '."
                                                       (content . [((type . "text")
                                                                    (text . "Item 2"))]))]))]))]))))
     (let ((result (shipit-issue-jira--adf-to-text adf)))
-      (should (equal "\n- Item 1\n- Item 2\n\n" result)))))
+      (should (equal "- Item 1\n- Item 2\n" result)))))
 
 (ert-deftest test-shipit-issue-jira-adf-nested-bullet-list ()
   "GIVEN an ADF bulletList with a nested sub-bulletList
@@ -559,7 +559,7 @@ THEN nested items are indented with 2 spaces."
                                                                                 (content . [((type . "text")
                                                                                              (text . "Child"))]))]))]))]))]))]))))
     (let ((result (shipit-issue-jira--adf-to-text adf)))
-      (should (equal "\n- Parent\n  - Child\n\n" result)))))
+      (should (equal "- Parent\n  - Child\n" result)))))
 
 (ert-deftest test-shipit-issue-jira-adf-ordered-list ()
   "GIVEN an ADF orderedList with 3 items
@@ -581,7 +581,7 @@ THEN each item is numbered sequentially."
                                                       (content . [((type . "text")
                                                                    (text . "Third"))]))]))]))]))))
     (let ((result (shipit-issue-jira--adf-to-text adf)))
-      (should (equal "\n1. First\n2. Second\n3. Third\n\n" result)))))
+      (should (equal "1. First\n2. Second\n3. Third\n" result)))))
 
 (defun test-shipit-issue-jira--cell (type &rest paragraphs)
   "Return an ADF table cell of TYPE, a paragraph for each of PARAGRAPHS."
@@ -610,7 +610,7 @@ THEN it becomes a markdown table, so shipit draws its cells in columns."
                     (test-shipit-issue-jira--cell "tableHeader" "Size"))
               (list (test-shipit-issue-jira--cell "tableCell" "Latte")
                     (test-shipit-issue-jira--cell "tableCell" "Large")))))
-    (should (equal "\n| Drink | Size |\n| --- | --- |\n| Latte | Large |\n\n"
+    (should (equal "| Drink | Size |\n| --- | --- |\n| Latte | Large |\n"
                    (shipit-issue-jira--adf-to-text adf)))))
 
 (ert-deftest test-shipit-issue-jira-adf-table-cell-stays-on-its-row ()
@@ -621,7 +621,25 @@ space, and its bar is escaped, so it does not end the cell."
   (let ((adf (test-shipit-issue-jira--table
               (list (test-shipit-issue-jira--cell "tableHeader" "Order"))
               (list (test-shipit-issue-jira--cell "tableCell" "Milk | sugar" "No ice")))))
-    (should (equal "\n| Order |\n| --- |\n| Milk \\| sugar No ice |\n\n"
+    (should (equal "| Order |\n| --- |\n| Milk \\| sugar No ice |\n"
+                   (shipit-issue-jira--adf-to-text adf)))))
+
+;;; ADF Paragraph Tests
+
+(ert-deftest test-shipit-issue-jira-adf-paragraphs-have-a-blank-line-between ()
+  "GIVEN an ADF document of two paragraphs, the second with a line break
+WHEN converting to text
+THEN a blank line goes between the paragraphs, so shipit shows a gap
+between them, as Jira does, and the line break stays a single new line."
+  (let ((adf `((type . "doc")
+               (version . 1)
+               (content . [((type . "paragraph")
+                            (content . [((type . "text") (text . "Latte"))]))
+                           ((type . "paragraph")
+                            (content . [((type . "text") (text . "Mocha"))
+                                        ((type . "hardBreak"))
+                                        ((type . "text") (text . "Tea"))]))]))))
+    (should (equal "Latte\n\nMocha\nTea\n"
                    (shipit-issue-jira--adf-to-text adf)))))
 
 ;;; ADF Quote Tests
@@ -630,7 +648,8 @@ space, and its bar is escaped, so it does not end the cell."
   "GIVEN an ADF quote of two paragraphs, the second with a line break
 WHEN converting to text
 THEN each line of the quote starts with the mark of a quote, so shipit
-draws the bar of a quote at its left, as Jira does."
+draws the bar of a quote at its left, as Jira does, and a quote line with
+no text parts its two paragraphs."
   (let ((adf `((type . "doc")
                (version . 1)
                (content . [((type . "paragraph")
@@ -644,7 +663,7 @@ draws the bar of a quote at its left, as Jira does."
                                                      ((type . "text") (text . "Tea"))]))]))
                            ((type . "paragraph")
                             (content . [((type . "text") (text . "Thanks"))]))]))))
-    (should (equal "Order:\n\n> Latte\n> Mocha\n> Tea\n\nThanks\n"
+    (should (equal "Order:\n\n> Latte\n>\n> Mocha\n> Tea\n\nThanks\n"
                    (shipit-issue-jira--adf-to-text adf)))))
 
 ;;; ADF Code Block Tests

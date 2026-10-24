@@ -397,6 +397,8 @@ DEPTH tracks nesting level for list indentation (default 0)."
           (shipit-issue-jira--adf-table content))
          ((equal type "blockquote")
           (shipit-issue-jira--adf-blockquote content depth))
+         ((equal type "doc")
+          (shipit-issue-jira--adf-blocks content depth))
          ((equal type "heading")
           (let* ((level (or (cdr (assq 'level attrs)) 1))
                  (prefix (make-string level ?#))
@@ -473,13 +475,27 @@ Concatenates child paragraphs and nested lists."
                                "\n")))))
     result))
 
+(defun shipit-issue-jira--adf-blocks (content depth)
+  "Render the ADF blocks of CONTENT at nesting DEPTH, a blank line apart.
+Markdown parts paragraphs, lists, headings and code blocks by a blank
+line, and Jira shows a gap there too.  An empty paragraph adds no
+second blank line."
+  (let ((blocks (seq-remove
+                 #'string-empty-p
+                 (mapcar (lambda (child)
+                           (string-trim (shipit-issue-jira--adf-to-text child depth)
+                                        "\n+" "\n+"))
+                         (append content nil)))))
+    (if blocks
+        (concat (string-join blocks "\n\n") "\n")
+      "")))
+
 (defun shipit-issue-jira--adf-blockquote (content depth)
   "Render ADF blockquote CONTENT at nesting DEPTH as a markdown quote.
 Each line starts with the mark of a quote.  A blank line goes before
 and after it, as around a list."
   (let ((body (string-trim-right
-               (mapconcat (lambda (child) (shipit-issue-jira--adf-to-text child depth))
-                          (append content nil) "")
+               (shipit-issue-jira--adf-blocks content depth)
                "\n")))
     (concat "\n"
             (mapconcat (lambda (line) (if (string-empty-p line) ">" (concat "> " line)))

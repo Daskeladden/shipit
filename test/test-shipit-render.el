@@ -11,6 +11,8 @@
 (require 'shipit-render)
 (require 'shipit-pr-backends)
 (require 'shipit-canvas)
+(require 'shipit-http)
+(require 'shipit-test-http)
 
 ;;; Auto-increment Ordered Lists Tests
 
@@ -1140,18 +1142,19 @@ two markers of a cell, AND each marker is a paragraph of its own."
                           "</td>\n</tr>\n</table>\n\n\n"
                           "## The rules\n")))))
 
-(ert-deftest test-shipit-html-table-with-a-picture-or-code-has-no-cell-marker ()
+(ert-deftest test-shipit-html-table-with-a-picture-or-code-has-its-cells-marked ()
   "GIVEN an HTML table with markdown in its two cells, the first of
 which holds a picture, written as markdown or as a tag, or a fenced
 code block
-WHEN the HTML tags are converted
-THEN no tag of the table and no marker is left, AND the markdown of
-the first cell stands above that of the second."
+WHEN the markdown is made ready for markdown-mode
+THEN the markdown of each cell is marked as a cell of the same row, as
+in a table of text, so that the two can stand side by side."
   (dolist (cell '("![shot](shot.png)" "<img src=\"shot.png\">" "```sh\nmake\n```"))
-    (should (equal (concat cell "\n\ntext")
-                   (shipit--convert-inline-html
-                    (concat "<table>\n<tr>\n<td>\n\n" cell "\n\n</td>\n"
-                            "<td>\n\ntext\n\n</td>\n</tr>\n</table>\n"))))))
+    (should (equal `((1 0 ,cell) (1 1 "text"))
+                   (test-shipit-render--table-cells
+                    (shipit--prepare-markdown
+                     (concat "<table>\n<tr>\n<td>\n\n" cell "\n\n</td>\n"
+                             "<td>\n\ntext\n\n</td>\n</tr>\n</table>\n")))))))
 
 (ert-deftest test-shipit-html-table-without-markdown-stays ()
   "GIVEN an HTML table with no blank line in it, which holds rows of
@@ -1438,6 +1441,149 @@ THEN the text is as it was."
                       (test-shipit-render--cell 2 2 "c"))))
     (should (equal "alone\n\na\n\nb\n\nc"
                    (substring-no-properties (shipit--lay-out-table-rows text 43))))))
+
+(defun test-shipit-render--char-faces (line)
+  "The face of each character of the string LINE, as a list."
+  (mapcar (lambda (i) (get-text-property i 'face line))
+          (number-sequence 0 (1- (length line)))))
+
+(defun test-shipit-render--background-p (face)
+  "Whether FACE, a face property, gives a background."
+  (seq-some (lambda (part) (and (consp part) (plist-get part :background)))
+            (if (and (consp face) (keywordp (car face))) (list face) (ensure-list face))))
+
+(ert-deftest test-shipit-a-code-block-in-a-table-cell-stands-in-its-column ()
+  "GIVEN a table row of two marked cells: a fenced code block whose
+widest line is 20, AND a text
+WHEN the table rows are laid out in 50 columns
+THEN the code column is 22 wide, the code with a space on each side,
+AND the text gets the rest, AND the fences are gone, AND each character
+of the code column has the code background and is marked as code of a
+table, so that no code block of the whole text is drawn over it."
+  (let* ((shipit-code-block-background "#333333")
+         (text (concat (test-shipit-render--cell
+                        1 0 "```sh\nmake tea\nmake coffee --strong\n```")
+                       "\n\n"
+                       (test-shipit-render--cell 1 1 "Brew it")))
+         (lines (test-shipit-render--row-lines (shipit--lay-out-table-rows text 50))))
+    (should (equal (list (format "%-22s │ Brew it" " make tea")
+                         " make coffee --strong  │ ")
+                   (mapcar #'substring-no-properties lines)))
+    (should (equal 23 (get-text-property 22 'shipit-column (car lines))))
+    (dolist (line lines)
+      (should (cl-every #'test-shipit-render--background-p
+                        (test-shipit-render--char-faces (substring line 0 22))))
+      (should (eq t (get-text-property 0 'shipit-table-code line)))
+      (should-not (text-property-not-all 0 22 'shipit-table-code t line)))))
+
+(ert-deftest test-shipit-a-code-block-too-wide-for-its-row-stays ()
+  "GIVEN a table row of two marked cells: a fenced code block whose
+widest line is 40, AND a text
+WHEN the table rows are laid out in 50 columns, where the text would
+get fewer than the 20 columns that a cell needs
+THEN the text is as it was, with the fences of the code."
+  (let ((text (concat (test-shipit-render--cell
+                       1 0 (concat "```sh\n" (make-string 40 ?x) "\n```"))
+                      "\n\n"
+                      (test-shipit-render--cell 1 1 "Brew it"))))
+    (should (equal (substring-no-properties text)
+                   (substring-no-properties (shipit--lay-out-table-rows text 50))))))
+
+(defmacro test-shipit-render--with-picture-display (&rest body)
+  "Run BODY where a picture is 400 by 180 pixels, or as wide as its
+`:max-width' with the same shape, a character is 8 pixels wide, AND a
+line is 18 pixels high.  Batch Emacs shows no picture."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'image-size)
+              (lambda (image &rest _)
+                (let ((width (min 400 (or (plist-get (cdr image) :max-width) 400))))
+                  (cons width (/ (* width 180) 400)))))
+             ((symbol-function 'frame-char-width) (lambda (&rest _) 8))
+             ((symbol-function 'default-line-height) (lambda () 18)))
+     ,@body))
+
+(ert-deftest test-shipit-a-picture-in-a-table-cell-is-cut-into-lines ()
+  "GIVEN a table row of two marked cells: a text, AND a picture of 400 by
+180 pixels on a line of its own
+WHEN the table rows are laid out in 43 columns, 20 for each cell, so
+160 pixels where a character is 8
+THEN the picture is made 160 pixels wide and so 72 high, AND it stands
+in its column as 4 strips, one on each line of the row, each 18 pixels
+high, so that the text can stand beside it, AND each strip is centered
+on its line as the text is, so that it makes its line no higher and no
+gap shows between two strips."
+  (test-shipit-render--with-picture-display
+    (let* ((cup '(image :type png :file "cup.png"))
+           (text (concat (test-shipit-render--cell 1 0 "Brew it")
+                         "\n\n"
+                         (test-shipit-render--cell 1 1 (propertize " " 'display cup))))
+           (lines (test-shipit-render--row-lines (shipit--lay-out-table-rows text 43)))
+           (fitted (append cup '(:max-width 160 :ascent center))))
+      (should (equal '("Brew it │  " " │  " " │  " " │  ")
+                     (mapcar #'substring-no-properties lines)))
+      (should (equal (mapcar (lambda (top) `((slice 0 ,top 160 18) ,fitted))
+                             '(0 18 36 54))
+                     (mapcar (lambda (line)
+                               (get-text-property (1- (length line)) 'display line))
+                             lines))))))
+
+(ert-deftest test-shipit-a-picture-keeps-the-cell-it-stands-in ()
+  "GIVEN an <img> tag, a markdown picture, AND a linked markdown picture,
+each marked as the second cell of a table row
+WHEN the pictures of the text are processed
+THEN what stands in place of each is marked as that cell, so that the
+row still has two cells."
+  (let ((shipit-render-images t))
+    (dolist (input '("<img src=\"https://example.com/cup.png\" alt=\"cup\">"
+                     "![cup](https://example.com/cup.png)"
+                     "[![cup](https://example.com/cup.png)](https://example.com)"))
+      (let ((result (shipit-test-http-answering '(("\\`https://example\\.com/" 404 ""))
+                      (shipit--process-inline-images
+                       (test-shipit-render--cell 1 1 input)))))
+        (should (string-match-p "\\[Image: cup" result))
+        (should (equal '(1 . 1) (get-text-property 0 'shipit-cell result)))))))
+
+(ert-deftest test-shipit-the-strips-of-a-moving-picture-move-once ()
+  "GIVEN a buffer with three strips of one moving picture
+WHEN the pictures of the buffer are set moving
+THEN that picture is set moving once."
+  (let ((started nil)
+        (cup '(image :type gif :file "cup.gif")))
+    (cl-letf (((symbol-function 'image-multi-frame-p) (lambda (&rest _) t))
+              ((symbol-function 'image-animate)
+               (lambda (image &rest _) (push image started))))
+      (with-temp-buffer
+        (dolist (top '(0 18 36))
+          (insert (propertize " " 'display `((slice 0 ,top 160 18) ,cup)) "\n"))
+        (shipit--animate-images-in-region (point-min) (point-max))))
+    (should (equal (list cup) started))))
+
+(ert-deftest test-shipit-table-code-keeps-its-background-at-the-line-edges ()
+  "GIVEN a line of a table row whose code, marked as code of a table,
+starts with spaces and ends with the spaces that fill its column
+WHEN the faces on the white space at the edges of lines are taken off
+THEN those spaces keep the code background, so the code column stays a
+box."
+  (let* ((face '(:background "#333333"))
+         (result (shipit--strip-face-on-whitespace
+                  (concat (propertize "  make  " 'face face 'shipit-table-code t)
+                          "\n"))))
+    (should (equal face (get-text-property 0 'face result)))
+    (should (equal face (get-text-property 7 'face result)))))
+
+(ert-deftest test-shipit-table-code-gets-no-code-block-over-its-row ()
+  "GIVEN a buffer with a line of a table row whose code, marked as code
+of a table, has the face of an indented code block
+WHEN the code blocks of the buffer are drawn
+THEN no code block is drawn over the row, as the code of the table has
+its background already."
+  (let ((shipit-code-block-background "#333333"))
+    (with-temp-buffer
+      (insert (propertize " make tea " 'face 'markdown-pre-face 'shipit-table-code t)
+              " │ Brew it\nafter\n")
+      (shipit--apply-code-block-backgrounds-in-region (point-min) (point-max))
+      (should-not (seq-some (lambda (ov) (overlay-get ov 'shipit-code-block))
+                            (overlays-in (point-min) (point-max)))))))
 
 (ert-deftest test-shipit-a-table-column-starts-at-its-place-after-the-indent ()
   "GIVEN a buffer with a line of a table row after an indent of 5: the

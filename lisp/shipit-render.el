@@ -1360,6 +1360,14 @@ taken there use the temp buffer's face which may differ from the
 destination.  When unbound the renderer falls back to its own
 heuristics.")
 
+(defun shipit--display-image (display)
+  "Return the image that the display property DISPLAY shows, or nil.
+DISPLAY is an image, or a list that has one, as a strip of an image
+has.  The strips of one image share it."
+  (cond ((eq (car-safe display) 'image) display)
+        ((consp display)
+         (seq-find (lambda (part) (eq (car-safe part) 'image)) display))))
+
 (defun shipit--animate-images-in-region (start end)
   "Animate any multi-frame images displayed via text properties in START..END.
 The render pipeline creates images inside `with-temp-buffer', so calling
@@ -1368,14 +1376,16 @@ as the temp buffer is unwound.  Callers run this helper after inserting
 the rendered text into the destination buffer; the timer then captures
 that live buffer and the animation actually plays."
   (save-excursion
-    (let ((pos start))
+    (let ((pos start)
+          (started nil))
       (while (and pos (< pos end))
-        (let ((display (get-text-property pos 'display)))
-          (when (and (consp display)
-                     (eq (car display) 'image)
+        (let ((image (shipit--display-image (get-text-property pos 'display))))
+          (when (and image
+                     (not (memq image started))
                      (fboundp 'image-multi-frame-p)
-                     (image-multi-frame-p display))
-            (image-animate display 0 t)))
+                     (image-multi-frame-p image))
+            (push image started)
+            (image-animate image 0 t)))
         (setq pos (next-single-property-change pos 'display nil end))))))
 
 (defun shipit--prepare-gif-for-display (file target-width)
@@ -2666,13 +2676,146 @@ A row is the list of its cells in the order of the text, each
    (lambda (hashes) (if (get-text-property 0 'invisible hashes) "" hashes))
    text t t))
 
-(defun shipit--table-cell-lines (cell width)
-  "Return the lines of the table CELL of this buffer, wrapped to WIDTH.
-CELL is (START . END)."
-  (split-string
-   (shipit--wrap-text
-    (shipit--table-cell-text (buffer-substring (car cell) (cdr cell))) width)
-   "\n"))
+(defun shipit--table-cell-parts (cell)
+  "Return the text of the table CELL of this buffer as parts, in order.
+CELL is (START . END).  A fenced code block is a part (LANGUAGE .
+LINES), without its fences.  The text between code blocks is a part
+that is a string."
+  (let ((parts nil) (text nil) (code nil))
+    (dolist (line (split-string (shipit--table-cell-text
+                                 (buffer-substring (car cell) (cdr cell)))
+                                "\n"))
+      (cond
+       ((and code (string-match-p shipit--code-fence-end-regexp line))
+        (push (cons (car code) (nreverse (cdr code))) parts)
+        (setq code nil))
+       (code
+        (push (if (string-search "\t" line) (shipit--expand-tabs-to-spaces line) line)
+              (cdr code)))
+       ((string-match shipit--code-fence-regexp line)
+        (when text
+          (push (string-join (nreverse text) "\n") parts))
+        (setq text nil
+              code (list (match-string 2 line))))
+       (t (push line text))))
+    (when code
+      (push (cons (car code) (nreverse (cdr code))) parts))
+    (when text
+      (push (string-join (nreverse text) "\n") parts))
+    (nreverse parts)))
+
+(defun shipit--table-code-width (parts)
+  "Return the columns that the code of PARTS, the parts of a cell, takes.
+That is its widest line with a space on each side, or nil when the
+cell has no code."
+  (let ((codes (seq-remove #'stringp parts)))
+    (when codes
+      (+ 2 (apply #'max 0 (mapcar #'string-width (apply #'append (mapcar #'cdr codes))))))))
+
+(defun shipit--table-column-widths (cells width)
+  "Return the width of each of CELLS in a table row WIDTH columns wide.
+CELLS has the parts of each cell.  A cell with code is as wide as its
+code, and the other cells share what is left.  The result is nil for a
+row of one cell, and for a row where the code does not fit or a cell
+gets fewer than `shipit--table-cell-min-width' columns."
+  (let* ((fixed (mapcar #'shipit--table-code-width cells))
+         (free (- width
+                  (* shipit--table-gutter-width (1- (length cells)))
+                  (apply #'+ (delq nil (copy-sequence fixed)))))
+         (shared (cl-count nil fixed))
+         (share (if (> shared 0) (/ free shared) free)))
+    (when (and (cdr cells)
+               (>= free 0)
+               (or (= shared 0) (>= share shipit--table-cell-min-width)))
+      (mapcar (lambda (code-width) (or code-width share)) fixed))))
+
+(defun shipit--line-picture (line)
+  "Return the picture that LINE shows, when it shows nothing else.
+Spaces and hidden text do not count."
+  (let ((pictures nil) (other nil))
+    (dotimes (i (length line))
+      (let ((display (get-text-property i 'display line)))
+        (cond ((eq (car-safe display) 'image)
+               (cl-pushnew display pictures :test #'eq))
+              ((not (or (memq (aref line i) '(?\s ?\t))
+                        (get-text-property i 'invisible line)))
+               (setq other t)))))
+    (and (not other) (null (cdr pictures)) (car pictures))))
+
+(defun shipit--strip-picture (picture width)
+  "Return PICTURE, an image, as its strips show it: no wider than WIDTH pixels.
+Each strip is centered on its line as the text is.  Then it makes its
+line no higher, and no gap shows between two strips."
+  (let ((properties (copy-sequence (cdr picture))))
+    (when (> (car (image-size picture t)) width)
+      (setq properties (plist-put properties :max-width width)))
+    (cons 'image (plist-put properties :ascent 'center))))
+
+(defun shipit--picture-strip (picture size top height)
+  "Return a space that shows the strip of PICTURE from TOP, HEIGHT pixels high.
+SIZE is the size of PICTURE in pixels.  The last strip is lower when
+the picture ends inside it.  Centered on its line, it would leave a gap
+above it, so it is raised to the top of the line."
+  (let ((low (min height (- (cdr size) top))))
+    (propertize " " 'display
+                (if (< low height)
+                    `((raise ,(/ (- height low) 2.0 (frame-char-height)))
+                      (slice 0 ,top ,(car size) ,low)
+                      ,picture)
+                  `((slice 0 ,top ,(car size) ,height) ,picture)))))
+
+(defun shipit--picture-strips (picture width)
+  "Return lines that show PICTURE in strips one line high.
+PICTURE is made no wider than WIDTH pixels.  Each line is a space that
+shows one strip, so that text can stand beside the picture."
+  (let* ((fitted (shipit--strip-picture picture width))
+         (size (image-size fitted t))
+         (height (default-line-height)))
+    (mapcar (lambda (top) (shipit--picture-strip fitted size top height))
+            (number-sequence 0 (max 0 (1- (cdr size))) height))))
+
+(defun shipit--table-text-lines (text width)
+  "Return the lines of TEXT in a table cell WIDTH columns wide.
+TEXT is wrapped to WIDTH.  A picture on a line of its own is cut into
+strips, one on each line."
+  (mapcan (lambda (line)
+            (let ((picture (shipit--line-picture line)))
+              (if picture
+                  (shipit--picture-strips picture (* width (frame-char-width)))
+                (list line))))
+          (split-string (shipit--wrap-text text width) "\n")))
+
+(defun shipit--table-code-fontified (code)
+  "Return the lines of CODE, (LANGUAGE . LINES), in the colors of LANGUAGE."
+  (let ((text (string-join (cdr code) "\n")))
+    (split-string (if (string-empty-p (car code))
+                      text
+                    (shipit--fontify-code-string text (car code)))
+                  "\n")))
+
+(defun shipit--table-code-lines (code width)
+  "Return the lines of CODE, a code block of a table cell WIDTH columns wide.
+CODE is (LANGUAGE . LINES).  Each line has a space on each side and the
+code background up to the width of the cell.  It is marked as code of
+a table, so that no code block of the whole text is drawn over its row."
+  (let ((background (shipit--code-block-background)))
+    (mapcar (lambda (line)
+              (let ((padded (concat " " line
+                                    (make-string (max 0 (- width 1 (string-width line)))
+                                                 ?\s))))
+                (when background
+                  (add-face-text-property 0 (length padded)
+                                          `(:background ,background) t padded))
+                (propertize padded 'shipit-table-code t)))
+            (shipit--table-code-fontified code))))
+
+(defun shipit--table-cell-lines (parts width)
+  "Return the lines of a table cell WIDTH columns wide, made of PARTS."
+  (mapcan (lambda (part)
+            (if (stringp part)
+                (shipit--table-text-lines part width)
+              (shipit--table-code-lines part width)))
+          parts))
 
 (defun shipit--table-column-gap (column)
   "Return the text between two table cells in a line of their row.
@@ -2683,25 +2826,27 @@ row.  The first space is marked with that column, for
           (propertize "│" 'face 'shadow)
           " "))
 
-(defun shipit--table-row-line (texts cell-width)
+(defun shipit--table-row-line (texts widths)
   "Return one line of a table row: TEXTS, one for each cell, side by side.
-Each cell is CELL-WIDTH columns wide."
+WIDTHS has the width of each cell in columns."
   (let ((line (car texts))
-        (column (1+ cell-width)))
-    (dolist (text (cdr texts))
-      (setq line (concat line (shipit--table-column-gap column) text))
-      (setq column (+ column cell-width shipit--table-gutter-width)))
+        (column (1+ (car widths))))
+    (cl-mapc (lambda (text width)
+               (setq line (concat line (shipit--table-column-gap column) text))
+               (setq column (+ column width shipit--table-gutter-width)))
+             (cdr texts) (cdr widths))
     ;; A centered line gets its place from the start of the line, and
     ;; a cell does not start there.  So no text of a cell is centered.
     (propertize line 'shipit-no-wrap t 'shipit-align nil)))
 
-(defun shipit--table-row-text (columns cell-width)
+(defun shipit--table-row-text (columns widths)
   "Return the text of a table row whose cells have the lines COLUMNS.
-COLUMNS has one list of lines for each cell, CELL-WIDTH columns wide."
+COLUMNS has one list of lines for each cell, and WIDTHS the width of
+each cell in columns."
   (mapconcat (lambda (index)
                (shipit--table-row-line
                 (mapcar (lambda (lines) (or (nth index lines) "")) columns)
-                cell-width))
+                widths))
              (number-sequence 0 (1- (apply #'max (mapcar #'length columns))))
              "\n"))
 
@@ -2709,23 +2854,21 @@ COLUMNS has one list of lines for each cell, CELL-WIDTH columns wide."
   "Put the CELLS of a table row of this buffer side by side in WIDTH columns.
 CELLS is a list of (START . END).  A row of one cell stays as it is,
 and so does a row whose cells get too narrow."
-  (let* ((count (length cells))
-         (cell-width (/ (- width (* shipit--table-gutter-width (1- count)))
-                        count)))
-    (when (and (> count 1) (>= cell-width shipit--table-cell-min-width))
-      (let ((columns (mapcar (lambda (cell)
-                               (shipit--table-cell-lines cell cell-width))
-                             cells)))
+  (let* ((parts (mapcar #'shipit--table-cell-parts cells))
+         (widths (shipit--table-column-widths parts width)))
+    (when widths
+      (let ((columns (cl-mapcar #'shipit--table-cell-lines parts widths)))
         (goto-char (caar cells))
         (delete-region (point) (cdar (last cells)))
-        (insert (shipit--table-row-text columns cell-width))))))
+        (insert (shipit--table-row-text columns widths))))))
 
 (defun shipit--lay-out-table-rows (text width)
   "Return TEXT with the cells of each of its table rows side by side.
 The cells are marked with the text property `shipit-cell'.  WIDTH is
-the number of columns that a row can take.  Each cell gets the same
-share of them, and its text is wrapped to that.  A line of a row has
-the text property `shipit-no-wrap'."
+the number of columns that a row can take.  A cell with code is as
+wide as its code, and the other cells share the rest.  The text of a
+cell is wrapped to its width.  A line of a row has the text property
+`shipit-no-wrap'."
   (with-temp-buffer
     (insert text)
     (dolist (row (shipit--marked-table-rows))
@@ -2784,30 +2927,22 @@ CLOSING tells whether it is a closing tag."
     ("tr" (unless closing shipit--row-marker))
     ((or "td" "th") (if closing shipit--cell-close shipit--cell-open))))
 
-(defun shipit--html-unwrap-table (start end side-by-side)
+(defun shipit--html-unwrap-table (start end)
   "Put a paragraph break for each tag of the HTML table from START to END.
-With SIDE-BY-SIDE, a layout marker also stands where each row started,
-and where each cell started and ended."
+A layout marker also stands where each row started, and where each
+cell started and ended."
   ;; The marker moves with the text that is put at it.  The break for
   ;; the last tag is put there, and the search must not end before point.
   (let ((end (copy-marker end t)))
     (goto-char start)
     (while (re-search-forward shipit--html-table-tag-regexp end t)
-      (let ((marker (and side-by-side
-                         (shipit--html-table-marker (downcase (match-string 2))
-                                                    (match-beginning 1)))))
+      (let ((marker (shipit--html-table-marker (downcase (match-string 2))
+                                               (match-beginning 1))))
         (replace-match "")
         (if marker
             (shipit--html-insert-paragraph marker)
           (shipit--html-paragraph-break))))
     (set-marker end nil)))
-
-(defun shipit--html-table-side-by-side-p (table)
-  "Whether the cells of TABLE, the text of an HTML table, can stand side by side."
-  ;; What: a table with a picture or a fenced code block cannot.
-  ;; Why:  a picture can be wider than the column of its cell, and the
-  ;;       background of a code block is drawn over whole lines.
-  (not (string-match-p "<img\\b\\|!\\[\\|^[ \t]*\\(?:```\\|~~~\\)" table)))
 
 (defun shipit--html-unwrap-layout-tables ()
   "Take the tags out of each HTML table of this buffer that holds markdown.
@@ -2823,8 +2958,7 @@ rows of data, and stays."
       (when (and table
                  (not (shipit--in-markdown-code-p start))
                  (string-match-p "\n[ \t]*\n" table))
-        (shipit--html-unwrap-table
-         start end (shipit--html-table-side-by-side-p table))))))
+        (shipit--html-unwrap-table start end)))))
 
 (defun shipit--convert-html-tags ()
   "Convert the HTML tags of this buffer as `shipit--html-tag-converters' says."
@@ -3081,18 +3215,25 @@ text)."
              "" result)))
     result))
 
-(defmacro shipit--with-alignment-of (source &rest body)
-  "Return the string that BODY makes, with the alignment of the text SOURCE.
+(defconst shipit--layout-properties '(shipit-align shipit-cell)
+  "The text properties that tell where text stands on the page.
+They say whether it is centered, and which table cell it is in.")
+
+(defun shipit--copy-layout (source text)
+  "Return TEXT with the layout properties of the start of the text SOURCE."
+  (let ((text (copy-sequence text)))
+    (dolist (property shipit--layout-properties text)
+      (let ((value (get-text-property 0 property source)))
+        (when value
+          (put-text-property 0 (length text) property value text))))))
+
+(defmacro shipit--with-layout-of (source &rest body)
+  "Return the string that BODY makes, with the layout of the text SOURCE.
 BODY runs with the match data saved.  The string takes the place of
-SOURCE in a text, and SOURCE can be marked as centered."
+SOURCE in a text, and SOURCE can be marked as centered or as a table
+cell."
   (declare (indent 1))
-  (let ((text (make-symbol "text"))
-        (align (make-symbol "align")))
-    `(let ((,text (save-match-data ,@body))
-           (,align (get-text-property 0 'shipit-align ,source)))
-       (if ,align
-           (propertize ,text 'shipit-align ,align)
-         ,text))))
+  `(shipit--copy-layout ,source (save-match-data ,@body)))
 
 (defconst shipit--img-width-regexp
   "\\bwidth[ \t]*=[ \t]*[\"']?\\([0-9]+\\)\\(?:px\\)?\\(?:[\"'[:space:]/>]\\|\\'\\)"
@@ -3117,7 +3258,7 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
             (replace-regexp-in-string
              "<img[^>]+>"
              (lambda (img-tag)
-               (shipit--with-alignment-of img-tag
+               (shipit--with-layout-of img-tag
                  (let ((src (when (string-match "src=\"\\([^\"]+\\)\"" img-tag)
                               (match-string 1 img-tag)))
                        (alt (when (string-match "alt=\"\\([^\"]*\\)\"" img-tag)
@@ -3137,7 +3278,7 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
             (replace-regexp-in-string
              "\\[!\\[\\([^]]*\\)\\](\\([^)]+\\))\\](\\([^)]+\\))"
              (lambda (match)
-               (shipit--with-alignment-of match
+               (shipit--with-layout-of match
                  (string-match "\\[!\\[\\([^]]*\\)\\](\\([^)]+\\))\\](\\([^)]+\\))" match)
                  (let ((alt (match-string 1 match))
                        (url (match-string 2 match)))
@@ -3149,7 +3290,7 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
             (replace-regexp-in-string
              "!\\[\\([^]]*\\)\\](\\([^)]+\\))"
              (lambda (match)
-               (shipit--with-alignment-of match
+               (shipit--with-layout-of match
                  (string-match "!\\[\\([^]]*\\)\\](\\([^)]+\\))" match)
                  (let ((alt (match-string 1 match))
                        (url (match-string 2 match)))
@@ -3680,6 +3821,40 @@ Skips:
                 (overlay-put ov 'evaporate t)
                 (overlay-put ov 'shipit-inline-code t)))))))))
 
+(defconst shipit--code-fence-regexp "^\\([ \t]*\\)```[ \t]*\\([a-zA-Z0-9_+-]*\\)"
+  "Regexp matching the fence that opens a code block.
+Group 1 is its indent, and group 2 its language, which can be empty.")
+
+(defconst shipit--code-fence-end-regexp "^[ \t]*```"
+  "Regexp matching the fence that closes a code block.")
+
+(defun shipit--code-block-background ()
+  "Return the background color of a code block, or nil.
+It is `shipit-code-block-background', or else the background of
+`markdown-code-face'.  Either is made a little lighter on a dark
+background and a little darker on a light one, so that it differs from
+the highlight of the section at point."
+  (let* ((explicit (and (boundp 'shipit-code-block-background)
+                        shipit-code-block-background))
+         ;; `face-background' can return the symbolic "unspecified-bg"
+         ;; string on TTY frames or when the inheritance chain bottoms
+         ;; out without a concrete background -- treat that as no
+         ;; background to avoid `color-name-to-rgb' failing with
+         ;; "Unable to load color 'unspecified-bg'".
+         (markdown (and (not explicit)
+                        (facep 'markdown-code-face)
+                        (face-background 'markdown-code-face nil 'default)))
+         (base (or explicit
+                   (and markdown
+                        (not (member markdown '("unspecified-bg" "unspecified-fg")))
+                        markdown))))
+    (when base
+      (let* ((rgb (color-name-to-rgb base))
+             (luminance (+ (* 0.2126 (nth 0 rgb))
+                           (* 0.7152 (nth 1 rgb))
+                           (* 0.0722 (nth 2 rgb)))))
+        (shipit--adjust-color-brightness base (if (< luminance 0.5) 0.04 -0.04))))))
+
 (defun shipit--apply-code-block-backgrounds-in-region (start end)
   "Apply background color overlays and syntax highlighting to code blocks.
 Detects both triple-backtick fenced code blocks and indented code blocks
@@ -3694,44 +3869,19 @@ blends with the surrounding prose."
   ;; Guard against invalid region bounds (can happen during async refresh)
   (when (and start end (< start end) (<= end (point-max)))
     (condition-case err
-      (let* ((explicit-bg (and (boundp 'shipit-code-block-background)
-                               shipit-code-block-background))
-             ;; Get background from markdown-code-face if no explicit setting.
-             ;; `face-background' can return the symbolic "unspecified-bg"
-             ;; string on TTY frames or when the inheritance chain bottoms
-             ;; out without a concrete background -- treat that as no
-             ;; background to avoid `color-name-to-rgb' failing with
-             ;; "Unable to load color 'unspecified-bg'".
-             (markdown-bg-raw (and (not explicit-bg)
-                                   (facep 'markdown-code-face)
-                                   (face-background 'markdown-code-face nil 'default)))
-             (markdown-bg (and markdown-bg-raw
-                               (not (member markdown-bg-raw
-                                            '("unspecified-bg" "unspecified-fg")))
-                               markdown-bg-raw))
-             ;; Always adjust the background slightly to distinguish from magit-section-highlight
-             ;; which may have the same background as markdown-code-face
-             ;; Lighten for dark themes, darken for light themes
-             (base-bg (or explicit-bg markdown-bg))
-             (code-block-bg (when base-bg
-                              (let* ((rgb (color-name-to-rgb base-bg))
-                                     (luminance (+ (* 0.2126 (nth 0 rgb))
-                                                   (* 0.7152 (nth 1 rgb))
-                                                   (* 0.0722 (nth 2 rgb)))))
-                                (shipit--adjust-color-brightness base-bg
-                                                                 (if (< luminance 0.5) 0.04 -0.04)))))
+      (let* ((code-block-bg (shipit--code-block-background))
              (nested-block-bg (shipit--nested-code-block-bg code-block-bg))
              (found-fenced 0)
              (found-indented 0)
              (found-org 0))
-        (shipit--debug-log "CODE-BLOCK-BG: Searching region %d-%d, explicit-bg=%s, markdown-bg=%s, code-block-bg=%s"
-                           start end explicit-bg markdown-bg code-block-bg)
+        (shipit--debug-log "CODE-BLOCK-BG: Searching region %d-%d, code-block-bg=%s"
+                           start end code-block-bg)
         (save-excursion
           (goto-char start)
           ;; First pass: Find all triple-backtick code blocks (with optional leading whitespace)
           ;; Use [ \t]* instead of \s* because \s* is syntax-class dependent
           ;; Allow optional whitespace between ``` and language (gfm-mode can insert spaces)
-          (while (re-search-forward "^\\([ \t]*\\)```[ \t]*\\([a-zA-Z0-9_+-]*\\)" end t)
+          (while (re-search-forward shipit--code-fence-regexp end t)
             (setq found-fenced (1+ found-fenced))
             (let* ((indent (match-string 1))
                    (language (match-string 2))
@@ -3752,35 +3902,34 @@ blends with the surrounding prose."
                 (end-of-line)
                 ;; Allow any leading whitespace for closing - the indent captured from opening
                 ;; may not match due to markdown-mode processing or comment body indentation
-                (let ((close-pattern "^[ \t]*```"))
-                  (if (re-search-forward close-pattern end t)
-                      (let* ((content-end (line-beginning-position))  ; End before closing ```
-                             (block-end (min (1+ (line-end-position)) end)))
-                        (shipit--debug-log "CODE-BLOCK-BG: Multi-line block content-start=%d content-end=%d language='%s'"
-                                           content-start content-end language)
-                        ;; Apply syntax highlighting to code content
-                        ;; If no language on fence, try detecting from shebang
-                        (let ((lang (if (and language (not (string-empty-p language)))
-                                        language
-                                      (and shipit-code-block-detect-shebang
-                                           (shipit--detect-language-from-shebang
-                                            content-start content-end)))))
-                          (when (and lang (< content-start content-end))
-                            (shipit--apply-code-block-syntax-highlighting
-                             content-start content-end lang)))
-                        ;; Apply background overlay
-                        (when code-block-bg
-                          (let ((ov (make-overlay block-start block-end)))
-                            (overlay-put ov 'priority 10)
-                            (overlay-put ov 'face `(:background ,code-block-bg :extend t))
-                            (overlay-put ov 'shipit-code-block t))))
-                    ;; If closing backticks not found, style to end of region
-                    (when code-block-bg
-                      (let ((ov (make-overlay block-start end)))
-                        (overlay-put ov 'priority 10)
-                        (overlay-put ov 'face `(:background ,code-block-bg :extend t))
-                        (overlay-put ov 'shipit-code-block t))))))))
-          ;; Second pass: Find indented code blocks by looking for markdown-pre-face
+                (if (re-search-forward shipit--code-fence-end-regexp end t)
+                    (let* ((content-end (line-beginning-position))  ; End before closing ```
+                           (block-end (min (1+ (line-end-position)) end)))
+                      (shipit--debug-log "CODE-BLOCK-BG: Multi-line block content-start=%d content-end=%d language='%s'"
+                                         content-start content-end language)
+                      ;; Apply syntax highlighting to code content
+                      ;; If no language on fence, try detecting from shebang
+                      (let ((lang (if (and language (not (string-empty-p language)))
+                                      language
+                                    (and shipit-code-block-detect-shebang
+                                         (shipit--detect-language-from-shebang
+                                          content-start content-end)))))
+                        (when (and lang (< content-start content-end))
+                          (shipit--apply-code-block-syntax-highlighting
+                           content-start content-end lang)))
+                      ;; Apply background overlay
+                      (when code-block-bg
+                        (let ((ov (make-overlay block-start block-end)))
+                          (overlay-put ov 'priority 10)
+                          (overlay-put ov 'face `(:background ,code-block-bg :extend t))
+                          (overlay-put ov 'shipit-code-block t))))
+                  ;; If closing backticks not found, style to end of region
+                  (when code-block-bg
+                    (let ((ov (make-overlay block-start end)))
+                      (overlay-put ov 'priority 10)
+                      (overlay-put ov 'face `(:background ,code-block-bg :extend t))
+                      (overlay-put ov 'shipit-code-block t)))))))
+        ;; Second pass: Find indented code blocks by looking for markdown-pre-face
           ;; These are created by markdown-mode for 4-space indented code
           ;; Skip positions already inside fenced code blocks
           (when code-block-bg
@@ -3788,8 +3937,10 @@ blends with the surrounding prose."
             (let ((pos start)
                   (block-start nil))
               (while (< pos end)
-                ;; Skip if already inside a fenced code block overlay
-                (if (shipit--point-in-code-block-overlay-p pos)
+                ;; Skip if already inside a fenced code block overlay,
+                ;; or in the code of a table, which has its background
+                (if (or (shipit--point-in-code-block-overlay-p pos)
+                        (get-text-property pos 'shipit-table-code))
                     (setq block-start nil)  ; Reset any pending block
                   (let ((face (get-text-property pos 'face)))
                     ;; Check if this position has markdown-pre-face
@@ -5848,6 +5999,16 @@ buffer."
           (remove-text-properties pos next '(face nil)))
         (setq pos next)))))
 
+(defun shipit--remove-faces-outside-table-code (start end)
+  "Take the faces off the text from START to END that is no code of a table.
+The code of a table keeps its background up to the edge of its column."
+  (let ((pos start))
+    (while (< pos end)
+      (let ((next (next-single-property-change pos 'shipit-table-code nil end)))
+        (unless (get-text-property pos 'shipit-table-code)
+          (remove-text-properties pos next '(face nil font-lock-face nil)))
+        (setq pos next)))))
+
 (defun shipit--strip-face-on-whitespace (text)
   "Return TEXT with `face'/`font-lock-face' stripped from line-edge whitespace.
 Specifically strips:
@@ -5866,13 +6027,11 @@ and through the indentation of continuation lines."
       ;; Trailing whitespace + newline
       (goto-char (point-min))
       (while (re-search-forward "[ \t]*\n" nil t)
-        (remove-text-properties (match-beginning 0) (match-end 0)
-                                '(face nil font-lock-face nil)))
+        (shipit--remove-faces-outside-table-code (match-beginning 0) (match-end 0)))
       ;; Leading whitespace at start of each line
       (goto-char (point-min))
       (while (re-search-forward "^[ \t]+" nil t)
-        (remove-text-properties (match-beginning 0) (match-end 0)
-                                '(face nil font-lock-face nil)))
+        (shipit--remove-faces-outside-table-code (match-beginning 0) (match-end 0)))
       (buffer-string))))
 
 (defun shipit--org-cache-clear ()

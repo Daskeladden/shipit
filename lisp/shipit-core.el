@@ -2341,18 +2341,38 @@ LEAD, because each line of a quote has them.  The rest is spaces."
   (replace-regexp-in-string
    "[^>]+" (lambda (other) (make-string (string-width other) ?\s)) lead t t))
 
+(defconst shipit--wrap-picture-char ?￼
+  "The character that stands for a picture while a line is filled.
+A picture is a space that shows it.  `fill-region-as-paragraph' takes
+each space for room between words, and deletes one of two spaces that
+stand together.")
+
+(defun shipit--wrap-swap-pictures (from to)
+  "Make each character FROM of this buffer that shows a picture TO."
+  (let ((pos (point-min)))
+    (while (setq pos (text-property-not-all pos (point-max) 'display nil))
+      (when (eq (char-after pos) from)
+        (let ((properties (text-properties-at pos)))
+          (save-excursion
+            (goto-char pos)
+            (delete-char 1)
+            (insert (apply #'propertize (string to) properties)))))
+      (setq pos (1+ pos)))))
+
 (defun shipit--wrap-line (line width)
   "Fill LINE to WIDTH in the current buffer, which it empties; the result.
 The lines after the first start where the text of LINE starts: under
 the indent of a line inside a list item, and past the marker of a list
 item.  Without that the rest of a paragraph leaves the item it is in.
-The lines of a quote start with the marks of the quote."
+The lines of a quote start with the marks of the quote.  A picture
+stays where it is."
   (string-match shipit--wrap-lead-regexp line)
   (let* ((lead (match-string 0 line))
          (hang (shipit--wrap-hang lead))
          (fill-column (max 20 (- width (string-width lead)))))
     (erase-buffer)
     (insert (substring line (length lead)))
+    (shipit--wrap-swap-pictures ?\s shipit--wrap-picture-char)
     ;; Plain `fill-region' calls `fill-forward-paragraph' /
     ;; `move-to-left-margin' per visual line, runs
     ;; `adaptive-fill-mode' prefix detection, and fires
@@ -2366,6 +2386,7 @@ The lines of a quote start with the marks of the quote."
           (paragraph-start "\f\\|[ \t]*$")
           (paragraph-separate "[ \t\f]*$"))
       (fill-region-as-paragraph (point-min) (point-max)))
+    (shipit--wrap-swap-pictures shipit--wrap-picture-char ?\s)
     (concat lead (replace-regexp-in-string "\n" (concat "\n" hang) (buffer-string)))))
 
 (defun shipit--wrap-text (text width &optional code-block-indent)

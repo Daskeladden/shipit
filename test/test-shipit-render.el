@@ -885,6 +885,22 @@ THEN the tag is gone, AND the text around it stays."
   (should (equal "Usage"
                  (shipit--convert-inline-html "<a name=\"usage\"></a>Usage"))))
 
+(ert-deftest test-shipit-html-link-has-no-white-space-at-its-edges ()
+  "GIVEN an <a> tag around a picture on a line of its own, as the logo of
+a README has, AND one in a centered paragraph, AND an <a> tag around a
+word between spaces
+WHEN the HTML tags are converted
+THEN each markdown link starts and ends with what it shows, so that the
+underline of the link shows no white space beside it, AND the text
+around each link stays."
+  (dolist (case '(("<a href=\"https://example.com\">\n<img src=\"cup.svg\">\n</a>"
+                   . "[<img src=\"cup.svg\">](https://example.com)")
+                  ("<p align=\"center\"><a href=\"https://example.com\">\n<img src=\"cup.svg\">\n</a></p>"
+                   . "<shipit-center>\n\n[<img src=\"cup.svg\">](https://example.com)\n\n</shipit-center>")
+                  ("Read <a href=\"docs/a.md\"> the docs </a> first."
+                   . "Read [the docs](docs/a.md) first.")))
+    (should (equal (cdr case) (shipit--convert-inline-html (car case))))))
+
 (ert-deftest test-shipit-html-paragraphs-are-paragraphs-of-markdown ()
   "GIVEN two <p> elements with no blank line between them, and text
 after them, as the head of a README has

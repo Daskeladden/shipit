@@ -2262,14 +2262,17 @@ ATTRIBUTES is the text of a tag after its name."
 (defun shipit--html-link (_name closing attributes)
   "Put a part of a markdown link where an <a> tag stood.
 An <a> tag without an address, which only names a place in the text,
-leaves nothing."
+leaves nothing.  The white space at the edges of the text of the link
+goes, as a forge shows none there."
   (if closing
       (when-let* ((target (pop shipit--html-link-targets)))
+        (delete-region (point) (progn (skip-chars-backward " \t\n") (point)))
         (insert "](" target ")"))
     (let ((target (shipit--html-attribute attributes "href")))
       (push target shipit--html-link-targets)
       (when target
-        (insert "[")))))
+        (insert "[")
+        (shipit--html-delete-white-space-after)))))
 
 (defun shipit--html-content-end (name)
   "Return the place of the next closing tag NAME after point, or nil."

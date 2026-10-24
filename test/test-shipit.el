@@ -443,6 +443,24 @@ THEN the mark of each line is shown as that bar."
     (dolist (line lines)
       (should (equal "|" (get-text-property 0 'display line))))))
 
+(ert-deftest test-shipit--wrap-text-keeps-a-picture-between-spaces ()
+  "GIVEN a line with a picture between two spaces, as a picture in a
+link of an HTML README has, AND a long line with a picture in it
+WHEN the text is wrapped
+THEN each picture stays, AND so do the spaces around the picture in
+the link."
+  (let* ((logo '(image :type svg :file "cup.svg"))
+         (picture (propertize " " 'display logo))
+         (link (shipit--wrap-text (concat "[ " picture " ](https://example.com)") 80 0))
+         (long (shipit--wrap-text
+                (concat "Pour the milk " picture " into the cup, and then stir it"
+                        " slowly, so that the foam stays on top.")
+                40)))
+    (should (equal "[   ](https://example.com)" (substring-no-properties link)))
+    (should (equal logo (get-text-property 2 'display link)))
+    (should (> (length (split-string long "\n")) 1))
+    (should (text-property-any 0 (length long) 'display logo long))))
+
 (ert-deftest test-shipit--wrap-text-leaves-a-line-that-is-marked-to-stay ()
   "GIVEN a line longer than the wrap width that is marked as a line not
 to wrap, between two long lines that are not

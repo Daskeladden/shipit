@@ -1701,6 +1701,25 @@ box."
     (should (equal face (get-text-property 0 'face result)))
     (should (equal face (get-text-property 7 'face result)))))
 
+(ert-deftest test-shipit-a-code-block-background-ends-at-its-fence ()
+  "GIVEN a buffer with an indented code block of elisp, with an indented
+blank line in its code, AND a heading after it
+WHEN the code blocks of the buffer are drawn
+THEN the background of the block ends at the end of the line of its
+closing fence, though the colored code that takes the place of the
+code is shorter, AND the heading has no background."
+  (let ((shipit-code-block-background "#333333"))
+    (with-temp-buffer
+      (insert "     ```elisp\n     (setq cup 1)\n     \n     (setq tea 2)\n     ```\n"
+              "   Heading\n")
+      (shipit--apply-code-block-backgrounds-in-region (point-min) (point-max))
+      (let ((block (seq-find (lambda (ov) (overlay-get ov 'shipit-code-block))
+                             (overlays-in (point-min) (point-max))))
+            (heading (save-excursion (goto-char (point-min))
+                                     (search-forward "Heading")
+                                     (line-beginning-position))))
+        (should (equal heading (overlay-end block)))))))
+
 (ert-deftest test-shipit-table-code-gets-no-code-block-over-its-row ()
   "GIVEN a buffer with a line of a table row whose code, marked as code
 of a table, has the face of an indented code block

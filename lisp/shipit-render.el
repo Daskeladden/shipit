@@ -4060,7 +4060,10 @@ blends with the surrounding prose."
                 ;; may not match due to markdown-mode processing or comment body indentation
                 (if (re-search-forward shipit--code-fence-end-regexp end t)
                     (let* ((content-end (line-beginning-position))  ; End before closing ```
-                           (block-end (min (1+ (line-end-position)) end)))
+                           ;; A marker: the colored code that takes the
+                           ;; place of the code can be shorter, as an
+                           ;; indented blank line in it loses its indent.
+                           (block-end (copy-marker (min (1+ (line-end-position)) end))))
                       (shipit--debug-log "CODE-BLOCK-BG: Multi-line block content-start=%d content-end=%d language='%s'"
                                          content-start content-end language)
                       ;; Apply syntax highlighting to code content

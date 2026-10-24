@@ -42,6 +42,7 @@
 (declare-function shipit--convert-html-tables-to-markdown "shipit-render")
 (declare-function shipit--center-aligned-lines-in-region "shipit-render")
 (declare-function shipit--lay-out-table-rows "shipit-render")
+(declare-function shipit--join-paragraph-lines "shipit-render")
 (declare-function shipit--align-table-columns-in-region "shipit-render")
 (declare-function shipit--convert-html-lists-to-markdown "shipit-render")
 (declare-function shipit--generic-url-action-menu "shipit-render")
@@ -619,6 +620,17 @@ still picks org when the body has org markers like `#+TITLE:')."
       (shipit--detect-body-format text))
      (t (or by-filename 'markdown)))))
 
+(defun shipit-repo-buffer--render-readme (text format)
+  "Return TEXT, a README in FORMAT, rendered.
+The lines of each paragraph of a markdown README are joined, as a forge
+shows a file.  A comment keeps its lines, as a forge shows it so too."
+  (let ((rendered (if (fboundp 'shipit--render-body)
+                      (shipit--render-body text format)
+                    text)))
+    (if (and (eq format 'markdown) (fboundp 'shipit--join-paragraph-lines))
+        (shipit--join-paragraph-lines rendered)
+      rendered)))
+
 (defun shipit-repo-buffer--fill-readme (rendered)
   "Return RENDERED, the text of a README, filled to `shipit-readme-fill-column'.
 The cells of each table row that is marked in it are put side by side
@@ -657,9 +669,7 @@ with :filename and :content keys (the format returned by backend
             (if (and (eq format 'markdown)
                      (string-match-p "<details>" readme-text))
                 (shipit--insert-body-with-details readme-text 3)
-              (let* ((rendered (if (fboundp 'shipit--render-body)
-                                   (shipit--render-body readme-text format)
-                                 readme-text))
+              (let* ((rendered (shipit-repo-buffer--render-readme readme-text format))
                      ;; Hard-wrapping via `fill-region' was a ~25%
                      ;; slice of redisplay profiles.  The buffer has
                      ;; `truncate-lines' nil + `word-wrap' t (set in

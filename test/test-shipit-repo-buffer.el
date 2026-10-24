@@ -216,6 +216,25 @@ line, past the 4 columns of the first cell."
           (should (equal `(space :align-to ,(+ indent 5))
                          (get-text-property gap 'display))))))))
 
+(ert-deftest test-repo-buffer-readme-joins-the-lines-of-a-paragraph ()
+  "GIVEN a README whose rendered text has a paragraph of two lines
+WHEN inserting the readme section, filled to 80 columns or not filled
+THEN the paragraph shows as one line, as a forge shows a file."
+  (require 'shipit-repo-buffer)
+  (require 'shipit-render)
+  (dolist (fill-column '(80 nil))
+    (cl-letf (((symbol-function 'shipit--render-body)
+               (lambda (&rest _) "Pour the milk\ninto the cup.\n")))
+      (with-temp-buffer
+        (let ((inhibit-read-only t)
+              (shipit-render-markdown t)
+              (shipit-readme-fill-column fill-column))
+          (shipit-repo-buffer--insert-readme-section
+           (list :filename "README.md" :content "x"))
+          (should (string-match-p "Pour the milk into the cup\\."
+                                  (buffer-substring-no-properties
+                                   (point-min) (point-max)))))))))
+
 (ert-deftest test-repo-buffer-readme-org-uses-org-renderer ()
   "GIVEN a README plist with a .org filename
 WHEN inserting the readme section

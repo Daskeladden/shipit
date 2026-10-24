@@ -2270,8 +2270,9 @@ ATTRIBUTES is the text of a tag after its name."
   "Start a new line where a <br> tag stood.
 The white space around the tag goes, as HTML shows none there.  A line
 of white space before it would be a blank line to markdown, which ends
-a paragraph and a link in it.  The new line is marked, so that the
-next <br> keeps it and two of them leave an empty line."
+a paragraph and a link in it.  The new line is marked with
+`shipit-line-break'.  The next <br> keeps it, so two of them leave an
+empty line, and so does `shipit--join-paragraph-lines'."
   (delete-region (progn (shipit--html-skip-white-space-back) (point))
                  (progn (skip-chars-forward " \t\n") (point)))
   (insert (propertize "\n" 'shipit-line-break t)))
@@ -3003,6 +3004,121 @@ text property `shipit-no-wrap'."
       (shipit--lay-out-table table width))
     (buffer-string)))
 
+(defconst shipit--no-paragraph-regexp
+  (concat "\\`\\(?:#\\{1,6\\}[ \t]"          ; a heading
+          "\\||"                              ; a table row
+          "\\|```\\|~~~"                      ; a code fence
+          "\\|<[a-zA-Z/!]"                    ; an HTML tag
+          "\\|\\(?:=+\\|-+\\|\\*+\\|_+\\)[ \t]*\\'\\)") ; a rule, or the line under a heading
+  "Regexp matching the text of a line that is no line of a paragraph.
+The text is what comes after the indent and the marks of a quote.")
+
+(defconst shipit--list-item-regexp
+  "\\`[ \t]*\\(?:>[ \t]?\\)*[ \t]*\\(?:[-*+]\\|[0-9]+[.)]\\)[ \t]+"
+  "Regexp matching the start of a line that starts a list item.
+The item can be in a quote.")
+
+(defun shipit--paragraph-text (line)
+  "Return the text of LINE after its indent and its marks of a quote."
+  (replace-regexp-in-string "\\`[ \t]*\\(?:>[ \t]?\\)*[ \t]*" "" line t t))
+
+(defun shipit--blank-line-p (line)
+  "Whether LINE shows nothing: only white space, and no picture."
+  (not (seq-some (lambda (i)
+                   (or (not (memq (aref line i) '(?\s ?\t)))
+                       (get-text-property i 'display line)))
+                 (number-sequence 0 (1- (length line))))))
+
+(defun shipit--paragraph-line-p (line)
+  "Whether LINE can be a line of a paragraph.
+It shows something, and is no code, heading, table row, HTML tag or
+rule."
+  (let ((text (shipit--paragraph-text line)))
+    (not (or (shipit--blank-line-p line)
+             (string-match-p shipit--no-paragraph-regexp text)
+             (memq 'markdown-pre-face
+                   (ensure-list (get-text-property (- (length line) (length text))
+                                                   'face line)))))))
+
+(defun shipit--quote-depth (line)
+  "Return how many quotes LINE is in."
+  (string-match "\\`[ \t]*\\(?:>[ \t]?\\)*" line)
+  (cl-count ?> (match-string 0 line)))
+
+(defun shipit--hard-break-p (line)
+  "Whether LINE ends with a hard line break: two spaces or a backslash."
+  (string-match-p "\\(?:[^ ]  +\\|\\\\\\)\\'" (substring-no-properties line)))
+
+(defun shipit--paragraph-lines-p (line next)
+  "Whether LINE and the line NEXT after it are lines of one paragraph.
+NEXT starts no list item, and both are in as many quotes, in one table
+cell and in one alignment."
+  (and (shipit--paragraph-line-p line)
+       (shipit--paragraph-line-p next)
+       (not (shipit--hard-break-p line))
+       (not (string-match-p shipit--list-item-regexp next))
+       (= (shipit--quote-depth line) (shipit--quote-depth next))
+       (seq-every-p (lambda (property)
+                      (equal (get-text-property 0 property line)
+                             (get-text-property 0 property next)))
+                    shipit--layout-properties)))
+
+(defun shipit--joins-next-line-p ()
+  "Whether the line at point and the next line are lines of one paragraph.
+A line break that a <br> tag put stays."
+  (let ((newline (line-end-position)))
+    (and (< newline (point-max))
+         (not (get-text-property newline 'shipit-line-break))
+         (shipit--paragraph-lines-p
+          (buffer-substring (point) newline)
+          (buffer-substring (1+ newline) (save-excursion (forward-line 1)
+                                                         (line-end-position)))))))
+
+(defun shipit--skip-lead-forward ()
+  "Go past the indent and the marks of a quote after point.
+A space that shows a picture is no indent."
+  (while (or (eq (char-after) ?>)
+             (and (memq (char-after) '(?\s ?\t))
+                  (not (get-text-property (point) 'display))))
+    (forward-char)))
+
+(defun shipit--join-next-line ()
+  "Join the next line to the line at point, a space between them.
+The white space at the end of the line goes, and so do the indent and
+the marks of a quote of the next.  The space has the layout of the
+line."
+  (let ((space (shipit--copy-layout (buffer-substring (point) (1+ (point))) " ")))
+    (end-of-line)
+    (delete-region (progn (while (and (memq (char-before) '(?\s ?\t))
+                                      (not (get-text-property (1- (point)) 'display)))
+                            (backward-char))
+                          (point))
+                   (save-excursion (forward-line 1)
+                                   (shipit--skip-lead-forward)
+                                   (point)))
+    (insert space)
+    (beginning-of-line)))
+
+(defun shipit--join-paragraph-lines (text)
+  "Return TEXT with the lines of each of its paragraphs joined into one.
+A forge shows a file so: a line break in a paragraph is a space.  A
+hard line break stays: two spaces or a backslash at the end of a line,
+and a <br> tag.  So does each line of code, a heading, a list item, a
+table row, an HTML tag and a rule."
+  (with-temp-buffer
+    (insert text)
+    (goto-char (point-min))
+    (let ((in-code nil))
+      (while (not (eobp))
+        (cond
+         ((looking-at "[ \t]*\\(?:>[ \t]?\\)*[ \t]*\\(?:```\\|~~~\\)")
+          (setq in-code (not in-code))
+          (forward-line 1))
+         ((and (not in-code) (shipit--joins-next-line-p))
+          (shipit--join-next-line))
+         (t (forward-line 1)))))
+    (buffer-string)))
+
 (defun shipit--align-table-columns-in-region (start end)
   "Put each bar between two table cells from START to END at its column.
 The space before such a bar is marked with the column of the row where
@@ -3135,7 +3251,6 @@ that an entity such as &lt;b&gt; is no tag."
       (shipit--html-unwrap-layout-tables)
       (shipit--convert-html-tags))
     (shipit--decode-html-entities (point-min) (point-max))
-    (remove-text-properties (point-min) (point-max) '(shipit-line-break nil))
     (buffer-string)))
 
 (defun shipit--escape-underscores-in-table-cells (text)
@@ -3262,18 +3377,19 @@ Handles <ol> with numbered items and <ul>/<li> with bullet points."
   "Auto-increment ordered list numbers in TEXT.
 Markdown allows all items to be numbered `1.` and renderers auto-number.
 Emacs markdown-mode does not auto-number, so we pre-process the text.
-Handles nested lists by tracking indent levels independently."
+Handles nested lists by tracking indent levels independently.  Only
+the numbers change, so the rest of TEXT keeps its text properties."
   (if (or (not text) (string-empty-p text))
       (or text "")
-    (let ((lines (split-string text "\n"))
-          (result '())
-          ;; Stack of (indent-level . counter) for nested lists
-          (counters '()))
-      (dolist (line lines)
-        (if (string-match "\\`\\([ \t]*\\)\\([0-9]+\\)\\. " line)
-            (let* ((indent (match-string 1 line))
-                   (indent-len (length indent))
-                   (rest-of-line (substring line (match-end 0))))
+    (with-temp-buffer
+      (insert text)
+      (goto-char (point-min))
+      ;; Stack of (indent-level . counter) for nested lists
+      (let ((counters '()))
+        (while (not (eobp))
+          (cond
+           ((looking-at "\\([ \t]*\\)\\([0-9]+\\)\\. ")
+            (let ((indent-len (length (match-string 1))))
               ;; Pop counters for deeper or equal indent that no longer apply
               (while (and counters (> (caar counters) indent-len))
                 (setq counters (cdr counters)))
@@ -3283,12 +3399,12 @@ Handles nested lists by tracking indent levels independently."
                   (setcdr (car counters) (1+ (cdar counters)))
                 ;; New indent level — start at 1
                 (push (cons indent-len 1) counters))
-              (push (format "%s%d. %s" indent (cdar counters) rest-of-line) result))
-          ;; Non-list line — reset counters if blank line (list break)
-          (when (string-match-p "\\`[ \t]*\\'" line)
-            (setq counters nil))
-          (push line result)))
-      (mapconcat #'identity (nreverse result) "\n"))))
+              (replace-match (number-to-string (cdar counters)) t t nil 2)))
+           ;; Non-list line — reset counters if blank line (list break)
+           ((looking-at "[ \t]*$")
+            (setq counters nil)))
+          (forward-line 1)))
+      (buffer-string))))
 
 (defun shipit--rewrite-relative-markdown-links (text)
   "Rewrite relative URLs in markdown `[text](url)' links to absolute paths.

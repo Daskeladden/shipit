@@ -2863,6 +2863,70 @@ THEN the comment shows."
                               :base-indent 6 :repo "o/r" :pr-number 7 :include-header t))
     (should (string-match-p "It breaks when the file is empty" (buffer-string)))))
 
+;;; The lines of a paragraph
+
+(ert-deftest test-shipit-the-lines-of-a-paragraph-are-joined ()
+  "GIVEN a paragraph of two lines of text, a paragraph of three pictures
+on lines of their own, as the badges of a README are, a list item with
+a line that goes on under it, AND a quote of two lines
+WHEN the lines of the paragraphs are joined
+THEN each paragraph and each list item is one line, its lines parted
+by a space, as a forge shows a file, AND each picture stays."
+  (let* ((picture (propertize " " 'display '(image :type svg :file "badge.svg")))
+         (result (shipit--join-paragraph-lines
+                  (concat "Pour the milk\ninto the cup.\n\n"
+                          picture "\n" picture "\n" picture "\n\n"
+                          "- Stir\n  slowly\n\n"
+                          "> Hot\n> milk\n"))))
+    (should (equal (concat "Pour the milk into the cup.\n\n"
+                           "     \n\n"
+                           "- Stir slowly\n\n"
+                           "> Hot milk\n")
+                   (substring-no-properties result)))
+    (should (= 3 (cl-count-if (lambda (i) (get-text-property i 'display result))
+                              (number-sequence 0 (1- (length result))))))))
+
+(ert-deftest test-shipit-lines-that-are-no-paragraph-stay ()
+  "GIVEN two list items, a heading above a line of text, a table of two
+rows, a fenced code block, an indented code block, a line that ends
+with two spaces, a line that ends where a <br> tag stood, a quote line
+above a line of text, an HTML tag above a line of text, AND a line
+with the line of a heading under it
+WHEN the lines of the paragraphs are joined
+THEN each text is as it was."
+  (dolist (text (list "- one\n- two"
+                      "## Title\nText"
+                      "| a |\n| b |"
+                      "```sh\nmake tea\nmake coffee\n```"
+                      (propertize "    make tea\n    make coffee" 'face 'markdown-pre-face)
+                      "Hot  \nCold"
+                      (concat "Hot" (propertize "\n" 'shipit-line-break t) "Cold")
+                      "> Hot\nCold"
+                      "<div>\nCold"
+                      "Title\n====="))
+    (should (equal (substring-no-properties text)
+                   (substring-no-properties (shipit--join-paragraph-lines text))))))
+
+(ert-deftest test-shipit-a-line-break-tag-keeps-its-line-when-lines-are-joined ()
+  "GIVEN markdown with a <br> tag in a paragraph of two lines
+WHEN the markdown is made ready AND the lines of its paragraphs are
+joined
+THEN the line break of the tag stays, AND the line of the source after
+it joins the line before."
+  (should (equal "Hot\nCold Tea"
+                 (substring-no-properties
+                  (shipit--join-paragraph-lines
+                   (shipit--prepare-markdown "Hot<br>Cold\nTea"))))))
+
+(ert-deftest test-shipit-the-lines-of-a-table-cell-are-joined-in-the-cell ()
+  "GIVEN a table cell of two lines
+WHEN the lines of the paragraphs are joined
+THEN the cell is one line, AND all of it is still that cell."
+  (should (equal '((1 0 "Pour milk"))
+                 (test-shipit-render--table-cells
+                  (shipit--join-paragraph-lines
+                   (test-shipit-render--cell 1 0 "Pour\nmilk"))))))
+
 ;;; Preview popups
 
 (defmacro test-shipit-render--popup-in-test-frame (&rest body)

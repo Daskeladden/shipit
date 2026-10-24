@@ -2339,10 +2339,11 @@ At the start and at the end of the buffer no line is put."
 (defconst shipit--cell-close "</shipit-cell>"
   "The marker that ends a table cell in markdown that is made ready.")
 
-(defconst shipit--layout-marker-regexp "<\\(/\\)?shipit-\\(center\\|row\\|cell\\)>"
+(defconst shipit--layout-marker-regexp
+  "<\\(/\\)?shipit-\\(center\\|row\\|cell\\)\\(?: \\(top\\|bottom\\)\\)?>"
   "Regexp matching a marker of the layout of markdown that is made ready.
-Group 1 is the slash of a marker that ends a part, and 2 is the kind of
-the part.")
+Group 1 is the slash of a marker that ends a part, 2 is the kind of the
+part, and 3 where a table cell stands in its row, if not in the middle.")
 
 (defvar shipit--html-open-blocks nil
   "The block elements that are open, the last one first.
@@ -2546,22 +2547,29 @@ the element would stay.  CLOSING tells which tag it was."
 
 (defvar shipit--layout-open-parts nil
   "The parts of the layout that are open, the last one first.
-An element is (KIND . START).  Bound while layout markers are applied.")
+An element is (KIND START VALIGN), with VALIGN where a table cell
+stands in its row.  Bound while layout markers are applied.")
 
 (defvar shipit--layout-next-cell nil
   "The mark that the next table cell gets, (ROW . PLACE).
 Bound while layout markers are applied.")
 
-(defun shipit--layout-open-part (kind)
+(defun shipit--layout-open-part (kind &optional valign)
   "Take note that a part of the layout of KIND starts at point.
-A table row has no end of its own.  It starts the count of its cells."
+A table cell stands at VALIGN in its row, `top' or `bottom', or in the
+middle when it is nil.  A table row has no end of its own.  It starts
+the count of its cells."
   (if (equal kind "row")
       (setq shipit--layout-next-cell (cons (1+ (car shipit--layout-next-cell)) 0))
-    (push (cons kind (point)) shipit--layout-open-parts)))
+    (push (list kind (point) valign) shipit--layout-open-parts)))
 
-(defun shipit--layout-mark-cell (start end)
-  "Mark the text from START to END as the next cell of its table row."
+(defun shipit--layout-mark-cell (start end valign)
+  "Mark the text from START to END as the next cell of its table row.
+VALIGN is where the cell stands in its row, as
+`shipit--layout-open-part' takes it."
   (put-text-property start end 'shipit-cell shipit--layout-next-cell)
+  (when valign
+    (put-text-property start end 'shipit-valign valign))
   (setq shipit--layout-next-cell (cons (car shipit--layout-next-cell)
                                        (1+ (cdr shipit--layout-next-cell)))))
 
@@ -2571,12 +2579,12 @@ A part that was opened after it and not closed ends here too.  A part
 without text gets no mark."
   (when-let* ((entry (assoc kind shipit--layout-open-parts)))
     (setq shipit--layout-open-parts (cdr (memq entry shipit--layout-open-parts)))
-    (let ((start (cdr entry))
+    (let ((start (nth 1 entry))
           (end (save-excursion (skip-chars-backward " \t\n") (point))))
       (cond
        ((>= start end))
        ((equal kind "center") (put-text-property start end 'shipit-align 'center))
-       (t (shipit--layout-mark-cell start end))))))
+       (t (shipit--layout-mark-cell start end (nth 2 entry)))))))
 
 (defun shipit--apply-layout-markers (text)
   "Return TEXT without its markers of the layout.
@@ -2592,12 +2600,13 @@ from 1, and its place in that row, counted from 0."
           (shipit--layout-next-cell (cons 0 0)))
       (while (re-search-forward shipit--layout-marker-regexp nil t)
         (let ((closing (match-beginning 1))
-              (kind (match-string 2)))
+              (kind (match-string 2))
+              (valign (match-string 3)))
           (replace-match "" t t)
           (shipit--html-paragraph-break)
           (if closing
               (shipit--layout-close-part kind)
-            (shipit--layout-open-part kind)))))
+            (shipit--layout-open-part kind (and valign (intern valign)))))))
     (buffer-string)))
 
 (defun shipit--line-text-start (end)
@@ -2839,6 +2848,15 @@ WIDTHS has the width of each cell in columns."
     ;; a cell does not start there.  So no text of a cell is centered.
     (propertize line 'shipit-no-wrap t 'shipit-align nil)))
 
+(defun shipit--table-cell-aligned (lines height valign)
+  "Return LINES, the lines of a table cell, below the blank lines it needs.
+They put the cell at VALIGN in a row HEIGHT lines high: at the `top', at
+the `bottom', or else in the middle, as HTML has it.  In the middle it
+takes the upper line when the room above and below cannot be the same."
+  (let ((room (- height (length lines))))
+    (append (make-list (pcase valign ('top 0) ('bottom room) (_ (/ room 2))) "")
+            lines)))
+
 (defun shipit--table-row-text (columns widths)
   "Return the text of a table row whose cells have the lines COLUMNS.
 COLUMNS has one list of lines for each cell, and WIDTHS the width of
@@ -2857,10 +2875,15 @@ and so does a row whose cells get too narrow."
   (let* ((parts (mapcar #'shipit--table-cell-parts cells))
          (widths (shipit--table-column-widths parts width)))
     (when widths
-      (let ((columns (cl-mapcar #'shipit--table-cell-lines parts widths)))
+      (let* ((columns (cl-mapcar #'shipit--table-cell-lines parts widths))
+             (height (apply #'max (mapcar #'length columns)))
+             (aligned (cl-mapcar (lambda (cell lines)
+                                   (shipit--table-cell-aligned
+                                    lines height (get-text-property (car cell) 'shipit-valign)))
+                                 cells columns)))
         (goto-char (caar cells))
         (delete-region (point) (cdar (last cells)))
-        (insert (shipit--table-row-text columns widths))))))
+        (insert (shipit--table-row-text aligned widths))))))
 
 (defun shipit--lay-out-table-rows (text width)
   "Return TEXT with the cells of each of its table rows side by side.
@@ -2910,9 +2933,10 @@ A tag in a fenced code block or in a code span is text, and stays."
       (apply (car converter) name closing attributes (cdr converter)))))
 
 (defconst shipit--html-table-tag-regexp
-  "<\\(/\\)?\\(table\\|thead\\|tbody\\|tfoot\\|tr\\|td\\|th\\)\\(?:[ \t\n][^<>]*\\)?>"
+  "<\\(/\\)?\\(table\\|thead\\|tbody\\|tfoot\\|tr\\|td\\|th\\)\\([ \t\n][^<>]*\\)?>"
   "Regexp matching a tag of an HTML table: the table, a row or a cell.
-Group 1 is the slash of a closing tag, and 2 is the name of the tag.")
+Group 1 is the slash of a closing tag, 2 is the name of the tag, and 3
+its attributes.")
 
 (defun shipit--html-table-end ()
   "Return the end of the HTML table that point is in, or nil."
@@ -2920,24 +2944,53 @@ Group 1 is the slash of a closing tag, and 2 is the name of the tag.")
     (when (re-search-forward "</table[ \t\n]*>" nil t)
       (point))))
 
-(defun shipit--html-table-marker (name closing)
+(defun shipit--html-valign (attributes)
+  "Return where the tag with ATTRIBUTES puts its table cells in a row.
+That is `top', `middle' or `bottom', from its valign or else from the
+vertical-align of its style, or nil when it says nothing."
+  (save-match-data
+    (let* ((style (shipit--html-attribute attributes "style"))
+           (value (or (shipit--html-attribute attributes "valign")
+                      (and style
+                           (string-match "vertical-align[ \t]*:[ \t]*\\([a-z]+\\)" style)
+                           (match-string 1 style)))))
+      (car (member (and value (intern (downcase value))) '(top middle bottom))))))
+
+(defun shipit--html-cell-open-marker (valign)
+  "Return the marker that starts a table cell that stands at VALIGN.
+A cell in the middle, where HTML puts it when nothing is said, gets
+the plain marker."
+  (if (memq valign '(top bottom))
+      (format "<shipit-cell %s>" valign)
+    shipit--cell-open))
+
+(defun shipit--html-table-marker (name closing valign)
   "Return the layout marker that stands for the table tag NAME, or nil.
-CLOSING tells whether it is a closing tag."
+CLOSING tells whether it is a closing tag.  A cell stands at VALIGN in
+its row."
   (pcase name
     ("tr" (unless closing shipit--row-marker))
-    ((or "td" "th") (if closing shipit--cell-close shipit--cell-open))))
+    ((or "td" "th") (if closing
+                        shipit--cell-close
+                      (shipit--html-cell-open-marker valign)))))
 
 (defun shipit--html-unwrap-table (start end)
   "Put a paragraph break for each tag of the HTML table from START to END.
 A layout marker also stands where each row started, and where each
-cell started and ended."
+cell started and ended.  A cell stands where its tag says, or else
+where the tag of its row says."
   ;; The marker moves with the text that is put at it.  The break for
   ;; the last tag is put there, and the search must not end before point.
-  (let ((end (copy-marker end t)))
+  (let ((end (copy-marker end t))
+        (row-valign nil))
     (goto-char start)
     (while (re-search-forward shipit--html-table-tag-regexp end t)
-      (let ((marker (shipit--html-table-marker (downcase (match-string 2))
-                                               (match-beginning 1))))
+      (let* ((name (downcase (match-string 2)))
+             (closing (match-beginning 1))
+             (valign (shipit--html-valign (or (match-string 3) "")))
+             (marker (shipit--html-table-marker name closing (or valign row-valign))))
+        (when (and (equal name "tr") (not closing))
+          (setq row-valign valign))
         (replace-match "")
         (if marker
             (shipit--html-insert-paragraph marker)
@@ -3215,9 +3268,10 @@ text)."
              "" result)))
     result))
 
-(defconst shipit--layout-properties '(shipit-align shipit-cell)
+(defconst shipit--layout-properties '(shipit-align shipit-cell shipit-valign)
   "The text properties that tell where text stands on the page.
-They say whether it is centered, and which table cell it is in.")
+They say whether it is centered, which table cell it is in, and where
+that cell stands in its row.")
 
 (defun shipit--copy-layout (source text)
   "Return TEXT with the layout properties of the start of the text SOURCE."

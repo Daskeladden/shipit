@@ -1156,6 +1156,31 @@ in a table of text, so that the two can stand side by side."
                      (concat "<table>\n<tr>\n<td>\n\n" cell "\n\n</td>\n"
                              "<td>\n\ntext\n\n</td>\n</tr>\n</table>\n")))))))
 
+(ert-deftest test-shipit-html-table-cell-alignment-goes-in-its-marker ()
+  "GIVEN an HTML table of two rows with markdown: the first with valign
+middle and three cells, one with valign top, one with a style of
+vertical-align bottom, AND one with no alignment, AND the second with
+valign top and a cell with no alignment
+WHEN the HTML tags are converted
+THEN the marker of each cell names the alignment of the cell, or else
+that of its row, AND a cell in the middle, where HTML puts it when
+nothing is said, gets the plain marker."
+  (should (equal (concat "Menu\n\n"
+                         "<shipit-row>\n\n"
+                         "<shipit-cell top>\n\na\n\n</shipit-cell>\n\n"
+                         "<shipit-cell bottom>\n\nb\n\n</shipit-cell>\n\n"
+                         "<shipit-cell>\n\nc\n\n</shipit-cell>\n\n"
+                         "<shipit-row>\n\n"
+                         "<shipit-cell top>\n\nd\n\n</shipit-cell>\n\n"
+                         "After\n")
+                 (shipit--convert-inline-html
+                  (concat "Menu\n\n<table>\n<tr valign=\"middle\">\n"
+                          "<td valign=\"top\">\n\na\n\n</td>\n"
+                          "<td style=\"padding: 4px; vertical-align: bottom\">\n\nb\n\n</td>\n"
+                          "<td>\n\nc\n\n</td>\n</tr>\n"
+                          "<tr valign=\"top\">\n<td>\n\nd\n\n</td>\n</tr>\n</table>\n\n"
+                          "After\n")))))
+
 (ert-deftest test-shipit-html-table-without-markdown-stays ()
   "GIVEN an HTML table with no blank line in it, which holds rows of
 data, AND an HTML table with blank lines in a fenced code block
@@ -1343,6 +1368,20 @@ the text of each cell is marked with its row and its place in the row."
     (should (equal '((1 0 "a") (1 1 "b\nc") (2 0 "d"))
                    (test-shipit-render--table-cells text)))))
 
+(ert-deftest test-shipit-a-cell-marker-with-an-alignment-marks-the-cell-with-it ()
+  "GIVEN markdown with a table row of a cell whose marker names top, AND
+a cell whose marker names no alignment
+WHEN the markers are applied
+THEN both are marked as cells of the row, AND the text of the first is
+marked as standing at the top, AND the second has no such mark."
+  (let ((text (shipit--apply-layout-markers
+               (concat "<shipit-row>\n\n"
+                       "<shipit-cell top>\n\na\n\n</shipit-cell>\n\n"
+                       "<shipit-cell>\n\nb\n\n</shipit-cell>"))))
+    (should (equal '((1 0 "a") (1 1 "b")) (test-shipit-render--table-cells text)))
+    (should (eq 'top (get-text-property 0 'shipit-valign text)))
+    (should-not (get-text-property (string-search "b" text) 'shipit-valign text))))
+
 (ert-deftest test-shipit-html-table-cells-are-marked-in-the-markdown-to-fontify ()
   "GIVEN markdown with an HTML table of two cells that hold markdown
 WHEN the markdown is made ready for markdown-mode
@@ -1387,8 +1426,8 @@ around the row are as they were."
 line of 59 characters
 WHEN the table rows are laid out in 43 columns, 20 for each cell
 THEN the text of the first cell takes more than one line, AND no line
-of it is wider than 20, AND the text of the second cell stands on the
-first line of the row."
+of it is wider than 20, AND the text of the second cell stands beside
+it."
   (let* ((text (concat (test-shipit-render--cell
                         1 0 "one two three four five six seven eight nine ten eleven one")
                        "\n\n"
@@ -1397,9 +1436,29 @@ first line of the row."
                         (test-shipit-render--row-lines
                          (shipit--lay-out-table-rows text 43)))))
     (should (> (length lines) 1))
-    (should (string-suffix-p " │ right" (car lines)))
+    (should (seq-some (lambda (line) (string-suffix-p " │ right" line)) lines))
     (dolist (line lines)
       (should (<= (string-search " │ " line) 20)))))
+
+(ert-deftest test-shipit-a-short-table-cell-stands-at-its-alignment ()
+  "GIVEN table rows of a cell of four lines AND a cell of one line, which
+is marked as standing at the top, at the bottom, or not marked
+WHEN the table rows are laid out in 43 columns
+THEN the short cell stands on the first line at the top, on the last at
+the bottom, AND on the second when it is not marked: in the middle, as
+HTML has it, and on the upper line when the room above and below
+cannot be the same."
+  (dolist (case '((top . 0) (bottom . 3) (nil . 1)))
+    (let* ((text (concat (test-shipit-render--cell 1 0 "a\nb\nc\nd") "\n\n"
+                         (propertize (test-shipit-render--cell 1 1 "tea")
+                                     'shipit-valign (car case))))
+           (lines (mapcar #'substring-no-properties
+                          (test-shipit-render--row-lines
+                           (shipit--lay-out-table-rows text 43)))))
+      (should (= 4 (length lines)))
+      (should (equal (cdr case)
+                     (seq-position lines "tea" (lambda (line tea)
+                                                 (string-suffix-p tea line))))))))
 
 (ert-deftest test-shipit-a-heading-in-a-table-cell-loses-its-hidden-hashes ()
   "GIVEN a table row of two marked cells that each start with a heading
@@ -1509,7 +1568,8 @@ WHEN the table rows are laid out in 43 columns, 20 for each cell, so
 160 pixels where a character is 8
 THEN the picture is made 160 pixels wide and so 72 high, AND it stands
 in its column as 4 strips, one on each line of the row, each 18 pixels
-high, so that the text can stand beside it, AND each strip is centered
+high, so that the text can stand beside it, in the middle of the row,
+AND each strip is centered
 on its line as the text is, so that it makes its line no higher and no
 gap shows between two strips."
   (test-shipit-render--with-picture-display
@@ -1519,7 +1579,7 @@ gap shows between two strips."
                          (test-shipit-render--cell 1 1 (propertize " " 'display cup))))
            (lines (test-shipit-render--row-lines (shipit--lay-out-table-rows text 43)))
            (fitted (append cup '(:max-width 160 :ascent center))))
-      (should (equal '("Brew it │  " " │  " " │  " " │  ")
+      (should (equal '(" │  " "Brew it │  " " │  " " │  ")
                      (mapcar #'substring-no-properties lines)))
       (should (equal (mapcar (lambda (top) `((slice 0 ,top 160 18) ,fitted))
                              '(0 18 36 54))
@@ -1531,17 +1591,20 @@ gap shows between two strips."
   "GIVEN an <img> tag, a markdown picture, AND a linked markdown picture,
 each marked as the second cell of a table row
 WHEN the pictures of the text are processed
-THEN what stands in place of each is marked as that cell, so that the
-row still has two cells."
+THEN what stands in place of each is marked as that cell, AND as
+standing at the top of it, so that the row still has two cells, and
+the cell its alignment."
   (let ((shipit-render-images t))
     (dolist (input '("<img src=\"https://example.com/cup.png\" alt=\"cup\">"
                      "![cup](https://example.com/cup.png)"
                      "[![cup](https://example.com/cup.png)](https://example.com)"))
       (let ((result (shipit-test-http-answering '(("\\`https://example\\.com/" 404 ""))
                       (shipit--process-inline-images
-                       (test-shipit-render--cell 1 1 input)))))
+                       (propertize (test-shipit-render--cell 1 1 input)
+                                   'shipit-valign 'top)))))
         (should (string-match-p "\\[Image: cup" result))
-        (should (equal '(1 . 1) (get-text-property 0 'shipit-cell result)))))))
+        (should (equal '(1 . 1) (get-text-property 0 'shipit-cell result)))
+        (should (eq 'top (get-text-property 0 'shipit-valign result)))))))
 
 (ert-deftest test-shipit-the-strips-of-a-moving-picture-move-once ()
   "GIVEN a buffer with three strips of one moving picture

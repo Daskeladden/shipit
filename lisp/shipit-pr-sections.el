@@ -3499,6 +3499,12 @@ Used for targeted refresh - preserves section structure."
     ;; Trailing newline to preserve section boundary
     (insert "\n")))
 
+(defvar shipit-file-diff-refreshed-hook nil
+  "Hook run in a pull request buffer once the diff of one file is drawn again.
+That redraw, as after a comment on the file is posted, removes what
+other packages put inside the file section, and their functions here
+put it back.")
+
 (defun shipit--refresh-file-inline-comment-section (file-path pr-number repo)
   "Refresh inline comments for a single FILE-PATH without full PR buffer refresh.
 Follows the labels section targeted refresh pattern with ETag caching.
@@ -3605,6 +3611,8 @@ Per magit-section best practices, we must:
             (setq pos (1+ pos))))))
     (unless section-found
       (message "File section not visible"))
+    (when refresh-successful
+      (run-hooks 'shipit-file-diff-refreshed-hook))
     refresh-successful))
 
 (defun shipit--insert-files-section (repo pr pr-number)

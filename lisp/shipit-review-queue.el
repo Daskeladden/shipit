@@ -430,15 +430,23 @@ The section objects let us delete the section region cleanly on
 remove / discard / re-render -- text-only tracking would have to
 re-walk the buffer for each removal.")
 
+(defun shipit-review-queue--section-text-p (section)
+  "Whether the text of the draft SECTION is still in the buffer.
+A redraw of Files Changed, or of one file in it, removes the drafts in
+it, and the markers of SECTION then point into other text."
+  (let ((start (oref section start)))
+    (and start (eq (get-text-property start 'magit-section) section))))
+
 (defun shipit-review-queue--clear-sections ()
   "Delete every pending-comment section inserted by the queue.
 Removes the buffer text covered by each section and detaches the
 section from its parent\\='s `children' list so the magit tree
-stays consistent."
+stays consistent.  A section whose text a redraw already removed
+deletes nothing."
   (let ((inhibit-read-only t))
     (dolist (cell shipit-review-queue--sections)
       (let ((section (cdr cell)))
-        (when (and section (slot-boundp section 'start))
+        (when (and section (shipit-review-queue--section-text-p section))
           (let* ((start (let ((m (oref section start)))
                           (if (markerp m) (marker-position m) m)))
                  (end (let ((m (oref section end)))
@@ -1233,6 +1241,17 @@ sees the section disappear)."
     (remove-hook 'shipit-buffer-ready-hook sym))
   (add-hook 'shipit-buffer-ready-hook
             #'shipit-review-queue--maybe-rerender))
+
+(defun shipit-review-queue--repaint-files ()
+  "Draw the drafts and the file badges again after a redraw.
+A redraw of Files Changed, or of one file in it, removes the drafts
+and the badges in it.  For `shipit-files-section-refreshed-hook' and
+`shipit-file-diff-refreshed-hook'."
+  (shipit-review-queue--render)
+  (shipit-review-queue--render-badges))
+
+(add-hook 'shipit-files-section-refreshed-hook #'shipit-review-queue--repaint-files)
+(add-hook 'shipit-file-diff-refreshed-hook #'shipit-review-queue--repaint-files)
 
 (with-eval-after-load 'shipit-buffer
   (when (boundp 'shipit-mode-map)

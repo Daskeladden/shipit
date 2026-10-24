@@ -48,8 +48,6 @@
 (declare-function shipit--insert-files-content "shipit-pr-sections")
 (declare-function shipit-preview--refresh-files-section-only "shipit-preview")
 (declare-function shipit-commit-comments-refresh-files-section "shipit-commit-comments-buffer")
-(declare-function shipit-review-queue--render "shipit-review-queue")
-(declare-function shipit-review-queue--render-badges "shipit-review-queue")
 
 ;; Forward declarations — variables
 (defvar shipit-buffer-repo)
@@ -545,18 +543,6 @@ Works from any buffer - refreshes all visible shipit-mode buffers with files sec
                                               (shipit--insert-files-content repo pr-data pr-number))
                                             ;; Update section end marker
                                             (oset section end (copy-marker (point)))
-                                            ;; The wipe-and-reinsert dropped any
-                                            ;; queue-rendered inline pending sections
-                                            ;; and file-heading draft badges, since
-                                            ;; they lived inside the file children we
-                                            ;; just regenerated.  Repaint them so the
-                                            ;; user keeps seeing their drafts after a
-                                            ;; filter toggle.
-                                            (when (fboundp 'shipit-review-queue--render)
-                                              (setq-local shipit-review-queue--sections nil)
-                                              (shipit-review-queue--render))
-                                            (when (fboundp 'shipit-review-queue--render-badges)
-                                              (shipit-review-queue--render-badges))
                                             (run-hooks 'shipit-files-section-refreshed-hook)
                                             (setq refreshed-count (1+ refreshed-count))))
                                       (error

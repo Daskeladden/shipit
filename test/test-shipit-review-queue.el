@@ -118,6 +118,40 @@ too, as the hint below the draft says."
     (search-forward "Read the header only once")
     (should (equal 1 (plist-get (shipit-review-queue-at-point) :id)))))
 
+(defun test-review-queue--draft-count ()
+  "The number of times the text of the draft shows in this buffer."
+  (how-many "Read the header only once" (point-min) (point-max)))
+
+(ert-deftest test-review-queue-a-draft-shows-again-after-its-file-is-redrawn ()
+  "GIVEN a draft comment shown under its line
+WHEN the diff of its file is drawn again, as after a comment on the
+file is posted
+THEN the draft shows under its line again, once."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (shipit--refresh-file-inline-comment-section "src/parser.el" 1 "o/r")
+    (should (= 1 (test-review-queue--draft-count)))
+    (should (string-match-p "(read-header)\n.*\n?.*Read the header only once"
+                            (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-review-queue-a-draft-lost-in-a-redraw-removes-no-diff ()
+  "GIVEN a draft comment whose text a redraw of its file removed, with
+nothing that draws the draft again
+WHEN the queue is drawn again
+THEN the diff of the file stays whole and the draft shows once, because
+the queue removes no text that is no longer the draft."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (let ((shipit-file-diff-refreshed-hook nil))
+      (shipit--refresh-file-inline-comment-section "src/parser.el" 1 "o/r"))
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (should (string-match-p "(read-body))" (buffer-substring-no-properties
+                                            (point-min) (point-max))))
+    (should (= 1 (test-review-queue--draft-count)))))
+
 (ert-deftest test-review-queue-a-long-draft-wraps-in-pending-review ()
   "GIVEN a draft comment longer than a line
 WHEN the Pending Review section is drawn

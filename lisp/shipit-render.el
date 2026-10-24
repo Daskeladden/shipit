@@ -2892,35 +2892,51 @@ no longer trigger a pandoc subprocess."
          text))
     text))
 
+(defconst shipit--underscore-keep-regexps
+  '("`[^`\n]+`"
+    "```[^\n]*\n\\(?:.\\|\n\\)*?```"
+    "https?://[^[:space:]<>]+")
+  "Regexps of the text whose underscores get no backslash.
+These are inline code, code blocks and web addresses.  markdown-mode
+hides the backslash before an underscore in plain text, but it shows
+it in code and in an address, and in an address it also changes the
+page that a click opens.")
+
+(defun shipit--regions-matching (regexps)
+  "Return (START . END) of each match of REGEXPS in this buffer."
+  (let ((regions nil))
+    (dolist (regexp regexps regions)
+      (goto-char (point-min))
+      (while (re-search-forward regexp nil t)
+        (push (cons (match-beginning 0) (match-end 0)) regions)))))
+
+(defun shipit--mid-word-underscores (keep)
+  "Return the position of each underscore in the middle of a word.
+Leave out an underscore inside one of the regions KEEP, a list of
+\(START . END).  The last position comes first."
+  (let ((found nil))
+    (goto-char (point-min))
+    (while (re-search-forward "\\w\\(_\\)\\w" nil t)
+      (let ((pos (match-beginning 1)))
+        (unless (cl-some (lambda (region)
+                           (and (>= pos (car region)) (< pos (cdr region))))
+                         keep)
+          (push pos found))))
+    found))
+
 (defun shipit--escape-mid-word-underscores (text)
   "Escape underscores in the middle of words to prevent italic rendering.
 Leaves underscores at word boundaries for emphasis (e.g., _italic_).
-Does NOT escape underscores inside backtick-delimited code (e.g., `foo_bar`)."
+Leaves the underscores in the text of `shipit--underscore-keep-regexps'."
   (with-temp-buffer
     (insert text)
-    (goto-char (point-min))
-    ;; Find all backtick-delimited regions and mark them
-    (let ((protected-regions '()))
-      ;; Find inline code spans (single backticks)
-      (goto-char (point-min))
-      (while (re-search-forward "`\\([^`\n]+\\)`" nil t)
-        (push (cons (match-beginning 0) (match-end 0)) protected-regions))
-      ;; Find code blocks (triple backticks)
-      (goto-char (point-min))
-      (while (re-search-forward "```[^\n]*\n\\(\\(?:.\\|\n\\)*?\\)```" nil t)
-        (push (cons (match-beginning 0) (match-end 0)) protected-regions))
-      ;; Now escape underscores that are NOT in protected regions
-      (goto-char (point-min))
-      (while (re-search-forward "\\(\\w\\)_\\(\\w\\)" nil t)
-        (let ((underscore-pos (1- (point))))
-          ;; Check if this underscore is in a protected region
-          (unless (cl-some (lambda (region)
-                             (and (>= underscore-pos (car region))
-                                  (<= underscore-pos (cdr region))))
-                           protected-regions)
-            ;; Not protected - escape it
-            (replace-match "\\1\\\\_\\2" t nil))))
-      (buffer-string))))
+    ;; From the last underscore to the first, so that a backslash that
+    ;; is put in moves no position that is still to come.
+    (dolist (pos (shipit--mid-word-underscores
+                  (shipit--regions-matching shipit--underscore-keep-regexps)))
+      (goto-char pos)
+      (insert "\\"))
+    (buffer-string)))
 
 (defun shipit--convert-html-lists-to-markdown (text)
   "Convert HTML list elements to markdown format in TEXT.

@@ -1881,6 +1881,45 @@ THEN backend :edit-comment is called with is-inline=t."
         (expected "Use `foo_bar` and `baz_qux` but not plain\\_text"))
     (should (string= (shipit--escape-mid-word-underscores input) expected))))
 
+(ert-deftest test-shipit-a-web-address-keeps-its-underscores ()
+  "GIVEN a comment with a web address that has underscores in the middle
+of words: in angle brackets, bare, AND as the target of a link
+WHEN the markdown is made ready for markdown-mode
+THEN each address is as written, without a backslash, AND a word with
+an underscore after the address still gets its backslash."
+  (dolist (link '("<https://example.com/order?milk_type=oat&sugar_count=2>"
+                  "https://example.com/order?milk_type=oat&sugar_count=2"
+                  "[order](https://example.com/order?milk_type=oat&sugar_count=2)"))
+    (let ((text (shipit--prepare-markdown (concat "Coffee: " link " for table_four\n"))))
+      (should (string-search "https://example.com/order?milk_type=oat&sugar_count=2" text))
+      (should (string-search "table\\_four" text)))))
+
+(ert-deftest test-shipit-an-address-keeps-its-underscores-after-other-words ()
+  "GIVEN a comment with four words that have an underscore in the middle,
+AND after them an address whose last word has one
+WHEN the markdown is made ready for markdown-mode
+THEN the four words get a backslash before the underscore, AND the
+address stays as written, though each backslash before it moves it."
+  (let ((text (shipit--prepare-markdown
+               "Set cup_size, milk_type, sugar_count and lid_color at https://example.com/menu#hot_tea\n")))
+    (should (string-search "cup\\_size, milk\\_type, sugar\\_count and lid\\_color" text))
+    (should (string-search "https://example.com/menu#hot_tea" text))))
+
+(ert-deftest test-shipit-a-web-address-shows-no-italics ()
+  "GIVEN a comment with a bare web address that has two underscores
+WHEN the comment is rendered
+THEN the address shows as written, AND no part of it is in italics,
+though it has no backslash before its underscores.
+Runs where the real markdown-mode is installed."
+  (skip-unless (and (require 'markdown-mode nil t) (boundp 'markdown-mode-version)))
+  (let* ((out (shipit--render-markdown-uncached
+               "Coffee.\n\nOrder at https://example.com/order_form_two now\n"))
+         (start (string-search "https://" out)))
+    (should (string-search "https://example.com/order_form_two" out))
+    (should-not (seq-some (lambda (i) (memq 'markdown-italic-face
+                                            (ensure-list (get-text-property i 'face out))))
+                          (number-sequence start (+ start 33))))))
+
 (defmacro test-shipit--without-images (&rest body)
   "Run BODY with every image on example.com answering 404.
 The label shows whether or not the download worked, and a failed one

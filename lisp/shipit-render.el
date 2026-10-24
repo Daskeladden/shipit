@@ -5138,6 +5138,14 @@ Tries system browsers (xdg-open, open, start) then falls back to eww."
     ("draft" "🚧")
     (_ "⚪")))
 
+(define-derived-mode shipit-preview-popup-mode special-mode "Shipit-Popup"
+  "Major mode of the preview popup of a pull request or an issue.
+It is made from `special-mode', so that a package of modal keys, such
+as meow, treats the popup as text to read and leaves its keys to it.
+Each popup sets its own keys after this mode."
+  (setq mode-line-format nil
+        cursor-type nil))
+
 ;;; Child frame for PR preview
 (defun shipit--create-pr-preview-frame (pr-number pr-data &optional anchor no-focus)
   "Create a child frame displaying PR information next to the cursor.
@@ -5222,9 +5230,6 @@ that the mouse opens.  Return the frame."
 
     ;; Set up the buffer with styled PR info
     (with-current-buffer buffer
-      ;; Hide modeline for cleaner popup appearance
-      (setq mode-line-format nil)
-
       ;; Add top padding
       (insert "\n")
 
@@ -5456,6 +5461,8 @@ that the mouse opens.  Return the frame."
       ;; Move to beginning of buffer to ensure it displays from the top
       (goto-char (point-min))
 
+      ;; The mode resets the keymap of the buffer, so it comes first.
+      (shipit-preview-popup-mode)
       ;; Set up keybindings with cleanup
       (let ((map (make-sparse-keymap)))
         (define-key map (kbd "RET")
@@ -5494,11 +5501,7 @@ that the mouse opens.  Return the frame."
             (delete-frame frame)
             (kill-buffer buffer)
             (select-window original-window)))
-        (use-local-map map))
-
-      ;; Set buffer properties
-      (setq buffer-read-only t)
-      (setq cursor-type nil))
+        (use-local-map map)))
 
     ;; Show buffer in the frame and give it focus
     (set-frame-parameter frame 'default-minibuffer-frame anchor-frame)
@@ -5592,7 +5595,6 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
                    (horizontal-scroll-bars . nil)))))
 
     (with-current-buffer buffer
-      (setq mode-line-format nil)
       (insert "\n")
 
       ;; Issue header with state
@@ -5682,6 +5684,8 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
 
       (goto-char (point-min))
 
+      ;; The mode resets the keymap of the buffer, so it comes first.
+      (shipit-preview-popup-mode)
       ;; Keybindings
       (let* ((map (make-sparse-keymap))
              (open-issue (lambda ()
@@ -5706,10 +5710,7 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
             (delete-frame frame)
             (kill-buffer buffer)
             (select-window original-window)))
-        (use-local-map map))
-
-      (setq buffer-read-only t)
-      (setq cursor-type nil))
+        (use-local-map map)))
 
     (set-window-buffer (frame-selected-window frame) buffer)
     (select-frame-set-input-focus frame)

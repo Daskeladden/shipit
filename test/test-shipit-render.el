@@ -2552,5 +2552,42 @@ THEN the comment shows."
                               :base-indent 6 :repo "o/r" :pr-number 7 :include-header t))
     (should (string-match-p "It breaks when the file is empty" (buffer-string)))))
 
+;;; Preview popups
+
+(defmacro test-shipit-render--popup-in-test-frame (&rest body)
+  "Run BODY where a preview popup is shown in the frame of the test.
+Batch Emacs makes no frame, and has no place on the screen for point
+or for the edges of its frame."
+  (declare (indent 0))
+  `(let ((shipit--current-pr-preview-data nil))
+     (cl-letf (((symbol-function 'make-frame) (lambda (&rest _) (selected-frame)))
+               ((symbol-function 'frame-edges) (lambda (&rest _) '(0 0 800 600)))
+               ((symbol-function 'posn-at-point)
+                (lambda (&rest _) (list (selected-window) 1 '(0 . 0) 0))))
+       ,@body)))
+
+(defun test-shipit-render--popup-buffer (frame)
+  "Return the buffer of the preview popup FRAME."
+  (window-buffer (frame-selected-window frame)))
+
+(ert-deftest test-shipit-render-a-preview-popup-is-a-buffer-to-read ()
+  "GIVEN the preview popup of a pull request, AND that of an issue
+WHEN each is shown
+THEN its buffer is in a mode made from `special-mode', so that a package
+of modal keys such as meow leaves the keys of the popup to it, AND `q'
+and `b' are the keys of the popup."
+  (let ((data '((title . "Order a coffee") (state . "open") (body . "Oat milk"))))
+    (dolist (show (list (lambda () (shipit--create-pr-preview-frame 1 data))
+                        (lambda () (shipit--create-issue-preview-frame 2 data))))
+      (let ((buffer (test-shipit-render--popup-in-test-frame
+                      (test-shipit-render--popup-buffer (funcall show)))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should (derived-mode-p 'special-mode))
+              (should (local-key-binding "q"))
+              (should (local-key-binding "b"))
+              (should-not mode-line-format))
+          (kill-buffer buffer))))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

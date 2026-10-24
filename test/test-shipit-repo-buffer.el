@@ -194,8 +194,8 @@ THEN the buffer contains the rendered README content."
 of two marked cells
 WHEN inserting the readme section with a fill column of 80
 THEN one line of the buffer has the text of both cells with a bar
-between them, AND the bar starts at column 39 after the indent of the
-line."
+between them, AND the bar starts at column 5 after the indent of the
+line, past the 4 columns of the first cell."
   (require 'shipit-repo-buffer)
   (require 'shipit-render)
   (cl-letf (((symbol-function 'shipit--render-body)
@@ -213,7 +213,7 @@ line."
         (should (re-search-forward "^\\( +\\)left │ right$" nil t))
         (let ((indent (length (match-string 1)))
               (gap (text-property-not-all (point-min) (point-max) 'shipit-column nil)))
-          (should (equal `(space :align-to ,(+ indent 39))
+          (should (equal `(space :align-to ,(+ indent 5))
                          (get-text-property gap 'display))))))))
 
 (ert-deftest test-repo-buffer-readme-org-uses-org-renderer ()

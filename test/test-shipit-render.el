@@ -949,10 +949,27 @@ heading."
 one in a <p> element
 WHEN the HTML tags are converted
 THEN the text after each starts a new line."
-  (should (equal "one\ntwo\nthree"
-                 (shipit--convert-inline-html "one<br />  two<BR>three")))
+  (should (equal "one\ntwo\nthree\nfour"
+                 (shipit--convert-inline-html "one<br />  two<BR>three<br/>four")))
   (should (equal "one\ntwo"
                  (shipit--convert-inline-html "<p>one<br>\n  two</p>"))))
+
+(ert-deftest test-shipit-html-line-break-takes-the-white-space-around-it ()
+  "GIVEN a link around a picture, a <br/> on an indented line of its
+own, AND a name, as a cell of a README table has
+WHEN the HTML tags are converted
+THEN the name stands on the line after the picture with no line of
+white space between them, so markdown keeps both in one link, AND two
+<br> tags in a row still leave an empty line."
+  (should (equal "[<img src=\"cup.png\" />\n**Cup**](https://example.com)"
+                 (shipit--convert-inline-html
+                  (concat "<a href=\"https://example.com\">\n"
+                          "  <img src=\"cup.png\" />\n"
+                          "  <br/>\n"
+                          "  <b>Cup</b>\n"
+                          "</a>"))))
+  (should (equal "Hot\n\nCold" (shipit--convert-inline-html "Hot<br><br>Cold")))
+  (should (equal "Hot\n\nCold" (shipit--convert-inline-html "Hot <br>\n <br> Cold"))))
 
 (ert-deftest test-shipit-html-block-with-markdown-keeps-its-lines ()
   "GIVEN a <div> element with blank lines in it, which holds markdown
@@ -1181,13 +1198,31 @@ nothing is said, gets the plain marker."
                           "<tr valign=\"top\">\n<td>\n\nd\n\n</td>\n</tr>\n</table>\n\n"
                           "After\n")))))
 
-(ert-deftest test-shipit-html-table-without-markdown-stays ()
-  "GIVEN an HTML table with no blank line in it, which holds rows of
-data, AND an HTML table with blank lines in a fenced code block
+(ert-deftest test-shipit-html-table-of-plain-rows-has-its-cells-between-markers ()
+  "GIVEN an HTML table with no blank line in it, which holds a row of
+heads and a row of data
 WHEN the HTML tags are converted
-THEN each table is the same."
-  (dolist (text '("<table>\n<tr><th>Name</th></tr>\n<tr><td>one</td></tr>\n</table>\n"
-                  "```html\n<table>\n\n<tr><td>x</td></tr>\n\n</table>\n```\n"))
+THEN no tag of the table is left, AND each row and each cell stands
+between markers, as in a table with markdown in its cells."
+  (should (equal (concat "Menu\n\n"
+                         "<shipit-row>\n\n"
+                         "<shipit-cell>\n\nDrink\n\n</shipit-cell>\n\n"
+                         "<shipit-cell>\n\nSize\n\n</shipit-cell>\n\n"
+                         "<shipit-row>\n\n"
+                         "<shipit-cell>\n\nLatte\n\n</shipit-cell>\n\n"
+                         "<shipit-cell>\n\nLarge\n\n</shipit-cell>\n\n"
+                         "After\n")
+                 (shipit--convert-inline-html
+                  (concat "Menu\n\n<table>\n"
+                          "<tr><th>Drink</th><th>Size</th></tr>\n"
+                          "<tr><td>Latte</td><td>Large</td></tr>\n"
+                          "</table>\n\nAfter\n")))))
+
+(ert-deftest test-shipit-html-table-in-code-stays ()
+  "GIVEN an HTML table in a fenced code block
+WHEN the HTML tags are converted
+THEN the table is the same."
+  (let ((text "```html\n<table>\n\n<tr><td>x</td></tr>\n\n</table>\n```\n"))
     (should (equal text (shipit--convert-inline-html text)))))
 
 ;;; Centered text
@@ -1398,14 +1433,38 @@ marked as a cell of the same row."
     (should (equal '((1 0 "## Before\n\n> long") (1 1 "## After\n\n> short"))
                    (test-shipit-render--table-cells text)))))
 
+(ert-deftest test-shipit-the-columns-of-a-table-are-as-wide-as-their-text ()
+  "GIVEN a table of two rows of two marked cells, with only white space
+between the rows: prev and slides back, AND slideTo and slides to the
+index
+WHEN the table rows are laid out in 43 columns
+THEN the first column is 7 wide in both rows, as its widest text is,
+so the bar of each row is marked to start at column 8, AND a rule
+parts the two rows, crossing the bar where it stands, in place of the
+blank line between them."
+  (let* ((text (concat (test-shipit-render--cell 1 0 "prev") "\n\n"
+                       (test-shipit-render--cell 1 1 "slides back") "\n\n"
+                       (test-shipit-render--cell 2 0 "slideTo") "\n\n"
+                       (test-shipit-render--cell 2 1 "slides to the index")))
+         (result (shipit--lay-out-table-rows text 43)))
+    (should (equal (concat "prev │ slides back\n"
+                           (make-string 8 ?─) "┼" (make-string 20 ?─) "\n"
+                           "slideTo │ slides to the index")
+                   (substring-no-properties result)))
+    (should (equal 8 (get-text-property (string-search " │ slides back" result)
+                                        'shipit-column result)))
+    (should (equal 8 (get-text-property (string-search " │ slides to" result)
+                                        'shipit-column result)))
+    (should (get-text-property (string-search "┼" result) 'shipit-no-wrap result))))
+
 (ert-deftest test-shipit-the-cells-of-a-table-row-stand-side-by-side ()
   "GIVEN a text with a table row of two marked cells between two
 paragraphs: the first cell has one line AND the second has two
-WHEN the table rows are laid out in 43 columns, 20 for each cell
+WHEN the table rows are laid out in 43 columns
 THEN the row has two lines, each with the line of the first cell, a
 bar, and the line of the second, AND the place where the bar must
-start, column 21, is marked on the space before it, AND the paragraphs
-around the row are as they were."
+start, column 4 after the first cell of 3, is marked on the space
+before it, AND the paragraphs around the row are as they were."
   (let* ((text (concat "above\n\n"
                        (test-shipit-render--cell 1 0 "one") "\n\n"
                        (test-shipit-render--cell 1 1 "two\nthree")
@@ -1416,18 +1475,18 @@ around the row are as they were."
     (should (equal '("one │ two" " │ three")
                    (mapcar #'substring-no-properties
                            (test-shipit-render--row-lines result))))
-    (should (equal 21 (get-text-property (string-search " │ two" result)
-                                         'shipit-column result)))
-    (should (equal 21 (get-text-property (string-search " │ three" result)
-                                         'shipit-column result)))))
+    (should (equal 4 (get-text-property (string-search " │ two" result)
+                                        'shipit-column result)))
+    (should (equal 4 (get-text-property (string-search " │ three" result)
+                                        'shipit-column result)))))
 
 (ert-deftest test-shipit-a-table-cell-is-wrapped-to-its-column ()
   "GIVEN a table row of two marked cells, the first of which is one
-line of 59 characters
-WHEN the table rows are laid out in 43 columns, 20 for each cell
-THEN the text of the first cell takes more than one line, AND no line
-of it is wider than 20, AND the text of the second cell stands beside
-it."
+line of 59 characters, AND the second a word of 5
+WHEN the table rows are laid out in 43 columns
+THEN the word keeps its 5, AND the first cell gets the 35 that are
+left, so its text takes more than one line and no line of it is wider
+than 35, AND the text of the second cell stands beside it."
   (let* ((text (concat (test-shipit-render--cell
                         1 0 "one two three four five six seven eight nine ten eleven one")
                        "\n\n"
@@ -1437,8 +1496,10 @@ it."
                          (shipit--lay-out-table-rows text 43)))))
     (should (> (length lines) 1))
     (should (seq-some (lambda (line) (string-suffix-p " │ right" line)) lines))
+    (should (> (apply #'max (mapcar (lambda (line) (string-search " │ " line)) lines))
+               20))
     (dolist (line lines)
-      (should (<= (string-search " │ " line) 20)))))
+      (should (<= (string-search " │ " line) 35)))))
 
 (ert-deftest test-shipit-a-short-table-cell-stands-at-its-alignment ()
   "GIVEN table rows of a cell of four lines AND a cell of one line, which
@@ -1490,15 +1551,17 @@ place from the start of the line, and that moves both cells."
     (should-not (test-shipit-render--centered-text result))))
 
 (ert-deftest test-shipit-a-table-row-that-does-not-fit-stays ()
-  "GIVEN a table row of one marked cell, AND a table row of three
-WHEN the table rows are laid out in 43 columns, where each of three
-cells gets fewer than the 20 columns that a cell needs
+  "GIVEN a table of one row of one marked cell, AND, after a paragraph,
+a table of one row of three cells of 30 characters each
+WHEN the table rows are laid out in 43 columns, where each of the
+three cells would get fewer than the 20 columns that a cell needs
 THEN the text is as it was."
-  (let ((text (concat (test-shipit-render--cell 1 0 "alone") "\n\n"
-                      (test-shipit-render--cell 2 0 "a") "\n\n"
-                      (test-shipit-render--cell 2 1 "b") "\n\n"
-                      (test-shipit-render--cell 2 2 "c"))))
-    (should (equal "alone\n\na\n\nb\n\nc"
+  (let* ((long (make-string 30 ?x))
+         (text (concat (test-shipit-render--cell 1 0 "alone") "\n\nbetween\n\n"
+                       (test-shipit-render--cell 2 0 long) "\n\n"
+                       (test-shipit-render--cell 2 1 long) "\n\n"
+                       (test-shipit-render--cell 2 2 long))))
+    (should (equal (substring-no-properties text)
                    (substring-no-properties (shipit--lay-out-table-rows text 43))))))
 
 (defun test-shipit-render--char-faces (line)
@@ -1549,40 +1612,44 @@ THEN the text is as it was, with the fences of the code."
                    (substring-no-properties (shipit--lay-out-table-rows text 50))))))
 
 (defmacro test-shipit-render--with-picture-display (&rest body)
-  "Run BODY where a picture is 400 by 180 pixels, or as wide as its
+  "Run BODY where a picture is 400 by 100 pixels, or as wide as its
 `:max-width' with the same shape, a character is 8 pixels wide, AND a
 line is 18 pixels high.  Batch Emacs shows no picture."
   (declare (indent 0))
   `(cl-letf (((symbol-function 'image-size)
               (lambda (image &rest _)
                 (let ((width (min 400 (or (plist-get (cdr image) :max-width) 400))))
-                  (cons width (/ (* width 180) 400)))))
+                  (cons width (/ (* width 100) 400)))))
              ((symbol-function 'frame-char-width) (lambda (&rest _) 8))
+             ((symbol-function 'frame-char-height) (lambda (&rest _) 18))
              ((symbol-function 'default-line-height) (lambda () 18)))
      ,@body))
 
 (ert-deftest test-shipit-a-picture-in-a-table-cell-is-cut-into-lines ()
-  "GIVEN a table row of two marked cells: a text, AND a picture of 400 by
-180 pixels on a line of its own
-WHEN the table rows are laid out in 43 columns, 20 for each cell, so
-160 pixels where a character is 8
-THEN the picture is made 160 pixels wide and so 72 high, AND it stands
+  "GIVEN a table row of two marked cells: a text of 7 characters, AND a
+picture of 400 by 100 pixels on a line of its own
+WHEN the table rows are laid out in 43 columns, where the text keeps
+its 7 and the picture gets the 33 left, 264 pixels where a character
+is 8
+THEN the picture is made 264 pixels wide and so 66 high, AND it stands
 in its column as 4 strips, one on each line of the row, each 18 pixels
 high, so that the text can stand beside it, in the middle of the row,
 AND each strip is centered
 on its line as the text is, so that it makes its line no higher and no
-gap shows between two strips."
+gap shows between two strips, AND the last strip, 12 high, is raised
+by the 3 pixels that would else be above it, to the top of its line."
   (test-shipit-render--with-picture-display
     (let* ((cup '(image :type png :file "cup.png"))
            (text (concat (test-shipit-render--cell 1 0 "Brew it")
                          "\n\n"
                          (test-shipit-render--cell 1 1 (propertize " " 'display cup))))
            (lines (test-shipit-render--row-lines (shipit--lay-out-table-rows text 43)))
-           (fitted (append cup '(:max-width 160 :ascent center))))
+           (fitted (append cup '(:max-width 264 :ascent center))))
       (should (equal '(" │  " "Brew it │  " " │  " " │  ")
                      (mapcar #'substring-no-properties lines)))
-      (should (equal (mapcar (lambda (top) `((slice 0 ,top 160 18) ,fitted))
-                             '(0 18 36 54))
+      (should (equal (append (mapcar (lambda (top) `((slice 0 ,top 264 18) ,fitted))
+                                     '(0 18 36))
+                             `(((raise ,(/ 3.0 18)) (slice 0 54 264 12) ,fitted)))
                      (mapcar (lambda (line)
                                (get-text-property (1- (length line)) 'display line))
                              lines))))))

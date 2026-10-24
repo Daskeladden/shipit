@@ -2196,10 +2196,11 @@ preserved since they carry meaningful emphasis or semantic information."
   (make-string 40 ?\x2500))
 
 (defconst shipit--html-tag-regexp
-  "<\\(/\\)?\\([a-zA-Z][a-zA-Z0-9]*\\)\\(\\(?:[ \t\n][^<>]*\\)?\\)>"
+  "<\\(/\\)?\\([a-zA-Z][a-zA-Z0-9]*\\)\\(\\(?:[ \t\n][^<>]*\\)?\\)/?>"
   "Regexp matching an HTML tag.
 Group 1 is the slash of a closing tag, 2 the name of the tag, and 3
-its attributes.")
+its attributes.  A tag with no end tag can end with a slash, as <br/>
+does.")
 
 (defconst shipit--html-tag-converters
   '(("strong" shipit--html-mark "**")
@@ -2259,10 +2260,21 @@ ATTRIBUTES is the text of a tag after its name."
   "Delete the white space after point, the ends of lines too."
   (delete-region (point) (progn (skip-chars-forward " \t\n") (point))))
 
+(defun shipit--html-skip-white-space-back ()
+  "Go back over the white space before point, up to a line that a <br> started."
+  (while (and (memq (char-before) '(?\s ?\t ?\n))
+              (not (get-text-property (1- (point)) 'shipit-line-break)))
+    (backward-char)))
+
 (defun shipit--html-line-break (&rest _)
-  "Start a new line where a <br> tag stood."
-  (shipit--html-delete-white-space-after)
-  (insert "\n"))
+  "Start a new line where a <br> tag stood.
+The white space around the tag goes, as HTML shows none there.  A line
+of white space before it would be a blank line to markdown, which ends
+a paragraph and a link in it.  The new line is marked, so that the
+next <br> keeps it and two of them leave an empty line."
+  (delete-region (progn (shipit--html-skip-white-space-back) (point))
+                 (progn (skip-chars-forward " \t\n") (point)))
+  (insert (propertize "\n" 'shipit-line-break t)))
 
 (defun shipit--html-rule (&rest _)
   "Draw a horizontal line where an <hr> tag stood."
@@ -2721,22 +2733,82 @@ cell has no code."
     (when codes
       (+ 2 (apply #'max 0 (mapcar #'string-width (apply #'append (mapcar #'cdr codes))))))))
 
-(defun shipit--table-column-widths (cells width)
-  "Return the width of each of CELLS in a table row WIDTH columns wide.
-CELLS has the parts of each cell.  A cell with code is as wide as its
-code, and the other cells share what is left.  The result is nil for a
-row of one cell, and for a row where the code does not fit or a cell
-gets fewer than `shipit--table-cell-min-width' columns."
-  (let* ((fixed (mapcar #'shipit--table-code-width cells))
-         (free (- width
-                  (* shipit--table-gutter-width (1- (length cells)))
+(defun shipit--visible-width (line)
+  "Return the columns that LINE takes on the screen.
+Hidden text takes none."
+  (let ((width 0))
+    (dotimes (i (length line))
+      (unless (get-text-property i 'invisible line)
+        (setq width (+ width (char-width (aref line i))))))
+    width))
+
+(defun shipit--table-line-width (line)
+  "Return the columns that LINE, a line of a table cell, takes unwrapped.
+A picture on a line of its own takes the columns of its width."
+  (let ((picture (shipit--line-picture line)))
+    (if picture
+        (ceiling (car (image-size picture t)) (frame-char-width))
+      (shipit--visible-width line))))
+
+(defun shipit--table-natural-width (parts)
+  "Return the columns that a table cell of PARTS takes without wrapping."
+  (apply #'max 0 (mapcar (lambda (part)
+                           (if (stringp part)
+                               (apply #'max 0 (mapcar #'shipit--table-line-width
+                                                      (split-string part "\n")))
+                             (shipit--table-code-width (list part))))
+                         parts)))
+
+(defun shipit--table-room-level (wants room)
+  "Return the most columns that one of the columns WANTS gets in ROOM.
+WANTS has the columns that each one would take.  A column that wants
+less than an even share of what is left gets what it wants.  The result
+is nil when all of them fit."
+  (when (> (apply #'+ wants) room)
+    (let ((left room) (count (length wants)) (level nil))
+      (dolist (want (sort (copy-sequence wants) #'<) level)
+        (unless level
+          (if (<= (* want count) left)
+              (setq left (- left want)
+                    count (1- count))
+            (setq level (/ left count))))))))
+
+(defun shipit--table-share-room (wants room)
+  "Return the width of each of the columns WANTS when they share ROOM.
+Nil when a column that gets less than it wants gets fewer than
+`shipit--table-cell-min-width'."
+  (let ((level (shipit--table-room-level wants room)))
+    (unless (and level (< level shipit--table-cell-min-width))
+      (mapcar (lambda (want) (if level (min want level) want)) wants))))
+
+(defun shipit--table-columns (rows)
+  "Return the cells of each column of a table of ROWS, a list of cells."
+  (mapcar (lambda (index) (delq nil (mapcar (lambda (row) (nth index row)) rows)))
+          (number-sequence 0 (1- (apply #'max (mapcar #'length rows))))))
+
+(defun shipit--table-column-widths (rows width)
+  "Return the width of each column of a table of ROWS in WIDTH columns.
+ROWS has the parts of each cell of each row.  A column of code is as
+wide as its widest code.  Each other column is as wide as its widest
+cell, and when they do not fit, the widest of them share the room that
+the others leave.  The result is nil for a table of one column, and
+for one where the code does not fit or a column gets fewer than
+`shipit--table-cell-min-width'."
+  (let* ((columns (shipit--table-columns rows))
+         (fixed (mapcar (lambda (cells)
+                          (let ((widths (delq nil (mapcar #'shipit--table-code-width cells))))
+                            (and widths (apply #'max widths))))
+                        columns))
+         (wants (cl-loop for cells in columns
+                         for code-width in fixed
+                         unless code-width
+                         collect (apply #'max 0 (mapcar #'shipit--table-natural-width cells))))
+         (room (- width
+                  (* shipit--table-gutter-width (1- (length columns)))
                   (apply #'+ (delq nil (copy-sequence fixed)))))
-         (shared (cl-count nil fixed))
-         (share (if (> shared 0) (/ free shared) free)))
-    (when (and (cdr cells)
-               (>= free 0)
-               (or (= shared 0) (>= share shipit--table-cell-min-width)))
-      (mapcar (lambda (code-width) (or code-width share)) fixed))))
+         (shared (and (cdr columns) (>= room 0) (shipit--table-share-room wants room))))
+    (when (and (cdr columns) (>= room 0) (or shared (null wants)))
+      (mapcar (lambda (code-width) (or code-width (pop shared))) fixed))))
 
 (defun shipit--line-picture (line)
   "Return the picture that LINE shows, when it shows nothing else.
@@ -2868,34 +2940,67 @@ each cell in columns."
              (number-sequence 0 (1- (apply #'max (mapcar #'length columns))))
              "\n"))
 
-(defun shipit--lay-out-table-row (cells width)
-  "Put the CELLS of a table row of this buffer side by side in WIDTH columns.
-CELLS is a list of (START . END).  A row of one cell stays as it is,
-and so does a row whose cells get too narrow."
-  (let* ((parts (mapcar #'shipit--table-cell-parts cells))
+(defun shipit--marked-tables ()
+  "Return the marked tables of this buffer, the last one first.
+A table is the list of its rows in the order of the text, each as
+`shipit--marked-table-rows' gives it.  Rows with only white space
+between them are rows of one table."
+  (let ((tables nil) (end nil))
+    (dolist (row (reverse (shipit--marked-table-rows)))
+      (if (and end (string-blank-p (buffer-substring-no-properties end (caar row))))
+          (push row (car tables))
+        (push (list row) tables))
+      (setq end (cdar (last row))))
+    (mapcar #'reverse tables)))
+
+(defun shipit--table-rule (widths)
+  "Return the line that parts two rows of a table whose columns are WIDTHS.
+It crosses the bar between two cells where that bar stands."
+  (propertize (mapconcat (lambda (width) (make-string width ?─)) widths "─┼─")
+              'face 'shadow 'shipit-no-wrap t))
+
+(defun shipit--table-row-of (cells parts widths)
+  "Return the text of the table row of CELLS, whose parts are PARTS.
+Its columns are WIDTHS wide.  Each cell stands where its alignment
+says, and a row with fewer cells than columns has empty cells at its
+end."
+  (let* ((columns (cl-mapcar #'shipit--table-cell-lines parts widths))
+         (height (apply #'max (mapcar #'length columns)))
+         (aligned (cl-mapcar (lambda (cell lines)
+                               (shipit--table-cell-aligned
+                                lines height (get-text-property (car cell) 'shipit-valign)))
+                             cells columns)))
+    (shipit--table-row-text
+     (append aligned (make-list (- (length widths) (length aligned)) nil))
+     widths)))
+
+(defun shipit--lay-out-table (rows width)
+  "Put the cells of the table of ROWS of this buffer side by side.
+ROWS is the list of its rows, each a list of cells (START . END).  The
+table takes WIDTH columns, each column is as wide in each row, and a
+rule parts two rows.  A table that does not fit stays as it is."
+  (let* ((parts (mapcar (lambda (row) (mapcar #'shipit--table-cell-parts row)) rows))
          (widths (shipit--table-column-widths parts width)))
     (when widths
-      (let* ((columns (cl-mapcar #'shipit--table-cell-lines parts widths))
-             (height (apply #'max (mapcar #'length columns)))
-             (aligned (cl-mapcar (lambda (cell lines)
-                                   (shipit--table-cell-aligned
-                                    lines height (get-text-property (car cell) 'shipit-valign)))
-                                 cells columns)))
-        (goto-char (caar cells))
-        (delete-region (point) (cdar (last cells)))
-        (insert (shipit--table-row-text aligned widths))))))
+      (let ((text (mapconcat (lambda (row)
+                               (shipit--table-row-of (car row) (cdr row) widths))
+                             (cl-mapcar #'cons rows parts)
+                             (concat "\n" (shipit--table-rule widths) "\n"))))
+        (goto-char (caar (car rows)))
+        (delete-region (point) (cdar (last (car (last rows)))))
+        (insert text)))))
 
 (defun shipit--lay-out-table-rows (text width)
   "Return TEXT with the cells of each of its table rows side by side.
 The cells are marked with the text property `shipit-cell'.  WIDTH is
-the number of columns that a row can take.  A cell with code is as
-wide as its code, and the other cells share the rest.  The text of a
-cell is wrapped to its width.  A line of a row has the text property
-`shipit-no-wrap'."
+the number of columns that a table can take.  A column is as wide as
+its widest cell, or as `shipit--table-column-widths' shares the room.
+The text of a cell is wrapped to its width.  A line of a row has the
+text property `shipit-no-wrap'."
   (with-temp-buffer
     (insert text)
-    (dolist (row (shipit--marked-table-rows))
-      (shipit--lay-out-table-row row width))
+    (dolist (table (shipit--marked-tables))
+      (shipit--lay-out-table table width))
     (buffer-string)))
 
 (defun shipit--align-table-columns-in-region (start end)
@@ -2998,19 +3103,15 @@ where the tag of its row says."
     (set-marker end nil)))
 
 (defun shipit--html-unwrap-layout-tables ()
-  "Take the tags out of each HTML table of this buffer that holds markdown.
-Such a table has a blank line in it.  A forge shows its cells side by
-side.  Here the markdown of each cell stays, and layout markers tell
-where each row and each cell is.  A table without a blank line holds
-rows of data, and stays."
+  "Take the tags out of each HTML table of this buffer.
+A forge shows its cells side by side.  Here the text of each cell
+stays, and layout markers tell where each row and each cell is.  A
+table in code is text, and stays."
   (goto-char (point-min))
   (while (re-search-forward "<table\\(?:[ \t\n][^<>]*\\)?>" nil t)
-    (let* ((start (match-beginning 0))
-           (end (shipit--html-table-end))
-           (table (and end (buffer-substring start end))))
-      (when (and table
-                 (not (shipit--in-markdown-code-p start))
-                 (string-match-p "\n[ \t]*\n" table))
+    (let ((start (match-beginning 0))
+          (end (shipit--html-table-end)))
+      (when (and end (not (shipit--in-markdown-code-p start)))
         (shipit--html-unwrap-table start end)))))
 
 (defun shipit--convert-html-tags ()
@@ -3034,6 +3135,7 @@ that an entity such as &lt;b&gt; is no tag."
       (shipit--html-unwrap-layout-tables)
       (shipit--convert-html-tags))
     (shipit--decode-html-entities (point-min) (point-max))
+    (remove-text-properties (point-min) (point-max) '(shipit-line-break nil))
     (buffer-string)))
 
 (defun shipit--escape-underscores-in-table-cells (text)

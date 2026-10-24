@@ -1140,7 +1140,7 @@ When SHOW-WORKFLOW is non-nil, include workflow name."
             (make-string (max 1 (- num-w (length num) -2)) ?\s)
             (when (and wf (> wf-w 0))
               (concat (propertize (truncate-string-to-width wf wf-w nil nil "...")
-                                  'font-lock-face 'magit-tag-face)
+                                  'font-lock-face 'magit-tag)
                       (make-string (max 1 (- wf-w (min (length wf) wf-w) -2)) ?\s)))
             mid-part
             (make-string gap ?\s)

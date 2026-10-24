@@ -1753,6 +1753,36 @@ visually below the collapsed wrapper heading."
                 (should overrode-display))))
         (kill-buffer buf)))))
 
+;;; Faces of the details of a pull request
+
+(ert-deftest test-shipit-notifications-buffer-pr-details-status-and-labels-have-faces ()
+  "GIVEN a notification of a merged pull request with a label
+WHEN its details arrive and are inserted below the notification
+THEN the state and the label each carry a face that Emacs knows, so
+they show in that color and Emacs logs no invalid face."
+  (cl-letf (((symbol-function 'shipit--check-notifications-background)
+             (lambda (&rest _args) nil))
+            ((symbol-function 'shipit--check-notifications-background-async)
+             (lambda (&rest _args) nil)))
+    (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (buf (shipit-notifications-buffer-create)))
+      (puthash "owner/foo:pr:1"
+               '((repo . "owner/foo") (number . 1) (type . "pr")
+                 (subject . "Foo") (reason . "mention")
+                 (pr-state . "merged") (updated-at . "2026-01-01T00:00:00Z"))
+               shipit--notification-pr-activities)
+      (unwind-protect
+          (with-current-buffer buf
+            (shipit-notifications-buffer--rerender)
+            (shipit-notifications-buffer--update-pr-details
+             (car (oref magit-root-section children))
+             '((state . "closed") (merged . t) (labels . [((name . "decaf"))])))
+            (dolist (text '("Status: merged" "Labels: decaf"))
+              (goto-char (point-min))
+              (search-forward text)
+              (should (facep (get-text-property (1- (point)) 'font-lock-face)))))
+        (kill-buffer buf)))))
+
 ;;; mark-all-read scoping when grouped
 
 (ert-deftest test-shipit-notifications-buffer-mark-all-read-grouped-marks-all ()

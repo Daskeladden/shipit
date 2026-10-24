@@ -1802,7 +1802,7 @@ wrapper when group-by-repo is on) properly hides the expanded body."
                                      ((string= state "closed") "closed")
                                      (draft "draft")
                                      (t "open"))
-                                'font-lock-face (cond (merged 'magit-tag-face)
+                                'font-lock-face (cond (merged 'magit-tag)
                                             ((string= state "closed") 'error)
                                             (draft 'shadow)
                                             (t 'success)))
@@ -1815,7 +1815,7 @@ wrapper when group-by-repo is on) properly hides the expanded body."
             (insert "    Labels: "
                     (mapconcat (lambda (l)
                                  (propertize (cdr (assq 'name l))
-                                             'font-lock-face 'magit-tag-face))
+                                             'font-lock-face 'magit-tag))
                                labels ", ")
                     "\n")))
         (oset section end (point-marker))

@@ -1209,6 +1209,20 @@ THEN the browser opens the run, as b does."
             (should (string-match-p "░" text))))
       (kill-buffer buf))))
 
+;;; Workflow name face
+
+(ert-deftest test-actions-list-run-line-workflow-name-has-a-face ()
+  "GIVEN the columns of a run line that names its workflow
+WHEN the run line is formatted
+THEN the workflow name carries a face that Emacs knows, so it shows in
+that color and Emacs logs no invalid face."
+  (let* ((line (shipit-actions-list--format-run-line
+                '(:num "#7" :wf "Brew" :branch "main" :commit "Grind the beans"
+                  :duration "1m" :age "2h")
+                '(:num 2 :wf 4 :dur 2 :age 2)))
+         (face (get-text-property (string-search "Brew" line) 'font-lock-face line)))
+    (should (facep face))))
+
 ;;; Run summary tests
 
 (ert-deftest test-actions-list-summary-section-inserted-with-jobs ()

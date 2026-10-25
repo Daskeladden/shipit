@@ -3542,10 +3542,8 @@ Handles both HTML <img> tags and markdown ![alt](url) syntax."
              "<img[^>]+>"
              (lambda (img-tag)
                (shipit--with-layout-of img-tag
-                 (let ((src (when (string-match "src=\"\\([^\"]+\\)\"" img-tag)
-                              (match-string 1 img-tag)))
-                       (alt (when (string-match "alt=\"\\([^\"]*\\)\"" img-tag)
-                              (match-string 1 img-tag)))
+                 (let ((src (shipit--html-attribute img-tag "src"))
+                       (alt (shipit--html-attribute img-tag "alt"))
                        ;; GitHub authors set explicit display sizes via
                        ;; `<img width="N">' on issue/PR screenshots.
                        ;; Honor it so shipit doesn't upscale to fill the

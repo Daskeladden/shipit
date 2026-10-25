@@ -1974,6 +1974,19 @@ leaves nothing in the image cache."
         (input "![screenshot](https://example.com/screenshot.png)"))
     (should (string= (shipit--process-inline-images input) input))))
 
+(ert-deftest test-shipit--process-inline-images-html-in-single-quotes ()
+  "GIVEN an <img> tag whose address and name are in single quotes, as a
+badge of a README can be
+WHEN the images of the text are processed
+THEN the tag is replaced by its picture, here the label of a picture
+that did not download, with its name."
+  (let ((shipit-render-images t))
+    (let ((result (test-shipit--without-images
+                    (shipit--process-inline-images
+                     "<img src='https://example.com/badge.svg' alt='ArXiv'>"))))
+      (should (string-match-p "\\[Image: ArXiv" result))
+      (should-not (string-match-p "<img" result)))))
+
 (ert-deftest test-shipit-the-width-of-an-img-tag-is-read-in-each-form ()
   "GIVEN <img> tags whose width is a number, a number of pixels with
 `px', a number with spaces around the equals sign, a number in single

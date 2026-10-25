@@ -4421,7 +4421,8 @@ expanded."
 INDENT is the indent of the row's parent, and REPO and PR-NUMBER are
 the pull request that links in BODY are read against."
   (let ((body-start (point)))
-    (shipit--insert-body-with-details body (+ (or indent 0) 3))
+    (shipit--insert-body-with-details
+     body (+ (or indent 0) 3) #'shipit--insert-markdown-text)
     ;; Apply the same decorations comment bodies get -- blockquote /
     ;; strikethrough faces, code-block backgrounds, PR / commit /
     ;; user-mention / Jira / URL overlays.  Without this the activity

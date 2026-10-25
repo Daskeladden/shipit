@@ -77,33 +77,6 @@ THEN text is unchanged."
   (let ((input "Hello world\nThis is just text"))
     (should (string= input (shipit--auto-increment-ordered-lists input)))))
 
-;;; HTML List Conversion Tests
-
-(ert-deftest test-shipit-convert-html-lists-ol-numbered ()
-  "GIVEN HTML with <ol> containing <li> items
-WHEN calling shipit--convert-html-lists-to-markdown
-THEN items are numbered sequentially."
-  (let ((input "<ol><li>First</li><li>Second</li><li>Third</li></ol>"))
-    (should (string-match-p "1\\. First" (shipit--convert-html-lists-to-markdown input)))
-    (should (string-match-p "2\\. Second" (shipit--convert-html-lists-to-markdown input)))
-    (should (string-match-p "3\\. Third" (shipit--convert-html-lists-to-markdown input)))))
-
-(ert-deftest test-shipit-convert-html-lists-ul-bullets ()
-  "GIVEN HTML with <ul> containing <li> items
-WHEN calling shipit--convert-html-lists-to-markdown
-THEN items use bullet points."
-  (let ((input "<ul><li>Alpha</li><li>Beta</li></ul>"))
-    (should (string-match-p "- Alpha" (shipit--convert-html-lists-to-markdown input)))
-    (should (string-match-p "- Beta" (shipit--convert-html-lists-to-markdown input)))))
-
-(ert-deftest test-shipit-convert-html-lists-standalone-li ()
-  "GIVEN HTML with standalone <li> items (no parent list)
-WHEN calling shipit--convert-html-lists-to-markdown
-THEN items use bullet points."
-  (let ((input "<li>Item A</li><li>Item B</li>"))
-    (should (string-match-p "- Item A" (shipit--convert-html-lists-to-markdown input)))
-    (should (string-match-p "- Item B" (shipit--convert-html-lists-to-markdown input)))))
-
 ;;; Mermaid Rendering Tests
 
 (ert-deftest test-shipit-render-mermaid-skips-when-disabled ()
@@ -3442,6 +3415,88 @@ and `b' are the keys of the popup."
               (should (local-key-binding "b"))
               (should-not mode-line-format))
           (kill-buffer buffer))))))
+
+;;; Details blocks
+
+(defun test-shipit-render--insert-with-details (body insert-text)
+  "Insert BODY with INSERT-TEXT in a new buffer of sections; return it.
+The body is indented 3 columns, as a description is."
+  (let ((buffer (generate-new-buffer " *details*")))
+    (with-current-buffer buffer
+      (magit-section-mode)
+      (let ((inhibit-read-only t))
+        (magit-insert-section (root)
+          (shipit--insert-body-with-details body 3 insert-text))))
+    buffer))
+
+(defun test-shipit-render--details-sections ()
+  "Return the sections of details blocks in this buffer, in buffer order."
+  (let ((sections nil))
+    (magit-map-sections (lambda (section)
+                          (when (eq (oref section type) 'comment-details)
+                            (push section sections))))
+    (sort sections (lambda (a b) (< (oref a start) (oref b start))))))
+
+(ert-deftest test-shipit-details-text-is-inserted-as-the-text-around-it ()
+  "GIVEN a body with a line of text, a details block, AND a line after it
+WHEN it is inserted with a function that inserts text of its kind
+THEN the summary is the heading of a section that starts folded, the
+text in the block is inserted by that function too, 3 columns further
+in and without the tags, AND the text around the block is inserted
+around the section, with no blank line next to it."
+  (let ((calls nil))
+    (with-current-buffer
+        (test-shipit-render--insert-with-details
+         "Intro\n\n<details>\n<summary>More</summary>\n\nHidden text\n</details>\n\nAfter"
+         (lambda (text indent)
+           (push (cons text indent) calls)
+           (shipit--insert-lines text indent)))
+      (unwind-protect
+          (let ((section (car (test-shipit-render--details-sections))))
+            (should (equal "   Intro\n   ► More\n      Hidden text\n   After\n"
+                           (buffer-substring-no-properties (point-min) (point-max))))
+            (should (member '("Hidden text" . 6) calls))
+            (should (oref section hidden))
+            (should (invisible-p (oref section content))))
+        (kill-buffer)))))
+
+(ert-deftest test-shipit-details-block-in-a-block-is-a-section-in-its-section ()
+  "GIVEN a details block with text and another details block in it
+WHEN the body is inserted
+THEN the inner block is a section in the section of the outer one, 3
+columns further in, AND both start folded."
+  (with-current-buffer
+      (test-shipit-render--insert-with-details
+       (concat "<details><summary>Outer</summary>\n\nA\n"
+               "<details><summary>Inner</summary>\n\nB\n</details>\n</details>")
+       #'shipit--insert-lines)
+    (unwind-protect
+        (pcase-let ((`(,outer ,inner) (test-shipit-render--details-sections)))
+          (should (equal "   ► Outer\n      A\n      ► Inner\n         B\n"
+                         (buffer-substring-no-properties (point-min) (point-max))))
+          (should (eq outer (oref inner parent)))
+          (should (and (oref outer hidden) (oref inner hidden))))
+      (kill-buffer))))
+
+(ert-deftest test-shipit-details-text-shows-its-html-as-the-body-does ()
+  "GIVEN a body whose details block holds a link in an <a> tag, AND a
+list in <ul> and <li> tags
+WHEN the body is inserted as markdown text
+THEN the text in the block shows the link and the list, AND no tag."
+  (skip-unless (and (require 'markdown-mode nil t) (boundp 'markdown-mode-version)))
+  (let ((shipit-render-markdown t))
+    (with-current-buffer
+        (test-shipit-render--insert-with-details
+         (concat "<details>\n<summary>Notes</summary>\n\n"
+                 "See <a href=\"https://example.com\">the menu</a>.\n"
+                 "<ul><li>Tea</li><li>Coffee</li></ul>\n</details>")
+         #'shipit--insert-markdown-text)
+      (unwind-protect
+          (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+            (should (string-match-p "the menu" text))
+            (should (string-match-p "^ +- Tea\n +- Coffee$" text))
+            (should-not (string-match-p "<a \\|<li>\\|<ul>" text)))
+        (kill-buffer)))))
 
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

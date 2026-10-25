@@ -39,12 +39,11 @@
 (declare-function shipit--get-pr-field-icon "shipit-render")
 (declare-function shipit--create-avatar-display "shipit-render")
 (declare-function shipit--insert-body-with-details "shipit-render")
-(declare-function shipit--convert-html-tables-to-markdown "shipit-render")
+(declare-function shipit--insert-lines "shipit-render")
 (declare-function shipit--center-aligned-lines-in-region "shipit-render")
 (declare-function shipit--lay-out-table-rows "shipit-render")
 (declare-function shipit--join-paragraph-lines "shipit-render")
 (declare-function shipit--align-table-columns-in-region "shipit-render")
-(declare-function shipit--convert-html-lists-to-markdown "shipit-render")
 (declare-function shipit--generic-url-action-menu "shipit-render")
 (declare-function shipit--classify-url "shipit-render")
 (declare-function shipit--open-classified-url "shipit-render")
@@ -644,6 +643,26 @@ first, each filled to its own column."
                           rendered)
                         width 0))))
 
+(defun shipit-repo-buffer--lay-out-readme (text format)
+  "Return TEXT, a README in FORMAT, rendered and laid out for the buffer."
+  ;; Hard-wrapping via `fill-region' was a ~25% slice of redisplay
+  ;; profiles.  The buffer has `truncate-lines' nil + `word-wrap' t (set
+  ;; in the mode), so the display engine visual-wraps long lines at zero
+  ;; allocation cost.  Set `shipit-readme-fill-column' to a number to
+  ;; opt back in to hard-wrap.
+  (let ((rendered (shipit-repo-buffer--render-readme text format)))
+    (if (and (numberp shipit-readme-fill-column) (fboundp 'shipit--wrap-text))
+        (shipit-repo-buffer--fill-readme rendered)
+      rendered)))
+
+(defun shipit-repo-buffer--insert-markdown-readme (text indent)
+  "Insert TEXT, a markdown README, after INDENT spaces.
+Its headings become nested sections that fold.  A details block, whose
+mark TEXT holds, becomes a section in the section of the heading above
+it, see `shipit--insert-body-with-details'."
+  (shipit-repo-buffer--insert-markdown-as-sections
+   (shipit-repo-buffer--lay-out-readme text 'markdown) indent #'shipit--insert-lines))
+
 (defun shipit-repo-buffer--insert-readme-section (readme)
   "Insert README section.
 README is either nil, a plain string of README content, or a plist
@@ -668,31 +687,15 @@ with :filename and :content keys (the format returned by backend
                     (* 80 (frame-char-width))))
                  (format (shipit-repo-buffer--readme-format readme))
                  (readme-start (point)))
-            (if (and (eq format 'markdown)
-                     (string-match-p "<details>" readme-text))
-                (shipit--insert-body-with-details readme-text 3)
-              (let* ((rendered (shipit-repo-buffer--render-readme readme-text format))
-                     ;; Hard-wrapping via `fill-region' was a ~25%
-                     ;; slice of redisplay profiles.  The buffer has
-                     ;; `truncate-lines' nil + `word-wrap' t (set in
-                     ;; the mode), so the display engine visual-wraps
-                     ;; long lines at zero allocation cost.  Set
-                     ;; `shipit-readme-fill-column' to a number to
-                     ;; opt back in to hard-wrap.
-                     (wrapped (cond
-                               ((and (numberp shipit-readme-fill-column)
-                                     (fboundp 'shipit--wrap-text))
-                                (shipit-repo-buffer--fill-readme rendered))
-                               (t rendered))))
-                (cond
-                 ((eq format 'org)
-                  (shipit-repo-buffer--insert-org-as-sections wrapped 3))
-                 ((eq format 'markdown)
-                  (shipit-repo-buffer--insert-markdown-as-sections wrapped 3))
-                 (t
+            (if (eq format 'markdown)
+                (shipit--insert-body-with-details
+                 readme-text 3 #'shipit-repo-buffer--insert-markdown-readme)
+              (let ((wrapped (shipit-repo-buffer--lay-out-readme readme-text format)))
+                (if (eq format 'org)
+                    (shipit-repo-buffer--insert-org-as-sections wrapped 3)
                   (insert (concat "   "
                                   (replace-regexp-in-string "\n" "\n   " wrapped)
-                                  "\n"))))))
+                                  "\n")))))
             (when (fboundp 'shipit--create-generic-url-overlays)
               (shipit--create-generic-url-overlays readme-start (point)))
             (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)

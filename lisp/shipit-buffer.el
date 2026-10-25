@@ -960,7 +960,6 @@ REPO is the repository name (owner/repo format)."
       (magit-insert-section-body
         (let* ((description-start (point))
                (is-empty (not clean-body))
-               (has-details (and clean-body (string-match-p "<details>" clean-body)))
                ;; Cap inline images to the 80-col wrap envelope used by
                ;; the rest of the description body.  Measured here in
                ;; the destination buffer's face so the renderer's
@@ -971,20 +970,7 @@ REPO is the repository name (owner/repo format)."
                   (* 80 (frame-char-width)))))
         (if is-empty
             (insert (propertize "   No description provided\n" 'font-lock-face 'italic))
-          (if has-details
-              ;; For details blocks, insert directly with magit-sections
-              (shipit--insert-body-with-details clean-body 3)
-            ;; For normal descriptions without details, use simple rendering
-            (let* ((rendered-body (if clean-body
-                                      (if (and (boundp 'shipit-render-markdown) shipit-render-markdown
-                                               (fboundp 'shipit--render-body))
-                                          (shipit--render-body clean-body)
-                                        clean-body)
-                                    "No description provided"))
-                   (wrapped-description (if (fboundp 'shipit--wrap-text)
-                                            (shipit--wrap-text rendered-body 80 0)  ; expand tabs from col 0
-                                          rendered-body)))
-              (insert (concat "   " (replace-regexp-in-string "\n" "\n   " wrapped-description) "\n")))))
+          (shipit--insert-body-with-details clean-body 3 #'shipit--insert-markdown-text))
         (shipit--decorate-description repo pr-number description-start (point))
         (add-text-properties description-start (point)
                              `(shipit-pr-description t

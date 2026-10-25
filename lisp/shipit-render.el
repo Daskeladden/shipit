@@ -843,8 +843,6 @@ If SKIP-REACTIONS is non-nil, reactions are not rendered (caller will handle the
               (if (fboundp 'string-pixel-width)
                   (string-pixel-width (make-string 80 ?M))
                 (* 80 (frame-char-width)))))
-         ;; Use the common rendering function
-         (indented-body (shipit--render-comment-body comment indent-level))
          (body-indent-str (make-string (+ indent-level 0) ?\s)))
 
     ;; Insert comment body with text properties for M-; and RET functionality
@@ -860,17 +858,13 @@ If SKIP-REACTIONS is non-nil, reactions are not rendered (caller will handle the
                               map)))
            ;; Apply background highlighting for inline comments if configured
            (background-face (when (and file-path shipit-inline-comment-highlight-background)
-                             `(:background ,shipit-inline-comment-highlight-background)))
-           ;; Check if body contains details blocks
-           (has-details (string-match-p "<details>" raw-body)))
-      ;; Use details-aware rendering if details blocks present, otherwise use normal rendering
-      (if has-details
-          ;; For details blocks, insert directly with magit-sections
-          ;; (shipit--insert-body-with-details will handle table conversion internally)
-          (shipit--insert-body-with-details raw-body indent-level)
-        ;; For normal comments without details, insert the indented body directly
-        ;; indented-body already includes proper indentation from shipit--render-comment-body
-        (insert (concat indented-body "\n")))
+                             `(:background ,shipit-inline-comment-highlight-background))))
+      (shipit--insert-body-with-details
+       raw-body indent-level
+       (lambda (text indent)
+         ;; The comment renderer indents the lines itself.
+         (shipit--insert-lines
+          (shipit--render-comment-body (cons (cons 'body text) comment) indent) 0)))
       (shipit--apply-comment-body-decorations body-start (point) repo pr-number)
       ;; Add shipit properties to the entire comment body
       (add-text-properties body-start (point)
@@ -3633,34 +3627,6 @@ Leaves the underscores in the text of `shipit--underscore-keep-regexps'."
       (goto-char pos)
       (insert "\\"))
     (buffer-string)))
-
-(defun shipit--convert-html-lists-to-markdown (text)
-  "Convert HTML list elements to markdown format in TEXT.
-Handles <ol> with numbered items and <ul>/<li> with bullet points."
-  (let ((result text))
-    ;; Convert <ol>...</ol> blocks: number each <li> inside
-    (while (string-match "<ol>" result)
-      (let* ((ol-start (match-beginning 0))
-             (ol-end (string-match "</ol>" result ol-start))
-             (ol-end (if ol-end (+ ol-end 5) (length result)))
-             (before (substring result 0 ol-start))
-             (block (substring result (+ ol-start 4) (- ol-end 5)))
-             (after (substring result ol-end))
-             (counter 0)
-             ;; Replace </li> with newline, then number each <li>
-             (items (replace-regexp-in-string "</li>" "\n" block))
-             (numbered (replace-regexp-in-string
-                        "<li>"
-                        (lambda (_match)
-                          (setq counter (1+ counter))
-                          (format "%d. " counter))
-                        items)))
-        (setq result (concat before numbered after))))
-    ;; Convert remaining <ul>...</ul> and standalone <li> to "- "
-    (setq result (replace-regexp-in-string "</?ul>" "" result))
-    (setq result (replace-regexp-in-string "<li>" "- "
-                   (replace-regexp-in-string "</li>" "\n" result)))
-    result))
 
 (defun shipit--auto-increment-ordered-lists (text)
   "Auto-increment ordered list numbers in TEXT.
@@ -6848,127 +6814,112 @@ Removes HTML tags, newlines, and collapses whitespace."
 
 (defvar shipit--details-section-counter 0)
 
-(defun shipit--insert-body-with-details (body indent-level)
-  "Insert BODY content with markdown details blocks as collapsible magit sections.
-INDENT-LEVEL is the current indentation level (in spaces).
-Recursively handles nested details blocks with proper indentation."
-  (let ((parsed (shipit--parse-markdown-details body))
-        (indent-str (make-string indent-level ? )))
-    ;; Debug: log what was parsed
-    (when (fboundp 'shipit--debug-log)
-      (shipit--debug-log "DEBUG INSERT-BODY-WITH-DETAILS: parsed %d blocks, has-details=%s"
-                         (length parsed)
-                         (seq-some (lambda (b) (eq (car b) 'details)) parsed)))
-    (dolist (block parsed)
-      (pcase block
-        (`(text ,content)
-         ;; Regular text - convert limited HTML elements to markdown and render
-         (let* (;; Convert HTML tables to markdown first (before other conversions)
-                (tables-converted (shipit--convert-html-tables-to-markdown content))
-                ;; DEBUG: Log the content after table conversion
-                (_ (when (string-match "<table" content)
-                     (shipit--debug-log "📊 Content after table conversion (first 500 chars): %s"
-                                       (substring tables-converted 0 (min 500 (length tables-converted))))))
-                ;; Collapse newlines within list items (HTML treats them as whitespace)
-                (li-newlines-collapsed (replace-regexp-in-string
-                                        "<li>\\([^<]*\n[^<]*\\)</li>"
-                                        (lambda (match)
-                                          (concat "<li>"
-                                                  (replace-regexp-in-string "\n+" " " (substring match 4 -5))
-                                                  "</li>"))
-                                        tables-converted))
-                ;; Convert HTML list elements to markdown format
-                ;; Handles <ol> with numbered items, <ul>/<li> with bullets
-                (markdown-converted (shipit--convert-html-lists-to-markdown li-newlines-collapsed))
-                ;; Strip blockquotes (just remove the tags)
-                (no-blockquotes (replace-regexp-in-string "<blockquote>\\|</blockquote>" "" markdown-converted))
-                ;; Add visual marker for horizontal rules (ensure newline before rule)
-                ;; Use the same width as the wrap column
-                (hr-width (or (and (boundp 'shipit-render-wrap-column) shipit-render-wrap-column) 120))
-                (horizontal-rules (replace-regexp-in-string "^---+$"
-                                                            (concat "\n" (make-string hr-width ?─))
-                                                            no-blockquotes))
-                ;; Convert <img> tags to markdown syntax before HTML stripping
-                ;; so shipit--render-markdown can process all images after font-lock
-                (img-converted (replace-regexp-in-string
-                                "<img[^>]*src=\"\\([^\"]+\\)\"[^>]*\\(?:alt=\"\\([^\"]*\\)\"\\)?[^>]*>"
-                                (lambda (match)
-                                  (save-match-data
-                                    (string-match "<img[^>]*src=\"\\([^\"]+\\)\"[^>]*\\(?:alt=\"\\([^\"]*\\)\"\\)?[^>]*>" match)
-                                    (let ((src (match-string 1 match))
-                                          (alt (or (match-string 2 match) "image")))
-                                      (format "![%s](%s)" alt src))))
-                                horizontal-rules nil t))
-                ;; Strip any remaining HTML tags
-                (no-html (replace-regexp-in-string "<[^>]+>" "" img-converted))
-                (trimmed (string-trim no-html))
-                ;; DEBUG: Log content before and after HTML stripping
-                (_ (when (string-match "Status.*Not run" trimmed)
-                     (shipit--debug-log "📝 Content with table - before HTML strip (first 800 chars): %s"
-                                       (substring horizontal-rules 0 (min 800 (length horizontal-rules))))
-                     (shipit--debug-log "📝 Content with table - after HTML strip (first 800 chars): %s"
-                                       (substring trimmed 0 (min 800 (length trimmed)))))))
-           ;; Only render if there's actual content (not just whitespace)
-           (unless (string-empty-p trimmed)
-             (let* ((rendered (if shipit-render-markdown
-                                (shipit--render-body trimmed)
-                              trimmed))
-                    ;; Wrap long prose lines to fit the configured wrap
-                    ;; column minus the current indent so paragraphs do
-                    ;; not run off the right edge.
-                    (wrap-col (or (and (boundp 'shipit-render-wrap-column)
-                                       shipit-render-wrap-column)
-                                  120))
-                    (wrap-width (max 40 (- wrap-col indent-level)))
-                    (wrapped (shipit--wrap-text rendered wrap-width indent-level))
-                    ;; Remove blank lines before list items to keep them compact
-                    ;; Match blank lines followed by a list item (dash space)
-                    ;; Preserves blank lines in other contexts
-                    (compact-lists (replace-regexp-in-string "\n\n+\\(- \\)" "\n\\1" wrapped)))
-               ;; Add indentation to each line (preserve markdown list nesting)
-               (dolist (line (split-string compact-lists "\n"))
-                 (let* ((trimmed-line (string-trim-left line))
-                        ;; Count leading spaces to preserve markdown nesting for list indentation
-                        (leading-spaces (- (length line) (length trimmed-line)))
-                        ;; Preserve indentation for nested list items: dash or star, or checkboxes
-                        (is-list-item (string-match-p "^[*-][ \t]" trimmed-line))
-                        (has-checkbox (string-match-p "\\[[Xx ]\\]" trimmed-line))
-                        ;; Keep original leading spaces for nested lists, trim for other content
-                        (preserved-line (if (or is-list-item has-checkbox)
-                                           line  ; Keep original with indentation for nested lists
-                                         trimmed-line)))
-                   (if (string-empty-p trimmed-line)
-                       ;; Check if original line has display property such as an image
-                       (if (text-property-not-all 0 (length line) 'display nil line)
-                           (insert indent-str line "\n")
-                         ;; Preserve single blank lines for markdown structure
-                         (insert "\n"))
-                     ;; Indent non-blank lines
-                     (insert indent-str preserved-line "\n"))))))))
-        (`(details ,summary ,body-content)
-         ;; Details block - create as magit-section with unique data
-         ;; Recursively render body to handle nested details blocks
-         (setq shipit--details-section-counter (1+ shipit--details-section-counter))
-         ;; Include indentation as part of the section heading so TAB works correctly
-         (magit-insert-section (comment-details shipit--details-section-counter)
-           ;; Force details sections to be collapsed by default
-           (when magit-insert-section--current
-             (oset magit-insert-section--current hidden t))
-           (magit-insert-heading (concat indent-str "► " (shipit--clean-summary-for-heading summary)))
-           (magit-insert-section-body
-             ;; Strip markdown blockquote > prefixes from body so inner
-             ;; code blocks and text render correctly
-             (let ((clean-body (replace-regexp-in-string
-                                "^> ?" "" (string-trim-left body-content)))
-                   (body-start (point)))
-               (shipit--insert-body-with-details
-                clean-body
-                (+ indent-level 3))
-               ;; Apply syntax highlighting here since magit-insert-section-body
-               ;; defers execution for hidden sections — the outer caller's scan
-               ;; runs before this content exists in the buffer
-               (when (fboundp 'shipit--apply-code-block-backgrounds-in-region)
-                 (shipit--apply-code-block-backgrounds-in-region body-start (point)))))))))))
+(defconst shipit--details-mark-regexp
+  (format "\\`\\([ \t]*\\)%c\\([0-9]+\\)%c[ \t]*\\'" #xE000 #xE000)
+  "Regexp matching a line that marks where a details block stood.
+Group 1 is the indent of the line, and 2 the number of the block.  The
+mark is made of a character of the private use area of Unicode, which
+the text of a forge does not hold.")
+
+(defvar shipit--details-blocks nil
+  "The details blocks of the text that is being inserted, a vector.
+Each one is (SUMMARY . TEXT).  The text holds a mark where each block
+stood, see `shipit--mark-details-blocks'.")
+
+(defvar shipit--details-insert-text nil
+  "The function that inserts the text that is being inserted.
+The text in a details block is inserted with it too.")
+
+(defun shipit--details-mark (number)
+  "Return the mark of the details block NUMBER, a paragraph of its own."
+  (format "\n\n%c%d%c\n\n" #xE000 number #xE000))
+
+(defun shipit--mark-details-blocks (body)
+  "Return (TEXT . BLOCKS): BODY with a mark in place of each details block.
+BLOCKS is a vector of the blocks, each (SUMMARY . TEXT), in the order
+of their marks.  A block in a block stays in the text of the outer one."
+  (let ((parts nil)
+        (blocks nil))
+    (pcase-dolist (`(,kind . ,content) (shipit--parse-markdown-details body))
+      (if (eq kind 'details)
+          (progn
+            (push (shipit--details-mark (length blocks)) parts)
+            (push (cons (car content) (cadr content)) blocks))
+        (push (car content) parts)))
+    (cons (apply #'concat (nreverse parts)) (vconcat (nreverse blocks)))))
+
+(defun shipit--insert-body-with-details (body indent insert-text)
+  "Insert BODY, with each details block in it as a section that folds.
+INSERT-TEXT inserts text of the kind of BODY, as (INSERT-TEXT TEXT
+INDENT), with INDENT spaces before each line.  It gets BODY with a mark
+where each block stood, and it inserts the lines with
+`shipit--insert-lines', which puts the section of the block there.
+The text in a block is inserted with INSERT-TEXT too, 3 columns
+further in, so that it looks as the text around it does."
+  (pcase-let ((`(,text . ,blocks) (shipit--mark-details-blocks body)))
+    (let ((shipit--details-blocks blocks)
+          (shipit--details-insert-text insert-text))
+      (funcall insert-text text indent))))
+
+(defun shipit--insert-indented-lines (lines indent)
+  "Insert LINES, each after INDENT spaces and with a line end."
+  (let ((indent-string (make-string indent ?\s)))
+    (dolist (line lines)
+      (insert indent-string line "\n"))))
+
+(defun shipit--insert-lines (text indent)
+  "Insert the lines of TEXT, each after INDENT spaces.
+A line that marks a details block gets the section of the block, see
+`shipit--insert-body-with-details', and the blank lines next to it go."
+  (let ((lines nil)
+        (after-mark nil))
+    (dolist (line (split-string text "\n"))
+      (cond
+       ((string-match shipit--details-mark-regexp line)
+        (let ((block (aref shipit--details-blocks (string-to-number (match-string 2 line))))
+              (block-indent (+ indent (length (match-string 1 line)))))
+          (shipit--insert-indented-lines
+           (nreverse (seq-drop-while #'shipit--blank-line-p lines)) indent)
+          (setq lines nil
+                after-mark t)
+          (shipit--insert-details-section block block-indent)))
+       ((and after-mark (shipit--blank-line-p line)))
+       (t
+        (setq after-mark nil)
+        (push line lines))))
+    (shipit--insert-indented-lines (nreverse lines) indent)))
+
+(defun shipit--details-text (text)
+  "Return TEXT, the text of a details block, as it is inserted.
+The blank lines at its ends go.  So does the mark of a markdown quote
+at the start of each line, which each line of a block in a quote has."
+  (replace-regexp-in-string
+   "^> ?" ""
+   (replace-regexp-in-string "\\`\\(?:[ \t]*\n\\)+\\|\\(?:\n[ \t]*\\)+\\'" "" text)))
+
+(defun shipit--insert-details-section (block indent)
+  "Insert the details BLOCK, (SUMMARY . TEXT), as a section that folds.
+The summary is its heading, after INDENT spaces, and the text is
+inserted as the text around the block is, 3 columns further in.  The
+section starts folded, as a forge shows it.  Its text is inserted now,
+and not when it is first unfolded, so that what the caller does to the
+text that it inserted reaches the text of the block too."
+  (let* ((insert-text shipit--details-insert-text)
+         (section
+          (magit-insert-section (comment-details (cl-incf shipit--details-section-counter) t)
+            (magit-insert-heading
+              (concat (make-string indent ?\s) "► "
+                      (shipit--clean-summary-for-heading (car block))))
+            (shipit--insert-body-with-details
+             (shipit--details-text (cdr block)) (+ indent 3) insert-text))))
+    (magit-section-hide section)))
+
+(defun shipit--insert-markdown-text (text indent)
+  "Insert markdown TEXT rendered, wrapped at 80 columns, after INDENT spaces.
+The description of a pull request or of an issue is inserted so."
+  (shipit--insert-lines
+   (shipit--wrap-text (if shipit-render-markdown (shipit--render-body text) text) 80 0)
+   indent))
 
 (defun shipit--count-comment-lines (comment)
   "Count the number of lines a COMMENT would take when rendered."

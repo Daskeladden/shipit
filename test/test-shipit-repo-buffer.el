@@ -497,23 +497,39 @@ THEN returns list with a details element containing correct summary and body."
       (should (equal (cadr block) "Click"))
       (should (string-match-p "body" (caddr block))))))
 
-(ert-deftest test-repo-buffer-readme-dispatches-to-details-renderer ()
-  "GIVEN readme text containing a <details> block
-WHEN inserting the readme section
-THEN shipit--insert-body-with-details is called instead of plain rendering."
+(defun test-repo-buffer--first-section (type)
+  "Return the first section of TYPE in this buffer, or nil."
+  (let ((found nil))
+    (magit-map-sections (lambda (section)
+                          (when (and (not found) (eq (oref section type) type))
+                            (setq found section))))
+    found))
+
+(ert-deftest test-repo-buffer-readme-details-block-stays-under-its-heading ()
+  "GIVEN a README with a heading, then text, a details block AND more
+text under it, and a second heading
+WHEN the README section is inserted
+THEN the block is a section that starts folded, in the section of the
+first heading, AND the text after the block is in that section too."
   (require 'shipit-repo-buffer)
   (require 'shipit-render)
-  (let ((details-called nil))
-    (cl-letf (((symbol-function 'shipit--insert-body-with-details)
-               (lambda (body indent)
-                 (setq details-called (list body indent))
-                 (insert "   [details rendered]\n"))))
-      (with-temp-buffer
-        (let ((inhibit-read-only t))
-          (shipit-repo-buffer--insert-readme-section
-           "Some text\n<details>\n<summary>Click</summary>\nbody\n</details>")
-          (should details-called)
-          (should (= (cadr details-called) 3)))))))
+  (with-temp-buffer
+    (magit-section-mode)
+    (let ((inhibit-read-only t))
+      (magit-insert-section (root)
+        (shipit-repo-buffer--insert-readme-section
+         (list :filename "README.md"
+               :content (concat "# Install\n\nIntro\n\n"
+                                "<details>\n<summary>Linux</summary>\n\nRun it\n</details>\n\n"
+                                "More\n\n# Usage\n\nUse it\n")))))
+    (let* ((details (test-repo-buffer--first-section 'comment-details))
+           (heading (oref details parent))
+           (more (save-excursion (goto-char (point-min)) (search-forward "More"))))
+      (should (eq 'markdown-heading (oref heading type)))
+      (should (string-match-p "Install" (buffer-substring-no-properties
+                                         (oref heading start) (oref heading content))))
+      (should (oref details hidden))
+      (should (< (oref details end) more (oref heading end))))))
 
 ;;; Language percentage tests
 

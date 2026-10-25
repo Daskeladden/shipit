@@ -2251,11 +2251,13 @@ It is uploaded to a repository, or to a comment.")
 
 (defun shipit-pr-github--upload-video-p (url)
   "Return non-nil when URL is a file uploaded to GitHub.
-GitHub shows such a URL that stands alone on a line as a video.  A
-video file of another site it shows as a link."
+GitHub shows such a URL that stands alone on a line as a video, in a
+section that folds under a header.  A video file of another site it
+shows as a link."
   (string-match-p shipit-pr-github--upload-regexp url))
 
 (add-hook 'shipit-video-url-functions #'shipit-pr-github--upload-video-p)
+(add-hook 'shipit-video-fold-functions #'shipit-pr-github--upload-video-p)
 
 (provide 'shipit-pr-github)
 ;;; shipit-pr-github.el ends here

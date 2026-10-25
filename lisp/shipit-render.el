@@ -1485,10 +1485,8 @@ Returns symbol like `png', `jpeg', `gif', `webp', `svg', or nil if unknown."
 
 (defcustom shipit-render-videos t
   "Whether to render inline video links (.mp4 / .webm / .mov / .avi).
-When non-nil and ffmpeg is available, video URLs in body text are
-replaced with a still thumbnail plus a clickable `▶ Play Video'
-button that opens the video via `shipit-video-player-command'.
-Without ffmpeg the button is shown without a thumbnail."
+When non-nil, video URLs in body text are replaced with a button that
+plays the video; see `shipit--render-video-link'."
   :type 'boolean
   :group 'shipit)
 
@@ -1520,7 +1518,7 @@ entirely (e.g. on Wayland without XWayland)."
   :group 'shipit)
 
 (defcustom shipit-video-inline-function 'canvas-browser-embed
-  "Function that plays a video in the buffer, under its Play button, or nil.
+  "Function that plays a video in the buffer, under its button, or nil.
 It is called with the URL of a page that plays the video, a width and a
 height in pixels, and the buffer.  It returns the text to insert, or
 nil when it cannot play there, as in a terminal frame; the video then
@@ -1530,8 +1528,8 @@ plays outside the buffer.  canvas-browser gives such a function."
 
 (defcustom shipit-video-inline-show t
   "Whether a video shows in the buffer as soon as the buffer is ready.
-It shows under its Play button, paused on its first frame, and a click
-on it plays it.  Nil leaves each video to its Play button."
+It shows under its button, paused on its first frame, and a click on it
+plays it.  Nil leaves each video to its button."
   :type 'boolean
   :group 'shipit)
 
@@ -1662,8 +1660,10 @@ before creating a new one so retries don't accumulate frames."
           t))))))
 
 (defun shipit--play-video-url (url &optional place)
-  "Play video URL, under its Play button at PLACE when the buffer can.
-PLACE is a marker on the button.  A video playing there already stops.
+  "Play video URL, under its button at PLACE when the buffer can.
+PLACE is a marker on the button.  A video shown there already plays or
+pauses, or, under a header, is hidden or shown again; see
+`shipit--press-video-button'.
 A video the buffer cannot play, or one with no PLACE, plays outside it;
 see `shipit--play-video-outside'.  A tracker's attachment plays from the
 URL the tracker hands out for it, which needs no login."
@@ -1671,21 +1671,29 @@ URL the tracker hands out for it, which needs no login."
    (list (or (get-text-property (point) 'shipit-video-url)
              (read-string "Video URL: "))))
   (if (and place (shipit--inline-video-at place))
-      (shipit--press-inline-video place)
+      (shipit--press-video-button place)
     (let ((url (or (shipit--media-url url) url)))
       (unless (and place (shipit--play-video-inline url place t))
         (shipit--play-video-outside url)))))
 
 (defun shipit--inline-video-start (place)
-  "Return where the video under the Play button at PLACE starts, or would.
+  "Return where the video under the button at PLACE starts, or would.
 That is the end of the button's line."
   (with-current-buffer (marker-buffer place)
     (save-excursion (goto-char place) (line-end-position))))
 
 (defun shipit--inline-video-at (place)
-  "Return non-nil when a video plays under the Play button at PLACE."
+  "Return non-nil when a video shows under the button at PLACE."
   (with-current-buffer (marker-buffer place)
     (get-text-property (shipit--inline-video-start place) 'shipit-video-inline)))
+
+(defun shipit--press-video-button (place)
+  "Press the button at PLACE of a video that shows under it.
+A header hides or shows the video, as the site of the video folds it.
+A Play button plays or pauses it."
+  (if (get-text-property place 'shipit-video-fold (marker-buffer place))
+      (shipit--fold-inline-video place)
+    (shipit--press-inline-video place)))
 
 (defun shipit--press-inline-video (place)
   "Press RET on the video under the Play button at PLACE: it plays or pauses.
@@ -1700,6 +1708,88 @@ The video's own text says what RET does there."
           (goto-char frame)
           (call-interactively command))))))
 
+(defun shipit--fold-inline-video (place)
+  "Hide the video under the header at PLACE, or show it again when hidden.
+A header that is a section folds as any section does.  A hidden video
+plays on, as one a forge folds away does."
+  (with-current-buffer (marker-buffer place)
+    (if-let* ((section (shipit--video-section-at place)))
+        (progn
+          (if (oref section hidden)
+              (magit-section-show section)
+            (magit-section-hide section))
+          (shipit--set-video-arrow place (not (oref section hidden))))
+      (let* ((start (shipit--inline-video-start place))
+             (end (next-single-property-change start 'shipit-video-inline nil (point-max)))
+             (hide (not (get-text-property start 'invisible))))
+        (with-silent-modifications
+          (put-text-property start end 'invisible hide))
+        (shipit--set-video-arrow place (not hide))))))
+
+(put 'shipit-video 'magit-section t)
+
+(defun shipit--video-section-at (pos)
+  "Return the section of the video header whose text holds POS, or nil."
+  (let ((section (get-text-property pos 'magit-section)))
+    (and section (eq (oref section type) 'shipit-video) section)))
+
+(defun shipit--video-section-reach (section)
+  "Make SECTION, of a video header, reach to the end of the video under it.
+Without a video under the header, its body is empty."
+  (let* ((content (oref section content))
+         (end (if (get-text-property content 'shipit-video-inline)
+                  (next-single-property-change content 'shipit-video-inline nil (point-max))
+                content)))
+    (set-marker (oref section end) end)
+    (with-silent-modifications
+      (put-text-property content (min (point-max) (1+ end)) 'magit-section section))))
+
+(defun shipit--add-video-section (bol)
+  "Make the video header of the line at BOL a section of the section it is in.
+magit's n and p then land on it, and it hides as any section does.  The
+header is drawn as part of a body, which knows no sections, so it
+becomes one once it is in the buffer."
+  (let ((parent (get-text-property bol 'magit-section))
+        (eol (save-excursion (goto-char bol) (line-end-position)))
+        (section (magit-section :type 'shipit-video)))
+    (oset section value (get-text-property (text-property-any bol eol 'shipit-video-button t)
+                                           'shipit-video-url))
+    (oset section start (copy-marker bol t))
+    (oset section content (copy-marker eol))
+    (oset section end (copy-marker eol))
+    (oset section hidden nil)
+    (oset section parent parent)
+    (oset parent children (sort (cons section (oref parent children))
+                                (lambda (a b) (< (oref a start) (oref b start)))))
+    (with-silent-modifications
+      (put-text-property bol eol 'magit-section section))
+    (shipit--video-section-reach section)))
+
+(defun shipit--add-video-sections ()
+  "Make each header over a video that folds a section of its own.
+Only a header within a section has a section to be part of."
+  (save-excursion
+    (let ((pos (point-min)))
+      (while (setq pos (text-property-any pos (point-max) 'shipit-video-fold t))
+        (goto-char pos)
+        (let ((bol (line-beginning-position)))
+          (when (and (get-text-property bol 'magit-section)
+                     (not (shipit--video-section-at bol)))
+            (shipit--add-video-section bol)))
+        (setq pos (line-beginning-position 2))))))
+
+(defun shipit--set-video-arrow (place open)
+  "Point the arrow of the header at PLACE down when OPEN, else right.
+Down says that the video shows under the header."
+  (with-current-buffer (marker-buffer place)
+    (save-excursion
+      (goto-char place)
+      (when-let* ((at (text-property-any (line-beginning-position) (line-end-position)
+                                         'shipit-video-arrow t)))
+        ;; Changed in place, so that the markers of a section stay put.
+        (with-silent-modifications
+          (subst-char-in-region at (1+ at) (char-after at) (if open ?▾ ?▸) t))))))
+
 (defun shipit--inline-video-size (buffer)
   "Return (WIDTH . HEIGHT) for a video played in BUFFER, in pixels.
 At most `shipit-video-inline-width', less when a window of BUFFER is
@@ -1710,7 +1800,7 @@ narrower, and 16 by 9."
     (cons width (round (* width 9) 16))))
 
 (defun shipit--play-video-inline (url place &optional autoplay)
-  "Show URL on the line under the Play button at PLACE; nil when it cannot.
+  "Show URL on the line under the button at PLACE; nil when it cannot.
 With AUTOPLAY it plays at once; without, it waits on its first frame for
 a click."
   (when (functionp shipit-video-inline-function)
@@ -1723,7 +1813,10 @@ a click."
           (save-excursion
             (goto-char (shipit--inline-video-start place))
             (let ((inhibit-read-only t))
-              (insert (propertize (concat "\n   " text) 'shipit-video-inline t)))))
+              (insert (propertize (concat "\n   " text) 'shipit-video-inline t))))
+          (when-let* ((section (shipit--video-section-at place)))
+            (shipit--video-section-reach section))
+          (shipit--set-video-arrow place t))
         t))))
 
 (defun shipit--play-video-outside (url)
@@ -1767,7 +1860,7 @@ owner can read it."
     (concat "file://" file)))
 
 (defun shipit--video-button-places ()
-  "Return a marker on each visible Play button of this buffer, in order."
+  "Return a marker on each visible video button of this buffer, in order."
   (let ((places nil)
         (position (point-min)))
     (while (setq position (text-property-any position (point-max) 'shipit-video-button t))
@@ -1778,7 +1871,7 @@ owner can read it."
     (nreverse places)))
 
 (defun shipit--show-inline-videos ()
-  "Show each video of this buffer under its Play button, paused.
+  "Show each video of this buffer under its button, paused.
 One shown already, or one whose button is hidden, as in a shut section,
 is left as it is."
   (when (and shipit-video-inline-show (functionp shipit-video-inline-function))
@@ -1790,12 +1883,29 @@ is left as it is."
 (defvar-local shipit--videos-timer nil
   "The timer that shows this buffer's videos, while one is pending.")
 
+(defun shipit--spread-video-header-keys ()
+  "Give the whole line of each video header of this buffer the header's keys.
+A body is indented after its text is made, so the indent before a
+header has no keys of its own, and TAB there would fold the section
+around it."
+  (save-excursion
+    (let ((pos (point-min)))
+      (while (setq pos (text-property-any pos (point-max) 'shipit-video-fold t))
+        (goto-char pos)
+        (with-silent-modifications
+          (add-text-properties (line-beginning-position) (line-end-position)
+                               (list 'keymap (get-text-property pos 'keymap)
+                                     'shipit-video-fold t)))
+        (setq pos (line-beginning-position 2))))))
+
 (defun shipit--show-inline-videos-in (buffer)
   "Show the videos of BUFFER, if it is still there."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq shipit--videos-timer nil)
-      (shipit--show-inline-videos))))
+      (shipit--spread-video-header-keys)
+      (shipit--show-inline-videos)
+      (shipit--add-video-sections))))
 
 (defun shipit--show-inline-videos-soon ()
   "Show the videos of this buffer once Emacs is idle, once for many calls.
@@ -1806,7 +1916,7 @@ shown before that."
           (run-with-idle-timer 0.2 nil #'shipit--show-inline-videos-in (current-buffer)))))
 
 (defun shipit--video-buttons-inserted (beg end _length)
-  "Show the videos soon when text inserted from BEG to END has a Play button.
+  "Show the videos soon when text inserted from BEG to END has a video button.
 In `after-change-functions' of a buffer that shows videos.  Its text
 arrives in parts, and again: the description, then the comments, more
 comments, and a section drawn again; each brings its buttons."
@@ -1814,7 +1924,7 @@ comments, and a section drawn again; each brings its buttons."
     (shipit--show-inline-videos-soon)))
 
 (defun shipit--watch-videos ()
-  "Show this buffer's videos whenever text with a Play button arrives."
+  "Show this buffer's videos whenever text with a video button arrives."
   (add-hook 'after-change-functions #'shipit--video-buttons-inserted nil t))
 
 (defun shipit--play-video-in-browser (url)
@@ -1830,11 +1940,14 @@ an attachment, as a tracker serves one, instead of playing it."
         (set-marker (make-marker) (posn-point start) (window-buffer (posn-window start))))
     (point-marker)))
 
-(defun shipit--video-button-keymap (url)
-  "Return a keymap for the `▶ Play Video' button, bound to play URL.
+(defun shipit--video-button-keymap (url &optional folds)
+  "Return a keymap for the button of a video, bound to play URL.
 Binds both \\`(kbd \"RET\")' (TTY/control-M) and `[return]' (GUI
 function key) — without the function-key form, hitting Enter in a
-GUI frame falls through to the major mode's `<return>' binding."
+GUI frame falls through to the major mode's `<return>' binding.
+When FOLDS, the button is a header over a video that folds, and TAB
+folds the video too, as it folds a section; without it, TAB on the
+header would fold the section the header is in."
   (let ((play (lambda (event) (interactive (list last-nonmenu-event))
                 (shipit--play-video-url url (shipit--event-place event)))))
     (let ((map (make-sparse-keymap)))
@@ -1843,27 +1956,46 @@ GUI frame falls through to the major mode's `<return>' binding."
       (define-key map (kbd "<RET>") play)
       (define-key map [mouse-1] play)
       (define-key map [mouse-2] play)
+      (when folds
+        (define-key map (kbd "TAB") play)
+        (define-key map [tab] play))
       map)))
 
+(defun shipit--video-header-text (name)
+  "Return the text of a header over a video that folds, which says NAME.
+It is a camera icon, NAME or else Video, and an arrow, which points down
+while the video shows under the header."
+  (concat (shipit--get-pr-field-icon "video-header" "🎥") " " (or name "Video") " "
+          (propertize "▸" 'shipit-video-arrow t)))
+
 (defun shipit--render-video-link (url &optional name)
-  "Return a string representation of video URL with a clickable play button.
-The label is propertized so that RET / mouse-1 invokes
-`shipit--play-video-url' on the URL, and says NAME when given.  When
-ffmpeg is available a still thumbnail is included beneath the button,
-unless the URL needs a login, which ffmpeg does not have."
+  "Return a button for video URL, which says NAME when given.
+A video that its site shows in a section that folds gets a header, as
+that site draws it; see `shipit--video-folds-p'.  Any other video gets
+a Play button.  RET / mouse-1 on either invokes `shipit--play-video-url'
+on the URL.  When ffmpeg is available a still thumbnail is included
+beneath the button, unless the URL needs a login, which ffmpeg does not
+have."
   (let* ((thumb (and shipit-render-videos
                      (not (shipit--login-headers url))
                      (shipit--ffmpeg-thumbnail-for-url url)))
-         (icon (shipit--get-pr-field-icon "video" ">"))
-         (label-text (format "[%s Play %s]" icon (or name "Video")))
+         (folds (and (shipit--video-folds-p url) t))
+         (label-text (if folds
+                         (shipit--video-header-text name)
+                       (format "[%s Play %s]" (shipit--get-pr-field-icon "video" ">")
+                               (or name "Video"))))
          (label (propertize label-text
                             'face 'link
                             'shipit-video-button t
+                            'shipit-video-fold folds
                             'pointer 'hand
                             'mouse-face 'highlight
-                            'help-echo (format "RET / mouse-1 to play %s" url)
+                            'help-echo (format (if folds
+                                                   "RET / TAB / mouse-1 to show or hide %s"
+                                                 "RET / mouse-1 to play %s")
+                                               url)
                             'shipit-video-url url
-                            'keymap (shipit--video-button-keymap url)))
+                            'keymap (shipit--video-button-keymap url folds)))
          (image-string
           (and thumb
                (condition-case err
@@ -7393,6 +7525,7 @@ Returns (octicon . color) or nil."
     ("pin" '("pin" . "#0366d6"))                                     ; Blue - Pinned comment
     ("linked-issue" '("link" . "#8250df"))                           ; Purple - PR to tracker issue link
     ("video" '("play" . "#0366d6"))                                  ; Blue - Video play button
+    ("video-header" '("device-camera-video" . "#0366d6"))            ; Blue - Header of a video that folds
     ("resolved" '("check-circle-fill" . "#28a745"))                  ; Green - Resolved review thread
     ("commits" '("git-commit" . "#6f42c1"))                          ; Purple - Commits a force push changed
     (_ nil)))

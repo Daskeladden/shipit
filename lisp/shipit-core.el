@@ -81,6 +81,17 @@ have such URLs adds one, so no shared file holds code for any one forge.")
   "Return non-nil when a site says that URL, which names no file, is a video."
   (run-hook-with-args-until-success 'shipit-video-url-functions url))
 
+(defvar shipit-video-fold-functions nil
+  "Functions that tell whether a video shows in a section that folds.
+Each is called with the URL of a video.  It returns non-nil when the
+site of the video shows it under a header that hides or shows it, as a
+forge may show the videos uploaded to it; the first answer counts.
+Any other video gets a Play button.")
+
+(defun shipit--video-folds-p (url)
+  "Return non-nil when the site of video URL shows it in a section that folds."
+  (run-hook-with-args-until-success 'shipit-video-fold-functions url))
+
 (defvar-local shipit--general-comments-fetched nil
   "Flag indicating whether general comments have been fetched.")
 

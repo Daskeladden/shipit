@@ -59,7 +59,7 @@ Three views draw on a canvas image, an image whose pixels Lisp can write. They a
 - [canvas-graph](https://github.com/Daskeladden/canvas-graph) lays out the stack canvas.
 - [canvas-keys](https://github.com/Daskeladden/canvas-keys) holds the keys of canvas buffers. canvas-diagram requires it.
 
-[canvas-browser](https://github.com/Daskeladden/canvas-browser) plays the videos of issues, pull requests and READMEs in the buffer, under their Play button. The option `shipit-video-inline-function` names the function that does this, `canvas-browser-embed` by default.
+[canvas-browser](https://github.com/Daskeladden/canvas-browser) plays the videos of issues, pull requests and READMEs in the buffer, under their Play button. A video uploaded to GitHub shows in a section that folds, as on GitHub: RET or TAB on its header hides or shows it. The option `shipit-video-inline-function` names the function that does this, `canvas-browser-embed` by default.
 
 These packages are optional, and shipit does not require them. Without them, a canvas view says what it needs, a video plays outside the buffer, and the rest of shipit works as before.
 

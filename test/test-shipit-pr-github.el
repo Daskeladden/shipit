@@ -158,5 +158,20 @@ line as a video, AND the other two are not."
                   ("https://example.com/owner/repo/assets/1/e2659674" . nil)))
     (should (eq (cdr case) (and (shipit--video-url-p (car case)) t)))))
 
+(ert-deftest test-github-an-uploaded-video-folds-as-on-github ()
+  "GIVEN a body with a video uploaded to GitHub alone on a line, AND a
+video file of another site alone on a line
+WHEN the videos of the body are processed
+THEN the upload gets a header with an arrow, as GitHub shows an upload
+in a section that folds, AND the other video gets a Play button, as
+GitHub shows no video there."
+  (let* ((upload "https://github.com/user-attachments/assets/0f3c2d4e-1a2b-4c3d-9e8f-123456789abc")
+         (shipit-use-svglib-icons nil)
+         (out (substring-no-properties
+               (shipit--process-inline-videos
+                (concat upload "\n\nhttps://example.com/cup.mp4\n")))))
+    (should (string-match-p "^🎥 Video ▸$" out))
+    (should (string-match-p "^\\[> Play Video\\]$" out))))
+
 (provide 'test-shipit-pr-github)
 ;;; test-shipit-pr-github.el ends here

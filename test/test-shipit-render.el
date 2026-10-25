@@ -2571,8 +2571,8 @@ under another: notification rows then mix icon sizes."
     '(("Authorization" . "Basic x"))))
 
 (defun test-shipit-render--video-url-of (text)
-  "Return the video URL the first Play button of TEXT plays, or nil."
-  (when-let* ((at (string-match "Play" text)))
+  "Return the video URL the first video button of TEXT plays, or nil."
+  (when-let* ((at (text-property-any 0 (length text) 'shipit-video-button t text)))
     (get-text-property at 'shipit-video-url text)))
 
 (ert-deftest test-shipit-render-video-link-named-by-its-text-plays ()
@@ -2678,7 +2678,51 @@ THEN mpv plays the URL the tracker handed out."
   "GIVEN a video's Play button
 THEN the mouse pointer over it is a hand, as over any link."
   (let ((out (shipit--render-video-link "https://example.com/v.mp4" "v.mp4")))
-    (should (eq 'hand (get-text-property (string-match "Play" out) 'pointer out)))))
+    (should (eq 'hand (get-text-property (string-match "v.mp4" out) 'pointer out)))))
+
+(defun test-shipit-render--header-line (text)
+  "Return the line of TEXT that holds its first video header, as plain text."
+  (let ((at (text-property-any 0 (length text) 'shipit-video-button t text)))
+    (with-temp-buffer
+      (insert text)
+      (goto-char (1+ at))
+      (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))
+
+(ert-deftest test-shipit-render-video-its-site-folds-gets-a-header ()
+  "GIVEN videos that their site shows in a section that folds, one with a
+file name and one with none, AND a video of a site that does not
+WHEN the button of each is made
+THEN each of the first two is a header that says the name, or Video, and
+an arrow that points right, as no video shows under it yet, AND the
+third is a Play button."
+  (let ((shipit-use-svglib-icons nil)
+        (shipit-video-fold-functions
+         (list (lambda (url) (string-prefix-p "https://example.com/" url)))))
+    (should (string-match-p "v\\.mp4 ▸\\'" (test-shipit-render--header-line
+                                             (shipit--render-video-link "https://example.com/v.mp4" "v.mp4"))))
+    (should (string-match-p "Video ▸\\'" (test-shipit-render--header-line
+                                         (shipit--render-video-link "https://example.com/v.mp4"))))
+    (should-not (string-match-p "Play" (shipit--render-video-link "https://example.com/v.mp4")))
+    (should (string-match-p "\\[> Play v\\.mp4\\]" (test-shipit-render--header-line
+                                                   (shipit--render-video-link "https://example.org/v.mp4" "v.mp4"))))))
+
+(ert-deftest test-shipit-render-video-header-has-the-camera-octicon ()
+  "GIVEN SVG icons, AND a video that its site shows in a section that folds
+WHEN the header of the video is made
+THEN it starts with the image of the camera octicon, as that site draws it."
+  (let ((asked nil)
+        (shipit-video-fold-functions (list #'always)))
+    ;; `features' is not special, so only `dlet' binds it for `featurep'.
+    (dlet ((shipit-use-svglib-icons t)
+           (features (cons 'svg-lib features)))
+      (cl-letf (((symbol-function 'svg-lib-icon)
+                 (lambda (name &rest _)
+                   (push name asked)
+                   '(image :type svg :data "<svg/>"))))
+        (let* ((out (shipit--render-video-link "https://example.com/v.mp4" "v.mp4"))
+               (at (text-property-any 0 (length out) 'shipit-video-button t out)))
+          (should (imagep (get-text-property at 'display out))))))
+    (should (equal '("device-camera-video") asked))))
 
 (ert-deftest test-shipit-render-video-page-has-no-scrollbar ()
   "GIVEN a page made to play a video
@@ -2742,11 +2786,11 @@ the browser was given, and `ran' what a player was started with."
          (with-temp-buffer
            (insert "Before\n" (shipit--render-video-link "https://example.com/v.mp4" "v.mp4") "After\n")
            (goto-char (point-min))
-           (search-forward "Play")
+           (search-forward "v.mp4")
            ,@body)))))
 
 (defun test-shipit-render--press-play ()
-  "Press RET on the Play button at point, through its own keys."
+  "Press RET on the video button at point, through its own keys."
   (call-interactively (lookup-key (get-text-property (point) 'keymap) (kbd "RET"))))
 
 (defvar test-shipit-render--frame-pressed nil
@@ -2761,7 +2805,7 @@ RET on it counts a press, as a real one plays or pauses its video."
     (propertize "[VIDEO]" 'keymap map)))
 
 (defun test-shipit-render--line-after-button ()
-  "Return the text of the line after the Play button at point."
+  "Return the text of the line after the video button at point."
   (save-excursion
     (forward-line 1)
     (buffer-substring-no-properties (line-beginning-position) (line-end-position))))
@@ -2783,6 +2827,17 @@ outside."
     (should-not opened)
     (should-not ran)))
 
+(defun test-shipit-render--video-hidden-p ()
+  "Return non-nil when the video of this buffer is hidden."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward "[VIDEO]")
+    (invisible-p (match-beginning 0))))
+
+(defun test-shipit-render--arrow ()
+  "Return the arrow at the end of the line of point."
+  (string (char-before (line-end-position))))
+
 (ert-deftest test-shipit-render-video-shown-plays-at-a-press-of-its-button ()
   "GIVEN a video shown under its Play button
 WHEN RET is pressed on the button
@@ -2798,6 +2853,155 @@ other video is put in or played."
       (should (= 1 (how-many "\\[VIDEO\\]" (point-min) (point-max))))
       (should-not inlined)
       (should-not opened))))
+
+(ert-deftest test-shipit-render-tab-on-a-video-header-folds-its-video ()
+  "GIVEN a video shown under its header, as its site shows it in a
+section that folds, AND a video under a Play button
+WHEN TAB is pressed on the header, as a GUI frame sends it and as a
+terminal does, and then again
+THEN the first press hides the video and the second shows it again, as
+TAB folds a section, and not the section the header is in, AND TAB on
+the Play button is left to the buffer, which folds the section it is in."
+  (let ((shipit-video-fold-functions (list #'always)))
+    (test-shipit-render--with-video-button #'test-shipit-render--video-frame
+      (shipit--show-inline-videos)
+      (dolist (key (list [tab] (kbd "TAB")))
+        (call-interactively (lookup-key (get-text-property (point) 'keymap) key))
+        (should (test-shipit-render--video-hidden-p))
+        (call-interactively (lookup-key (get-text-property (point) 'keymap) key))
+        (should-not (test-shipit-render--video-hidden-p)))))
+  (test-shipit-render--with-video-button #'test-shipit-render--video-frame
+    (should-not (lookup-key (get-text-property (point) 'keymap) (kbd "TAB")))
+    (should-not (lookup-key (get-text-property (point) 'keymap) [tab]))))
+
+(defun test-shipit-render--run-video-timer ()
+  "Run the timer that shows the videos of this buffer, as Emacs does when idle."
+  (let ((timer shipit--videos-timer))
+    (cancel-timer timer)
+    (apply (timer--function timer) (timer--args timer))))
+
+(defmacro test-shipit-render--in-sections-with-video (&rest body)
+  "Run BODY in a buffer of sections that watches for videos.
+The section Showcases holds a line of text and a header over a video
+that folds, indented as a body is, and the section Framework comes
+after it.  BODY runs once Emacs was idle, with point at the start."
+  (declare (indent 0))
+  `(let ((shipit-image-auth-functions nil)
+         (shipit-media-url-functions nil)
+         (shipit-video-fold-functions (list #'always))
+         (shipit-video-inline-function (lambda (&rest _) (test-shipit-render--video-frame))))
+     (with-temp-buffer
+       (magit-section-mode)
+       (shipit--watch-videos)
+       (let ((inhibit-read-only t))
+         (magit-insert-section (root)
+           (magit-insert-section (showcases)
+             (magit-insert-heading "Showcases")
+             (insert "   Text\n   "
+                     (string-trim-left (shipit--render-video-link "https://example.com/a.mp4") "\n")))
+           (magit-insert-section (framework)
+             (magit-insert-heading "Framework"))))
+       (test-shipit-render--run-video-timer)
+       (goto-char (point-min))
+       ,@body)))
+
+(defun test-shipit-render--video-header-p ()
+  "Return non-nil when point is at the start of the line of a video header."
+  (and (bolp) (looking-at-p "   .*Video [▸▾]$")))
+
+(ert-deftest test-shipit-render-n-and-p-land-on-a-video-header ()
+  "GIVEN a section whose body holds a header over a video that folds, and
+a section after it
+WHEN n is pressed on the heading of the first section, then n again,
+and then p
+THEN the first n lands on the header, as on a section of its own, the
+second on the next section, AND p goes back to the header."
+  (test-shipit-render--in-sections-with-video
+    (magit-section-forward)
+    (should (test-shipit-render--video-header-p))
+    (magit-section-forward)
+    (should (looking-at-p "Framework"))
+    (magit-section-backward)
+    (should (test-shipit-render--video-header-p))))
+
+(ert-deftest test-shipit-render-tab-hides-the-section-of-a-video ()
+  "GIVEN a header over a video that folds, in a buffer of sections
+WHEN TAB is pressed on the header, and then again
+THEN the first press hides the section of the video, as TAB hides any
+section, with the arrow to the right, AND the second shows it again."
+  (test-shipit-render--in-sections-with-video
+    (magit-section-forward)
+    (dolist (hidden '(t nil))
+      (call-interactively (lookup-key (get-text-property (point) 'keymap) [tab]))
+      (should (eq hidden (oref (magit-current-section) hidden)))
+      (should (eq hidden (and (test-shipit-render--video-hidden-p) t)))
+      (should (equal (if hidden "▸" "▾") (test-shipit-render--arrow))))))
+
+(ert-deftest test-shipit-render-a-video-played-later-is-in-its-section ()
+  "GIVEN a header over a video that folds, in a buffer of sections, set
+not to show its video until the header is pressed
+WHEN RET is pressed on the header, and then TAB
+THEN the video plays under the header, inside the section of the header,
+so TAB hides it."
+  (let ((shipit-video-inline-show nil))
+    (test-shipit-render--in-sections-with-video
+      (magit-section-forward)
+      (test-shipit-render--press-play)
+      (should (string-match-p "\\[VIDEO\\]" (test-shipit-render--line-after-button)))
+      (call-interactively (lookup-key (get-text-property (point) 'keymap) [tab]))
+      (should (oref (magit-current-section) hidden))
+      (should (test-shipit-render--video-hidden-p)))))
+
+(ert-deftest test-shipit-render-tab-anywhere-on-a-video-header-line-folds ()
+  "GIVEN a buffer that watches for videos, with a header over a video
+that folds, indented as a body is
+WHEN Emacs is idle, so the buffer shows its videos, and TAB is pressed
+on the indent before the header, and then again
+THEN the first press hides the video and the second shows it again, as
+on the text of the header: the indent comes after the header is made."
+  (let ((shipit-image-auth-functions nil)
+        (shipit-media-url-functions nil)
+        (shipit-video-fold-functions (list #'always))
+        (shipit-video-inline-function (lambda (&rest _) (test-shipit-render--video-frame))))
+    (with-temp-buffer
+      (shipit--watch-videos)
+      (insert "Body:" (shipit--render-video-link "https://example.com/a.mp4") "After\n")
+      (goto-char (point-min))
+      (forward-line 1)
+      (insert "   ")
+      (let ((timer shipit--videos-timer))
+        (cancel-timer timer)
+        (apply (timer--function timer) (timer--args timer)))
+      (goto-char (line-beginning-position))
+      (dolist (hidden '(t nil))
+        (call-interactively (lookup-key (get-text-property (point) 'keymap) [tab]))
+        (should (eq hidden (and (test-shipit-render--video-hidden-p) t)))))))
+
+(ert-deftest test-shipit-render-video-header-hides-and-shows-its-video ()
+  "GIVEN a video shown under its header, as its site shows it in a
+section that folds
+WHEN RET is pressed on the header, and then again
+THEN the arrow points down while the video shows, the first press hides
+the video and turns the arrow to the right, and the second shows it
+again, as that site folds a video at a click on its header, AND the
+video is not pressed, nor another put in or played."
+  (let ((shipit-video-fold-functions (list #'always)))
+    (test-shipit-render--with-video-button #'test-shipit-render--video-frame
+      (let ((test-shipit-render--frame-pressed 0))
+      (shipit--show-inline-videos)
+      (test-shipit-render--page-of (car inlined))
+      (setq inlined nil)
+      (should (equal "▾" (test-shipit-render--arrow)))
+      (test-shipit-render--press-play)
+      (should (test-shipit-render--video-hidden-p))
+      (should (equal "▸" (test-shipit-render--arrow)))
+      (test-shipit-render--press-play)
+      (should-not (test-shipit-render--video-hidden-p))
+      (should (equal "▾" (test-shipit-render--arrow)))
+      (should (= 0 test-shipit-render--frame-pressed))
+      (should (= 1 (how-many "\\[VIDEO\\]" (point-min) (point-max))))
+      (should-not inlined)
+      (should-not opened)))))
 
 (ert-deftest test-shipit-render-videos-show-paused-when-the-buffer-is-ready ()
   "GIVEN a buffer drawn with a video's Play button
@@ -2892,7 +3096,7 @@ THEN nothing is shown in the buffer, AND it plays outside the buffer."
         (shipit--show-inline-videos)
         (should-not (text-property-any (point-min) (point-max) 'shipit-video-inline t))
         (goto-char (point-min))
-        (search-forward "Play")
+        (search-forward "v.mp4")
         (test-shipit-render--press-play)
         (should (string-prefix-p "file://" opened))))))
 

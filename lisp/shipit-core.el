@@ -1504,6 +1504,16 @@ to cap further if your machine still struggles."
                  (integer :tag "Fixed pixels"))
   :group 'shipit)
 
+(defcustom shipit-image-max-frame-rate 10
+  "Most times a second that moving pictures, such as GIFs, are drawn.
+Each new frame draws the window again, and a remote display gets each
+frame of each picture over the network.  A picture with more frames a
+second leaves frames out and keeps its speed.  Only the pictures in
+view move.  nil draws each frame."
+  :type '(choice (const :tag "Each frame" nil)
+                 (number :tag "Frames a second"))
+  :group 'shipit)
+
 (defcustom shipit-render-mermaid t
   "Whether to render mermaid diagrams inline.
 canvas-mermaid draws them when it loads, on Emacs 32.  Else `mmdc'

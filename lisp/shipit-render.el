@@ -1368,25 +1368,144 @@ has.  The strips of one image share it."
         ((consp display)
          (seq-find (lambda (part) (eq (car-safe part) 'image)) display))))
 
+(defvar-local shipit--moving-pictures nil
+  "The moving pictures of this buffer, each with the time its next frame is due.
+A hash table with weak keys, so that a picture that a redraw of the
+buffer left behind drops out of it.  A picture that did not move yet is
+due at 0.")
+
+(defvar-local shipit--picture-clock nil
+  "The timer that moves the pictures of this buffer, or nil.
+It stops while no window shows one of them, so that they cost nothing
+then.")
+
+(defun shipit--images-in-region (start end &optional visible)
+  "Return the pictures that the text from START to END displays.
+With VISIBLE, leave out the pictures of text that is invisible, as in a
+folded section."
+  (let ((pos start)
+        (images nil))
+    (while (and pos (< pos end))
+      (let ((image (shipit--display-image (get-text-property pos 'display))))
+        (when (and image
+                   (not (memq image images))
+                   (not (and visible (invisible-p pos))))
+          (push image images)))
+      (setq pos (next-single-property-change pos 'display nil end)))
+    images))
+
 (defun shipit--animate-images-in-region (start end)
-  "Animate any multi-frame images displayed via text properties in START..END.
-The render pipeline creates images inside `with-temp-buffer', so calling
-`image-animate' there would bind the timer to a buffer that dies as soon
-as the temp buffer is unwound.  Callers run this helper after inserting
-the rendered text into the destination buffer; the timer then captures
-that live buffer and the animation actually plays."
-  (save-excursion
-    (let ((pos start)
-          (started nil))
-      (while (and pos (< pos end))
-        (let ((image (shipit--display-image (get-text-property pos 'display))))
-          (when (and image
-                     (not (memq image started))
-                     (fboundp 'image-multi-frame-p)
-                     (image-multi-frame-p image))
-            (push image started)
-            (image-animate image 0 t)))
-        (setq pos (next-single-property-change pos 'display nil end))))))
+  "Set moving the moving pictures that the text from START to END shows.
+The render pipeline creates the pictures inside `with-temp-buffer'.
+Callers run this after they insert the rendered text into its buffer,
+whose clock then moves the pictures.  Emacs's own `image-animate' would
+draw the window again at each frame of each picture, also out of view."
+  (dolist (image (shipit--images-in-region start end))
+    (when (image-multi-frame-p image)
+      (unless shipit--moving-pictures
+        (setq shipit--moving-pictures (make-hash-table :test 'eq :weakness 'key))
+        (shipit--watch-picture-views))
+      (puthash image 0 shipit--moving-pictures)))
+  (shipit--wake-picture-clock))
+
+(defun shipit--watch-picture-views ()
+  "Start the clock of this buffer's pictures when its view can change.
+A command can scroll a picture into view or unfold it, and a window can
+come to show the buffer or grow.  A window can also scroll with no
+command in the buffer, as a wheel over a window that is not selected
+does."
+  (add-hook 'post-command-hook #'shipit--wake-picture-clock nil t)
+  (add-hook 'window-buffer-change-functions #'shipit--wake-picture-clock nil t)
+  (add-hook 'window-size-change-functions #'shipit--wake-picture-clock nil t)
+  (add-hook 'window-scroll-functions #'shipit--wake-picture-clock nil t))
+
+(defun shipit--wake-picture-clock (&optional window _start)
+  "Start the clock that moves the pictures of the buffer of WINDOW.
+WINDOW defaults to the current buffer.  Do nothing when the clock runs,
+or when the buffer has no moving pictures.  The scroll hooks also pass
+the new start of WINDOW, which this ignores."
+  (with-current-buffer (if window (window-buffer window) (current-buffer))
+    (when (and shipit--moving-pictures (not shipit--picture-clock))
+      (shipit--start-picture-clock (shipit--picture-frame-gap)))))
+
+(defun shipit--start-picture-clock (seconds)
+  "Move the pictures of this buffer in SECONDS."
+  (setq shipit--picture-clock
+        (run-at-time seconds nil #'shipit--picture-clock-tick (current-buffer))))
+
+(defun shipit--picture-clock-tick (buffer)
+  "Move the pictures in view of BUFFER, and come back when a frame is due."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq shipit--picture-clock nil)
+      (when-let* ((seconds (shipit--move-pictures-at (float-time))))
+        (shipit--start-picture-clock seconds)))))
+
+(defun shipit--move-pictures-at (now)
+  "Show the frames that are due at time NOW of the moving pictures in view.
+Draw the windows of the buffer again once when a picture moved.  Return
+the seconds until the clock comes back, or nil when no window shows a
+moving picture of the buffer."
+  (when-let* ((shown (shipit--moving-pictures-in-view)))
+    (when (seq-filter (lambda (image) (shipit--move-picture image now)) shown)
+      (force-window-update (current-buffer)))
+    (shipit--next-picture-tick shown now)))
+
+(defun shipit--moving-pictures-in-view ()
+  "Return the moving pictures of this buffer that a window shows.
+A window of a terminal frame, as the first frame of an Emacs daemon,
+shows none."
+  (let ((shown nil))
+    (dolist (window (get-buffer-window-list nil nil 'visible))
+      (when (display-images-p (window-frame window))
+        (dolist (image (shipit--images-in-region
+                        (window-start window) (window-end window) t))
+          (when (and (gethash image shipit--moving-pictures)
+                     (not (memq image shown)))
+            (push image shown)))))
+    shown))
+
+(defun shipit--move-picture (image now)
+  "Show the frame of the moving picture IMAGE that is due at time NOW.
+Return non-nil when its frame changed.  A picture that waited more than
+a second, out of view, goes on from the frame it shows."
+  (let ((due (gethash image shipit--moving-pictures))
+        (moved nil))
+    (if (> (- now due) 1)
+        (setq due (+ now (shipit--picture-frame-seconds image)))
+      (while (<= due now)
+        (shipit--show-next-frame image)
+        (setq due (+ due (shipit--picture-frame-seconds image))
+              moved t)))
+    (puthash image due shipit--moving-pictures)
+    moved))
+
+(defun shipit--picture-frame-seconds (image)
+  "Return the seconds that the moving picture IMAGE shows its frame."
+  (max (or (cdr (image-multi-frame-p image)) image-default-frame-delay)
+       image-minimum-frame-delay))
+
+(defun shipit--show-next-frame (image)
+  "Make the moving picture IMAGE show its next frame, the first after the last."
+  (plist-put (cdr image) :index
+             (mod (1+ (or (plist-get (cdr image) :index) 0))
+                  (car (image-multi-frame-p image)))))
+
+(defun shipit--next-picture-tick (images now)
+  "Return the seconds from time NOW until a frame of IMAGES is due.
+It is at least the time between two frames at
+`shipit-image-max-frame-rate'."
+  (max (- (apply #'min (mapcar (lambda (image)
+                                 (gethash image shipit--moving-pictures))
+                               images))
+          now)
+       (shipit--picture-frame-gap)))
+
+(defun shipit--picture-frame-gap ()
+  "Return the fewest seconds between two moves of the pictures."
+  (if shipit-image-max-frame-rate
+      (/ 1.0 shipit-image-max-frame-rate)
+    image-minimum-frame-delay))
 
 (defun shipit--gif-resize-command (file width dest)
   "Return the command that writes GIF FILE WIDTH pixels wide as DEST, or nil.
@@ -2197,15 +2316,13 @@ window-body-width) applies."
                             (create-image cached-file image-type nil
                                           :max-width max-w
                                           :max-height max-h)))))
-              ;; Note: do NOT call `image-animate' here.  This function
+              ;; Note: do NOT set the picture moving here.  This function
               ;; runs inside `with-temp-buffer' (the markdown render path),
               ;; so `(current-buffer)' is a temp buffer that gets killed as
-              ;; soon as we return.  `image-animate' captures it as the
-              ;; image's `:animate-buffer' and cancels the timer the first
-              ;; time it fires (the buffer is dead).  Animation is started
-              ;; later by `shipit--animate-images-in-region', which the
-              ;; caller invokes after the rendered text is inserted into
-              ;; the real destination buffer.
+              ;; soon as we return.  The caller sets it moving with
+              ;; `shipit--animate-images-in-region' after it inserts the
+              ;; rendered text into the real destination buffer, whose
+              ;; clock then moves it.
               (if (display-images-p)
                   (let ((image-string (propertize " " 'display image 'rear-nonsticky '(display))))
                     ;; Inline placement: just the propertized space carrying

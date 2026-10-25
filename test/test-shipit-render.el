@@ -1673,20 +1673,189 @@ the cell its alignment."
         (should (equal '(1 . 1) (get-text-property 0 'shipit-cell result)))
         (should (eq 'top (get-text-property 0 'shipit-valign result)))))))
 
+(defmacro test-shipit-render--with-moving-pictures (frames shown &rest body)
+  "Run BODY in a buffer for moving pictures whose frames FRAMES tells.
+FRAMES is the number of frames and the seconds of each, as
+`image-multi-frame-p' gives them.  When SHOWN, the selected window
+shows the buffer, all of it, as in batch Emacs; else no window does.
+The frames show pictures, which the frame of batch Emacs does not."
+  (declare (indent 2))
+  `(cl-letf (((symbol-function 'image-multi-frame-p) (lambda (&rest _) ,frames))
+             ((symbol-function 'display-images-p) (lambda (&rest _) t)))
+     (with-temp-buffer
+       (when ,shown
+         (set-window-buffer (selected-window) (current-buffer)))
+       (unwind-protect
+           (progn ,@body)
+         (when shipit--picture-clock
+           (cancel-timer shipit--picture-clock))))))
+
+(defun test-shipit-render--insert-picture (image &rest properties)
+  "Insert a line that shows IMAGE, with the text PROPERTIES too."
+  (insert (apply #'propertize " " 'display image properties) "\n"))
+
+(defun test-shipit-render--frame (image)
+  "The frame that IMAGE shows: nil before its first move."
+  (plist-get (cdr image) :index))
+
+(ert-deftest test-shipit-a-moving-picture-keeps-its-speed-under-the-frame-cap ()
+  "GIVEN a moving picture in view whose frames last 0.03 seconds
+WHEN the clock moves the pictures, and again 0.1 seconds later
+THEN the picture is three frames on: it skips the frames that the cap
+on the frame rate leaves out, so it keeps its speed."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) t
+    (let ((cup (list 'image :type 'gif :file "cup.gif")))
+      (test-shipit-render--insert-picture cup)
+      (shipit--animate-images-in-region (point-min) (point-max))
+      (shipit--move-pictures-at 100.0)
+      (shipit--move-pictures-at 100.1)
+      (should (= 3 (test-shipit-render--frame cup))))))
+
+(ert-deftest test-shipit-the-clock-comes-back-at-most-at-the-frame-rate ()
+  "GIVEN a moving picture in view whose frames last 0.03 seconds
+WHEN the clock moves the pictures, with a cap of ten frames a second,
+and with no cap
+THEN the clock comes back 0.1 seconds later with the cap, and when the
+next frame is due without it."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) t
+    (test-shipit-render--insert-picture (list 'image :type 'gif :file "cup.gif"))
+    (shipit--animate-images-in-region (point-min) (point-max))
+    (let ((shipit-image-max-frame-rate 10))
+      (should (= 0.1 (shipit--move-pictures-at 100.0))))
+    (let ((shipit-image-max-frame-rate nil))
+      (should (< (abs (- 0.025 (shipit--move-pictures-at 100.035))) 1e-6)))))
+
+(ert-deftest test-shipit-a-slow-picture-brings-the-clock-back-when-it-is-due ()
+  "GIVEN a moving picture in view whose frames last 0.17 seconds, and a
+cap of ten frames a second
+WHEN the clock moves the pictures
+THEN the clock comes back when the next frame is due, 0.17 seconds
+later, and not each 0.1 seconds for nothing."
+  (test-shipit-render--with-moving-pictures '(8 . 0.17) t
+    (test-shipit-render--insert-picture (list 'image :type 'gif :file "cup.gif"))
+    (shipit--animate-images-in-region (point-min) (point-max))
+    (let ((shipit-image-max-frame-rate 10))
+      (should (< (abs (- 0.17 (shipit--move-pictures-at 100.0))) 1e-6)))))
+
+(ert-deftest test-shipit-moving-pictures-in-view-redraw-the-window-once ()
+  "GIVEN two moving pictures in view, each with a frame that is due
+WHEN the clock moves the pictures
+THEN both move, and the window is drawn again once, not once for each."
+  (let ((redraws 0))
+    (cl-letf (((symbol-function 'force-window-update)
+               (lambda (&rest _) (setq redraws (1+ redraws)))))
+      (test-shipit-render--with-moving-pictures '(8 . 0.03) t
+        (let ((cup (list 'image :type 'gif :file "cup.gif"))
+              (tea (list 'image :type 'gif :file "tea.gif")))
+          (test-shipit-render--insert-picture cup)
+          (test-shipit-render--insert-picture tea)
+          (shipit--animate-images-in-region (point-min) (point-max))
+          (shipit--move-pictures-at 100.0)
+          (shipit--move-pictures-at 100.04)
+          (should (= 1 (test-shipit-render--frame cup)))
+          (should (= 1 (test-shipit-render--frame tea)))
+          (should (= 1 redraws)))))))
+
 (ert-deftest test-shipit-the-strips-of-a-moving-picture-move-once ()
-  "GIVEN a buffer with three strips of one moving picture
-WHEN the pictures of the buffer are set moving
-THEN that picture is set moving once."
-  (let ((started nil)
-        (cup '(image :type gif :file "cup.gif")))
-    (cl-letf (((symbol-function 'image-multi-frame-p) (lambda (&rest _) t))
-              ((symbol-function 'image-animate)
-               (lambda (image &rest _) (push image started))))
-      (with-temp-buffer
-        (dolist (top '(0 18 36))
-          (insert (propertize " " 'display `((slice 0 ,top 160 18) ,cup)) "\n"))
-        (shipit--animate-images-in-region (point-min) (point-max))))
-    (should (equal (list cup) started))))
+  "GIVEN a buffer in view with three strips of one moving picture
+WHEN the clock moves the pictures when one frame is due
+THEN that picture is one frame on, not three."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) t
+    (let ((cup (list 'image :type 'gif :file "cup.gif")))
+      (dolist (top '(0 18 36))
+        (test-shipit-render--insert-picture `((slice 0 ,top 160 18) ,cup)))
+      (shipit--animate-images-in-region (point-min) (point-max))
+      (shipit--move-pictures-at 100.0)
+      (shipit--move-pictures-at 100.04)
+      (should (= 1 (test-shipit-render--frame cup))))))
+
+(ert-deftest test-shipit-a-moving-picture-out-of-view-holds-still ()
+  "GIVEN a moving picture in a buffer that no window shows
+WHEN the clock moves the pictures, also after its frame is due
+THEN the picture holds its frame, AND the clock does not come back:
+the picture costs nothing until the buffer is in view again."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) nil
+    (let ((cup (list 'image :type 'gif :file "cup.gif")))
+      (test-shipit-render--insert-picture cup)
+      (shipit--animate-images-in-region (point-min) (point-max))
+      (should-not (shipit--move-pictures-at 100.0))
+      (should-not (shipit--move-pictures-at 100.1))
+      (should-not (test-shipit-render--frame cup)))))
+
+(ert-deftest test-shipit-a-moving-picture-in-a-terminal-window-holds-still ()
+  "GIVEN a moving picture that only a window of a terminal frame shows,
+as the first frame of an Emacs daemon can
+WHEN the clock moves the pictures, also after its frame is due
+THEN the picture holds its frame: a terminal shows no pictures."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) t
+    (let ((cup (list 'image :type 'gif :file "cup.gif")))
+      (test-shipit-render--insert-picture cup)
+      (shipit--animate-images-in-region (point-min) (point-max))
+      (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil)))
+        (shipit--move-pictures-at 100.0)
+        (shipit--move-pictures-at 100.1))
+      (should-not (test-shipit-render--frame cup)))))
+
+(ert-deftest test-shipit-a-folded-moving-picture-holds-still ()
+  "GIVEN a moving picture in view, in text that a folded section hides
+WHEN the clock moves the pictures, also after its frame is due
+THEN the picture holds its frame."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) t
+    (let ((cup (list 'image :type 'gif :file "cup.gif")))
+      (test-shipit-render--insert-picture cup 'invisible t)
+      (shipit--animate-images-in-region (point-min) (point-max))
+      (shipit--move-pictures-at 100.0)
+      (shipit--move-pictures-at 100.1)
+      (should-not (test-shipit-render--frame cup)))))
+
+(ert-deftest test-shipit-the-clock-stops-out-of-view-and-starts-at-a-command ()
+  "GIVEN moving pictures in a buffer that no window shows, just set moving
+WHEN the clock runs, AND then a command ends in the buffer
+THEN the clock stops when it runs, AND it starts again after the
+command, which may have brought the pictures into view."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) nil
+    (test-shipit-render--insert-picture (list 'image :type 'gif :file "cup.gif"))
+    (shipit--animate-images-in-region (point-min) (point-max))
+    (should (timerp shipit--picture-clock))
+    (timer-event-handler shipit--picture-clock)
+    (should-not shipit--picture-clock)
+    (run-hooks 'post-command-hook)
+    (should (timerp shipit--picture-clock))))
+
+(ert-deftest test-shipit-the-clock-starts-when-a-window-scrolls-without-a-command ()
+  "GIVEN moving pictures in a buffer that the selected window shows, and
+a clock that stopped
+WHEN the window scrolls with no command in the buffer, as a wheel over
+a window that is not selected does, and redisplay runs the scroll hooks
+THEN the clock starts again, as the scroll may have brought the
+pictures into view."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) t
+    (test-shipit-render--insert-picture (list 'image :type 'gif :file "cup.gif"))
+    (shipit--animate-images-in-region (point-min) (point-max))
+    (cancel-timer shipit--picture-clock)
+    (setq shipit--picture-clock nil)
+    (run-hook-with-args 'window-scroll-functions (selected-window) (point-min))
+    (should (timerp shipit--picture-clock))))
+
+(ert-deftest test-shipit-a-picture-that-a-redraw-left-behind-holds-still ()
+  "GIVEN a buffer in view with a moving picture, set moving, that is
+drawn again as a new copy, which is set moving
+WHEN the clock moves the pictures after a frame is due
+THEN the new copy moves, AND the old copy holds still: the buffer shows
+it no more."
+  (test-shipit-render--with-moving-pictures '(8 . 0.03) t
+    (let ((old (list 'image :type 'gif :file "cup.gif"))
+          (new (list 'image :type 'gif :file "cup.gif")))
+      (test-shipit-render--insert-picture old)
+      (shipit--animate-images-in-region (point-min) (point-max))
+      (shipit--move-pictures-at 100.0)
+      (erase-buffer)
+      (test-shipit-render--insert-picture new)
+      (shipit--animate-images-in-region (point-min) (point-max))
+      (shipit--move-pictures-at 100.5)
+      (shipit--move-pictures-at 100.54)
+      (should (= 1 (test-shipit-render--frame new)))
+      (should-not (test-shipit-render--frame old)))))
 
 (ert-deftest test-shipit-table-code-keeps-its-background-at-the-line-edges ()
   "GIVEN a line of a table row whose code, marked as code of a table,

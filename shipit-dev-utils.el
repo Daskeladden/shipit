@@ -79,6 +79,13 @@ then `shipit-dev-reload-extra-files'."
                   shipit-dev--load-files)
           shipit-dev-reload-extra-files))
 
+(defun shipit-dev--file ()
+  "This file: on the load path, or else at the root of the project,
+beside shipit's lisp directory, where the repository keeps it."
+  (or (locate-library "shipit-dev-utils")
+      (expand-file-name "../shipit-dev-utils.el"
+                        (file-name-directory (locate-library "shipit-debug")))))
+
 (defun shipit-dev--shipit-function-p (fn)
   "Non-nil when FN is the symbol of a shipit function."
   (and (symbolp fn) (string-prefix-p "shipit-" (symbol-name fn))))
@@ -152,6 +159,10 @@ reload."
                   (push symbol functions))))
     functions))
 
+(defvar shipit--reload-bootstrapped nil
+  "Non-nil while `shipit-reload' runs the copy of itself that it just loaded.
+That copy then does not load this file again.")
+
 ;;;###autoload
 (defun shipit-reload (&optional compile-first)
   "Properly reload shipit from source files.
@@ -159,10 +170,7 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
   (interactive "P")
   (catch 'shipit-reload-done
     ;; Bootstrap: reload this file first to ensure we're using the latest version
-    (let ((this-file (or load-file-name
-                         (locate-library "shipit-dev-utils")
-                         (expand-file-name "shipit-dev-utils.el"
-                                           (file-name-directory (locate-library "shipit-debug"))))))
+    (let ((this-file (or load-file-name (shipit-dev--file))))
       (when (and this-file
                  (file-exists-p this-file)
                  (not (bound-and-true-p shipit--reload-bootstrapped)))

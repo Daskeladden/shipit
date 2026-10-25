@@ -141,6 +141,27 @@ reload has unbound the function that takes it."
   (should (< (cl-position "shipit-pr-actions.el" shipit-dev--load-files :test #'equal)
              (cl-position "shipit-actions-list.el" shipit-dev--load-files :test #'equal))))
 
+(ert-deftest test-shipit-dev-reload-finds-its-own-file-at-the-root ()
+  "GIVEN shipit's lisp directory on the load path, AND this file at the
+root of the project, beside that directory, not on the load path
+WHEN the reload looks for its own file, to load it first
+THEN it finds the file at the root: a reload that does not find it runs
+the old code of the reload."
+  (should (equal (expand-file-name
+                  "../shipit-dev-utils.el"
+                  (file-name-directory (locate-library "shipit-debug")))
+                 (shipit-dev--file)))
+  (should (file-exists-p (shipit-dev--file))))
+
+(ert-deftest test-shipit-dev-reload-loads-its-own-file-once ()
+  "GIVEN the mark that the reload binds while it runs the copy of itself
+that it just loaded
+WHEN the copy asks whether the mark is bound
+THEN it sees the binding: the mark is a special variable.  A lexical
+binding is not seen there, so the copy loads its file again, and again,
+until Emacs stops it at its depth of nesting."
+  (should (special-variable-p 'shipit--reload-bootstrapped)))
+
 (ert-deftest test-shipit-dev-reload-keeps-the-commands-of-its-file ()
   "GIVEN the commands of the reload, AND a loaded file of shipit
 WHEN the functions that a reload unbinds are listed

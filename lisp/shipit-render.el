@@ -1394,6 +1394,17 @@ folded section."
       (setq pos (next-single-property-change pos 'display nil end)))
     images))
 
+(defun shipit--picture-moves-p (image)
+  "Return non-nil when the picture IMAGE has more than one frame.
+Only a frame that shows pictures can tell: in a terminal frame
+`image-multi-frame-p' signals an error.  So ask the selected frame, or
+else another frame that shows pictures, as when the terminal frame of
+an Emacs daemon is selected.  Return nil when no frame shows pictures."
+  (when-let* ((frame (seq-find #'display-images-p
+                               (cons (selected-frame) (frame-list)))))
+    (with-selected-frame frame
+      (image-multi-frame-p image))))
+
 (defun shipit--animate-images-in-region (start end)
   "Set moving the moving pictures that the text from START to END shows.
 The render pipeline creates the pictures inside `with-temp-buffer'.
@@ -1401,7 +1412,7 @@ Callers run this after they insert the rendered text into its buffer,
 whose clock then moves the pictures.  Emacs's own `image-animate' would
 draw the window again at each frame of each picture, also out of view."
   (dolist (image (shipit--images-in-region start end))
-    (when (image-multi-frame-p image)
+    (when (shipit--picture-moves-p image)
       (unless shipit--moving-pictures
         (setq shipit--moving-pictures (make-hash-table :test 'eq :weakness 'key))
         (shipit--watch-picture-views))

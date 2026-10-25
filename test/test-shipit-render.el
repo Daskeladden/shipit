@@ -1796,6 +1796,19 @@ THEN the picture holds its frame: a terminal shows no pictures."
         (shipit--move-pictures-at 100.1))
       (should-not (test-shipit-render--frame cup)))))
 
+(ert-deftest test-shipit-pictures-render-where-no-frame-shows-pictures ()
+  "GIVEN a buffer that shows a picture, and no frame that shows pictures,
+as in batch Emacs or in a daemon that has only its terminal frame
+WHEN the pictures of the buffer are set moving
+THEN no error stops the render, AND no picture moves: only a frame
+that shows pictures can tell whether a picture has frames."
+  (with-temp-buffer
+    ;; PBM is built into every Emacs, so the test needs no image library.
+    (test-shipit-render--insert-picture (create-image "P1\n1 1\n1\n" 'pbm t))
+    (shipit--animate-images-in-region (point-min) (point-max))
+    (should-not shipit--moving-pictures)
+    (should-not shipit--picture-clock)))
+
 (ert-deftest test-shipit-a-folded-moving-picture-holds-still ()
   "GIVEN a moving picture in view, in text that a folded section hides
 WHEN the clock moves the pictures, also after its frame is due

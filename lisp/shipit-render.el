@@ -2449,6 +2449,52 @@ quote the face that is asked for here."
       (when (shipit--markdown-face-p (match-beginning 1) 'markdown-markup-face)
         (shipit--draw-quote-bars-between (match-beginning 1) (match-end 1))))))
 
+(defun shipit--table-bars (start end)
+  "Return the bars that part the cells of the table row from START to END.
+They are places of this buffer, the last one first.  A bar after a
+backslash is text of its cell."
+  (let ((bars nil))
+    (save-excursion
+      (goto-char start)
+      (while (search-forward "|" end t)
+        (unless (eq (char-before (1- (point))) ?\\)
+          (push (1- (point)) bars))))
+    bars))
+
+(defun shipit--hidden-count (start end)
+  "Return how many characters from START to END of this buffer are hidden."
+  (cl-count-if (lambda (pos) (get-text-property pos 'invisible))
+               (number-sequence start (1- end))))
+
+(defun shipit--widen-table-row (start end)
+  "Give each cell of the table row from START to END its hidden width back.
+A space goes before the bar that ends a cell for each hidden character
+of the cell."
+  (let ((bars (shipit--table-bars start end)))
+    (while (cdr bars)
+      (let ((hidden (shipit--hidden-count (1+ (cadr bars)) (car bars))))
+        (when (> hidden 0)
+          (save-excursion
+            (goto-char (car bars))
+            (insert (propertize (make-string hidden ?\s)
+                                'face (get-text-property (1- (point)) 'face))))))
+      (setq bars (cdr bars)))))
+
+(defun shipit--widen-table-cells ()
+  "Show each table cell of this buffer as wide as it is in its text.
+The buffer is fontified by markdown-mode.  pandoc aligned each table,
+so the cells of a column are as wide in the text.  markdown-mode hides
+some of that text: the backslash of an escape, which pandoc puts before
+a bracket, and the address of a link.  Such a cell is shown narrower,
+and its bar stands left of the bars above and below it.  A line of a
+code block that looks like a table row has no face of a table, and
+stays."
+  (save-excursion
+    (goto-char (point-min))
+    (while (re-search-forward "^[ \t]*\\(|\\).*|[ \t]*$" nil t)
+      (when (shipit--markdown-face-p (match-beginning 1) 'markdown-table-face)
+        (shipit--widen-table-row (match-beginning 1) (match-end 0))))))
+
 (defun shipit--draw-quoted-headings ()
   "Show each heading in a quote of this buffer as a heading.
 The buffer is fontified by markdown-mode, which makes no heading of a
@@ -6545,6 +6591,7 @@ This is the actual rendering implementation; callers should use
               (shipit--draw-horizontal-rules)
               (shipit--draw-quote-bars)
               (shipit--draw-quoted-headings)
+              (shipit--widen-table-cells)
               ;; Note: Code block backgrounds are applied via overlays AFTER
               ;; text is inserted into the final buffer (see shipit--apply-code-block-backgrounds-in-region)
               ;; because overlays don't transfer with buffer-string

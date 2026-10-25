@@ -765,6 +765,81 @@ text has none, AND the text of the buffer is as it was."
     (should (equal "> ## v1.3\n> Boil faster\n"
                    (buffer-substring-no-properties (point-min) (point-max))))))
 
+(defun test-shipit-render--shown-lines ()
+  "The lines of this buffer as they are shown: without their hidden text."
+  (mapcar (lambda (line)
+            (apply #'string (seq-remove #'null
+                                        (seq-map-indexed
+                                         (lambda (char i)
+                                           (unless (get-text-property i 'invisible line) char))
+                                         line))))
+          (split-string (buffer-string) "\n")))
+
+(defun test-shipit-render--insert-fontified (&rest parts)
+  "Insert PARTS, each (TEXT . HIDDEN) or a string, as markdown-mode leaves a table.
+Each line gets the face of a table, and the text of a part with HIDDEN
+is hidden, as markdown-mode hides the backslash of an escape."
+  (dolist (part parts)
+    (if (stringp part)
+        (insert (propertize part 'face '(markdown-table-face)))
+      (insert (propertize (car part) 'face '(markdown-table-face) 'invisible (cdr part))))))
+
+(ert-deftest test-shipit-a-table-cell-with-hidden-text-is-as-wide-as-its-column ()
+  "GIVEN a table that pandoc aligned, whose data cell has two escapes of
+a backslash, AND markdown-mode hid both backslashes
+WHEN the cells are widened by their hidden text
+THEN the data row is shown as wide as the head row, AND the cell got
+two spaces before its bar, so its bar stands below the bar of the head."
+  (with-temp-buffer
+    (test-shipit-render--insert-fontified
+     "| Name | Range         |\n"
+     "|------|---------------|\n"
+     "| cup  | " '("\\" . t) "[>= 1, < 2" '("\\" . t) "] |")
+    (shipit--widen-table-cells)
+    (let ((shown (test-shipit-render--shown-lines)))
+      (should (equal "| cup  | [>= 1, < 2]   |" (nth 2 shown)))
+      (should (= (length (nth 0 shown)) (length (nth 2 shown)))))))
+
+(ert-deftest test-shipit-an-escaped-bar-stays-in-its-table-cell ()
+  "GIVEN a fontified table row whose first cell has an escaped bar, whose
+backslash is hidden
+WHEN the cells are widened by their hidden text
+THEN the space goes before the bar that ends the first cell: the escaped
+bar is text of the cell."
+  (with-temp-buffer
+    (test-shipit-render--insert-fontified "| x" '("\\" . t) "|y | z |")
+    (shipit--widen-table-cells)
+    (should (equal "| x\\|y  | z |" (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-shipit-a-table-row-in-a-code-block-keeps-its-width ()
+  "GIVEN a line that looks like a table row with hidden text, in a code
+block
+WHEN the cells are widened by their hidden text
+THEN the line is as it was."
+  (with-temp-buffer
+    (insert (propertize "| a" 'face 'markdown-pre-face)
+            (propertize "\\" 'face 'markdown-pre-face 'invisible t)
+            (propertize "[ | b |" 'face 'markdown-pre-face))
+    (shipit--widen-table-cells)
+    (should (equal "| a\\[ | b |" (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-shipit-rendered-table-with-escapes-keeps-its-columns ()
+  "GIVEN a markdown table whose cell has brackets and angle brackets,
+which pandoc escapes when it aligns the table, AND a table whose cell
+holds a link
+WHEN each is rendered
+THEN each line of a table is shown as wide as the others, so the bars
+of each column stand below each other."
+  (skip-unless (and (require 'markdown-mode nil t) (boundp 'markdown-mode-version)
+                    (executable-find "pandoc")))
+  (dolist (text '("| Dependency | Range |\n| --- | --- |\n| cup | [>= 1, < 2] |\n"
+                  "| Name | Link |\n| --- | --- |\n| cup | [the menu](https://example.com/menu) |\n"))
+    (let ((shipit--markdown-render-cache (make-hash-table :test 'equal)))
+      (with-temp-buffer
+        (insert (string-trim-right (shipit--render-markdown text)))
+        (should (= 1 (length (delete-dups (mapcar #'length
+                                                   (test-shipit-render--shown-lines))))))))))
+
 (ert-deftest test-shipit-a-heading-after-a-mark-that-starts-no-quote-stays ()
   "GIVEN a line that looks like a heading in a quote, in a code block
 WHEN the headings in quotes are drawn

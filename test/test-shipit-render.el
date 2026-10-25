@@ -1176,11 +1176,12 @@ nothing is said, gets the plain marker."
 heads and a row of data
 WHEN the HTML tags are converted
 THEN no tag of the table is left, AND each row and each cell stands
-between markers, as in a table with markdown in its cells."
+between markers, as in a table with markdown in its cells, AND the
+heads stand in the middle of their columns, where HTML puts them."
   (should (equal (concat "Menu\n\n"
                          "<shipit-row>\n\n"
-                         "<shipit-cell>\n\nDrink\n\n</shipit-cell>\n\n"
-                         "<shipit-cell>\n\nSize\n\n</shipit-cell>\n\n"
+                         "<shipit-cell center>\n\nDrink\n\n</shipit-cell>\n\n"
+                         "<shipit-cell center>\n\nSize\n\n</shipit-cell>\n\n"
                          "<shipit-row>\n\n"
                          "<shipit-cell>\n\nLatte\n\n</shipit-cell>\n\n"
                          "<shipit-cell>\n\nLarge\n\n</shipit-cell>\n\n"
@@ -1494,6 +1495,83 @@ cannot be the same."
                      (seq-position lines "tea" (lambda (line tea)
                                                  (string-suffix-p tea line))))))))
 
+(defun test-shipit-render--room-widths (text)
+  "The widths of the spaces in the string TEXT that show room, in order."
+  (let ((widths nil))
+    (dotimes (i (length text))
+      (let ((display (get-text-property i 'display text)))
+        (when (eq (car-safe display) 'space)
+          (push (plist-get (cdr display) :width) widths))))
+    (nreverse widths)))
+
+(ert-deftest test-shipit-a-cell-marker-with-a-place-in-the-line-marks-the-cell ()
+  "GIVEN markdown with a table row of a cell whose marker names center,
+AND a cell whose marker names top and right
+WHEN the markers are applied
+THEN the first cell is marked to stand in the middle of its column, AND
+the second at the right of it and at the top of its row."
+  (let ((text (shipit--apply-layout-markers
+               (concat "<shipit-row>\n\n"
+                       "<shipit-cell center>\n\na\n\n</shipit-cell>\n\n"
+                       "<shipit-cell top right>\n\nb\n\n</shipit-cell>"))))
+    (should (equal '((1 0 "a") (1 1 "b")) (test-shipit-render--table-cells text)))
+    (should (eq 'center (get-text-property 0 'shipit-halign text)))
+    (should (eq 'right (get-text-property (string-search "b" text) 'shipit-halign text)))
+    (should (eq 'top (get-text-property (string-search "b" text) 'shipit-valign text)))))
+
+(ert-deftest test-shipit-html-table-cells-get-the-place-in-the-line-they-ask-for ()
+  "GIVEN an HTML table with a cell that says align center, one whose
+style says text-align right, a plain cell, a heading cell that says
+nothing, a heading cell that says align left, AND a row that says align
+right around a plain cell
+WHEN the HTML tags are converted
+THEN the markers of the cells say center, right, nothing, center as
+HTML puts a heading cell, nothing, AND right."
+  (let ((text (shipit--convert-inline-html
+               (concat "<table>"
+                       "<tr><td align=\"center\">a</td>"
+                       "<td style=\"color: red; text-align: right\">b</td><td>c</td></tr>"
+                       "<tr><th>d</th><th align=\"left\">e</th></tr>"
+                       "<tr align=\"right\"><td>f</td></tr>"
+                       "</table>")))
+        (markers nil)
+        (pos 0))
+    (while (string-match "<shipit-cell[^>]*>" text pos)
+      (push (match-string 0 text) markers)
+      (setq pos (match-end 0)))
+    (should (equal '("<shipit-cell center>" "<shipit-cell right>" "<shipit-cell>"
+                     "<shipit-cell center>" "<shipit-cell>" "<shipit-cell right>")
+                   (nreverse markers)))))
+
+(ert-deftest test-shipit-a-table-cell-line-stands-at-the-place-of-its-cell ()
+  "GIVEN table rows of a cell of a word, AND a cell of a short line and a
+long line, which is marked to stand in the middle, at the right, or not
+marked
+WHEN the table rows are laid out in 43 columns
+THEN the short line has room before it: half of the room that it leaves
+in its column in the middle, all of it at the right, and none when the
+cell is not marked, AND the long line, which fills its column, has none."
+  (dolist (case '((center 5.5) (right 11) (nil)))
+    (let* ((text (concat (test-shipit-render--cell 1 0 "one") "\n\n"
+                         (propertize (test-shipit-render--cell 1 1 "tea\nsugar and milk")
+                                     'shipit-halign (car case))))
+           (result (shipit--lay-out-table-rows text 43)))
+      (should (equal (cdr case) (test-shipit-render--room-widths result))))))
+
+(ert-deftest test-shipit-a-centered-line-in-a-table-cell-stands-in-the-middle ()
+  "GIVEN table rows of a cell of a word, AND a cell of a line that is
+marked as centered text, as a centered paragraph in the cell gives,
+and a long line
+WHEN the table rows are laid out in 43 columns
+THEN the centered line stands in the middle of its column, although the
+cell says nothing."
+  (let* ((text (concat (test-shipit-render--cell 1 0 "one") "\n\n"
+                       (test-shipit-render--cell
+                        1 1 (concat (propertize "tea" 'shipit-align 'center)
+                                    "\nsugar and milk"))))
+         (result (shipit--lay-out-table-rows text 43)))
+    (should (equal '(5.5) (test-shipit-render--room-widths result)))))
+
 (ert-deftest test-shipit-a-heading-in-a-table-cell-loses-its-hidden-hashes ()
   "GIVEN a table row of two marked cells that each start with a heading
 whose hashes are hidden
@@ -1597,6 +1675,25 @@ line is 18 pixels high.  Batch Emacs shows no picture."
              ((symbol-function 'frame-char-height) (lambda (&rest _) 18))
              ((symbol-function 'default-line-height) (lambda () 18)))
      ,@body))
+
+(ert-deftest test-shipit-a-centered-picture-in-a-table-cell-stands-in-the-middle ()
+  "GIVEN a table row of a text of 7 characters, AND a cell that is marked
+to stand in the middle, of a picture 80 pixels wide on a line of its
+own and a line of 20 characters
+WHEN the table rows are laid out in 43 columns, where a character is 8
+pixels wide
+THEN each strip of the picture, 10 columns wide in a column of 20, has
+room of 5 columns before it, AND the line of 20 characters has none."
+  (test-shipit-render--with-picture-display
+    (let* ((cup '(image :type png :file "cup.png" :max-width 80))
+           (text (concat (test-shipit-render--cell 1 0 "Brew it")
+                         "\n\n"
+                         (propertize (test-shipit-render--cell
+                                      1 1 (concat (propertize " " 'display cup)
+                                                  "\ntwenty characters ok"))
+                                     'shipit-halign 'center)))
+           (result (shipit--lay-out-table-rows text 43)))
+      (should (equal '(5.0 5.0) (test-shipit-render--room-widths result))))))
 
 (ert-deftest test-shipit-a-picture-in-a-table-cell-is-cut-into-lines ()
   "GIVEN a table row of two marked cells: a text of 7 characters, AND a

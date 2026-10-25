@@ -2636,10 +2636,13 @@ At the start and at the end of the buffer no line is put."
   "The marker that ends a table cell in markdown that is made ready.")
 
 (defconst shipit--layout-marker-regexp
-  "<\\(/\\)?shipit-\\(center\\|row\\|cell\\)\\(?: \\(top\\|bottom\\)\\)?>"
+  (concat "<\\(/\\)?shipit-\\(center\\|row\\|cell\\)"
+          "\\(?: \\(top\\|bottom\\)\\)?\\(?: \\(center\\|right\\)\\)?>")
   "Regexp matching a marker of the layout of markdown that is made ready.
 Group 1 is the slash of a marker that ends a part, 2 is the kind of the
-part, and 3 where a table cell stands in its row, if not in the middle.")
+part, 3 where a table cell stands in its row, if not in the middle, and
+4 where the lines of a table cell stand in its column, if not at the
+left.")
 
 (defvar shipit--html-open-blocks nil
   "The block elements that are open, the last one first.
@@ -2843,29 +2846,33 @@ the element would stay.  CLOSING tells which tag it was."
 
 (defvar shipit--layout-open-parts nil
   "The parts of the layout that are open, the last one first.
-An element is (KIND START VALIGN), with VALIGN where a table cell
-stands in its row.  Bound while layout markers are applied.")
+An element is (KIND START VALIGN HALIGN), with VALIGN where a table
+cell stands in its row, and HALIGN where its lines stand in its column.
+Bound while layout markers are applied.")
 
 (defvar shipit--layout-next-cell nil
   "The mark that the next table cell gets, (ROW . PLACE).
 Bound while layout markers are applied.")
 
-(defun shipit--layout-open-part (kind &optional valign)
+(defun shipit--layout-open-part (kind &optional valign halign)
   "Take note that a part of the layout of KIND starts at point.
 A table cell stands at VALIGN in its row, `top' or `bottom', or in the
-middle when it is nil.  A table row has no end of its own.  It starts
-the count of its cells."
+middle when it is nil.  Its lines stand at HALIGN in its column,
+`center' or `right', or at the left when it is nil.  A table row has no
+end of its own.  It starts the count of its cells."
   (if (equal kind "row")
       (setq shipit--layout-next-cell (cons (1+ (car shipit--layout-next-cell)) 0))
-    (push (list kind (point) valign) shipit--layout-open-parts)))
+    (push (list kind (point) valign halign) shipit--layout-open-parts)))
 
-(defun shipit--layout-mark-cell (start end valign)
+(defun shipit--layout-mark-cell (start end valign halign)
   "Mark the text from START to END as the next cell of its table row.
-VALIGN is where the cell stands in its row, as
-`shipit--layout-open-part' takes it."
+VALIGN is where the cell stands in its row, and HALIGN where its lines
+stand in its column, as `shipit--layout-open-part' takes them."
   (put-text-property start end 'shipit-cell shipit--layout-next-cell)
   (when valign
     (put-text-property start end 'shipit-valign valign))
+  (when halign
+    (put-text-property start end 'shipit-halign halign))
   (setq shipit--layout-next-cell (cons (car shipit--layout-next-cell)
                                        (1+ (cdr shipit--layout-next-cell)))))
 
@@ -2880,7 +2887,7 @@ without text gets no mark."
       (cond
        ((>= start end))
        ((equal kind "center") (put-text-property start end 'shipit-align 'center))
-       (t (shipit--layout-mark-cell start end (nth 2 entry)))))))
+       (t (shipit--layout-mark-cell start end (nth 2 entry) (nth 3 entry)))))))
 
 (defun shipit--apply-layout-markers (text)
   "Return TEXT without its markers of the layout.
@@ -2897,12 +2904,14 @@ from 1, and its place in that row, counted from 0."
       (while (re-search-forward shipit--layout-marker-regexp nil t)
         (let ((closing (match-beginning 1))
               (kind (match-string 2))
-              (valign (match-string 3)))
+              (valign (match-string 3))
+              (halign (match-string 4)))
           (replace-match "" t t)
           (shipit--html-paragraph-break)
           (if closing
               (shipit--layout-close-part kind)
-            (shipit--layout-open-part kind (and valign (intern valign)))))))
+            (shipit--layout-open-part kind (and valign (intern valign))
+                                      (and halign (intern halign)))))))
     (buffer-string)))
 
 (defun shipit--line-text-start (end)
@@ -3139,15 +3148,43 @@ shows one strip, so that text can stand beside the picture."
     (mapcar (lambda (top) (shipit--picture-strip fitted size top height))
             (number-sequence 0 (max 0 (1- (cdr size))) height))))
 
-(defun shipit--table-text-lines (text width)
+(defun shipit--picture-strip-columns (line)
+  "Return the columns that LINE takes when it is a strip of a picture.
+A strip is a space that shows a slice of a picture, as
+`shipit--picture-strip' makes it, and it is as wide as the slice.
+Return nil when LINE is no strip."
+  (let ((display (and (= (length line) 1) (get-text-property 0 'display line))))
+    (when-let* ((slice (and (consp (car-safe display)) (assq 'slice display))))
+      (/ (float (nth 3 slice)) (frame-char-width)))))
+
+(defun shipit--table-line-placed (line width halign)
+  "Return LINE, a line of a table cell WIDTH columns wide, at HALIGN.
+At `center' a space before the line takes half of the room that the
+line leaves in the cell, and at `right' all of it.  An empty line and a
+line at the left stay as they are."
+  (let ((room (- width (or (shipit--picture-strip-columns line)
+                           (shipit--table-line-width line)))))
+    (if (and (memq halign '(center right)) (> room 0) (not (string-empty-p line)))
+        (concat (propertize " " 'display
+                            `(space :width ,(if (eq halign 'center) (/ room 2.0) room)))
+                line)
+      line)))
+
+(defun shipit--table-text-lines (text width &optional halign)
   "Return the lines of TEXT in a table cell WIDTH columns wide.
 TEXT is wrapped to WIDTH.  A picture on a line of its own is cut into
-strips, one on each line."
+strips, one on each line.  Each line stands at HALIGN in the cell, see
+`shipit--table-line-placed'.  A line of centered text, as a centered
+paragraph in the cell gives, stands in the middle."
   (mapcan (lambda (line)
-            (let ((picture (shipit--line-picture line)))
-              (if picture
-                  (shipit--picture-strips picture (* width (frame-char-width)))
-                (list line))))
+            (let ((place (if (text-property-any 0 (length line) 'shipit-align 'center line)
+                             'center
+                           halign))
+                  (picture (shipit--line-picture line)))
+              (mapcar (lambda (part) (shipit--table-line-placed part width place))
+                      (if picture
+                          (shipit--picture-strips picture (* width (frame-char-width)))
+                        (list line)))))
           (split-string (shipit--wrap-text text width) "\n")))
 
 (defun shipit--table-code-fontified (code)
@@ -3174,11 +3211,12 @@ a table, so that no code block of the whole text is drawn over its row."
                 (propertize padded 'shipit-table-code t)))
             (shipit--table-code-fontified code))))
 
-(defun shipit--table-cell-lines (parts width)
-  "Return the lines of a table cell WIDTH columns wide, made of PARTS."
+(defun shipit--table-cell-lines (parts width &optional halign)
+  "Return the lines of a table cell WIDTH columns wide, made of PARTS.
+The lines of text stand at HALIGN in the cell.  A code block fills it."
   (mapcan (lambda (part)
             (if (stringp part)
-                (shipit--table-text-lines part width)
+                (shipit--table-text-lines part width halign)
               (shipit--table-code-lines part width)))
           parts))
 
@@ -3246,9 +3284,12 @@ It crosses the bar between two cells where that bar stands."
 (defun shipit--table-row-of (cells parts widths)
   "Return the text of the table row of CELLS, whose parts are PARTS.
 Its columns are WIDTHS wide.  Each cell stands where its alignment
-says, and a row with fewer cells than columns has empty cells at its
-end."
-  (let* ((columns (cl-mapcar #'shipit--table-cell-lines parts widths))
+says, in its row and in its column, and a row with fewer cells than
+columns has empty cells at its end."
+  (let* ((columns (cl-mapcar (lambda (cell cell-parts width)
+                               (shipit--table-cell-lines
+                                cell-parts width (get-text-property (car cell) 'shipit-halign)))
+                             cells parts widths))
          (height (apply #'max (mapcar #'length columns)))
          (aligned (cl-mapcar (lambda (cell lines)
                                (shipit--table-cell-aligned
@@ -3448,53 +3489,75 @@ its attributes.")
     (when (re-search-forward "</table[ \t\n]*>" nil t)
       (point))))
 
+(defun shipit--html-place (attributes attribute property places)
+  "Return the place that the tag with ATTRIBUTES asks for, one of PLACES.
+It is read from the attribute ATTRIBUTE, or else from PROPERTY in the
+style of the tag.  Return nil when the tag says nothing, or names no
+place of PLACES."
+  (save-match-data
+    (let* ((style (shipit--html-attribute attributes "style"))
+           (value (or (shipit--html-attribute attributes attribute)
+                      (and style
+                           (string-match (concat property "[ \t]*:[ \t]*\\([a-z]+\\)") style)
+                           (match-string 1 style)))))
+      (car (member (and value (intern (downcase value))) places)))))
+
 (defun shipit--html-valign (attributes)
   "Return where the tag with ATTRIBUTES puts its table cells in a row.
 That is `top', `middle' or `bottom', from its valign or else from the
 vertical-align of its style, or nil when it says nothing."
-  (save-match-data
-    (let* ((style (shipit--html-attribute attributes "style"))
-           (value (or (shipit--html-attribute attributes "valign")
-                      (and style
-                           (string-match "vertical-align[ \t]*:[ \t]*\\([a-z]+\\)" style)
-                           (match-string 1 style)))))
-      (car (member (and value (intern (downcase value))) '(top middle bottom))))))
+  (shipit--html-place attributes "valign" "vertical-align" '(top middle bottom)))
 
-(defun shipit--html-cell-open-marker (valign)
+(defun shipit--html-halign (attributes)
+  "Return where the tag with ATTRIBUTES puts the lines of its table cells.
+That is `left', `center' or `right', from its align or else from the
+text-align of its style, or nil when it says nothing."
+  (shipit--html-place attributes "align" "text-align" '(left center right)))
+
+(defun shipit--html-cell-open-marker (valign halign)
   "Return the marker that starts a table cell that stands at VALIGN.
-A cell in the middle, where HTML puts it when nothing is said, gets
-the plain marker."
-  (if (memq valign '(top bottom))
-      (format "<shipit-cell %s>" valign)
-    shipit--cell-open))
+The lines of the cell stand at HALIGN in its column.  The marker names
+each place that is not where HTML puts a cell when nothing is said: in
+the middle of its row, and at the left of its column."
+  (concat (string-remove-suffix ">" shipit--cell-open)
+          (if (memq valign '(top bottom)) (format " %s" valign) "")
+          (if (memq halign '(center right)) (format " %s" halign) "")
+          ">"))
 
-(defun shipit--html-table-marker (name closing valign)
+(defun shipit--html-table-marker (name closing valign halign)
   "Return the layout marker that stands for the table tag NAME, or nil.
 CLOSING tells whether it is a closing tag.  A cell stands at VALIGN in
-its row."
+its row, and its lines at HALIGN in its column."
   (pcase name
     ("tr" (unless closing shipit--row-marker))
     ((or "td" "th") (if closing
                         shipit--cell-close
-                      (shipit--html-cell-open-marker valign)))))
+                      (shipit--html-cell-open-marker valign halign)))))
 
 (defun shipit--html-unwrap-table (start end)
   "Put a paragraph break for each tag of the HTML table from START to END.
 A layout marker also stands where each row started, and where each
 cell started and ended.  A cell stands where its tag says, or else
-where the tag of its row says."
+where the tag of its row says, in its row and in its column."
   ;; The marker moves with the text that is put at it.  The break for
   ;; the last tag is put there, and the search must not end before point.
   (let ((end (copy-marker end t))
-        (row-valign nil))
+        (row-valign nil)
+        (row-halign nil))
     (goto-char start)
     (while (re-search-forward shipit--html-table-tag-regexp end t)
       (let* ((name (downcase (match-string 2)))
              (closing (match-beginning 1))
-             (valign (shipit--html-valign (or (match-string 3) "")))
-             (marker (shipit--html-table-marker name closing (or valign row-valign))))
+             (attributes (or (match-string 3) ""))
+             (valign (shipit--html-valign attributes))
+             (halign (shipit--html-halign attributes))
+             (marker (shipit--html-table-marker
+                      name closing (or valign row-valign)
+                      ;; A heading cell is centered when nothing is said.
+                      (or halign row-halign (and (equal name "th") 'center)))))
         (when (and (equal name "tr") (not closing))
-          (setq row-valign valign))
+          (setq row-valign valign
+                row-halign halign))
         (replace-match "")
         (if marker
             (shipit--html-insert-paragraph marker)

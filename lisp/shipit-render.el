@@ -1388,34 +1388,45 @@ that live buffer and the animation actually plays."
             (image-animate image 0 t)))
         (setq pos (next-single-property-change pos 'display nil end))))))
 
+(defun shipit--gif-resize-command (file width dest)
+  "Return the command that writes GIF FILE WIDTH pixels wide as DEST, or nil.
+It runs gifsicle, or else ImageMagick, whichever is on the path.
+ImageMagick coalesces the frames first: in an optimized GIF a frame
+holds only what changed, at its own place."
+  (let ((size (format "%dx" width)))
+    (cond
+     ((executable-find "gifsicle")
+      (list "gifsicle" (format "--resize-width=%d" width) file "-o" dest))
+     ((executable-find "magick")
+      (list "magick" file "-coalesce" "-resize" size dest))
+     ((executable-find "convert")
+      (list "convert" file "-coalesce" "-resize" size dest)))))
+
 (defun shipit--prepare-gif-for-display (file target-width)
   "Return a path to a GIF FILE suitable for display, pre-resized if needed.
 Animated GIFs scaled at display time often hit Emacs's tardiness limit
-(2s cumulative) and the animation aborts.  When `gifsicle' is available
-and FILE's natural width exceeds TARGET-WIDTH, this resizes the file
-once to a sibling cache path and returns that.  Otherwise returns FILE
-unchanged.  Failures fall back to the original file."
-  (let ((dim (shipit--gif-pixel-dimensions file)))
-    (cond
-     ((not (and dim (car dim) (> (car dim) target-width)))
-      file)
-     ((not (executable-find "gifsicle"))
-      file)
-     (t
-      (let ((dest (concat (file-name-sans-extension file)
-                          (format "-w%d.gif" target-width))))
-        (unless (file-exists-p dest)
-          (when (fboundp 'shipit--debug-log)
-            (shipit--debug-log "GIF-RESIZE: %s w=%d -> %s w=%d"
-                               file (car dim) dest target-width))
-          (condition-case err
-              (call-process "gifsicle" nil nil nil
-                            (format "--resize-width=%d" target-width)
-                            file "-o" dest)
-            (error
-             (when (fboundp 'shipit--debug-log)
-               (shipit--debug-log "GIF-RESIZE failed: %s" err)))))
-        (if (file-exists-p dest) dest file))))))
+(2s cumulative) and the animation aborts, and each frame costs time to
+draw.  When FILE's natural width exceeds TARGET-WIDTH, and gifsicle or
+ImageMagick is available, this resizes the file once to a sibling cache
+path and returns that.  Otherwise returns FILE unchanged.  Failures
+fall back to the original file."
+  (let* ((dim (shipit--gif-pixel-dimensions file))
+         (dest (concat (file-name-sans-extension file)
+                       (format "-w%d.gif" target-width)))
+         (command (and dim (car dim) (> (car dim) target-width)
+                       (shipit--gif-resize-command file target-width dest))))
+    (if (not command)
+        file
+      (unless (file-exists-p dest)
+        (when (fboundp 'shipit--debug-log)
+          (shipit--debug-log "GIF-RESIZE: %s w=%d -> %s w=%d with %s"
+                             file (car dim) dest target-width (car command)))
+        (condition-case err
+            (apply #'call-process (car command) nil nil nil (cdr command))
+          (error
+           (when (fboundp 'shipit--debug-log)
+             (shipit--debug-log "GIF-RESIZE failed: %s" err)))))
+      (if (file-exists-p dest) dest file))))
 
 (defun shipit--gif-pixel-dimensions (file)
   "Return (WIDTH . HEIGHT) of GIF FILE in pixels by parsing its header.
@@ -1987,13 +1998,13 @@ window-body-width) applies."
                               (window-body-width nil t)))
                    (max-h (or shipit-image-max-height
                               (window-body-height nil t)))
-                   ;; GIFs: pre-resize the file with `gifsicle' so each
-                   ;; frame is already at the target size.  Asking Emacs to
-                   ;; scale every frame at display time was hitting the 2s
-                   ;; tardiness cap and aborting animation on the 414-frame
-                   ;; demo gif.  Pre-resized files decode fast enough to keep
-                   ;; up.  If gifsicle isn't installed we fall back to
-                   ;; in-Emacs `:scale'.
+                   ;; GIFs: pre-resize the file with `gifsicle', or else
+                   ;; ImageMagick, so each frame is already at the target
+                   ;; size.  Asking Emacs to scale every frame at display
+                   ;; time was hitting the 2s tardiness cap and aborting
+                   ;; animation on the 414-frame demo gif.  Pre-resized
+                   ;; files decode fast enough to keep up.  If neither is
+                   ;; installed we fall back to in-Emacs `:scale'.
                    ;; Width resolution order:
                    ;; 1. EXPLICIT-WIDTH from source (`<img width=N>').
                    ;; 2. `shipit--image-target-width' bound by the caller.

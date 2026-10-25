@@ -1476,8 +1476,8 @@ Set to an integer to use a fixed maximum height."
   "Maximum display width in pixels for animated GIFs.
 When nil (the default), scale to the same wrap column width that the
 README body uses, so the gif fills the available envelope.  Pre-resizing
-via `gifsicle' usually keeps even full-width gifs under the
-`image-animate-timeout' tardiness cap.  Set to an integer (e.g., 480)
+via `gifsicle', or else ImageMagick, usually keeps even full-width gifs
+under the `image-animate-timeout' tardiness cap.  Set to an integer (e.g., 480)
 to cap further if your machine still struggles."
   :type '(choice (const :tag "Wrap column" nil)
                  (integer :tag "Fixed pixels"))

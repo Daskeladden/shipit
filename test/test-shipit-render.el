@@ -2193,6 +2193,52 @@ THEN returns (300 . 200)."
             (should (equal '(300 . 200) dim))))
       (delete-file tmp))))
 
+(defun test-shipit-render--moving-gif (directory)
+  "Make a GIF of two frames, 40 by 20 pixels, in DIRECTORY; its file."
+  (let ((file (expand-file-name "cup.gif" directory)))
+    (call-process "convert" nil nil nil "-size" "40x20"
+                  "xc:red" "xc:blue" "-loop" "0" file)
+    file))
+
+(defun test-shipit-render--gif-frames (file)
+  "The number of frames of the GIF FILE, as ImageMagick counts them."
+  (with-temp-buffer
+    (call-process "identify" nil t nil file)
+    (count-lines (point-min) (point-max))))
+
+(ert-deftest test-shipit-a-gif-is-resized-by-imagemagick-without-gifsicle ()
+  "GIVEN a moving GIF of two frames, 40 pixels wide, AND no gifsicle on
+the path, but ImageMagick
+WHEN the GIF is made ready to be shown 20 pixels wide
+THEN a new file is shown, 20 pixels wide and still of two frames, so
+that Emacs does not scale each frame as it draws it."
+  (skip-unless (and (executable-find "convert") (executable-find "identify")))
+  (let ((directory (make-temp-file "shipit-gif-test" t))
+        (find (symbol-function 'executable-find)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'executable-find)
+                   (lambda (name &rest args)
+                     (unless (equal name "gifsicle") (apply find name args)))))
+          (let* ((gif (test-shipit-render--moving-gif directory))
+                 (shown (shipit--prepare-gif-for-display gif 20)))
+            (should-not (equal gif shown))
+            (should (equal 20 (car (shipit--gif-pixel-dimensions shown))))
+            (should (= 2 (test-shipit-render--gif-frames shown)))))
+      (delete-directory directory t))))
+
+(ert-deftest test-shipit-a-gif-stays-without-a-tool-to-resize-it ()
+  "GIVEN a GIF 40 pixels wide, AND neither gifsicle nor ImageMagick on
+the path
+WHEN the GIF is made ready to be shown 20 pixels wide
+THEN the GIF itself is shown, and Emacs scales it."
+  (skip-unless (executable-find "convert"))
+  (let ((directory (make-temp-file "shipit-gif-test" t)))
+    (unwind-protect
+        (let ((gif (test-shipit-render--moving-gif directory)))
+          (cl-letf (((symbol-function 'executable-find) (lambda (&rest _) nil)))
+            (should (equal gif (shipit--prepare-gif-for-display gif 20)))))
+      (delete-directory directory t))))
+
 (ert-deftest test-shipit-gif-pixel-dimensions-rejects-non-gif ()
   "GIVEN a non-GIF file
 WHEN parsing as GIF dimensions

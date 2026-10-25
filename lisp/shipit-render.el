@@ -6446,8 +6446,15 @@ storing the next entry.  Set to 0 to disable caching."
   :type 'integer
   :group 'shipit)
 
+(defun shipit--render-cache-key (text)
+  "Return the key of TEXT in a cache of rendered text.
+A frame that shows no images, as a terminal frame, renders a picture as
+text, so its renders are kept apart from those of a frame that shows
+images."
+  (list (md5 text) (and (display-images-p) t)))
+
 (defvar shipit--markdown-render-cache (make-hash-table :test 'equal :size 256)
-  "Cache of rendered markdown keyed by md5 hash of the input text.
+  "Cache of rendered markdown, keyed by `shipit--render-cache-key'.
 Value is the propertized rendered string.  Size capped by
 `shipit-markdown-render-cache-size'.")
 
@@ -6512,25 +6519,29 @@ This is the actual rendering implementation; callers should use
        (shipit--debug-log "Markdown rendering failed: %s" err))
      text)))
 
+(defun shipit--cached-render (cache text render)
+  "Return TEXT rendered by the function RENDER, from CACHE when it has it.
+CACHE is keyed by `shipit--render-cache-key'.  It is emptied when it
+holds `shipit-markdown-render-cache-size' renders."
+  (let ((key (shipit--render-cache-key text)))
+    (or (gethash key cache)
+        (let ((result (funcall render text)))
+          (when (>= (hash-table-count cache) shipit-markdown-render-cache-size)
+            (clrhash cache))
+          (puthash key result cache)
+          result))))
+
 (defun shipit--render-markdown (text)
   "Apply GitHub markdown rendering to TEXT using markdown-mode's font-lock system.
-Caches the result keyed by md5 hash of TEXT to avoid redoing the
-expensive font-lock pass for repeated comment bodies.
-Cache size is bounded by `shipit-markdown-render-cache-size'."
+Caches the result, see `shipit--cached-render', to avoid redoing the
+expensive font-lock pass for repeated comment bodies."
   (if (not text)
       ""
-    (let* ((cache-key (md5 text))
-           (cached (gethash cache-key shipit--markdown-render-cache)))
-      (or cached
-          (let ((result (shipit--render-markdown-uncached text)))
-            (when (>= (hash-table-count shipit--markdown-render-cache)
-                      shipit-markdown-render-cache-size)
-              (clrhash shipit--markdown-render-cache))
-            (puthash cache-key result shipit--markdown-render-cache)
-            result)))))
+    (shipit--cached-render shipit--markdown-render-cache text
+                           #'shipit--render-markdown-uncached)))
 
 (defvar shipit--org-render-cache (make-hash-table :test 'equal :size 256)
-  "Cache of rendered org-mode content keyed by md5 hash of the input text.
+  "Cache of rendered org-mode content, keyed by `shipit--render-cache-key'.
 Value is the propertized rendered string.  Size capped by
 `shipit-markdown-render-cache-size'.")
 
@@ -6676,19 +6687,12 @@ active (e.g. a magit-section buffer)."
 
 (defun shipit--render-org (text)
   "Apply org-mode rendering to TEXT using org-mode's font-lock system.
-Caches the result keyed by md5 hash of TEXT.  Cache size is bounded
-by `shipit-markdown-render-cache-size' (shared with markdown cache)."
+Caches the result as the markdown renders are, see
+`shipit--cached-render'."
   (if (not text)
       ""
-    (let* ((cache-key (md5 text))
-           (cached (gethash cache-key shipit--org-render-cache)))
-      (or cached
-          (let ((result (shipit--render-org-uncached text)))
-            (when (>= (hash-table-count shipit--org-render-cache)
-                      shipit-markdown-render-cache-size)
-              (clrhash shipit--org-render-cache))
-            (puthash cache-key result shipit--org-render-cache)
-            result)))))
+    (shipit--cached-render shipit--org-render-cache text
+                           #'shipit--render-org-uncached)))
 
 (defconst shipit--org-document-keyword-regexp
   "^[ \t]*#\\+\\(?:TITLE\\|AUTHOR\\|OPTIONS\\|DATE\\|STARTUP\\|EMAIL\\|LANGUAGE\\|SETUPFILE\\|FILETAGS\\|CATEGORY\\|PROPERTY\\|TODO\\|TAGS\\|LINK\\|MACRO\\|DESCRIPTION\\|KEYWORDS\\|SUBTITLE\\|LATEX_HEADER\\|HTML_HEAD\\)[ \t]*:"

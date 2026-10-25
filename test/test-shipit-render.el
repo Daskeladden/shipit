@@ -2028,6 +2028,31 @@ THEN the cache is empty."
     (shipit--markdown-cache-clear)
     (should (= 0 (hash-table-count shipit--markdown-render-cache)))))
 
+(ert-deftest test-shipit--render-markdown-cache-keeps-frames-without-images-apart ()
+  "GIVEN the markdown cache is empty
+WHEN the same text renders once where the frame shows no images, as a
+terminal frame, and once where the frame shows them
+THEN the cache holds two renders, so that a frame that shows images
+never gets the text that stands for a picture in a terminal."
+  (let ((shipit--markdown-render-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil)))
+      (shipit--render-markdown "Hello **world**"))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t)))
+      (shipit--render-markdown "Hello **world**"))
+    (should (= 2 (hash-table-count shipit--markdown-render-cache)))))
+
+(ert-deftest test-shipit--render-org-cache-keeps-frames-without-images-apart ()
+  "GIVEN the org cache is empty
+WHEN the same text renders once where the frame shows no images, and
+once where the frame shows them
+THEN the cache holds two renders, as the markdown cache does."
+  (let ((shipit--org-render-cache (make-hash-table :test 'equal)))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil)))
+      (shipit--render-org "Hello *world*"))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t)))
+      (shipit--render-org "Hello *world*"))
+    (should (= 2 (hash-table-count shipit--org-render-cache)))))
+
 (ert-deftest test-shipit--render-markdown-cache-evicts-when-full ()
   "GIVEN the cache is at the size limit
 WHEN rendering a new text

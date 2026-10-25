@@ -4,11 +4,12 @@
 
 ;;; Commentary:
 
-;; `shipit-reload' unbinds every shipit function but those of its own
-;; file, and then loads each file again.  A hook that still names an
-;; unbound shipit function, and runs while the files load, makes every
-;; load fail.  `load-file' runs `kill-buffer-hook' when it kills the
-;; buffer it read a file in.
+;; `shipit-reload' compiles each file whose compiled file is old,
+;; unbinds every shipit function but those of its own file, and then
+;; loads each file again, compiled.  A hook that still names an unbound
+;; shipit function, and runs while the files load, makes every load
+;; fail.  `load-file' runs `kill-buffer-hook' when it kills the buffer
+;; it read a file in.
 
 ;;; Code:
 
@@ -140,6 +141,57 @@ handlers of `M-;': it adds its own handler there when it loads, and a
 reload has unbound the function that takes it."
   (should (< (cl-position "shipit-pr-actions.el" shipit-dev--load-files :test #'equal)
              (cl-position "shipit-actions-list.el" shipit-dev--load-files :test #'equal))))
+
+(defun test-shipit-dev--age (file seconds)
+  "Make FILE SECONDS older than now."
+  (set-file-times file (time-subtract (current-time) seconds)))
+
+(ert-deftest test-shipit-dev-reload-takes-a-compiled-file-that-is-new-enough ()
+  "GIVEN a source file with a compiled file as new as it, one with an
+older compiled file, AND one with none
+WHEN the file to load is picked for each
+THEN the first loads compiled, AND the other two load from source: an
+old compiled file holds code that the source has changed since."
+  (let ((directory (make-temp-file "shipit-dev-test" t)))
+    (unwind-protect
+        (let ((fresh (expand-file-name "fresh.el" directory))
+              (stale (expand-file-name "stale.el" directory))
+              (plain (expand-file-name "plain.el" directory)))
+          (dolist (file (list fresh stale plain (concat fresh "c") (concat stale "c")))
+            (write-region "" nil file))
+          (test-shipit-dev--age fresh 10)
+          (test-shipit-dev--age (concat stale "c") 10)
+          (should (equal (concat fresh "c") (shipit-dev--compiled-path fresh)))
+          (should (equal stale (shipit-dev--compiled-path stale)))
+          (should (equal plain (shipit-dev--compiled-path plain)))
+          (should (equal (list stale plain)
+                         (shipit-dev--stale-files (list fresh stale plain)))))
+      (delete-directory directory t))))
+
+(ert-deftest test-shipit-dev-reload-compiles-the-stale-files-with-make ()
+  "GIVEN two stale files of shipit, AND one of a package on top of it
+WHEN the arguments of the compile are made
+THEN make compiles those three files alone, with the directory of the
+package on the load path, so that its files find each other."
+  (should (equal '("compile"
+                   "LISP_FILES=/shipit/lisp/shipit-core.el /shipit/lisp/shipit-render.el /pkg/lisp/pkg-a.el"
+                   "EXTRA_LOAD_PATH=/pkg/lisp/")
+                 (shipit-dev--compile-arguments
+                  '("/shipit/lisp/shipit-core.el" "/shipit/lisp/shipit-render.el"
+                    "/pkg/lisp/pkg-a.el")
+                  "/shipit/lisp/"))))
+
+(ert-deftest test-shipit-dev-reload-loads-a-file-compiled ()
+  "GIVEN a file that is loaded, AND a compiled file of it that is new
+enough
+WHEN a reload has unbound its function, and loads the file again
+THEN the function is compiled code, not code that Emacs interprets:
+interpreted code runs slower and makes more garbage."
+  (test-shipit-dev--with-two-files first _second
+    (byte-compile-file first)
+    (fmakunbound 'shipit-test-reload-first)
+    (shipit-dev--load-files (list first))
+    (should (byte-code-function-p (symbol-function 'shipit-test-reload-first)))))
 
 (ert-deftest test-shipit-dev-reload-finds-its-own-file-at-the-root ()
   "GIVEN shipit's lisp directory on the load path, AND this file at the

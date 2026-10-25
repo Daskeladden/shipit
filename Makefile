@@ -21,6 +21,9 @@ CANVAS_KEYS = ../canvas-keys
 CANVAS_MERMAID = ../canvas-mermaid
 CANVAS_SEQUENCE = ../canvas-sequence
 CANVAS_MINDMAP = ../canvas-mindmap
+# The directories of packages on top of shipit whose files `make compile'
+# is given, so that those files find each other.  shipit-reload sets it.
+EXTRA_LOAD_PATH ?=
 
 .PHONY: all compile clean test test-older install autoloads package
 
@@ -46,6 +49,7 @@ compile: $(LISP_FILES)
 		-L $(CANVAS_MERMAID) \
 		-L $(CANVAS_SEQUENCE) \
 		-L $(CANVAS_MINDMAP) \
+		$(foreach dir,$(EXTRA_LOAD_PATH),-L $(dir)) \
 		-f batch-byte-compile $(LISP_FILES)
 
 # Generate autoloads

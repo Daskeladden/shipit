@@ -86,6 +86,49 @@ beside shipit's lisp directory, where the repository keeps it."
       (expand-file-name "../shipit-dev-utils.el"
                         (file-name-directory (locate-library "shipit-debug")))))
 
+(defun shipit-dev--compiled-path (path)
+  "The file that loads for PATH, a source file: its compiled file when
+that is as new as PATH, else PATH.  An older compiled file holds code
+that the source changed since, and a file whose compile failed has
+none or an old one."
+  (let ((elc (concat path "c")))
+    (if (and (file-exists-p elc) (not (file-newer-than-file-p path elc)))
+        elc
+      path)))
+
+(defun shipit-dev--stale-files (paths)
+  "The files of PATHS that load from source: their compiled file is
+missing or older than they are."
+  (seq-filter (lambda (path) (equal path (shipit-dev--compiled-path path))) paths))
+
+(defun shipit-dev--compile-arguments (files shipit-dir)
+  "The arguments of make that compile FILES alone, as `make compile' does.
+The directories of FILES outside SHIPIT-DIR, those of packages on top of
+shipit, go on the load path, so that their files find each other."
+  (let ((extra (delete-dups
+                (mapcar #'file-name-directory
+                        (seq-remove (lambda (file) (string-prefix-p shipit-dir file)) files)))))
+    (append (list "compile" (concat "LISP_FILES=" (string-join files " ")))
+            (and extra (list (concat "EXTRA_LOAD_PATH=" (string-join extra " ")))))))
+
+(defun shipit-dev--compile-stale (paths project-dir shipit-dir)
+  "Compile the files of PATHS whose compiled file is missing or old.
+`make compile' runs in PROJECT-DIR, in a batch Emacs, so the compile
+reads the files and not what this Emacs has loaded.  Its output goes to
+the buffer *shipit-compile*.  A file whose compile fails keeps no new
+compiled file, so it loads from source, and the reload says so.
+SHIPIT-DIR is the directory of shipit's own files."
+  (when-let* ((stale (shipit-dev--stale-files (seq-filter #'file-exists-p paths))))
+    (message "Compiling %d shipit files..." (length stale))
+    (let ((default-directory project-dir)
+          (buffer (get-buffer-create "*shipit-compile*")))
+      (with-current-buffer buffer (erase-buffer))
+      (apply #'call-process "make" nil buffer nil
+             (shipit-dev--compile-arguments stale shipit-dir))
+      (when-let* ((failed (shipit-dev--stale-files stale)))
+        (message "These shipit files did not compile and load from source, see *shipit-compile*: %s"
+                 (mapconcat #'file-name-nondirectory failed ", "))))))
+
 (defun shipit-dev--shipit-function-p (fn)
   "Non-nil when FN is the symbol of a shipit function."
   (and (symbolp fn) (string-prefix-p "shipit-" (symbol-name fn))))
@@ -101,13 +144,15 @@ can have a value of its own for a hook, as a terminal buffer has for
                                     (default-value hook))))))
 
 (defun shipit-dev--load-file (path)
-  "Load the file PATH from source; non-nil when it loaded.
-A file that fails is said, and the reload goes on with the next one."
-  (let ((file (file-name-nondirectory path)))
+  "Load the file PATH, compiled when its compiled file is new enough;
+non-nil when it loaded.  See `shipit-dev--compiled-path'.  A file that
+fails is said, and the reload goes on with the next one."
+  (let* ((load (shipit-dev--compiled-path path))
+         (file (file-name-nondirectory load)))
     (message "Loading %s..." file)
     (condition-case err
-        ;; `load-file' loads the exact .el file, not a .elc beside it.
-        (progn (load-file path) t)
+        ;; `load-file' loads the exact file it is given.
+        (progn (load-file load) t)
       (error (message "Error loading %s: %s" file (error-message-string err))
              nil))))
 
@@ -165,8 +210,11 @@ That copy then does not load this file again.")
 
 ;;;###autoload
 (defun shipit-reload (&optional compile-first)
-  "Properly reload shipit from source files.
-With prefix argument COMPILE-FIRST, run make clean && make compile first."
+  "Reload shipit, from its compiled files.
+Each file whose source changed since it was compiled is compiled first,
+see `shipit-dev--compile-stale': code that Emacs interprets runs slower
+and makes more garbage, so Emacs stops more often to collect it.  With
+prefix argument COMPILE-FIRST, run make clean && make compile first."
   (interactive "P")
   (catch 'shipit-reload-done
     ;; Bootstrap: reload this file first to ensure we're using the latest version
@@ -241,11 +289,8 @@ With prefix argument COMPILE-FIRST, run make clean && make compile first."
       ;; Load shipit's files in dependency order, then those of packages
       ;; on top of it.
       (let ((load-paths (shipit-dev--reload-paths shipit-dir)))
-        ;; First pass: Delete all .elc bytecode files to force fresh load
-        (dolist (path load-paths)
-          (let ((elc-path (concat (file-name-sans-extension path) ".elc")))
-            (when (file-exists-p elc-path)
-              (delete-file elc-path))))
+        ;; First pass: Compile each file whose compiled file is old
+        (shipit-dev--compile-stale load-paths project-dir shipit-dir)
         ;; Second pass: Remove shipit advice from all functions BEFORE unbinding
         (message "Removing shipit advice...")
         (mapatoms

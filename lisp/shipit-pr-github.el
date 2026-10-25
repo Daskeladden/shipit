@@ -2240,5 +2240,22 @@ with the alist (or nil on error).  Returns nil immediately."
        `((input . ((pullRequestId . ,pr-id) (path . ,path)))))
       (shipit--debug-log "Unmarked %s as viewed in PR #%d" path pr-number))))
 
+;;; Uploaded videos
+
+(defconst shipit-pr-github--upload-regexp
+  (concat "\\`https://github\\.com/"
+          "\\(?:user-attachments\\|[^/]+/[^/]+\\)/assets/"
+          "\\(?:[0-9]+/\\)?[0-9a-f-]+\\'")
+  "Regexp matching the URL of a file uploaded to GitHub.
+It is uploaded to a repository, or to a comment.")
+
+(defun shipit-pr-github--upload-video-p (url)
+  "Return non-nil when URL is a file uploaded to GitHub.
+GitHub shows such a URL that stands alone on a line as a video.  A
+video file of another site it shows as a link."
+  (string-match-p shipit-pr-github--upload-regexp url))
+
+(add-hook 'shipit-video-url-functions #'shipit-pr-github--upload-video-p)
+
 (provide 'shipit-pr-github)
 ;;; shipit-pr-github.el ends here

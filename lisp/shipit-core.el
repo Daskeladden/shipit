@@ -71,6 +71,16 @@ when the URL is not on its own site; the first answer counts.")
   "Return the URL a player can fetch the attachment at URL from, or nil."
   (run-hook-with-args-until-success 'shipit-media-url-functions url))
 
+(defvar shipit-video-url-functions nil
+  "Functions that tell whether a URL that names no file is a video.
+Each is called with a URL.  It returns non-nil when the URL is a video
+on its own site; the first answer counts.  A forge whose uploaded videos
+have such URLs adds one, so no shared file holds code for any one forge.")
+
+(defun shipit--video-url-p (url)
+  "Return non-nil when a site says that URL, which names no file, is a video."
+  (run-hook-with-args-until-success 'shipit-video-url-functions url))
+
 (defvar-local shipit--general-comments-fetched nil
   "Flag indicating whether general comments have been fetched.")
 

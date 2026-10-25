@@ -143,5 +143,20 @@ upstream and every existing pull request went undiscovered."
       (shipit-pr-github--search '(:repo "o/r") '(:state "all"))
       (should reached))))
 
+;;; Uploaded videos
+
+(ert-deftest test-github-an-uploaded-file-is-a-video ()
+  "GIVEN the URL of a file uploaded to a repository, the URL of a file
+uploaded to a comment, the URL of a file of a branch, AND a URL of
+another site
+WHEN shipit asks whether each URL is a video
+THEN the two uploaded files are, as GitHub shows such a URL alone on a
+line as a video, AND the other two are not."
+  (dolist (case '(("https://github.com/owner/repo/assets/1107525/e2659674-c813-402a-8a85-e620f0a6a454" . t)
+                  ("https://github.com/user-attachments/assets/0f3c2d4e-1a2b-4c3d-9e8f-123456789abc" . t)
+                  ("https://github.com/owner/repo/blob/main/cup.mp4" . nil)
+                  ("https://example.com/owner/repo/assets/1/e2659674" . nil)))
+    (should (eq (cdr case) (and (shipit--video-url-p (car case)) t)))))
+
 (provide 'test-shipit-pr-github)
 ;;; test-shipit-pr-github.el ends here

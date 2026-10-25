@@ -2585,6 +2585,27 @@ THEN the link becomes a Play button for its URL, named by the file."
     (should-not (string-match-p "attachment/content" (substring-no-properties out)))
     (should (equal test-shipit-render--tracker-video (test-shipit-render--video-url-of out)))))
 
+(ert-deftest test-shipit-render-a-lone-url-that-its-site-calls-a-video-plays ()
+  "GIVEN a line that holds only a URL that names no file, which its site
+says is a video, AND that URL in a sentence, AND a line that holds only
+a URL that no site claims
+WHEN the videos of a body are processed
+THEN the lone URL of the video becomes a Play button for it, as a forge
+shows an uploaded video, AND the other two stay as they were."
+  (let* ((video "https://example.com/uploads/7/cup")
+         (other "https://example.com/uploads/7/tea")
+         (shipit-video-url-functions (list (lambda (url) (equal url video))))
+         (out (shipit--process-inline-videos
+               (concat "Showcase:\n\n" video "\n\nSee " video " here.\n\n" other "\n"))))
+    (should (equal video (test-shipit-render--video-url-of out)))
+    (should (string-match-p (concat "See " (regexp-quote video) " here")
+                            (substring-no-properties out)))
+    (should (string-match-p (concat "^" (regexp-quote other) "$")
+                            (substring-no-properties out)))
+    (should (= 1 (with-temp-buffer
+                   (insert out)
+                   (how-many "Play" (point-min) (point-max)))))))
+
 (ert-deftest test-shipit-render-media-step-shows-a-video ()
   "GIVEN rendered text with a bare video URL
 WHEN its media are processed, as both the markdown and the org renderer do

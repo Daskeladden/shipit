@@ -1907,7 +1907,25 @@ URL, leaving the surrounding fragments visible in the buffer."
     (replace-regexp-in-string
      shipit--video-url-regexp
      (lambda (url) (save-match-data (shipit--render-video-link url)))
-     (shipit--process-video-links text) nil t)))
+     (shipit--process-lone-video-urls (shipit--process-video-links text)) nil t)))
+
+(defconst shipit--lone-url-regexp "^[ \t]*\\(https?://[^] \t\n<>\"'`)[]+\\)[ \t]*$"
+  "Regexp matching a line that holds only a URL.  Group 1 is the URL.")
+
+(defun shipit--process-lone-video-urls (text)
+  "Replace each line of TEXT that holds only the URL of a video with a Play button.
+A forge shows an uploaded video so.  Its URL names no file, and its
+site tells by `shipit-video-url-functions' that it is a video."
+  (replace-regexp-in-string
+   shipit--lone-url-regexp
+   (lambda (line)
+     (save-match-data
+       (string-match shipit--lone-url-regexp line)
+       (let ((url (match-string 1 line)))
+         (if (shipit--video-url-p url)
+             (shipit--render-video-link url)
+           line))))
+   text t t))
 
 (defun shipit--unescape-markdown (text)
   "Return TEXT without its markdown backslash escapes, as `\\_' for `_'."

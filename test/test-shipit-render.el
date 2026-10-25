@@ -2855,12 +2855,13 @@ Emacs is idle each video shows under its button."
       (should (= 2 (how-many "\\[VIDEO\\]" (point-min) (point-max))))
       (should-not shipit--videos-timer))))
 
-(ert-deftest test-shipit-render-videos-show-in-issue-and-pr-buffers ()
-  "GIVEN an issue buffer and a PR buffer
+(ert-deftest test-shipit-render-videos-show-in-issue-pr-and-repo-buffers ()
+  "GIVEN an issue buffer, a PR buffer and a repo buffer with its README
 THEN each watches for videos, whenever its text arrives."
   (require 'shipit-issues-buffer)
   (require 'shipit-buffer)
-  (dolist (mode '(shipit-issue-mode shipit-mode))
+  (require 'shipit-repo-buffer)
+  (dolist (mode '(shipit-issue-mode shipit-mode shipit-repo-mode))
     (with-temp-buffer
       (funcall mode)
       (should (memq #'shipit--video-buttons-inserted after-change-functions)))))

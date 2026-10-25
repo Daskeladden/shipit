@@ -48,6 +48,7 @@
 (declare-function shipit--generic-url-action-menu "shipit-render")
 (declare-function shipit--classify-url "shipit-render")
 (declare-function shipit--open-classified-url "shipit-render")
+(declare-function shipit--watch-videos "shipit-render")
 
 ;; Forward declarations — issue/discussion backends (optional features)
 (declare-function shipit-issue--resolve-for-repo "shipit-issue-backends")
@@ -220,7 +221,8 @@ Displays repository metadata and README.
   (add-hook 'magit-section-set-visibility-hook
             #'shipit-repo-buffer--section-visibility nil t)
   (setq-local magit-root-section nil)
-  (shipit--apply-section-defaults))
+  (shipit--apply-section-defaults)
+  (shipit--watch-videos))
 
 ;;; Data fetching
 

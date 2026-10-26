@@ -2073,29 +2073,79 @@ link, so it shows up for everyone."
       (message "Linked #%s to %s" (plist-get info :number) issue-key)
       (shipit-issue--populate-linked-prs-async issue-key shipit-issue-buffer-repo))))
 
+(defun shipit-issue--gather-linked-prs (issue-number issue-repo)
+  "The linked-PR plists of ISSUE-NUMBER, from each place that knows them.
+Combines overrides, the tracker\\='s remote links that are pull
+requests, and PR backend search results in ISSUE-REPO when
+`shipit-issue-linked-prs-auto-detect' is non-nil."
+  (let ((overrides (shipit-issue--linked-prs-from-overrides issue-number))
+        (remote (shipit-issue--linked-prs-from-remote issue-number))
+        (searched (when (and shipit-issue-linked-prs-auto-detect issue-repo)
+                    (shipit-issue--search-linked-prs
+                     (format "%s" issue-number) issue-repo))))
+    (shipit-issue--merge-linked-prs
+     (shipit-issue--merge-linked-prs overrides remote)
+     searched)))
+
+(defun shipit-issue--linked-prs-failure-label (reason)
+  "The label of the Linked PRs heading for a lookup that failed for REASON.
+It has no parenthesis and no newline, so that the heading pattern of a
+later refresh still finds the label."
+  (concat "failed: " (replace-regexp-in-string "[()\n]" "" reason)))
+
+(defun shipit-issue--show-linked-prs-failure (reason)
+  "Say in the Linked PRs heading of this buffer that the lookup failed for REASON."
+  (let ((section (shipit--find-section-by-type 'issue-linked-prs))
+        (inhibit-read-only t))
+    (when section
+      (save-excursion
+        (goto-char (oref section start))
+        (when (re-search-forward "Linked PRs (\\([^)]*\\))" (line-end-position) t)
+          (replace-match (shipit-issue--linked-prs-failure-label reason) t t nil 1))))))
+
+(declare-function handler-bind-1 "subr" (bodyfun &rest conditions-and-handlers))
+
+(defun shipit-issue--call-noting-backtrace (fn note)
+  "Call FN and return its value.  On an error, call NOTE with the backtrace.
+NOTE gets the backtrace of the place where the error was signaled, and
+the error then goes on.  The debugger is not used: after Emacs enters
+it once, it enters it again only after the next input event, so a
+`debug-on-error' of the user would not open.  Emacs 29 has no
+`handler-bind-1', and there NOTE is not called."
+  (if (fboundp 'handler-bind-1)
+      (handler-bind-1 fn '(error)
+                      (lambda (_err) (funcall note (with-output-to-string (backtrace)))))
+    (funcall fn)))
+
+(defun shipit-issue--fill-linked-prs (issue-number issue-repo)
+  "Fill the Linked PRs section of this buffer for ISSUE-NUMBER in ISSUE-REPO.
+The lookup runs in a timer, where an error only ends the timer, and the
+heading would say \"searching…\" for good.  So a failure shows in the
+heading, and its backtrace goes to the debug log."
+  (let ((trace nil))
+    (condition-case err
+        (shipit-issue--call-noting-backtrace
+         (lambda ()
+           (shipit-issue--replace-linked-prs-section
+            (shipit-issue--gather-linked-prs issue-number issue-repo)))
+         (lambda (backtrace) (setq trace backtrace)))
+      (error
+       (shipit--debug-log "LINKED-PRS: lookup of %s failed: %S\nBACKTRACE:\n%s"
+                          issue-number err trace)
+       (shipit-issue--show-linked-prs-failure (error-message-string err))))))
+
 (defun shipit-issue--populate-linked-prs-async (issue-number issue-repo)
   "Defer the linked-PRs lookup, then fill the section via targeted refresh.
 Runs in the next event-loop tick so the initial buffer render completes
-first.  Combines overrides, the tracker\='s remote links that are
-pull requests, and PR backend search results when
-`shipit-issue-linked-prs-auto-detect' is non-nil."
+first.  See `shipit-issue--gather-linked-prs' for where the links come
+from."
   (let ((buffer (current-buffer)))
     (run-at-time
      0 nil
      (lambda ()
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
-           (let* ((overrides (shipit-issue--linked-prs-from-overrides
-                              issue-number))
-                  (remote (shipit-issue--linked-prs-from-remote issue-number))
-                  (searched (when (and shipit-issue-linked-prs-auto-detect
-                                       issue-repo)
-                              (shipit-issue--search-linked-prs
-                               (format "%s" issue-number) issue-repo)))
-                  (plists (shipit-issue--merge-linked-prs
-                           (shipit-issue--merge-linked-prs overrides remote)
-                           searched)))
-             (shipit-issue--replace-linked-prs-section plists))))))))
+           (shipit-issue--fill-linked-prs issue-number issue-repo)))))))
 
 (defun shipit-issue--insert-linked-prs-section (issue-number &optional issue-repo)
   "Insert a collapsible `Linked PRs' section for ISSUE-NUMBER.

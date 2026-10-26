@@ -12,6 +12,7 @@
 (require 'shipit-sections)
 (require 'shipit-pr-github)
 (require 'shipit-issue-github)
+(require 'shipit-pr-linked-issue)
 (require 'shipit-test-http)
 
 ;;; Work Item Column Renderer Tests
@@ -474,6 +475,90 @@ found it, and not the project of the tracker."
                        (mapcar (lambda (plist)
                                  (cons (plist-get plist :repo) (plist-get plist :number)))
                                found)))))))
+
+(defun test-shipit-issue--linked-prs-heading ()
+  "The Linked PRs heading of this buffer, to the end of its line."
+  (save-excursion
+    (goto-char (point-min))
+    (and (search-forward "Linked PRs (" nil t)
+         (buffer-substring-no-properties (match-beginning 0) (line-end-position)))))
+
+(defun test-shipit-issue--wait-for-linked-prs ()
+  "Run timers for up to two seconds, until the Linked PRs lookup is done."
+  (let ((deadline (+ (float-time) 2)))
+    (while (and (equal "Linked PRs (searching…)" (test-shipit-issue--linked-prs-heading))
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01))))
+
+(ert-deftest test-shipit-issue-linked-prs-heading-says-why-the-lookup-failed ()
+  "GIVEN an issue buffer whose Linked PRs section waits for its lookup,
+and a tracker that fails when it is asked for the links of the issue
+WHEN the lookup runs
+THEN the heading says that the lookup failed, and why, in place of
+\"searching…\", which it would otherwise show for good."
+  (with-temp-buffer
+    (magit-section-mode)
+    (setq-local shipit-issue-backend-config '(:base-url "https://j"))
+    (let ((shipit-issue-linked-prs-auto-detect t)
+          (shipit-pr-linked-issue--overrides nil)
+          (shipit-pr-linked-issue--loaded t)
+          (inhibit-read-only t))
+      (cl-letf (((symbol-function 'shipit-issue--get-backend)
+                 (lambda ()
+                   (list :fetch-remote-urls
+                         (lambda (_config _key) (error "The tracker answered 503"))))))
+        (magit-insert-section (shipit-issue)
+          (shipit-issue--insert-linked-prs-section "PRJ-9" nil))
+        (test-shipit-issue--wait-for-linked-prs)
+        (should (equal "Linked PRs (failed: The tracker answered 503)"
+                       (test-shipit-issue--linked-prs-heading)))))))
+
+(ert-deftest test-shipit-issue-linked-prs-failure-leaves-the-debugger-alone ()
+  "GIVEN a Linked PRs lookup that failed, in the same command
+WHEN another error comes, and the user has `debug-on-error' on
+THEN the debugger opens for it.  Once Emacs enters the debugger, it
+enters it again only after the next input event.
+This test enters the debugger, and so it runs only where ERT does not
+catch failures through the debugger: where `handler-bind-1' exists."
+  (skip-unless (fboundp 'handler-bind-1))
+  (with-temp-buffer
+    (magit-section-mode)
+    (let ((shipit-pr-linked-issue--overrides nil)
+          (shipit-pr-linked-issue--loaded t)
+          (inhibit-read-only t)
+          (entered nil))
+      (cl-letf (((symbol-function 'shipit-issue--get-backend)
+                 (lambda ()
+                   (list :fetch-remote-urls
+                         (lambda (_config _key) (error "The tracker answered 503"))))))
+        (magit-insert-section (shipit-issue)
+          (shipit-issue--insert-linked-prs-section "PRJ-9" nil))
+        (shipit-issue--fill-linked-prs "PRJ-9" nil)
+        (let ((debug-on-error t)
+              (debugger (lambda (&rest _) (setq entered t))))
+          (condition-case nil
+              (error "Another error")
+            ((debug error) nil)))
+        (should entered)))))
+
+(ert-deftest test-shipit-issue-linked-prs-heading-takes-a-count-after-a-failure ()
+  "GIVEN a Linked PRs heading that says the lookup failed, for a reason
+in parentheses
+WHEN a later lookup finds no pull request, such as after a link is
+added
+THEN the heading shows the count again."
+  (with-temp-buffer
+    (magit-section-mode)
+    (let ((shipit-issue-linked-prs-auto-detect nil)
+          (shipit-pr-linked-issue--overrides nil)
+          (shipit-pr-linked-issue--loaded t)
+          (inhibit-read-only t))
+      (cl-letf (((symbol-function 'shipit-issue--get-backend) (lambda () nil)))
+        (magit-insert-section (shipit-issue)
+          (shipit-issue--insert-linked-prs-section "PRJ-9" nil))
+        (shipit-issue--show-linked-prs-failure "The tracker answered (503)")
+        (shipit-issue--fill-linked-prs "PRJ-9" nil)
+        (should (equal "Linked PRs (0)" (test-shipit-issue--linked-prs-heading)))))))
 
 (ert-deftest test-shipit-issue-link-pull-request-picks-and-links ()
   "GIVEN the user picks a PR from the repo's pull requests

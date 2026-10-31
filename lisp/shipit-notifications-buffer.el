@@ -431,6 +431,10 @@ triggers a rerender."
   (let ((buf (shipit-notifications-buffer-create)))
     (with-current-buffer buf
       (let ((inhibit-read-only t)
+            ;; A redraw is no change to undo.  Undo keeps only the marks
+            ;; that wait for the end of their undo window.  A redraw of
+            ;; thousands of notifications would add tens of megabytes.
+            (buffer-undo-list t)
             (pos (point)))
         ;; Deactivate any active mark before regenerating: the
         ;; region's saved positions point at sections that
@@ -2574,8 +2578,7 @@ once the timer fires, the server PATCH is irreversible."
             (setq shipit-notifications-buffer--pending-mark-batches
                   (assq-delete-all batch-id
                                    shipit-notifications-buffer--pending-mark-batches))
-            (let ((buffer-undo-list nil)) ; nil, not t -- t is the sentinel that breaks goggles'-style advice that walks the list
-              (shipit-notifications-buffer--rerender))
+            (shipit-notifications-buffer--rerender)
             (shipit-notifications-buffer--blink-restored-rows keys buf)
             (message "Restored %d row%s" n (if (= n 1) "" "s")))))))))
 
@@ -2610,8 +2613,7 @@ circuits if the batch was already cancelled by `undo'."
           (setq shipit-notifications-buffer--pending-mark-batches
                 (assq-delete-all batch-id
                                  shipit-notifications-buffer--pending-mark-batches))
-          (let ((buffer-undo-list nil)) ; nil, not t -- t is the sentinel that breaks goggles'-style advice that walks the list
-            (shipit-notifications-buffer--rerender)))))))
+          (shipit-notifications-buffer--rerender))))))
 
 (defun shipit-notifications-buffer--commit-all-pending-marks ()
   "Commit every pending mark batch in the current buffer immediately.
@@ -2648,10 +2650,7 @@ and starts the commit timer."
                  batch-id buf)))
     (push (list batch-id timer keys desc)
           shipit-notifications-buffer--pending-mark-batches)
-    ;; Suppress undo recording during the rerender so the only
-    ;; entry undo sees for this operation is our custom apply form.
-    (let ((buffer-undo-list nil)) ; nil, not t -- t is the sentinel that breaks goggles'-style advice that walks the list
-      (shipit-notifications-buffer--rerender))
+    (shipit-notifications-buffer--rerender)
     ;; magit-section-mode flips `buffer-undo-list' to t on its
     ;; non-edited buffers to disable recording.  Pushing onto t
     ;; produces an improper list `(entry . t)' that

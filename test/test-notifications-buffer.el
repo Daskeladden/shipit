@@ -2145,4 +2145,50 @@ THEN the snooze is removed."
           (should (assoc "owner/foo:pr:99" shipit-notifications--snoozes)))
       (delete-file tmp))))
 
+;;; Undo of the notifications buffer
+
+(defun test-notifications-buffer--activity (number subject)
+  "The notification of pull request NUMBER of owner/foo, titled SUBJECT."
+  `((repo . "owner/foo") (number . ,number) (type . "pr")
+    (subject . ,subject) (reason . "mention")
+    (pr-state . "open") (updated-at . "2026-01-01T00:00:00Z")))
+
+(defun test-notifications-buffer--shows-p (subject)
+  "Whether the notifications buffer shows SUBJECT."
+  (string-match-p (regexp-quote subject) (buffer-string)))
+
+(ert-deftest test-shipit-notifications-buffer-a-redraw-is-not-undone ()
+  "GIVEN the notifications buffer with two notifications, after one of
+them was marked read and waits for the end of its undo window
+WHEN the buffer is drawn again, as each poll does
+THEN undo keeps no change of the text, AND undo brings the marked
+notification back."
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+        (buf (shipit-notifications-buffer-create)))
+    (puthash "owner/foo:pr:1" (test-notifications-buffer--activity 1 "Foo")
+             shipit--notification-pr-activities)
+    (puthash "owner/foo:pr:2" (test-notifications-buffer--activity 2 "Bar")
+             shipit--notification-pr-activities)
+    (unwind-protect
+        (with-current-buffer buf
+          (setq shipit-notifications-buffer--group-by-repo nil)
+          (shipit-notifications-buffer--rerender)
+          (goto-char (oref (car (oref magit-root-section children)) start))
+          (shipit-notifications-buffer-mark-read)
+          (should-not (and (test-notifications-buffer--shows-p "Foo")
+                           (test-notifications-buffer--shows-p "Bar")))
+          (shipit-notifications-buffer--rerender)
+          (should (seq-every-p (lambda (entry)
+                                 (or (null entry) (eq (car-safe entry) 'apply)))
+                               buffer-undo-list))
+          ;; The command loop ends each command with a boundary.
+          (undo-boundary)
+          (shipit-notifications-buffer-undo)
+          (should (test-notifications-buffer--shows-p "Foo"))
+          (should (test-notifications-buffer--shows-p "Bar")))
+      (with-current-buffer buf
+        (dolist (batch shipit-notifications-buffer--pending-mark-batches)
+          (cancel-timer (nth 1 batch))))
+      (kill-buffer buf))))
+
 (provide 'test-notifications-buffer)

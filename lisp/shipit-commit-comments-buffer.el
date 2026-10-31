@@ -105,7 +105,7 @@
     (define-key map (kbd "M-;") #'shipit-dwim)
     (define-key map (kbd "e") #'shipit--ediff-file-at-point)
     (define-key map (kbd "f") #'shipit-files-filter)
-    (define-key map (kbd "o") #'shipit-commit-comments-browse-commit)
+    (define-key map (kbd "o") #'shipit-commit-comments-browse)
     (define-key map (kbd "q") #'quit-window)
     map)
   "Keymap for `shipit-commit-comments-mode'.
@@ -118,6 +118,7 @@ the same text properties, so they behave identically here.")
 \\{shipit-commit-comments-mode-map}"
   :group 'shipit
   (setq-local revert-buffer-function #'shipit-commit-comments-buffer-refresh)
+  (setq-local shipit-page-url-function #'shipit-commit-comments--url)
   (setq-local buffer-read-only t)
   (setq-local truncate-lines t)
   (setq-local tab-width 8)
@@ -625,6 +626,14 @@ changed, and those comments in a PR-buffer-shaped view."
       (unless browse-fn
         (user-error "No commit browse URL support for this backend"))
       (browse-url (funcall browse-fn (plist-get ops :config) sha)))))
+
+(defun shipit-commit-comments-browse ()
+  "Open the commit at point in the browser, or else the page of this view.
+The page of a branch compares it with its base."
+  (interactive)
+  (if (shipit-commit-comments--sha-at-point)
+      (shipit-commit-comments-browse-commit)
+    (shipit-open-in-browser)))
 
 (defun shipit-commit-comments--url ()
   "Return the shareable URL for the current buffer's view.

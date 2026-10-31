@@ -720,6 +720,28 @@ THEN the commit URL lands on the kill ring."
                                       test-scc--sha-commented)))))))
       (test-scc--kill-buffer buf-name))))
 
+(ert-deftest test-scc-o-opens-the-compare-page-or-the-commit ()
+  "GIVEN the branch buffer
+WHEN o is pressed on its title
+THEN the browser shows the compare page of the branch
+WHEN the commits are unfolded, and o is pressed on a commit
+THEN the browser shows that commit."
+  (test-scc--with-branch-buffer buf
+    (with-current-buffer buf
+      (let ((opened nil))
+        (cl-letf (((symbol-function 'browse-url)
+                   (lambda (url &rest _) (push url opened))))
+          (goto-char (oref (test-scc--find-section 'shipit-branch-title) start))
+          (call-interactively (key-binding (kbd "o")))
+          (magit-section-show (test-scc--find-section 'pr-commits))
+          (goto-char (oref (test-scc--find-section 'shipit-commit test-scc--sha-commented)
+                           start))
+          (call-interactively (key-binding (kbd "o"))))
+        (should (equal (reverse opened)
+                       (list "https://github.com/o/r/compare/master...feature"
+                             (format "https://github.com/o/r/commit/%s"
+                                     test-scc--sha-commented))))))))
+
 ;;; Empty-branch diagnostics
 
 (ert-deftest test-scc-open-branch-unpushed-branch-explains ()

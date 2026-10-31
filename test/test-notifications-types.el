@@ -852,6 +852,14 @@ THEN returns non-nil."
   (let ((plist '(:name "Test" :notifications #'ignore)))
     (should (shipit-issue--backend-has-notifications-p plist))))
 
+(ert-deftest test-shipit-issue--backend-has-notifications-p-async-only ()
+  "GIVEN a backend plist with a :notifications-async key only
+WHEN checking for notification support
+THEN returns non-nil, as a poll asks it without waiting."
+  (require 'shipit-issue-backends)
+  (let ((plist '(:name "Test" :notifications-async #'ignore)))
+    (should (shipit-issue--backend-has-notifications-p plist))))
+
 (ert-deftest test-shipit-issue--backend-has-notifications-p-false ()
   "GIVEN a backend plist without :notifications key
 WHEN checking for notification support

@@ -1301,6 +1301,7 @@ icon matches GitHub's web UI for deployment review requests."
                                  ("alert" "AL")
                                  ("invitation" "IN")
                                  ("external" "NT")
+                                 ("branch" "BR")
                                  (_ "??"))))
          (cache shipit-notifications-buffer--render-cache)
          (repo-width (or (and cache (plist-get cache :repo-width))
@@ -4609,40 +4610,12 @@ bursty typing re-renders the notifications buffer once per pause,
 not once per keystroke; the text filter is also checked against
 the cached last-rendered value so unchanged input is a no-op."
   (interactive)
-  (let* ((original-buffer (current-buffer))
-         (timer nil)
-         (minibuf nil)
-         (last-rendered nil))
-    (minibuffer-with-setup-hook
-        (lambda ()
-          (setq minibuf (current-buffer))
-          (add-hook 'post-command-hook
-                    (lambda ()
-                      (when timer (cancel-timer timer))
-                      (setq timer
-                            (run-with-idle-timer
-                             shipit-notifications-filter-live-delay nil
-                             (lambda ()
-                               (condition-case nil
-                                   (when (and (buffer-live-p minibuf)
-                                              (minibufferp minibuf))
-                                     (let ((current-input
-                                            (with-current-buffer minibuf
-                                              (minibuffer-contents-no-properties))))
-                                       (when (and (buffer-live-p original-buffer)
-                                                  (not (equal current-input
-                                                               last-rendered)))
-                                         (setq last-rendered current-input)
-                                         (with-current-buffer original-buffer
-                                           (setq shipit-notifications-buffer--filter-text
-                                                 current-input)
-                                           (shipit-notifications-buffer--rerender)))))
-                                 (error nil))))))
-                    nil t))
-      (let ((new-filter (read-string "Filter notifications: "
-                                     shipit-notifications-buffer--filter-text)))
-        (setq shipit-notifications-buffer--filter-text new-filter)
-        (shipit-notifications-buffer--rerender)))))
+  (shipit--read-filter-live
+   "Filter notifications: " shipit-notifications-buffer--filter-text
+   (lambda (text)
+     (setq shipit-notifications-buffer--filter-text text)
+     (shipit-notifications-buffer--rerender))
+   shipit-notifications-filter-live-delay))
 
 ;;; Debug / perf monitoring helpers
 

@@ -315,12 +315,43 @@ can reset it between polls."
                                 (funcall error-callback (format "HTTP %s" (or status-code "?"))))))
                           (kill-buffer (current-buffer)))))))
 
-(defun shipit--url-retrieve-async-with-headers (url method headers data success-callback error-callback)
-  "Like `shipit--url-retrieve-async' but also expose response headers.
-SUCCESS-CALLBACK is called with two arguments: the parsed JSON body and
-an alist of response headers (name and value both strings).  Used by
-callers that need HTTP response metadata such as the Link header for
-pagination.
+(defun shipit--read-response-headers ()
+  "The headers of the response in this buffer, as an alist of strings.
+Point moves to the start of the body."
+  (let ((response-headers nil))
+    (goto-char (point-min))
+    (forward-line 1)
+    (while (and (< (point) (point-max))
+                (not (looking-at "\r?\n")))
+      (let ((line (buffer-substring (point) (line-end-position))))
+        (when (string-match "^\\([^:]+\\):\\s-*\\(.*\\)$" line)
+          (push (cons (match-string 1 line)
+                      (string-trim-right (match-string 2 line) "\r"))
+                response-headers))
+        (forward-line 1)))
+    ;; Skip the blank separator line so point is at the body
+    (forward-line 1)
+    (nreverse response-headers)))
+
+(defun shipit--read-response-json ()
+  "The JSON body of the response in this buffer from point, or nil."
+  (when (< (point) (point-max))
+    (set-buffer-multibyte t)
+    (decode-coding-region (point) (point-max) 'utf-8)
+    (when shipit-strip-emoji-variation-selectors
+      (shipit--strip-emoji-variation-selectors (point) (point-max)))
+    (let ((json-array-type 'list)
+          (json-object-type 'alist)
+          (json-key-type 'symbol))
+      (json-read))))
+
+(defun shipit--url-retrieve-async-with-status (url method headers data callback error-callback)
+  "Ask for URL, and call CALLBACK with the status, the body and the headers.
+CALLBACK gets the status code, the parsed JSON body and an alist of the
+response headers, for each answer that url.el does not give as an
+error.  One is 304 Not Modified, the answer without a body to a request
+whose If-None-Match header has the ETag of what did not change.
+ERROR-CALLBACK gets the error of url.el.
 
 `system-time-locale' is `let\='-bound to \"C\" around `url-retrieve'
 so date headers stay ASCII regardless of the user's locale."
@@ -331,42 +362,32 @@ so date headers stay ASCII regardless of the user's locale."
     (url-retrieve
      url
      (lambda (status)
-       (let ((error-status (plist-get status :error)))
+       (let ((error-status (plist-get status :error))
+             (buffer (current-buffer)))
          (if error-status
              (funcall error-callback error-status)
            (goto-char (point-min))
            (let* ((status-line (buffer-substring (point-min) (line-end-position)))
                   (status-code (when (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
                                  (string-to-number (match-string 1 status-line))))
-                  (response-headers nil))
-             ;; Parse response headers into an alist until the blank line
-             (forward-line 1)
-             (while (and (< (point) (point-max))
-                         (not (looking-at "\r?\n")))
-               (let ((line (buffer-substring (point) (line-end-position))))
-                 (when (string-match "^\\([^:]+\\):\\s-*\\(.*\\)$" line)
-                   (push (cons (match-string 1 line)
-                               (string-trim-right (match-string 2 line) "\r"))
-                         response-headers))
-                 (forward-line 1)))
-             ;; Skip the blank separator line so point is at the body
-             (forward-line 1)
-             (let* ((json-data (when (< (point) (point-max))
-                                 (set-buffer-multibyte t)
-                                 (decode-coding-region (point) (point-max) 'utf-8)
-                                 (when shipit-strip-emoji-variation-selectors
-                                   (shipit--strip-emoji-variation-selectors (point) (point-max)))
-                                 (let ((json-array-type 'list)
-                                       (json-object-type 'alist)
-                                       (json-key-type 'symbol))
-                                   (condition-case err
-                                       (json-read)
-                                     (error
-                                      (signal (car err) (cdr err))))))))
-               (if (and status-code (>= status-code 200) (< status-code 300))
-                   (funcall success-callback json-data (nreverse response-headers))
-                 (funcall error-callback (format "HTTP %s" (or status-code "?"))))))
-           (kill-buffer (current-buffer))))))))
+                  (response-headers (shipit--read-response-headers)))
+             (funcall callback status-code (shipit--read-response-json) response-headers)))
+         (kill-buffer buffer))))))
+
+(defun shipit--url-retrieve-async-with-headers (url method headers data success-callback error-callback)
+  "Like `shipit--url-retrieve-async' but also expose response headers.
+SUCCESS-CALLBACK is called with two arguments: the parsed JSON body and
+an alist of response headers (name and value both strings).  Used by
+callers that need HTTP response metadata such as the Link header for
+pagination.  An answer that is not a success, as 304 Not Modified, goes
+to ERROR-CALLBACK as \"HTTP\" and its status."
+  (shipit--url-retrieve-async-with-status
+   url method headers data
+   (lambda (status-code json-data response-headers)
+     (if (and status-code (>= status-code 200) (< status-code 300))
+         (funcall success-callback json-data response-headers)
+       (funcall error-callback (format "HTTP %s" (or status-code "?")))))
+   error-callback))
 
 (defun shipit--parse-link-header-last-page (headers)
   "Return the last-page number from HEADERS, an alist of HTTP headers.

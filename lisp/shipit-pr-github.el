@@ -1287,6 +1287,377 @@ GitHub hands an event out some minutes to some hours after it happened."
          (when (zerop (cl-decf waiting))
            (funcall callback (shipit-pr-github--feed-entries events))))))))
 
+;;; Branches
+
+(defconst shipit-pr-github--commit-fields
+  "target {
+          ... on Commit {
+            oid
+            committedDate
+            messageHeadline
+            author { name user { login } }
+          }
+        }"
+  "The fields of the last commit of a branch, in a query of branches.")
+
+(defconst shipit-pr-github--pr-fields
+  "number title state isDraft isCrossRepository headRefName"
+  "The fields of a pull request of a branch, in a query of branches.")
+
+(defconst shipit-pr-github--branches-query
+  (concat "query($owner: String!, $name: String!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef { name }
+    refs(refPrefix: \"refs/heads/\", first: 100, after: $cursor) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name
+        " shipit-pr-github--commit-fields "
+      }
+    }
+  }
+}")
+  "The query of a page of the branches of a repository, with their last commit.")
+
+(defconst shipit-pr-github--branch-prs-query
+  (concat "query($owner: String!, $name: String!, $states: [PullRequestState!], $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: $states, first: 100, after: $cursor,
+                 orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes { " shipit-pr-github--pr-fields " }
+    }
+  }
+}")
+  "The query of a page of the pull requests of a repository in some states.
+The pull request that was updated last comes first.")
+
+(defconst shipit-pr-github--parallel-pages 8
+  "How many pages of branches are asked for at the same time.
+GitHub refuses more than 100 requests of a user at the same time.")
+
+(defun shipit-pr-github--repository-page (query repo variables callback)
+  "Call CALLBACK with what GitHub says of REPO for QUERY with VARIABLES.
+CALLBACK gets nil when GitHub refuses the query or knows no such
+repository."
+  (pcase-let ((`(,owner ,name) (split-string repo "/")))
+    (shipit--graphql-request
+     query `((owner . ,owner) (name . ,name) ,@variables)
+     (lambda (response)
+       (funcall callback (let-alist response .data.repository))))))
+
+(defun shipit-pr-github--collect-pages (fetch-page cursor nodes callback)
+  "Add the nodes of the page at CURSOR and of the pages after it to NODES.
+FETCH-PAGE is a function of a cursor and of a function that it calls
+with the connection of that page, or with nil when GitHub refused it.
+CALLBACK gets all the nodes, or nil when a page was refused."
+  (funcall fetch-page cursor
+           (lambda (connection)
+             (if (null connection)
+                 (funcall callback nil)
+               (let-alist connection
+                 (let ((all (append nodes .nodes)))
+                   (if (eq .pageInfo.hasNextPage t)
+                       (shipit-pr-github--collect-pages
+                        fetch-page .pageInfo.endCursor all callback)
+                     (funcall callback all))))))))
+
+(defun shipit-pr-github--run-limited (tasks limit callback)
+  "Run TASKS, at most LIMIT at the same time, and call CALLBACK with results.
+A task is a function of a function that it calls with its result.
+CALLBACK gets the results in the order of TASKS, once the last task
+gave its result."
+  (let* ((tasks (vconcat tasks))
+         (results (make-vector (length tasks) nil))
+         (next 0)
+         (waiting (length tasks)))
+    (cl-labels ((start ()
+                  (when (< next (length tasks))
+                    (let ((index next))
+                      (cl-incf next)
+                      (funcall (aref tasks index)
+                               (lambda (result)
+                                 (aset results index result)
+                                 (if (zerop (cl-decf waiting))
+                                     (funcall callback (append results nil))
+                                   (start))))))))
+      (if (zerop waiting)
+          (funcall callback nil)
+        (dotimes (_ (min limit waiting))
+          (start))))))
+
+(defun shipit-pr-github--refs-page (repo cursor callback)
+  "Call CALLBACK with the refs of REPO in the page at CURSOR, or nil."
+  (shipit-pr-github--repository-page
+   shipit-pr-github--branches-query repo `((cursor . ,cursor))
+   (lambda (repository) (funcall callback (alist-get 'refs repository)))))
+
+(defun shipit-pr-github--count-cursor-p (cursor count)
+  "Whether CURSOR is COUNT, the number of branches before it, in base64.
+GitHub writes a cursor of branches so, but does not promise it, so it is
+checked before pages are asked for by their count."
+  (equal (ignore-errors (base64-decode-string cursor)) (number-to-string count)))
+
+(defun shipit-pr-github--count-cursors (size total)
+  "The cursors of the pages of SIZE branches after the first, of TOTAL."
+  (cl-loop for count from size below total by size
+           collect (base64-encode-string (number-to-string count))))
+
+(defun shipit-pr-github--refs-by-count (repo first callback)
+  "Ask for the pages of REPO after FIRST by their count, some at a time.
+CALLBACK gets the refs of FIRST and of those pages, or nil when a page
+was refused."
+  (let-alist first
+    (shipit-pr-github--run-limited
+     (mapcar (lambda (cursor) (apply-partially #'shipit-pr-github--refs-page repo cursor))
+             (shipit-pr-github--count-cursors (length .nodes) .totalCount))
+     shipit-pr-github--parallel-pages
+     (lambda (pages)
+       (funcall callback
+                (unless (memq nil pages)
+                  (apply #'append .nodes
+                         (mapcar (lambda (page) (alist-get 'nodes page)) pages))))))))
+
+(defun shipit-pr-github--rest-of-refs (repo first callback)
+  "Call CALLBACK with the refs of FIRST, the first page of REPO, and the rest.
+Pages are asked for by their count, some at the same time, when the
+cursor of FIRST is the count of its refs.  Else they are asked for one
+after the other, which takes some seconds for each 100 branches.
+CALLBACK gets nil when a page was refused."
+  (let-alist first
+    (cond ((not (eq .pageInfo.hasNextPage t))
+           (funcall callback .nodes))
+          ((shipit-pr-github--count-cursor-p .pageInfo.endCursor (length .nodes))
+           (shipit-pr-github--refs-by-count repo first callback))
+          (t
+           (shipit-pr-github--collect-pages
+            (apply-partially #'shipit-pr-github--refs-page repo)
+            .pageInfo.endCursor .nodes callback)))))
+
+(defun shipit-pr-github--fetch-refs (repo callback)
+  "Call CALLBACK with the default branch and the refs of REPO.
+They come as (DEFAULT . REFS), or as nil when GitHub refuses a page or
+knows no such repository."
+  (shipit-pr-github--repository-page
+   shipit-pr-github--branches-query repo '((cursor))
+   (lambda (repository)
+     (if (null repository)
+         (funcall callback nil)
+       (let-alist repository
+         (shipit-pr-github--rest-of-refs
+          repo .refs
+          (lambda (refs)
+            (funcall callback (and refs (cons .defaultBranchRef.name refs))))))))))
+
+(defun shipit-pr-github--prs-page (repo states cursor callback)
+  "Call CALLBACK with the pull requests of REPO in STATES at CURSOR, or nil.
+With STATES nil they are in any state."
+  (shipit-pr-github--repository-page
+   shipit-pr-github--branch-prs-query repo `((states . ,states) (cursor . ,cursor))
+   (lambda (repository) (funcall callback (alist-get 'pullRequests repository)))))
+
+(defun shipit-pr-github--fetch-branch-prs (repo callback)
+  "Call CALLBACK with the pull requests of REPO that its branches show.
+They are the open ones, and the 100 that were updated last.  To ask for
+the pull requests of each branch takes longer than to ask for the
+branches, so an older pull request that was merged or closed is not
+shown."
+  (shipit-pr-github--collect-pages
+   (apply-partially #'shipit-pr-github--prs-page repo ["OPEN"]) nil nil
+   (lambda (open)
+     (shipit-pr-github--prs-page
+      repo nil nil
+      (lambda (recent)
+        (funcall callback (append open (alist-get 'nodes recent))))))))
+
+(defun shipit-pr-github--own-pr-p (pr)
+  "Whether the head of PR is a branch of its own repository.
+The head of a pull request from a fork is a branch of the fork, which
+can have the name of a branch of the repository."
+  (not (eq (alist-get 'isCrossRepository pr) t)))
+
+(defun shipit-pr-github--pr-before-p (pr other)
+  "Whether PR of a branch is shown before OTHER: an open one, else the newer."
+  (let ((open (equal (alist-get 'state pr) "OPEN")))
+    (if (eq open (equal (alist-get 'state other) "OPEN"))
+        (> (alist-get 'number pr) (alist-get 'number other))
+      open)))
+
+(defun shipit-pr-github--prs-by-branch (prs)
+  "A table of the pull request of each branch, by name, from PRS.
+Of two pull requests of one branch, the one that is shown first is
+kept."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (pr (seq-filter #'shipit-pr-github--own-pr-p prs) table)
+      (let ((kept (gethash (alist-get 'headRefName pr) table)))
+        (when (or (null kept) (shipit-pr-github--pr-before-p pr kept))
+          (puthash (alist-get 'headRefName pr) pr table))))))
+
+(defun shipit-pr-github--branch-pr (pr)
+  "PR, as GraphQL gives it, as the pull request of a branch, or nil.
+Its state is open, draft, merged or closed.  GitHub keeps a pull request
+that was closed as a draft as a draft, but it is closed."
+  (when pr
+    (let-alist pr
+      `((number . ,.number)
+        (title . ,.title)
+        (state . ,(if (and (equal .state "OPEN") (eq .isDraft t))
+                      "draft"
+                    (downcase .state)))))))
+
+(defun shipit-pr-github--branch (repo default prs ref)
+  "REF, a branch of REPO as GraphQL gives it, as a branch of a backend.
+DEFAULT is the name of the default branch of REPO, and PRS the table of
+`shipit-pr-github--prs-by-branch'.  Who made the last commit is the
+login of that person, or the name in the commit when no user of GitHub
+has its address."
+  (let-alist ref
+    `((name . ,.name)
+      (sha . ,.target.oid)
+      (time . ,.target.committedDate)
+      (subject . ,.target.messageHeadline)
+      (author . ,(or .target.author.user.login .target.author.name))
+      (own . ,(equal .target.author.user.login (shipit-pr-github--login)))
+      (default . ,(equal .name default))
+      (base . ,default)
+      (pr . ,(shipit-pr-github--branch-pr (gethash .name prs)))
+      (url . ,(format "https://github.com/%s/tree/%s" repo .name)))))
+
+(defun shipit-pr-github--newest-first (branches)
+  "BRANCHES, the one with the newest last commit first.
+GitHub orders branches by the date of their commit only for tags."
+  (sort branches (lambda (branch other)
+                   (string> (alist-get 'time branch) (alist-get 'time other)))))
+
+(defun shipit-pr-github--branches (repo refs prs)
+  "The branches of REPO from REFS, as (DEFAULT . REFS), and from PRS."
+  (let ((table (shipit-pr-github--prs-by-branch prs)))
+    (shipit-pr-github--newest-first
+     (mapcar (apply-partially #'shipit-pr-github--branch repo (car refs) table)
+             (cdr refs)))))
+
+(defun shipit-pr-github--fetch-branches-async (config callback)
+  "Call CALLBACK with the branches of the repository of CONFIG.
+The branch with the newest last commit comes first.  The branches and
+their pull requests are asked for at the same time.  CALLBACK gets nil
+when GitHub refuses a page of branches or knows no such repository:
+each repository has a default branch, so no branch at all says that
+nothing is known.  Pull requests that GitHub refuses leave the branches
+without one."
+  (let ((repo (plist-get config :repo))
+        (refs 'waiting)
+        (prs 'waiting))
+    (cl-flet ((join ()
+                (unless (or (eq refs 'waiting) (eq prs 'waiting))
+                  (funcall callback
+                           (and refs (shipit-pr-github--branches repo refs prs))))))
+      (shipit-pr-github--fetch-refs repo (lambda (result) (setq refs result) (join)))
+      (shipit-pr-github--fetch-branch-prs repo (lambda (result) (setq prs result) (join))))))
+
+(defun shipit-pr-github--branch-names-headers (etag)
+  "The headers of a request of the names of branches, with ETAG if there is one."
+  (delq nil (list (shipit--get-auth-header)
+                  '("Accept" . "application/vnd.github+json")
+                  (and etag (cons "If-None-Match" etag)))))
+
+(defun shipit-pr-github--branch-names (status refs headers)
+  "What GitHub's answer of STATUS, REFS and HEADERS says of the names of branches.
+It is `unchanged' for 304 Not Modified, (ETAG . NAMES) for a success
+with names, and nil for anything else."
+  (pcase status
+    (304 'unchanged)
+    ;; Each repository has a default branch, so a success without a name
+    ;; was cut short.  url.el gives status 200 and no body when the
+    ;; connection closes after the headers.
+    ((guard (null refs)) nil)
+    (200 (cons (cdr (assoc-string "ETag" headers t))
+               (mapcar (lambda (ref) (string-remove-prefix "refs/heads/" (alist-get 'ref ref)))
+                       refs)))))
+
+(defun shipit-pr-github--fetch-branch-names-async (config etag callback)
+  "Call CALLBACK with the names of the branches of the repository of CONFIG.
+ETAG is the one that came with the names before, or nil.  CALLBACK gets
+`unchanged' when the branches did not change since then, else (ETAG
+. NAMES), or nil when GitHub refuses or the answer is cut short.  GitHub
+gives all names in one answer, and an answer that nothing changed does
+not count against its rate limit."
+  (shipit--url-retrieve-async-with-status
+   (format "%s/repos/%s/git/matching-refs/heads/"
+           (or shipit-api-url "https://api.github.com") (plist-get config :repo))
+   "GET" (shipit-pr-github--branch-names-headers etag) nil
+   (lambda (status refs headers)
+     (funcall callback (shipit-pr-github--branch-names status refs headers)))
+   (lambda (_error) (funcall callback nil))))
+
+(defconst shipit-pr-github--names-per-query 100
+  "How many branches one query asks for by name.")
+
+(defun shipit-pr-github--named-refs-query (count)
+  "The query of COUNT branches, each named by a variable $b0, $b1 and so on.
+Each comes with its open pull requests."
+  ;; GitHub gives a branch also the pull requests from a fork whose branch
+  ;; has the same name, so one pull request could hide the own one.
+  (let ((indices (number-sequence 0 (1- count))))
+    (format "query($owner: String!, $name: String!, %s) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef { name }
+%s
+  }
+}"
+            (mapconcat (lambda (i) (format "$b%d: String!" i)) indices ", ")
+            (mapconcat (lambda (i)
+                         (format "    b%d: ref(qualifiedName: $b%d) {
+      name %s
+      associatedPullRequests(states: OPEN, first: 10) { nodes { %s } }
+    }"
+                                 i i shipit-pr-github--commit-fields
+                                 shipit-pr-github--pr-fields))
+                       indices "\n"))))
+
+(defun shipit-pr-github--named-refs-variables (names)
+  "The variables of the query of the branches NAMES, as (bN . refs/heads/NAME)."
+  (cl-loop for name in names
+           for index from 0
+           collect (cons (intern (format "b%d" index)) (concat "refs/heads/" name))))
+
+(defun shipit-pr-github--named-refs (repo names callback)
+  "Call CALLBACK with the default branch and the refs of REPO named NAMES.
+They come as (DEFAULT . REFS), without a name that is not there, or as
+nil when GitHub refuses."
+  (let ((variables (shipit-pr-github--named-refs-variables names)))
+    (shipit-pr-github--repository-page
+     (shipit-pr-github--named-refs-query (length names)) repo variables
+     (lambda (repository)
+       (funcall callback
+                (when repository
+                  (cons (let-alist repository .defaultBranchRef.name)
+                        (delq nil (mapcar (lambda (variable)
+                                            (alist-get (car variable) repository))
+                                          variables)))))))))
+
+(defun shipit-pr-github--refs-prs (refs)
+  "The pull requests that come with REFS, the branches asked for by name."
+  (mapcan (lambda (ref) (append (let-alist ref .associatedPullRequests.nodes) nil))
+          refs))
+
+(defun shipit-pr-github--fetch-named-branches-async (config names callback)
+  "Call CALLBACK with the branches of the repository of CONFIG named NAMES.
+They are as `shipit-pr-github--fetch-branches-async' gives them, but
+with an open pull request only.  A name that is not there is left out.
+CALLBACK gets nil when GitHub refuses."
+  (let ((repo (plist-get config :repo)))
+    (shipit-pr-github--run-limited
+     (mapcar (lambda (some) (apply-partially #'shipit-pr-github--named-refs repo some))
+             (seq-split names shipit-pr-github--names-per-query))
+     shipit-pr-github--parallel-pages
+     (lambda (parts)
+       (funcall callback
+                (unless (memq nil parts)
+                  (let ((refs (apply #'append (mapcar #'cdr parts))))
+                    (shipit-pr-github--branches
+                     repo (cons (caar parts) refs) (shipit-pr-github--refs-prs refs)))))))))
+
 ;;; Async check operations
 ;; Async variants for the checks pipeline — used by shipit-checks.el
 ;; to avoid calling shipit--api-request (GitHub HTTP) directly.
@@ -2131,6 +2502,9 @@ data should pass it: this runs on every render of the section."
        :mark-notification-read-async #'shipit-pr-github--mark-notification-read-async
        :fetch-notifications #'shipit-pr-github--fetch-notifications
        :fetch-feed-async #'shipit-pr-github--fetch-feed-async
+       :fetch-branches-async #'shipit-pr-github--fetch-branches-async
+       :fetch-branch-names-async #'shipit-pr-github--fetch-branch-names-async
+       :fetch-named-branches-async #'shipit-pr-github--fetch-named-branches-async
        :browse-discussion-url #'shipit-pr-github--browse-discussion-url
        :fetch-user-teams #'shipit-pr-github--fetch-user-teams
        :fetch-repo-info #'shipit-pr-github--fetch-repo-info

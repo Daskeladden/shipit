@@ -3812,5 +3812,48 @@ the landing page of a repository."
     (should (eq 'shipit-open-repo-buffer (plist-get suffix :command)))
     (should (commandp 'shipit-open-repo-buffer))))
 
+(ert-deftest test-shipit-main-menu-opens-the-branches-of-a-repository ()
+  "GIVEN the main menu of shipit
+WHEN the key `B' is looked up in it
+THEN it is named Branches AND it runs the command that shows the
+branches of a repository."
+  (let ((suffix (cdr (transient-get-suffix 'shipit-menu "B"))))
+    (should (equal "Branches" (plist-get suffix :description)))
+    (should (eq 'shipit-branches (plist-get suffix :command)))))
+
+(defun test-shipit--init-body ()
+  "The forms of the body of `shipit-init', as its source has them.
+Running `shipit-init' would turn on global modes and timers for the
+tests that run after it."
+  (with-temp-buffer
+    (insert-file-contents (locate-library "shipit.el"))
+    (let ((form nil))
+      (while (not (eq (car-safe form) 'defun))
+        (setq form (read (current-buffer)))
+        (unless (eq (cadr form) 'shipit-init)
+          (setq form nil)))
+      (cdddr form))))
+
+(ert-deftest test-shipit-init-checks-the-watched-branches-at-each-poll ()
+  "GIVEN the definition of `shipit-init'
+THEN it loads the branches, whose check of the watched repositories
+runs each time shipit polls for notifications."
+  (should (member '(require 'shipit-branches) (test-shipit--init-body))))
+
+(ert-deftest test-shipit-a-live-filter-applies-the-text-that-was-read ()
+  "GIVEN a buffer, and a filter that is read with live updates
+WHEN the text is read
+THEN the function that applies it gets the text in that buffer, AND
+the text is the value."
+  (with-temp-buffer
+    (let ((buffer (current-buffer))
+          (applied nil))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "some words")))
+        (should (equal "some words"
+                       (shipit--read-filter-live
+                        "Filter: " "" (lambda (text)
+                                        (push (list text (current-buffer)) applied))))))
+      (should (equal applied (list (list "some words" buffer)))))))
+
 (provide 'test-shipit)
 ;;; test-shipit.el ends here

@@ -180,6 +180,8 @@ test-unit: compile
 		-l test/test-shipit-notifications-external.el \
 		-l test/test-shipit-explore.el \
 		-l test/test-shipit-explore-buffer.el \
+		-l test/test-shipit-branches.el \
+		-l test/test-shipit-branches-buffer.el \
 		-l test/test-shipit-page-menu.el \
 		-l test/test-shipit-comments-order.el \
 		-l test/test-shipit-imenu.el \

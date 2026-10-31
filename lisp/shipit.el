@@ -105,6 +105,9 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
   ;; GitLab backend (always loaded for cross-backend features like repo search)
   (require 'shipit-pr-gitlab)
   (require 'shipit-comment-gitlab)
+  ;; Its check of the watched repositories runs at each poll of
+  ;; notifications.
+  (require 'shipit-branches)
   (when shipit-issues-enabled
     (require 'shipit-issue-backends)   ; Pluggable backend registry
     (require 'shipit-issue-github)     ; GitHub backend (always available)
@@ -210,6 +213,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
 (declare-function shipit-subscriptions "shipit-subscriptions-buffer")
 (declare-function shipit-open-repo-buffer "shipit-repo-buffer")
 (declare-function shipit-explore "shipit-explore-buffer")
+(declare-function shipit-branches "shipit-branches-buffer")
 (declare-function shipit-help "shipit-core")
 (declare-function shipit-notifications-menu "shipit-notifications")
 (declare-function shipit-issues--quick-search "shipit-issues")
@@ -237,6 +241,7 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
    ("m" "Branch commit comments" shipit-branch-comments)
    ("n" "Notifications buffer" shipit--view-notifications)
    ("e" "Explore" shipit-explore)
+   ("B" "Branches" shipit-branches)
    ("A" "Atlassian dashboard" shipit-atlassian-dashboard
     :if shipit-atlassian-dashboard-available-p)]
   ["Issues" :if (lambda () shipit-issues-enabled)

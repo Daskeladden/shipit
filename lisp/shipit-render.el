@@ -7938,6 +7938,7 @@ Returns (octicon . color) or nil."
     ("alert"      '("shield" . "#da3633"))               ; Red
     ("invitation" '("mail" . "#0366d6"))                 ; Blue
     ("external"   '("inbox" . "#8250df"))                ; Purple
+    ("branch"     '("git-branch" . "#28a745"))           ; Green
     (_ nil)))
 
 (defun shipit--get-notification-type-icon (type emoji-fallback)

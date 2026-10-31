@@ -102,6 +102,27 @@
 ;;                              fork, create, release or public), actor, repo,
 ;;                              own (whether the repository is the user's),
 ;;                              detail, title, url and time
+;;   :fetch-branches-async    — (config callback) → calls CALLBACK with the
+;;                              branches of the repository, the newest last
+;;                              commit first, or with nil when nothing is
+;;                              known.  A branch is an alist of name, sha,
+;;                              time, subject and author of the last commit,
+;;                              own (whether the user made that commit),
+;;                              default, base (the name of the default
+;;                              branch, which the branch is compared
+;;                              with), url, and pr: the number, title and
+;;                              state (open, draft, merged or closed) of its
+;;                              newest pull request, or nil
+;;   :fetch-branch-names-async — (config etag callback) → calls CALLBACK
+;;                              with `unchanged' when the branches did not
+;;                              change since ETAG came with their names,
+;;                              else with (ETAG . NAMES) for all branches, or
+;;                              with nil when nothing is known
+;;   :fetch-named-branches-async — (config names callback) → calls CALLBACK
+;;                              with the branches named NAMES that are there,
+;;                              as :fetch-branches-async gives them but
+;;                              with pr only for an open pull request, or
+;;                              with nil when nothing is known
 ;;   :browse-discussion-url   — (config number) → URL string
 ;;   :fetch-user-teams        — (config) → list of team data alists
 ;;   :fetch-merge-methods     — (config) → list of allowed merge method strings

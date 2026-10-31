@@ -550,6 +550,7 @@ A directory that is in no repository is a clone of nothing."
     shipit-repo-buffer-repo
     shipit-discussion-buffer-repo
     shipit-releases-buffer-repo
+    shipit-branches-buffer-repo
     shipit-commit-comments--repo
     shipit-issue-create--repo
     shipit-editor--repo
@@ -1975,6 +1976,48 @@ Preserves field width (for right-aligned timestamps) and all existing text prope
               (set-text-properties pos (+ pos new-len) old-props)
               (setq next-change (+ pos new-len))))
           (setq pos (or next-change (point-max))))))))
+
+(defconst shipit--filter-live-delay 0.25
+  "Seconds without typing before a live filter shows its text.")
+
+(defun shipit--live-filter-hook (buffer delay apply)
+  "A function for `post-command-hook' in the minibuffer of a live filter.
+After DELAY seconds without typing it calls APPLY in BUFFER with the
+text of the minibuffer, when that changed since the call before."
+  (let ((minibuf (current-buffer))
+        (timer nil)
+        (applied nil))
+    (lambda ()
+      (when timer (cancel-timer timer))
+      (setq timer
+            (run-with-idle-timer
+             delay nil
+             (lambda ()
+               (condition-case nil
+                   (when (and (buffer-live-p minibuf) (minibufferp minibuf)
+                              (buffer-live-p buffer))
+                     (let ((text (with-current-buffer minibuf
+                                   (minibuffer-contents-no-properties))))
+                       (unless (equal text applied)
+                         (setq applied text)
+                         (with-current-buffer buffer (funcall apply text)))))
+                 (error nil))))))))
+
+(defun shipit--read-filter-live (prompt initial apply &optional delay)
+  "Read the text of a filter with PROMPT and INITIAL, and APPLY it as typed.
+APPLY is called in the buffer that is current now, with the text:
+after DELAY seconds without typing, `shipit--filter-live-delay' when
+nil, and once more with the text that was read.  Returns that text."
+  (let ((buffer (current-buffer)))
+    (minibuffer-with-setup-hook
+        (lambda ()
+          (add-hook 'post-command-hook
+                    (shipit--live-filter-hook
+                     buffer (or delay shipit--filter-live-delay) apply)
+                    nil t))
+      (let ((text (read-string prompt initial)))
+        (funcall apply text)
+        text))))
 
 (defvar shipit--emoji-support-cache nil
   "Cache for emoji support detection to avoid repeated checks.")

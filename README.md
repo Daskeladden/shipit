@@ -198,6 +198,26 @@ The feed is then asked for each time shipit polls for notifications. The notific
 
 A switch of the menu stays for the session. `shipit-explore-kinds` and `shipit-explore-about` hold the same choices for your configuration. GitHub hands an event out some minutes to some hours after it happened. It keeps the last 300 events of all that you can see, which the work in a busy repository fills in some hours, and the last 300 public events, which reach back some weeks. Explore reads both. It has no API for the repositories that it calls trending, so those are not in Explore.
 
+### Branches
+
+`M-x shipit-branches`, or `B` in the menu of shipit, shows the branches of the repository you are in. They stand in the groups of the branches page of GitHub: the default branch, your branches, the active branches of others, and the stale ones. If you made the last commit of a branch, the branch is yours. If a branch had no commit for 90 days, it is stale, and that group starts folded. Each line shows the name of the branch, the time and the author of its last commit, and its pull request with the state. The pull request is an open one, or one of the 100 that were updated last, so an older merged or closed pull request is not shown.
+
+`RET` opens the branch in shipit. A branch with a pull request opens the pull request, and the default branch opens the page of the repository. Any other branch shows how it differs from the default branch, as the compare page of GitHub does: its commits, its changed files with their diffs, its checks and the comments on its commits. There, `o` shows the compare page in the browser, or the commit at point. If the backend has no comments on commits, `RET` shows the compare page in the browser.
+
+`f` filters the branches as you type. Only the branches whose name or author contains each word you type stay, and the headings count them. An empty filter shows all branches again. `o` shows the page of the branch in the browser, and `M-w` copies the name of the branch. `g` reads the branches again, and `L` switches the times between a date and how long ago. With a prefix argument, `shipit-branches` asks for the repository.
+
+`SPC` opens a menu with these actions, and also compares the branch in the browser and copies its address. With embark, the line of a branch has the actions too: `o` opens it in shipit, `b` in the browser, `c` compares it in the browser, `w` copies its name and `u` its address.
+
+`w` watches the repository, and `w` again stops. Each time shipit polls for notifications, it then asks for the names of the branches of each watched repository. A new branch whose last commit someone else made gives a notification, and `RET` on it shows how that branch differs from the default branch, as `RET` on the branch does here. The branches that you saw when you pressed `w` give no notification, and neither does a branch that you push. A branch with an open pull request, also a draft, gives no notification either, because the pull request gives one of its own. If a branch gets an open pull request after its notification came, the notification goes away at the next poll. `w` saves the list with Customize. You can also set it in your configuration:
+
+```elisp
+(setq shipit-branches-watched-repos '("owner/repo"))
+```
+
+The first poll of a repository that you add there only learns its branches. shipit keeps the branches that it saw in `shipit-branches-watch-file`, so a restart gives no notification for the branches that came before. The file also keeps each notification of a new branch until you read it, so a restart does not lose it.
+
+Each poll asks GitHub for the names of all branches in one request. GitHub sends an ETag with the list, a tag that names this version of the list. The next poll sends that ETag back. If no branch changed, GitHub answers "304 Not Modified", which does not count against its rate limit. If a branch changed, the names come again. shipit then asks for the last commits and the open pull requests of the new branches only, in one GraphQL query for each 100 of them. While a notification of a new branch is not read, each poll also asks for that branch again, to see if it has a pull request now. A list of 5800 branches came in about 2 seconds, and an unchanged one in about 1.5 seconds. Only the GitHub backend lists branches.
+
 ## Configuration
 
 ```elisp

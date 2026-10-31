@@ -42,6 +42,10 @@
   "The body of each request answered, oldest first; nil for one without a body.
 In step with `shipit-test-http-requests'.")
 
+(defvar shipit-test-http-headers nil
+  "The headers that each request answered sent, oldest first, as alists.
+In step with `shipit-test-http-requests'.")
+
 (defvar shipit-test-http--unanswered nil
   "The addresses asked for that no answer covered, newest first.")
 
@@ -61,13 +65,17 @@ Records ADDRESS and signals when none does."
   "BODY as the bytes of a response: a string as it is, else as JSON."
   (encode-coding-string (if (stringp body) body (json-encode body)) 'utf-8))
 
-(defun shipit-test-http--response (status body)
-  "A buffer holding a response of STATUS with BODY, as url.el leaves one."
+(defun shipit-test-http--response (status body headers)
+  "A buffer holding a response of STATUS with BODY, as url.el leaves one.
+HEADERS is an alist of the headers it has beside its type."
   (let ((buffer (generate-new-buffer " *shipit-test-http*")))
     (with-current-buffer buffer
       (set-buffer-multibyte nil)
-      (insert (format "HTTP/1.1 %d %s\nContent-Type: application/json\n\n"
+      (insert (format "HTTP/1.1 %d %s\nContent-Type: application/json\n"
                       status (if (< status 400) "OK" "Error")))
+      (dolist (header headers)
+        (insert (format "%s: %s\n" (car header) (cdr header))))
+      (insert "\n")
       (setq-local url-http-end-of-headers (copy-marker (1- (point))))
       (setq-local url-http-response-status status)
       (insert (shipit-test-http--body body)))
@@ -83,16 +91,43 @@ Records ADDRESS and signals when none does."
   "Kill the response buffers that are still alive."
   (mapc #'kill-buffer (shipit-test-http-live-responses)))
 
+(defun shipit-test-http--body-for (body)
+  "BODY of an answer to the request that is made now.
+A function gives it from what the request sent, as a string."
+  (if (functionp body) (funcall body url-request-data) body))
+
+(defun shipit-test-http--headers-for (headers)
+  "HEADERS of an answer to the request that is made now.
+A function gives them, as an alist."
+  (if (functionp headers) (funcall headers) headers))
+
+(defun shipit-test-http--unchanged-p (headers)
+  "Whether the request that is made now has the ETag of HEADERS.
+It asks for the body only when that changed, and gets 304 Not Modified."
+  (let ((etag (cdr (assoc "ETag" headers))))
+    (and etag (equal etag (cdr (assoc "If-None-Match" url-request-extra-headers))))))
+
+(defun shipit-test-http--record (address)
+  "Record the request of ADDRESS that is made now."
+  (setq shipit-test-http-requests
+        (append shipit-test-http-requests
+                (list (list (or url-request-method "GET") address)))
+        shipit-test-http-bodies
+        (append shipit-test-http-bodies (list url-request-data))
+        shipit-test-http-headers
+        (append shipit-test-http-headers (list url-request-extra-headers))))
+
 (defun shipit-test-http--answer (answers url)
   "The response ANSWERS give to a request of URL, which is recorded."
   (let* ((address (shipit-test-http--address url))
-         (answer (shipit-test-http--find answers address)))
-    (setq shipit-test-http-requests
-          (append shipit-test-http-requests
-                  (list (list (or url-request-method "GET") address)))
-          shipit-test-http-bodies
-          (append shipit-test-http-bodies (list url-request-data)))
-    (shipit-test-http--response (nth 1 answer) (nth 2 answer))))
+         (answer (shipit-test-http--find answers address))
+         (headers (shipit-test-http--headers-for (nth 3 answer))))
+    (shipit-test-http--record address)
+    (if (shipit-test-http--unchanged-p headers)
+        (shipit-test-http--response 304 "" headers)
+      (shipit-test-http--response (nth 1 answer)
+                                  (shipit-test-http--body-for (nth 2 answer))
+                                  headers))))
 
 (defun shipit-test-http--status (buffer)
   "The status url.el hands a callback for the response in BUFFER."
@@ -130,15 +165,22 @@ The responses are killed first, so that they do not fail the next form."
 
 (defmacro shipit-test-http-answering (answers &rest body)
   "Run BODY with url.el answering each request from ANSWERS.
-ANSWERS is a list of (PATTERN STATUS BODY).  A request whose address
-matches PATTERN, a regexp, gets STATUS and BODY: a string as it is,
-anything else encoded as JSON, so an empty array is written [].  A
-request none covers signals, and fails the form when BODY ends.  A
-response that is still alive when BODY ends fails the form too."
+ANSWERS is a list of (PATTERN STATUS BODY HEADERS).  A request whose
+address matches PATTERN, a regexp, gets STATUS and BODY: a string as it
+is, anything else encoded as JSON, so an empty array is written [].
+BODY can be a function too: it gets what the request sent, as a string,
+and gives the body, so that the pages of one GraphQL query differ.
+HEADERS, which can be left out, is an alist of the headers of the
+answer, or a function of no arguments that gives it.  A request whose
+If-None-Match is the ETag of those headers gets 304 Not Modified and no
+body, as GitHub answers when nothing changed.  A request none covers
+signals, and fails the form when BODY ends.  A response that is still
+alive when BODY ends fails the form too."
   (declare (indent 1))
   (let ((table (make-symbol "answers")))
     `(let ((shipit-test-http-requests nil)
            (shipit-test-http-bodies nil)
+           (shipit-test-http-headers nil)
            (shipit-test-http--unanswered nil)
            (,table ,answers))
        ;; A form that signalled left its responses: they are not of this one.

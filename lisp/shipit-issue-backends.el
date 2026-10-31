@@ -291,8 +291,12 @@ CONFIG is passed to the backend's :creation-fields function."
 ;;; Optional notification polling
 
 (defun shipit-issue--backend-has-notifications-p (backend-plist)
-  "Return non-nil if BACKEND-PLIST supports the :notifications operation."
-  (not (null (plist-get backend-plist :notifications))))
+  "Return non-nil if BACKEND-PLIST gives notifications.
+It does with the :notifications operation, or with :notifications-async
+only, which a poll prefers."
+  (and (or (plist-get backend-plist :notifications)
+           (plist-get backend-plist :notifications-async))
+       t))
 
 (defun shipit-issue--fetch-notifications (backend-plist config &optional since)
   "Fetch notifications from BACKEND-PLIST using CONFIG.

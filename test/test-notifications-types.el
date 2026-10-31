@@ -9,6 +9,7 @@
 (require 'ert)
 (require 'shipit-notifications)
 (require 'shipit-test-http)
+(require 'shipit-pr-github)
 
 ;;; Key Helper Tests
 
@@ -1701,8 +1702,8 @@ return value equals 2."
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
         (shipit-notifications-auto-mark-read-rules
          '((:state merged) (:title "^chore: bump"))))
-    (cl-letf (((symbol-function 'shipit--mark-notification-read)
-               (lambda (number repo &optional _no-refresh type)
+    (cl-letf (((symbol-function 'shipit--mark-notification-read-async)
+               (lambda (number repo &optional type _resolved-cache)
                  (push (list number repo type) marked))))
       (puthash "owner/foo:pr:1"
                '((repo . "owner/foo") (number . 1) (type . "pr")
@@ -1732,14 +1733,63 @@ return value equals 2."
         (should-not (member '(1 "owner/foo" "pr") marked))
         (should-not (member '(4 "owner/foo" "issue") marked))))))
 
+(defun test-auto-mark--activity (number thread-id)
+  "An unread merged pull request NUMBER whose notification is THREAD-ID."
+  `((repo . "owner/foo") (number . ,number) (type . "pr")
+    (subject . "Old work") (pr-state . "merged")
+    (notification . ((id . ,thread-id) (unread . t)))))
+
+(defmacro test-auto-mark--with-merged-prs (numbers status &rest body)
+  "Run BODY with an unread merged pull request for each of NUMBERS.
+A rule marks merged pull requests, the thread of a pull request is its
+number as a string, and GitHub answers a mark with STATUS."
+  (declare (indent 2))
+  `(let ((shipit--notification-pr-activities (make-hash-table :test 'equal))
+         (shipit--locally-marked-read-notifications (make-hash-table :test 'equal))
+         (shipit-notifications-auto-mark-read-rules '((:state merged)))
+         (shipit-github-token "token"))
+     (dolist (number ,numbers)
+       (puthash (format "owner/foo:pr:%d" number)
+                (test-auto-mark--activity number (number-to-string number))
+                shipit--notification-pr-activities))
+     (shipit-test-http-answering `(("/notifications/threads/" ,,status ""))
+       ,@body)))
+
+(ert-deftest test-shipit--auto-mark-rules-apply-does-not-wait-for-github ()
+  "GIVEN an unread notification that a rule marks
+WHEN the rules apply, as they do after each poll
+THEN GitHub gets the mark in a request that does not wait for its
+answer, AND the notification leaves the list at once."
+  (test-auto-mark--with-merged-prs '(77) 205
+    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+               (lambda (url &rest _) (error "A request that waits: %s" url))))
+      (should (= 1 (shipit--auto-mark-rules-apply)))
+      (should (equal `(("PATCH" ,(concat shipit-api-url "/notifications/threads/77")))
+                     shipit-test-http-requests))
+      (should-not (gethash "owner/foo:pr:77" shipit--notification-pr-activities))
+      (should (gethash "77" shipit--locally-marked-read-notifications)))))
+
+(ert-deftest test-shipit--auto-mark-rules-apply-goes-on-after-a-failed-mark ()
+  "GIVEN two unread notifications that a rule marks
+AND GitHub refuses each mark
+WHEN the rules apply
+THEN no error ends the run, AND both notifications leave the list, so
+that the next poll does not ask GitHub to mark them again."
+  (test-auto-mark--with-merged-prs '(77 78) 500
+    (should (= 2 (shipit--auto-mark-rules-apply)))
+    (should (= 2 (length shipit-test-http-requests)))
+    (should (zerop (hash-table-count shipit--notification-pr-activities)))
+    (should (gethash "77" shipit--locally-marked-read-notifications))
+    (should (gethash "78" shipit--locally-marked-read-notifications))))
+
 (ert-deftest test-shipit--auto-mark-rules-apply-no-rules-is-noop ()
   "GIVEN empty rules list and a populated hash
 WHEN apply runs
-THEN it returns 0 and never calls `shipit--mark-notification-read'."
+THEN it returns 0 and never calls `shipit--mark-notification-read-async'."
   (let ((called nil)
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
         (shipit-notifications-auto-mark-read-rules nil))
-    (cl-letf (((symbol-function 'shipit--mark-notification-read)
+    (cl-letf (((symbol-function 'shipit--mark-notification-read-async)
                (lambda (&rest _) (setq called t))))
       (puthash "owner/foo:pr:1"
                '((repo . "owner/foo") (number . 1) (type . "pr")
@@ -1820,8 +1870,8 @@ THEN the item is NOT marked again — re-marking would remove the cache
   (let ((marked '())
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
         (shipit-notifications-auto-mark-read-rules '((:state merged))))
-    (cl-letf (((symbol-function 'shipit--mark-notification-read)
-               (lambda (number repo &optional _no-refresh type)
+    (cl-letf (((symbol-function 'shipit--mark-notification-read-async)
+               (lambda (number repo &optional type _resolved-cache)
                  (push (list number repo type) marked))))
       (puthash "owner/foo:pr:5"
                '((repo . "owner/foo") (number . 5) (type . "pr")
@@ -1840,8 +1890,8 @@ A bare `(when unread …)' would erroneously match it."
   (let ((marked '())
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
         (shipit-notifications-auto-mark-read-rules '((:state merged))))
-    (cl-letf (((symbol-function 'shipit--mark-notification-read)
-               (lambda (number repo &optional _no-refresh type)
+    (cl-letf (((symbol-function 'shipit--mark-notification-read-async)
+               (lambda (number repo &optional type _resolved-cache)
                  (push (list number repo type) marked))))
       (puthash "owner/foo:pr:6"
                '((repo . "owner/foo") (number . 6) (type . "pr")
@@ -1860,8 +1910,8 @@ notification thread, so presence in the hash means unread."
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
         (shipit-notifications-auto-mark-read-rules
          '((:repo "PRJ" :not (:jira-component "Firmware")))))
-    (cl-letf (((symbol-function 'shipit--mark-notification-read)
-               (lambda (number repo &optional _no-refresh type)
+    (cl-letf (((symbol-function 'shipit--mark-notification-read-async)
+               (lambda (number repo &optional type _resolved-cache)
                  (push (list number repo type) marked))))
       (puthash "PRJ:issue:PRJ-12744"
                '((repo . "PRJ") (number . "PRJ-12744") (type . "issue")
@@ -1887,8 +1937,8 @@ are absent, so `:not' flips it to true."
         (shipit--notification-pr-activities (make-hash-table :test 'equal))
         (shipit-notifications-auto-mark-read-rules
          '((:repo "PRJ" :not (:jira-component "Firmware")))))
-    (cl-letf (((symbol-function 'shipit--mark-notification-read)
-               (lambda (number repo &optional _no-refresh type)
+    (cl-letf (((symbol-function 'shipit--mark-notification-read-async)
+               (lambda (number repo &optional type _resolved-cache)
                  (push (list number repo type) marked))))
       (puthash "PRJ:issue:PRJ-1"
                '((repo . "PRJ") (number . "PRJ-1") (type . "issue")
@@ -1932,8 +1982,8 @@ rule to take effect."
         (shipit--last-notification-count 0)
         (shipit-notifications-auto-mark-read-rules
          '((:repo "PRJ" :reason "updated"))))
-    (cl-letf (((symbol-function 'shipit--mark-notification-read)
-               (lambda (number repo &optional _no-refresh type)
+    (cl-letf (((symbol-function 'shipit--mark-notification-read-async)
+               (lambda (number repo &optional type _resolved-cache)
                  (push (list number repo type) marked))))
       (shipit--merge-backend-notifications
        '(((repo . "PRJ") (number . "PRJ-1") (type . "issue")

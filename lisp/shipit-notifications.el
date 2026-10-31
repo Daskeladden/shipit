@@ -1710,8 +1710,9 @@ PHASE optional symbol controls which rules participate:
 
 Walks `shipit--notification-pr-activities', collects activities
 that match any active rule, then marks each via
-`shipit--mark-notification-read'.  Returns the number of
-activities marked.
+`shipit--mark-notification-read-async', so that a poll does not
+wait for the server once for each activity, and a mark that fails
+does not end the run.  Returns the number of activities marked.
 
 Already-read items are skipped — re-marking them would be a no-op
 on the server but their cache entry would still be removed, which
@@ -1735,7 +1736,8 @@ not configure it."
        (or phase 'full)
        (length rules) (length all-rules)
        (hash-table-count shipit--notification-pr-activities))
-      (let ((to-mark '()))
+      (let ((to-mark '())
+            (resolved-cache (make-hash-table :test 'equal)))
         (maphash
          (lambda (_k activity)
            (cl-incf scanned)
@@ -1771,7 +1773,7 @@ not configure it."
             (when (and number repo)
               (shipit--debug-log "Auto-mark: marking %s/%s/%s (reason=%s)"
                                  repo type number reason)
-              (shipit--mark-notification-read number repo t type)
+              (shipit--mark-notification-read-async number repo type resolved-cache)
               (cl-incf count))))
         (when (> count 0)
           (shipit--debug-log "Auto-mark: marked %d activit%s"

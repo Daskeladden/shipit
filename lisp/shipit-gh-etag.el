@@ -30,8 +30,11 @@
 
 ;; Fix for url-cache-extract header boundary detection
 ;; From: https://emacs.stackexchange.com/questions/32950/why-isnt-url-http-end-of-headers-set-correctly-when-using-url-automatic-caching
-(defun url-cache-extract (fnam)
-  "Extract FNAM from the cache."
+(defun shipit-gh-etag--url-cache-read (fnam)
+  "Return a new buffer that holds the cached answer FNAM, or nil.
+FNAM is an address or the file of its cached copy.  In the buffer,
+`url-http-end-of-headers' is the end of the headers of the copy.  The
+caller kills the buffer."
   (let* ((coding-system-for-read 'binary)
          ;; Handle both URL and direct file path cases
          (cache-file (if (file-exists-p fnam)
@@ -66,7 +69,7 @@
                       (point-min))))
 
                 (when (fboundp 'shipit--debug-log)
-                  (shipit--debug-log "🔧 url-cache-extract: found headers end at position %d" end-of-headers))
+                  (shipit--debug-log "🔧 shipit-gh-etag--url-cache-read: found headers end at position %d" end-of-headers))
 
                 ;; Set the boundary marker that url.el expects
                 (set (make-local-variable 'url-http-end-of-headers) end-of-headers)
@@ -85,9 +88,19 @@
                 (current-buffer))))
         (error
          (when (fboundp 'shipit--debug-log)
-           (shipit--debug-log "⚠️ url-cache-extract error for %s: %s" cache-file (error-message-string err)))
+           (shipit--debug-log "⚠️ shipit-gh-etag--url-cache-read error for %s: %s" cache-file (error-message-string err)))
          ;; Return nil on error instead of propagating
          nil)))))
+
+;; url-http calls `url-cache-extract' on 304 Not Modified, and ignores
+;; what it returns.  The url.el version puts the cached copy in place of
+;; the answer, and it fails when no copy exists.  shipit reads the 304
+;; itself, so this version leaves the answer as it is.
+(defun url-cache-extract (_fnam)
+  "Leave the answer 304 Not Modified as it is, and return nil.
+`shipit-gh-etag--url-cache-read' gives the cached copy to a caller
+that wants it."
+  nil)
 
 (defvar shipit-gh-etag--persistent-cache (make-hash-table :test 'equal)
   "Persistent ETag cache: REPO/ENDPOINT -> (:etag STRING :json DATA :timestamp NUMBER).

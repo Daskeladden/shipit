@@ -171,7 +171,7 @@ If SKIP-JSON is non-nil, returns just status-code without parsing JSON."
                              ;; On 304, the response body is empty — read from URL cache instead
                              (if (>= (point) (point-max))
                                  (if (eq status-code 304)
-                                     (let ((cache-buf (url-cache-extract (url-cache-create-filename url))))
+                                     (let ((cache-buf (shipit-gh-etag--url-cache-read (url-cache-create-filename url))))
                                        (when cache-buf
                                          (with-current-buffer cache-buf
                                            (set-buffer-multibyte t)

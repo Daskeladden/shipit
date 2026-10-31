@@ -23,6 +23,11 @@
 
 (declare-function shipit--debug-log "shipit-debug")
 
+;; url-http loads url-cache.el only when it first gets 304 Not
+;; Modified.  That load would put back the `url-cache-extract' of
+;; url.el over the one below, and it fails when no cached copy exists.
+(require 'url-cache)
+
 ;; Fix for url-cache-extract header boundary detection
 ;; From: https://emacs.stackexchange.com/questions/32950/why-isnt-url-http-end-of-headers-set-correctly-when-using-url-automatic-caching
 (defun url-cache-extract (fnam)

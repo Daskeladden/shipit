@@ -117,6 +117,7 @@ test-unit: compile
 		-l test/test-shipit-requires.el \
 		-l test/test-files-filter.el \
 		-l test/test-shipit-files-hide.el \
+		-l test/test-shipit-file-rename.el \
 		-l test/test-shipit-review-queue.el \
 		-l test/test-shipit-review-mode-integration.el \
 		-l test/test-shipit-review-revision.el \

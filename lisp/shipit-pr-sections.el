@@ -1729,7 +1729,8 @@ PR-DATA and PR-HEAD-SHA are optional metadata to attach to the section."
             (format " %s %s %s%s (%s %s)"
                     viewed-icon
                     (propertize status-char 'font-lock-face 'magit-diff-file-heading)
-                    (propertize filename 'font-lock-face (if viewed 'shadow 'shipit-filename-face))
+                    (propertize (shipit--file-display-path file)
+                                'font-lock-face (if viewed 'shadow 'shipit-filename-face))
                     comment-indicator
                     (if (> adds 0)
                         (propertize (format "+%d" adds) 'font-lock-face 'diff-added)
@@ -4323,7 +4324,7 @@ the two heads."
   (format "%s %s (%s %s)"
           (propertize (shipit--file-status-char (cdr (assq 'status file)))
                       'font-lock-face 'magit-diff-file-heading)
-          (propertize (or (cdr (assq 'filename file)) "?")
+          (propertize (or (shipit--file-display-path file) "?")
                       'font-lock-face 'shipit-filename-face)
           (propertize (format "+%d" (or (cdr (assq 'additions file)) 0))
                       'font-lock-face 'diff-added)
@@ -4360,7 +4361,7 @@ where it is in force when the body actually runs."
               (shipit--cached-inline-comments nil)
               (shipit--inline-comments-fetched nil))
           (shipit--insert-file-diff
-           (shipit--file-patch-from-git before after filename)
+           (shipit--file-patch-from-git before after file)
            filename 0 repo nil)
           (add-text-properties body-start (point) props)
           (unless (string-empty-p prefix)
@@ -5172,34 +5173,23 @@ Fetches files via backend when the section is first shown."
       (error
        (shipit--debug-log "washer: ERROR: %S" err)))))
 
-(defun shipit--get-local-commit-file-patch (commit-sha filename)
-  "Get the diff patch for FILENAME in COMMIT-SHA.
+(defun shipit--get-local-commit-file-patch (commit-sha file)
+  "Get the diff patch for FILE, a changed file, in COMMIT-SHA.
 Uses --root to handle the initial commit."
   (shell-command-to-string
-   (format "git diff-tree --root -p %s -- %s 2>/dev/null"
-           commit-sha (shell-quote-argument filename))))
+   (format "git diff-tree --root -M -p %s -- %s 2>/dev/null"
+           commit-sha
+           (mapconcat #'shell-quote-argument (shipit--file-diff-paths file) " "))))
 
 (defun shipit--get-local-commit-files (commit-sha)
   "Get files changed in COMMIT-SHA from local git.
 Returns a list of alists compatible with shipit file rendering.
 Uses --root flag to handle the initial commit (root commit with no parent)."
-  (let* ((output (shell-command-to-string
-                  (format "git diff-tree --no-commit-id --numstat -r --root %s 2>/dev/null" commit-sha)))
-         (lines (split-string output "\n" t))
-         (files nil))
-    (dolist (line lines)
-      (let* ((parts (split-string line "\t"))
-             (additions (string-to-number (or (nth 0 parts) "0")))
-             (deletions (string-to-number (or (nth 1 parts) "0")))
-             (filename (nth 2 parts)))
-        (when filename
-          (push `((filename . ,filename)
-                  (status . "modified")
-                  (additions . ,additions)
-                  (deletions . ,deletions)
-                  (patch . ,(shipit--get-local-commit-file-patch commit-sha filename)))
-                files))))
-    (nreverse files)))
+  (mapcar (lambda (file)
+            (append file `((patch . ,(shipit--get-local-commit-file-patch commit-sha file)))))
+          (shipit--files-from-git
+           (magit-git-lines "diff-tree" "--no-commit-id" "-r" "--root" "-M" "--numstat" commit-sha)
+           (magit-git-lines "diff-tree" "--no-commit-id" "-r" "--root" "-M" "--name-status" commit-sha))))
 
 (defun shipit--create-local-commit-files-washer (commit-sha section)
   "Create a washer function for lazy-loading commit files from local git.
@@ -5238,53 +5228,52 @@ SECTION is the magit section object that will contain the files."
 
 (add-hook 'post-command-hook #'shipit--check-section-expansion)
 
+(defun shipit--file-from-git (numstat status)
+  "Return the file alist of NUMSTAT and STATUS, its lines of those two reads.
+The path comes from STATUS, which names both paths of a rename apart.
+NUMSTAT writes them as one, such as src/{old.txt => new.txt}."
+  (pcase-let ((`(,additions ,deletions . ,_) (split-string numstat "\t"))
+              (`(,code ,path ,new-path) (split-string status "\t")))
+    `((filename . ,(or new-path path))
+      (status . ,(pcase (substring code 0 1)
+                   ("A" "added") ("D" "removed") ("R" "renamed") (_ "modified")))
+      ,@(when new-path `((previous_filename . ,path)))
+      ;; A binary file reports `-' for both.
+      (additions . ,(string-to-number additions))
+      (deletions . ,(string-to-number deletions)))))
+
 (defun shipit--files-from-git (numstat statuses)
   "Return file alists from NUMSTAT and STATUSES lines.
 Counts come from `--numstat\=' and the status letter from
 `--name-status\=', which are two reads rather than one because git will
-not print both at once."
-  (when numstat
-    (let ((status-of (make-hash-table :test 'equal)))
-      (dolist (line statuses)
-        (let ((parts (split-string line "\t" t)))
-          (when (cdr parts)
-            (puthash (car (last parts))
-                     (pcase (substring (car parts) 0 1)
-                       ("A" "added") ("D" "removed") ("R" "renamed") (_ "modified"))
-                     status-of))))
-      (delq nil
-            (mapcar (lambda (line)
-                      (let ((parts (split-string line "\t" t)))
-                        (when (cddr parts)
-                          (let ((name (nth 2 parts)))
-                            `((filename . ,name)
-                              (status . ,(or (gethash name status-of) "modified"))
-                              ;; A binary file reports `-' for both.
-                              (additions . ,(or (string-to-number (nth 0 parts)) 0))
-                              (deletions . ,(or (string-to-number (nth 1 parts)) 0)))))))
-                    numstat)))))
+not print both at once.  git lists the files of both in the same order."
+  (unless (= (length numstat) (length statuses))
+    (error "git gave counts for %d files and a status for %d"
+           (length numstat) (length statuses)))
+  (cl-mapcar #'shipit--file-from-git numstat statuses))
 
 (defun shipit--commit-files-from-git (commit-sha)
   "Return the files COMMIT-SHA changed, read from the repository.
 Nil when the commit is not here."
   (shipit--files-from-git
-   (magit-git-lines "show" "--format=" "--numstat" commit-sha)
-   (magit-git-lines "show" "--format=" "--name-status" commit-sha)))
+   (magit-git-lines "show" "--format=" "-M" "--numstat" commit-sha)
+   (magit-git-lines "show" "--format=" "-M" "--name-status" commit-sha)))
 
 (defun shipit--range-files-from-git (base head)
   "Return the files that differ between BASE and HEAD in the repository.
 This is the direct difference between the two, which is what the
 compare API cannot give: it only compares from the merge base."
   (shipit--files-from-git
-   (magit-git-lines "diff" "--numstat" base head)
-   (magit-git-lines "diff" "--name-status" base head)))
+   (magit-git-lines "diff" "-M" "--numstat" base head)
+   (magit-git-lines "diff" "-M" "--name-status" base head)))
 
-(defun shipit--file-patch-from-git (base head filename)
-  "Return the patch for FILENAME between BASE and HEAD, hunks only.
+(defun shipit--file-patch-from-git (base head file)
+  "Return the patch for FILE, a changed file, between BASE and HEAD, hunks only.
 Cut to the first hunk header, where the API\='s `patch\=' field starts
 and where the hunk parser expects to begin."
   (let ((output (with-temp-buffer
-                  (magit-git-insert "diff" base head "--" filename)
+                  (apply #'magit-git-insert "diff" "-M" base head "--"
+                         (shipit--file-diff-paths file))
                   (buffer-string))))
     (when (string-match "^@@" output)
       (substring output (match-beginning 0)))))
@@ -5406,7 +5395,8 @@ Uses proper magit section safe update pattern:
                         (dels (or deletions 0)))
                     (magit-insert-heading (format "              %s %s%s (%s %s)"
                                                   (propertize status-char 'font-lock-face 'magit-diff-file-heading)
-                                                  (propertize (or filename "unknown") 'font-lock-face 'shipit-filename-face)
+                                                  (propertize (or (shipit--file-display-path file) "unknown")
+                                                              'font-lock-face 'shipit-filename-face)
                                                   comment-indicator
                                                   (if (> adds 0)
                                                       (propertize (format "+%d" adds) 'font-lock-face 'diff-added)

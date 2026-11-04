@@ -266,7 +266,18 @@ Uses cached CODEOWNERS data for performance."
 FILTER-TEXT is as for `shipit--file-matches-show-only-p'."
   (let ((filename (cdr (assq 'filename file))))
     (and (not (shipit--file-hidden-p filename))
-         (shipit--file-matches-show-only-p filename filter-text))))
+         (or (shipit--file-matches-show-only-p filename filter-text)
+             (shipit--file-old-path-matches-p file filter-text)))))
+
+(defun shipit--file-old-path-matches-p (file filter-text)
+  "Return non-nil if FILTER-TEXT is in the path FILE had before a rename.
+Only a filter of text looks at that path.  What the other filters ask,
+such as whether a file was viewed, is known for the new path."
+  (let ((previous (shipit--file-previous-path file)))
+    (and previous
+         (null shipit--files-filter-mode)
+         filter-text
+         (shipit--name-contains-p previous filter-text))))
 
 (defun shipit--filtered-files (files)
   "The FILES that Files Changed shows under the current filter."

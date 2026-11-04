@@ -30,6 +30,24 @@
 (defvar shipit-mode-map)
 (defvar shipit-preview--base-ref)
 
+(defun shipit--file-previous-path (file)
+  "The path that FILE, a changed file, had before it was renamed, or nil.
+A copied file also comes with an old path, but nothing moved."
+  (when (equal "renamed" (cdr (assq 'status file)))
+    (cdr (assq 'previous_filename file))))
+
+(defun shipit--file-display-path (file)
+  "The path of FILE, a changed file, as a list of files shows it.
+A renamed file shows as OLD -> NEW."
+  (let ((path (cdr (assq 'filename file)))
+        (previous (shipit--file-previous-path file)))
+    (if previous (format "%s -> %s" previous path) path)))
+
+(defun shipit--file-diff-paths (file)
+  "The paths that git needs to show the diff of FILE, a changed file.
+With the new path alone, git shows a renamed file as a whole new file."
+  (delq nil (list (shipit--file-previous-path file) (cdr (assq 'filename file)))))
+
 (defun shipit--file-safe (text)
   "TEXT with every character but letters, digits and `-' made `_'.
 For a file name made from a repository or a branch: a branch name can

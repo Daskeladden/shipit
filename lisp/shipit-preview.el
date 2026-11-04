@@ -194,33 +194,22 @@ show what the base gained since as changes of the branch."
   "Return this preview's commits, or those in RANGE."
   (shipit--commits-in-range (or range (shipit-preview--range))))
 
-(defun shipit-preview--get-file-patch (filename)
-  "Get the diff patch for FILENAME between base ref and HEAD."
-  (let ((range (shipit-preview--diff-range)))
-    (shell-command-to-string
-     (format "git diff %s -- %s 2>/dev/null" range (shell-quote-argument filename)))))
+(defun shipit-preview--get-file-patch (file)
+  "Get the diff patch for FILE, a changed file, between base ref and HEAD."
+  (shell-command-to-string
+   (format "git diff -M %s -- %s 2>/dev/null"
+           (shipit-preview--diff-range)
+           (mapconcat #'shell-quote-argument (shipit--file-diff-paths file) " "))))
 
 (defun shipit-preview--get-files ()
   "Get files changed between base ref and HEAD as alists.
 Returns list compatible with `shipit--render-files-section'."
-  (let* ((range (shipit-preview--diff-range))
-         (output (shell-command-to-string
-                  (format "git diff --numstat %s 2>/dev/null" range)))
-         (lines (split-string output "\n" t))
-         (files nil))
-    (dolist (line lines)
-      (let* ((parts (split-string line "\t"))
-             (additions (string-to-number (or (nth 0 parts) "0")))
-             (deletions (string-to-number (or (nth 1 parts) "0")))
-             (filename (nth 2 parts)))
-        (when filename
-          (push `((filename . ,filename)
-                  (status . "modified")
-                  (additions . ,additions)
-                  (deletions . ,deletions)
-                  (patch . ,(shipit-preview--get-file-patch filename)))
-                files))))
-    (nreverse files)))
+  (let ((range (shipit-preview--diff-range)))
+    (mapcar (lambda (file)
+              (append file `((patch . ,(shipit-preview--get-file-patch file)))))
+            (shipit--files-from-git
+             (magit-git-lines "diff" "-M" "--numstat" range)
+             (magit-git-lines "diff" "-M" "--name-status" range)))))
 
 ;;; Buffer rendering
 

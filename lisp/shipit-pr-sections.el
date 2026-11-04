@@ -1685,7 +1685,7 @@ deferring a sync call via timer when the backend has no async support."
 (defun shipit--file-status-char (status)
   "Return the one-letter mark for a changed file's STATUS."
   (cond ((equal status "added") "A")
-        ((equal status "deleted") "D")
+        ((member status '("removed" "deleted")) "D")
         ((equal status "modified") "M")
         ((equal status "renamed") "R")
         (t "?")))
@@ -5388,11 +5388,7 @@ Uses proper magit section safe update pattern:
                    (outdated-count (shipit--get-file-outdated-comment-count pr-number filename))
                    (resolved-count (shipit--get-file-resolved-comment-count pr-number filename))
                    (comment-indicator (shipit--get-comment-indicator comment-count outdated-count resolved-count))
-                   (status-char (cond ((equal status "added") "A")
-                                      ((equal status "deleted") "D")
-                                      ((equal status "modified") "M")
-                                      ((equal status "renamed") "R")
-                                      (t "?"))))
+                   (status-char (shipit--file-status-char status)))
               ;; Create a magit section for each file
               ;; Define properties once, apply to both heading and body
               (let ((file-props `(shipit-commit-file t

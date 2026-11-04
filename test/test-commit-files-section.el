@@ -24,6 +24,13 @@
   (when (bound-and-true-p magit-root-section)
     (magit-section-show-children magit-root-section 99)))
 
+(ert-deftest test-commit-files-a-removed-file-is-marked-d ()
+  "GIVEN a file that a pull request or a commit removes
+WHEN its one-letter mark is asked for
+THEN the mark is D."
+  (should (equal "D" (shipit--file-status-char "removed")))
+  (should (equal "D" (shipit--file-status-char "deleted"))))
+
 (ert-deftest test-commit-files-section-type-registered ()
   "Verify that commit-files section type is properly registered with Magit."
   (should (eq (get 'commit-files 'magit-section) t)))

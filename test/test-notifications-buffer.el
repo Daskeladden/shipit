@@ -1753,6 +1753,163 @@ visually below the collapsed wrapper heading."
                 (should overrode-display))))
         (kill-buffer buf)))))
 
+;;; An answer that comes after a redraw
+
+(defvar test-notifications-buffer--held nil
+  "The requests to url.el that wait for their answer, newest first.")
+
+(defun test-notifications-buffer--hold (url callback &optional cbargs &rest _)
+  "A stand-in for `url-retrieve' that keeps the request of URL.
+CALLBACK gets CBARGS and the answer from
+`test-notifications-buffer--answer-held'."
+  (push (list url callback cbargs) test-notifications-buffer--held)
+  nil)
+
+(defun test-notifications-buffer--answer-held (answers)
+  "Give each held request its answer from ANSWERS, the oldest first.
+ANSWERS has the form that `shipit-test-http-answering' takes."
+  (let ((held (reverse test-notifications-buffer--held)))
+    (setq test-notifications-buffer--held nil)
+    (dolist (request held)
+      (let ((response (shipit-test-http--answer answers (nth 0 request))))
+        (with-current-buffer response
+          (apply (nth 1 request) (shipit-test-http--status response)
+                 (nth 2 request)))))))
+
+(defmacro test-notifications-buffer--late-answers (answers &rest body)
+  "Run BODY in the notifications buffer, with url.el answering late.
+Each request waits until BODY calls
+`test-notifications-buffer--answer-held' with ANSWERS, a variable.
+No poll runs, and Jira and GitHub each have a login."
+  (declare (indent 1))
+  `(let* ((login (make-temp-file "shipit-test-" nil ".netrc"
+                                 "machine jira.example.com login a@example.com password tok\n"))
+          (auth-sources (list login))
+          (shipit-github-token "test-token")
+          (shipit--notification-pr-activities (make-hash-table :test 'equal)))
+     (auth-source-forget-all-cached)
+     (unwind-protect
+         (shipit-test-http-answering ,answers
+           (cl-letf (((symbol-function 'shipit--check-notifications-background)
+                      #'ignore)
+                     ((symbol-function 'shipit--check-notifications-background-async)
+                      #'ignore)
+                     ((symbol-function 'url-retrieve)
+                      #'test-notifications-buffer--hold))
+             (let ((test-notifications-buffer--held nil)
+                   (buf (shipit-notifications-buffer-create)))
+               (unwind-protect
+                   (with-current-buffer buf ,@body)
+                 (kill-buffer buf)))))
+       (auth-source-forget-all-cached)
+       (delete-file login))))
+
+(defun test-notifications-buffer--show-and-expand (activity)
+  "Show ACTIVITY alone in the notifications buffer, and expand it."
+  (puthash "only" activity shipit--notification-pr-activities)
+  (shipit-notifications-buffer--rerender)
+  (goto-char (point-min))
+  (search-forward (cdr (assq 'subject activity)))
+  (shipit-notifications-buffer-toggle-section))
+
+(defconst test-notifications-buffer--jira-issue
+  '((repo . "Kitchen") (number . "PRJ-7") (type . "issue") (source . jira)
+    (backend-config :base-url "https://jira.example.com")
+    (subject . "The coffee machine leaks") (reason . "updated")
+    (updated-at . "2026-11-04T10:10:00Z"))
+  "A notification of a Jira issue.")
+
+(defconst test-notifications-buffer--jira-answers
+  '(("/rest/api/3/issue/PRJ-7\\?" 200
+     ((key . "PRJ-7")
+      (fields (comment (comments . [])))
+      (changelog
+       (histories . [((created . "2026-11-04T10:10:00.000+0000")
+                      (author (displayName . "A barista"))
+                      (items . [((field . "status")
+                                 (fromString . "Code Review")
+                                 (toString . "Done"))]))])))))
+  "Jira's answer to the question of the last activity of PRJ-7.")
+
+(defconst test-notifications-buffer--github-issue
+  '((repo . "owner/kitchen") (number . 7) (type . "issue")
+    (subject . "The coffee machine leaks") (reason . "mention")
+    (updated-at . "2026-11-04T10:10:00Z"))
+  "A notification of a GitHub issue.")
+
+(defconst test-notifications-buffer--github-answers
+  '(("/repos/owner/kitchen/issues/7/timeline" 200
+     [((event . "commented") (id . 1)
+       (created_at . "2026-11-04T10:12:00Z")
+       (actor (login . "barista")) (user (login . "barista"))
+       (body . "It drips"))]))
+  "GitHub's answer to the question of the timeline of issue 7.")
+
+(ert-deftest test-shipit-notifications-buffer-jira-activity-fills-its-row ()
+  "GIVEN an expanded notification of a Jira issue, whose last activity
+is on its way
+WHEN Jira answers
+THEN the Activity row of the notification says who changed the issue."
+  (let ((answers test-notifications-buffer--jira-answers))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand
+       test-notifications-buffer--jira-issue)
+      (test-notifications-buffer--answer-held answers)
+      (goto-char (point-min))
+      (search-forward "Activity")
+      (forward-line 1)
+      (should (string-match-p "A barista changed"
+                              (buffer-substring (point) (line-end-position)))))))
+
+(ert-deftest test-shipit-notifications-buffer-jira-activity-after-a-redraw-writes-nothing ()
+  "GIVEN an expanded notification of a Jira issue, whose last activity
+is on its way
+WHEN the buffer is redrawn, as a poll does, and then Jira answers
+THEN the buffer stays as the redraw left it, and the activity does not
+show at the top of the buffer."
+  (let ((answers test-notifications-buffer--jira-answers))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand
+       test-notifications-buffer--jira-issue)
+      (shipit-notifications-buffer--rerender)
+      (let ((redrawn (buffer-string)))
+        (test-notifications-buffer--answer-held answers)
+        (should (equal redrawn (buffer-string)))))))
+
+(ert-deftest test-shipit-notifications-buffer-timeline-fills-the-activity-section ()
+  "GIVEN an expanded notification of a GitHub issue, whose timeline is
+on its way
+WHEN GitHub answers
+THEN the notification shows an Activity section with the comment."
+  ;; The events of a timeline are drawn as in the buffer of a pull request.
+  (require 'shipit-pr-sections)
+  (let ((answers test-notifications-buffer--github-answers))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand
+       test-notifications-buffer--github-issue)
+      (test-notifications-buffer--answer-held answers)
+      (goto-char (point-min))
+      (search-forward "The coffee machine leaks")
+      (should (search-forward "Activity (1 since notification)" nil t))
+      (should (search-forward "barista commented" nil t)))))
+
+(ert-deftest test-shipit-notifications-buffer-timeline-after-a-redraw-writes-nothing ()
+  "GIVEN an expanded notification of a GitHub issue, whose timeline is
+on its way
+WHEN the buffer is redrawn, as a poll does, and then GitHub answers
+THEN the buffer stays as the redraw left it, and the activity does not
+show at the top of the buffer."
+  ;; The events of a timeline are drawn as in the buffer of a pull request.
+  (require 'shipit-pr-sections)
+  (let ((answers test-notifications-buffer--github-answers))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand
+       test-notifications-buffer--github-issue)
+      (shipit-notifications-buffer--rerender)
+      (let ((redrawn (buffer-string)))
+        (test-notifications-buffer--answer-held answers)
+        (should (equal redrawn (buffer-string)))))))
+
 ;;; Faces of the details of a pull request
 
 (ert-deftest test-shipit-notifications-buffer-pr-details-status-and-labels-have-faces ()

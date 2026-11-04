@@ -1456,7 +1456,7 @@ Layout matches the PR Activity section: indent + truncated-left +
 Heading mirrors the PR activity section so the look stays
 consistent (icon + Activity label + indented body).  Spawns one
 HTTP request and replaces the placeholder body when the response
-arrives.  Stale markers (from buffer re-renders) are tolerated."
+arrives.  A response that comes after a redraw is dropped."
   (require 'shipit-issue-jira)
   (let* ((key (cdr (assq 'number activity)))
          (config (cdr (assq 'backend-config activity)))
@@ -1490,7 +1490,7 @@ arrives.  Stale markers (from buffer re-renders) are tolerated."
            (lambda (last)
              (shipit--debug-log "Last-activity callback for %s: type=%s"
                                 key (plist-get last :type))
-             (when (buffer-live-p buf)
+             (when (shipit-notifications-buffer--section-shown-p buf sect)
                (with-current-buffer buf
                  (condition-case inner
                      (shipit-notifications-buffer--replace-jira-last-activity-body
@@ -1660,6 +1660,17 @@ invisibility overlay."
       ;; PR/Issue/Discussion — fetch details async then render
       (shipit-notifications-buffer--fetch-and-insert-details section activity))))
 
+(defun shipit-notifications-buffer--section-shown-p (buffer section)
+  "Return non-nil if BUFFER is live and still shows SECTION.
+A redraw empties the buffer and draws new sections.  The markers of an
+old section then all point at the start of the buffer, so a response
+written into it would show above the heading of the list."
+  (and (buffer-live-p buffer)
+       (let ((top section))
+         (while (oref top parent)
+           (setq top (oref top parent)))
+         (eq top (buffer-local-value 'magit-root-section buffer)))))
+
 (defun shipit-notifications-buffer--extend-parent-ends (section new-pos)
   "Walk parent chain from SECTION and extend each parent's end to NEW-POS.
 Needed when SECTION is nested (e.g., grouped-by-repo) and we just
@@ -1747,7 +1758,7 @@ wrapper when group-by-repo is on) properly hides the expanded body."
             (shipit--fetch-recent-timeline-events-async
              repo number
              (lambda (events)
-               (when (buffer-live-p buf)
+               (when (shipit-notifications-buffer--section-shown-p buf sect)
                  (with-current-buffer buf
                    (let ((inhibit-read-only t))
                      (save-excursion

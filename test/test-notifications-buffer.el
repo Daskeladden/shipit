@@ -3,6 +3,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'shipit-notifications-buffer)
+(require 'shipit-notifications-external)
 (require 'shipit-test-http)
 (require 'shipit-test-meow)
 
@@ -1664,8 +1665,7 @@ visible (a boundary leak)."
   "GIVEN a grouped buffer where an entry has been expanded and then
 the wrapper collapsed
 WHEN late-arriving async content is APPENDED at the entry's end
-(matching how `shipit--update-pr-details' and the timeline-events
-callback fire — both goto the section end and insert)
+(as the details of a notification come in when they arrive)
 THEN the wrapper's invisibility overlay is extended so the new
 content stays hidden under the collapsed wrapper.
 
@@ -1786,7 +1786,14 @@ No poll runs, and Jira and GitHub each have a login."
                                  "machine jira.example.com login a@example.com password tok\n"))
           (auth-sources (list login))
           (shipit-github-token "test-token")
-          (shipit--notification-pr-activities (make-hash-table :test 'equal)))
+          (shipit--notification-pr-activities (make-hash-table :test 'equal))
+          (shipit--locally-marked-read-notifications (make-hash-table :test 'equal))
+          (shipit--last-notification-count 0)
+          (shipit--notification-count 0)
+          (shipit--mention-count 0)
+          (shipit--mention-prs nil)
+          (shipit--modeline-string nil)
+          (shipit-external--read nil))
      (auth-source-forget-all-cached)
      (unwind-protect
          (shipit-test-http-answering ,answers
@@ -1861,20 +1868,20 @@ THEN the Activity row of the notification says who changed the issue."
       (should (string-match-p "A barista changed"
                               (buffer-substring (point) (line-end-position)))))))
 
-(ert-deftest test-shipit-notifications-buffer-jira-activity-after-a-redraw-writes-nothing ()
+(ert-deftest test-shipit-notifications-buffer-jira-activity-after-a-redraw-stays-below-the-heading ()
   "GIVEN an expanded notification of a Jira issue, whose last activity
 is on its way
 WHEN the buffer is redrawn, as a poll does, and then Jira answers
-THEN the buffer stays as the redraw left it, and the activity does not
-show at the top of the buffer."
+THEN the activity does not show at the top of the buffer, above the
+heading of the list."
   (let ((answers test-notifications-buffer--jira-answers))
     (test-notifications-buffer--late-answers answers
       (test-notifications-buffer--show-and-expand
        test-notifications-buffer--jira-issue)
       (shipit-notifications-buffer--rerender)
-      (let ((redrawn (buffer-string)))
-        (test-notifications-buffer--answer-held answers)
-        (should (equal redrawn (buffer-string)))))))
+      (test-notifications-buffer--answer-held answers)
+      (goto-char (point-min))
+      (should (looking-at-p "Notifications")))))
 
 (ert-deftest test-shipit-notifications-buffer-timeline-fills-the-activity-section ()
   "GIVEN an expanded notification of a GitHub issue, whose timeline is
@@ -1893,12 +1900,12 @@ THEN the notification shows an Activity section with the comment."
       (should (search-forward "Activity (1 since notification)" nil t))
       (should (search-forward "barista commented" nil t)))))
 
-(ert-deftest test-shipit-notifications-buffer-timeline-after-a-redraw-writes-nothing ()
+(ert-deftest test-shipit-notifications-buffer-timeline-after-a-redraw-stays-below-the-heading ()
   "GIVEN an expanded notification of a GitHub issue, whose timeline is
 on its way
 WHEN the buffer is redrawn, as a poll does, and then GitHub answers
-THEN the buffer stays as the redraw left it, and the activity does not
-show at the top of the buffer."
+THEN the activity does not show at the top of the buffer, above the
+heading of the list."
   ;; The events of a timeline are drawn as in the buffer of a pull request.
   (require 'shipit-pr-sections)
   (let ((answers test-notifications-buffer--github-answers))
@@ -1906,9 +1913,204 @@ show at the top of the buffer."
       (test-notifications-buffer--show-and-expand
        test-notifications-buffer--github-issue)
       (shipit-notifications-buffer--rerender)
-      (let ((redrawn (buffer-string)))
+      (test-notifications-buffer--answer-held answers)
+      (goto-char (point-min))
+      (should (looking-at-p "Notifications")))))
+
+;;; An expanded notification across a redraw
+
+(defconst test-notifications-buffer--github-pr
+  '((repo . "owner/kitchen") (number . 8) (type . "pr")
+    (subject . "Descale the coffee machine") (reason . "review_requested")
+    (pr-state . "open") (updated-at . "2026-11-04T10:10:00Z"))
+  "A notification of a GitHub pull request.")
+
+(defconst test-notifications-buffer--github-pr-answers
+  '(("/repos/owner/kitchen/pulls/8" 200
+     ((number . 8) (state . "open") (title . "Descale the coffee machine")
+      (head (ref . "descale")) (user (login . "barista"))))
+    ("/repos/owner/kitchen/issues/8/timeline" 200
+     [((event . "commented") (id . 2)
+       (created_at . "2026-11-04T10:12:00Z")
+       (actor (login . "barista")) (user (login . "barista"))
+       (body . "Ready for review"))]))
+  "GitHub's answers on pull request 8 and on its timeline.")
+
+(defconst test-notifications-buffer--github-newer-answers
+  '(("/repos/owner/kitchen/issues/7/timeline" 200
+     [((event . "commented") (id . 1)
+       (created_at . "2026-11-04T10:12:00Z")
+       (actor (login . "barista")) (user (login . "barista"))
+       (body . "It drips"))
+      ((event . "commented") (id . 3)
+       (created_at . "2026-11-04T11:00:00Z")
+       (actor (login . "baker")) (user (login . "baker"))
+       (body . "It drips on the bread"))]))
+  "GitHub's answer on the timeline of issue 7, after a second comment.")
+
+(defun test-notifications-buffer--site-pushes-a-notification ()
+  "A site pushes a new notification, and the redraw it asks for runs."
+  (shipit-notifications-push :source "door.example" :title "The door squeaks")
+  (test-notifications-buffer--run-pending-redraw))
+
+(defun test-notifications-buffer--a-poll-brings (activity)
+  "A poll brings ACTIVITY in place of the one shown, and the redraw runs."
+  (puthash "only" activity shipit--notification-pr-activities)
+  (shipit--rerender-notifications-buffer-if-visible)
+  (test-notifications-buffer--run-pending-redraw))
+
+(defun test-notifications-buffer--run-pending-redraw ()
+  "Run the redraw that waits for Emacs to be idle."
+  (let ((timer shipit--rerender-debounce-timer))
+    (should (timerp timer))
+    (cancel-timer timer)
+    (apply (timer--function timer) (timer--args timer))))
+
+(defun test-notifications-buffer--requests ()
+  "The number of requests that went to a server so far."
+  (+ (length shipit-test-http-requests)
+     (length test-notifications-buffer--held)))
+
+(defun test-notifications-buffer--toggle (activity)
+  "Press TAB on the line of the notification of ACTIVITY."
+  (goto-char (point-min))
+  (search-forward (cdr (assq 'subject activity)))
+  (shipit-notifications-buffer-toggle-section))
+
+(defun test-notifications-buffer--shows (activity text)
+  "Non-nil when the notification of ACTIVITY shows TEXT below its line."
+  (save-excursion
+    (goto-char (point-min))
+    (search-forward (cdr (assq 'subject activity)))
+    (and (search-forward text nil t)
+         (not (invisible-p (match-beginning 0))))))
+
+(defun test-notifications-buffer--line ()
+  "The line of the cursor, as text."
+  (buffer-substring-no-properties (line-beginning-position) (line-end-position)))
+
+(ert-deftest test-shipit-notifications-buffer-an-expanded-pull-request-stays-expanded ()
+  "GIVEN I expanded a notification of a pull request, and its details and
+its activity arrived
+WHEN a site pushes a new notification and the buffer redraws
+THEN the pull request is still expanded and shows its branch and its
+Activity section, in the flat list and grouped by repository
+AND shipit sent no new request to GitHub."
+  ;; The events of a timeline are drawn as in the buffer of a pull request.
+  (require 'shipit-pr-sections)
+  ;; The details of a pull request come from its backend.
+  (require 'shipit-pr-github)
+  (dolist (grouped '(nil t))
+    (let ((answers test-notifications-buffer--github-pr-answers)
+          (pr test-notifications-buffer--github-pr))
+      (test-notifications-buffer--late-answers answers
+        (setq shipit-notifications-buffer--group-by-repo grouped)
+        (test-notifications-buffer--show-and-expand pr)
         (test-notifications-buffer--answer-held answers)
-        (should (equal redrawn (buffer-string)))))))
+        (should (test-notifications-buffer--shows pr "Branch: descale"))
+        (let ((sent (test-notifications-buffer--requests)))
+          (test-notifications-buffer--site-pushes-a-notification)
+          (should (test-notifications-buffer--shows pr "Branch: descale"))
+          (should (test-notifications-buffer--shows
+                   pr "Activity (1 since notification)"))
+          (should (= sent (test-notifications-buffer--requests))))))))
+
+(ert-deftest test-shipit-notifications-buffer-an-expanded-jira-issue-stays-expanded ()
+  "GIVEN I expanded a notification of a Jira issue, and its last activity
+arrived
+WHEN a site pushes a new notification and the buffer redraws
+THEN the issue is still expanded, and its Activity row says who changed it
+AND shipit sent no new request to Jira."
+  (let ((answers test-notifications-buffer--jira-answers)
+        (issue test-notifications-buffer--jira-issue))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand issue)
+      (test-notifications-buffer--answer-held answers)
+      (should (test-notifications-buffer--shows issue "A barista changed"))
+      (let ((sent (test-notifications-buffer--requests)))
+        (test-notifications-buffer--site-pushes-a-notification)
+        (should (test-notifications-buffer--shows issue "A barista changed"))
+        (should (= sent (test-notifications-buffer--requests)))))))
+
+(ert-deftest test-shipit-notifications-buffer-the-cursor-stays-on-its-notification ()
+  "GIVEN I expanded a notification of a GitHub issue, and the cursor is on
+the line of its activity
+WHEN a site pushes a new notification, which comes above it in the
+list, and the buffer redraws
+THEN the cursor is on the same line of the same notification."
+  (require 'shipit-pr-sections)
+  (let ((answers test-notifications-buffer--github-answers))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand
+       test-notifications-buffer--github-issue)
+      (test-notifications-buffer--answer-held answers)
+      (goto-char (point-min))
+      (search-forward "barista commented")
+      (let ((line (test-notifications-buffer--line)))
+        (test-notifications-buffer--site-pushes-a-notification)
+        (should (string-match-p "The door squeaks"
+                                (buffer-substring (point-min) (point))))
+        (should (equal line (test-notifications-buffer--line)))))))
+
+(ert-deftest test-shipit-notifications-buffer-a-folded-notification-stays-folded ()
+  "GIVEN I expanded a notification of a GitHub issue, its activity
+arrived, and I folded it again
+WHEN a site pushes a new notification and the buffer redraws
+THEN the issue stays folded
+AND when I expand it again, it shows its activity without a new request
+to GitHub."
+  (require 'shipit-pr-sections)
+  (let ((answers test-notifications-buffer--github-answers)
+        (issue test-notifications-buffer--github-issue))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand issue)
+      (test-notifications-buffer--answer-held answers)
+      (test-notifications-buffer--toggle issue)
+      (should-not (test-notifications-buffer--shows issue "Activity"))
+      (let ((sent (test-notifications-buffer--requests)))
+        (test-notifications-buffer--site-pushes-a-notification)
+        (should-not (test-notifications-buffer--shows issue "Activity"))
+        (test-notifications-buffer--toggle issue)
+        (should (test-notifications-buffer--shows
+                 issue "Activity (1 since notification)"))
+        (should (= sent (test-notifications-buffer--requests)))))))
+
+(ert-deftest test-shipit-notifications-buffer-an-answer-on-its-way-fills-the-redrawn-notification ()
+  "GIVEN I expanded a notification of a Jira issue, whose last activity is
+still on its way
+WHEN a site pushes a new notification and the buffer redraws, and then
+Jira answers
+THEN the issue is expanded, and its Activity row says who changed it
+AND shipit asked Jira once."
+  (let ((answers test-notifications-buffer--jira-answers)
+        (issue test-notifications-buffer--jira-issue))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand issue)
+      (test-notifications-buffer--site-pushes-a-notification)
+      (test-notifications-buffer--answer-held answers)
+      (should (test-notifications-buffer--shows issue "A barista changed"))
+      (should (= 1 (length shipit-test-http-requests))))))
+
+(ert-deftest test-shipit-notifications-buffer-a-changed-notification-asks-again ()
+  "GIVEN I expanded a notification of a GitHub issue, and its activity
+arrived
+WHEN a poll brings a newer version of the notification, as when someone
+comments again, and the buffer redraws
+THEN the issue stays expanded, asks GitHub again, and shows the new
+comment in its Activity section."
+  (require 'shipit-pr-sections)
+  (let* ((answers test-notifications-buffer--github-answers)
+         (issue test-notifications-buffer--github-issue)
+         (newer (cons '(updated-at . "2026-11-04T11:00:00Z") issue)))
+    (test-notifications-buffer--late-answers answers
+      (test-notifications-buffer--show-and-expand issue)
+      (test-notifications-buffer--answer-held answers)
+      (should (test-notifications-buffer--shows issue "barista commented"))
+      (test-notifications-buffer--a-poll-brings newer)
+      (should (= 1 (length test-notifications-buffer--held)))
+      (test-notifications-buffer--answer-held
+       test-notifications-buffer--github-newer-answers)
+      (should (test-notifications-buffer--shows newer "baker commented")))))
 
 ;;; Faces of the details of a pull request
 
@@ -1931,9 +2133,12 @@ they show in that color and Emacs logs no invalid face."
       (unwind-protect
           (with-current-buffer buf
             (shipit-notifications-buffer--rerender)
-            (shipit-notifications-buffer--update-pr-details
+            (shipit-notifications-buffer--insert-content-into-section
              (car (oref magit-root-section children))
-             '((state . "closed") (merged . t) (labels . [((name . "decaf"))])))
+             (lambda ()
+               (shipit-notifications-buffer--insert-pr-details
+                '((state . "closed") (merged . t)
+                  (labels . [((name . "decaf"))])))))
             (dolist (text '("Status: merged" "Labels: decaf"))
               (goto-char (point-min))
               (search-forward text)

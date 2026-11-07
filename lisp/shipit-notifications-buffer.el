@@ -51,6 +51,7 @@
 (declare-function shipit--render-body "shipit-render")
 (declare-function shipit--api-request "shipit-http")
 (declare-function shipit-pr--resolve-for-repo "shipit-pr-backends")
+(declare-function shipit-pr--fetch-pr-async "shipit-pr-backends")
 (declare-function shipit--insert-activity-event "shipit-pr-sections")
 (declare-function shipit--fetch-timeline-events-async "shipit-http")
 (declare-function shipit--fetch-recent-timeline-events-async "shipit-http")
@@ -435,7 +436,7 @@ triggers a rerender."
             ;; that wait for the end of their undo window.  A redraw of
             ;; thousands of notifications would add tens of megabytes.
             (buffer-undo-list t)
-            (pos (point)))
+            (places (shipit-notifications-buffer--places)))
         ;; Deactivate any active mark before regenerating: the
         ;; region's saved positions point at sections that
         ;; `erase-buffer' is about to wipe, and the next redisplay
@@ -443,10 +444,60 @@ triggers a rerender."
         ;; `magit-section-at' on those stale positions and crash
         ;; with `(wrong-type-argument ... nil)'.
         (deactivate-mark)
+        (shipit-notifications-buffer--note-expanded)
         (erase-buffer)
         (shipit-notifications-buffer--render)
+        (shipit-notifications-buffer--forget-gone-details)
+        (shipit-notifications-buffer--redraw-expanded)
         (shipit-notifications-buffer--reapply-hidden-sections)
-        (goto-char (min pos (point-max)))))))
+        (shipit-notifications-buffer--restore-places places)))))
+
+(defun shipit-notifications-buffer--places ()
+  "Return where point and each window on the buffer are.
+`shipit-notifications-buffer--restore-places' finds them after a
+redraw, on the same line of the same notification."
+  (cons (shipit-notifications-buffer--place (point))
+        (mapcar (lambda (window)
+                  (list window
+                        (shipit-notifications-buffer--place (window-point window))
+                        (shipit-notifications-buffer--place (window-start window))))
+                (get-buffer-window-list nil nil t))))
+
+(defun shipit-notifications-buffer--restore-places (places)
+  "Put point and each window back where PLACES says they were."
+  (goto-char (shipit-notifications-buffer--place-position (car places)))
+  (pcase-dolist (`(,window ,point ,start) (cdr places))
+    (when (window-live-p window)
+      (set-window-start window (shipit-notifications-buffer--place-position start) t)
+      (set-window-point window (shipit-notifications-buffer--place-position point)))))
+
+(defun shipit-notifications-buffer--place (pos)
+  "Return POS with the key of its notification and its line and column there.
+The key and the rest are nil when POS is on no notification."
+  (cons pos
+        (when-let* ((entry (shipit-notifications-buffer--entry-at pos))
+                    (key (shipit-notifications-buffer--activity-key (oref entry value))))
+          (save-excursion
+            (goto-char pos)
+            (list key
+                  (count-lines (oref entry start) (line-beginning-position))
+                  (current-column))))))
+
+(defun shipit-notifications-buffer--place-position (place)
+  "Return where PLACE is in the buffer drawn now.
+On the same line of the same notification, or on its heading when it
+is folded now.  The same position as before, when the notification is
+gone or PLACE was on no notification."
+  (pcase-let* ((`(,pos ,key ,line ,column) place)
+               (entry (and key (shipit-notifications-buffer--entry-of-key key))))
+    (if (not entry)
+        (min pos (point-max))
+      (save-excursion
+        (goto-char (oref entry start))
+        (unless (oref entry hidden)
+          (forward-line line)
+          (move-to-column column))
+        (min (point) (max (oref entry start) (1- (oref entry end))))))))
 
 (defun shipit-notifications-buffer--snoozes-load ()
   "Read snoozed entries from `shipit-notifications-snoozes-file' if any.
@@ -1352,8 +1403,10 @@ icon matches GitHub's web UI for deployment review requests."
                         'font-lock-face 'shipit-timestamp-face
                         'shipit-raw-timestamp (get-text-property 0 'shipit-raw-timestamp time-ago)))))
 
-(defun shipit-notifications-buffer--insert-activity-details (activity)
-  "Insert expandable details for a PR/Issue/Discussion ACTIVITY."
+(defun shipit-notifications-buffer--insert-activity-details (activity &optional details)
+  "Insert expandable details for a PR/Issue/Discussion ACTIVITY.
+DETAILS holds what came from the server for it, such as the last
+activity of a Jira issue."
   (let* ((repo (or (cdr (assq 'repo activity)) ""))
          (number (or (cdr (assq 'number activity))
                      (cdr (assq 'pr-number activity))))
@@ -1404,7 +1457,8 @@ icon matches GitHub's web UI for deployment review requests."
     (when url
       (insert "    " (propertize url 'font-lock-face 'link) "\n"))
     (when (eq (cdr (assq 'source activity)) 'jira)
-      (shipit-notifications-buffer--insert-jira-last-activity activity))))
+      (shipit-notifications-buffer--insert-jira-last-activity
+       (shipit-notifications-buffer--answer-for details 'last)))))
 
 (defun shipit-notifications-buffer--format-last-activity (last)
   "Format LAST as `<author> <verb>: <summary>' (no timestamp).
@@ -1451,80 +1505,27 @@ Layout matches the PR Activity section: indent + truncated-left +
             (make-string timestamp-width ?\s))))
     (insert indent padded-left " " padded-ts "\n")))
 
-(defun shipit-notifications-buffer--insert-jira-last-activity (activity)
-  "Insert a `notification-jira-last-activity' section and async-fill its body.
-Heading mirrors the PR activity section so the look stays
-consistent (icon + Activity label + indented body).  Spawns one
-HTTP request and replaces the placeholder body when the response
-arrives.  A response that comes after a redraw is dropped."
-  (require 'shipit-issue-jira)
-  (let* ((key (cdr (assq 'number activity)))
-         (config (cdr (assq 'backend-config activity)))
-         (buf (current-buffer))
-         (heading-indent 4)
+(defun shipit-notifications-buffer--insert-jira-last-activity (answer)
+  "Insert a `notification-jira-last-activity' section.
+ANSWER is (last . LAST) once Jira gave LAST, the last activity of the
+issue, or nil while the question is open.  The heading mirrors the PR
+activity section so the look stays consistent (icon + Activity label
++ indented body)."
+  (let* ((heading-indent 4)
          (icon (shipit--get-pr-field-icon "activity" "\U0001f4a5"))
          (heading (format "%s%s Activity"
                           (make-string heading-indent ?\s) icon))
-         (body-indent (make-string (+ heading-indent 3) ?\s))
-         (sect (magit-insert-section (notification-jira-last-activity activity)
-                 (magit-insert-heading heading)
-                 (shipit-notifications-buffer--insert-aligned-row
-                  body-indent
-                  (propertize "loading..."
-                              'font-lock-face 'font-lock-comment-face)
-                  nil))))
-    (shipit--debug-log "Last-activity dispatch: key=%s base-url=%s fbound=%s"
-                       key
-                       (and config (plist-get config :base-url))
-                       (fboundp 'shipit-issue-jira--fetch-last-activity-async))
-    (cond
-     ((not (and key config))
-      (shipit--debug-log "Last-activity dispatch: skipping -- missing %s"
-                         (if (not key) "key" "config")))
-     ((not (fboundp 'shipit-issue-jira--fetch-last-activity-async))
-      (shipit--debug-log "Last-activity dispatch: fetcher not bound"))
-     (t
-      (condition-case err
-          (shipit-issue-jira--fetch-last-activity-async
-           config key
-           (lambda (last)
-             (shipit--debug-log "Last-activity callback for %s: type=%s"
-                                key (plist-get last :type))
-             (when (shipit-notifications-buffer--section-shown-p buf sect)
-               (with-current-buffer buf
-                 (condition-case inner
-                     (shipit-notifications-buffer--replace-jira-last-activity-body
-                      sect body-indent last)
-                   (error
-                    (shipit--debug-log "Last-activity render failed: %S" inner)))))))
-        (error
-         (shipit--debug-log "Last-activity dispatch raised: %S" err)))))))
-
-(defun shipit-notifications-buffer--replace-jira-last-activity-body (section indent last)
-  "Replace SECTION's body with the formatted LAST activity.
-INDENT is the body indent used at insertion time so the
-replacement matches the surrounding column layout.  Renders the
-timestamp right-aligned with `shipit-timestamp-face' so the row
-matches the PR activity section."
-  (let* ((content (oref section content))
-         (end (oref section end))
-         (left (or (shipit-notifications-buffer--format-last-activity last)
-                   (propertize "(no activity)"
-                               'font-lock-face 'font-lock-comment-face)))
-         (timestamp (and last (plist-get last :timestamp))))
-    (when (and content end (markerp content) (markerp end)
-               (marker-position content) (marker-position end))
-      (let ((inhibit-read-only t)
-            (content-pos (marker-position content)))
-        (save-excursion
-          (delete-region content-pos (marker-position end))
-          (goto-char content-pos)
-          (shipit-notifications-buffer--insert-aligned-row
-           indent left timestamp)
-          (oset section end (point-marker))
-          ;; Keep ancestor `end' markers in sync so collapsing the
-          ;; parent notification-entry properly hides this section.
-          (shipit-notifications-buffer--extend-parent-ends section (point)))))))
+         (last (cdr answer)))
+    (magit-insert-section (notification-jira-last-activity)
+      (magit-insert-heading heading)
+      (shipit-notifications-buffer--insert-aligned-row
+       (make-string (+ heading-indent 3) ?\s)
+       (cond ((null answer)
+              (propertize "loading..." 'font-lock-face 'font-lock-comment-face))
+             ((shipit-notifications-buffer--format-last-activity last))
+             (t (propertize "(no activity)"
+                            'font-lock-face 'font-lock-comment-face)))
+       (plist-get last :timestamp)))))
 
 (defun shipit-notifications-buffer--insert-description (description)
   "Insert DESCRIPTION as expandable body content.
@@ -1648,28 +1649,226 @@ invisibility overlay."
          (> (marker-position end-pos) (marker-position content-pos)))))
 
 (defun shipit-notifications-buffer--load-section-content (section activity)
-  "Load and insert content for notification SECTION from ACTIVITY."
-  (let ((description (cdr (assq 'description activity))))
-    (if (and (shipit-notifications-buffer--notification-only-p activity)
-             (stringp description)
-             (not (string-empty-p description)))
-        ;; A feed entry and the like: the description came with it.
-        (shipit-notifications-buffer--insert-content-into-section
-         section
-         (lambda () (shipit-notifications-buffer--insert-description description)))
-      ;; PR/Issue/Discussion — fetch details async then render
-      (shipit-notifications-buffer--fetch-and-insert-details section activity))))
+  "Show the details of ACTIVITY in SECTION, and ask for those not asked yet."
+  (let ((details (shipit-notifications-buffer--details-for activity)))
+    (shipit-notifications-buffer--insert-content-into-section
+     section
+     (lambda () (shipit-notifications-buffer--insert-details activity details)))
+    (shipit-notifications-buffer--ask-missing activity details)))
 
-(defun shipit-notifications-buffer--section-shown-p (buffer section)
-  "Return non-nil if BUFFER is live and still shows SECTION.
-A redraw empties the buffer and draws new sections.  The markers of an
-old section then all point at the start of the buffer, so a response
-written into it would show above the heading of the list."
-  (and (buffer-live-p buffer)
-       (let ((top section))
-         (while (oref top parent)
-           (setq top (oref top parent)))
-         (eq top (buffer-local-value 'magit-root-section buffer)))))
+;;; Details of an expanded notification
+
+;; A redraw empties the buffer and draws each notification again.  The
+;; details of a notification come from a server when it is expanded, so
+;; the buffer keeps them here.  A redraw draws them again for each
+;; notification that was expanded, and asks no server again.
+
+(cl-defstruct (shipit-notifications-buffer--details
+               (:constructor shipit-notifications-buffer--details-create)
+               (:copier nil))
+  "What came from the servers for one notification that was expanded.
+UPDATED-AT is the update time of the notification it is for.
+EXPANDED is non-nil when the notification showed its details at the
+last redraw.  ASKED lists the parts that were asked for, and ANSWERS
+is an alist of the parts that came: `pr', `events' and `last'."
+  updated-at expanded asked answers)
+
+(defvar-local shipit-notifications-buffer--details nil
+  "Hash table of the details of each expanded notification, by its key.
+Each value is a `shipit-notifications-buffer--details'.")
+
+(defun shipit-notifications-buffer--details-for (activity)
+  "Return the details of the notification of ACTIVITY.
+Details for an older version of the notification are replaced by new
+ones, which ask the servers again."
+  (let* ((table (or shipit-notifications-buffer--details
+                    (setq shipit-notifications-buffer--details
+                          (make-hash-table :test 'equal))))
+         (key (shipit-notifications-buffer--activity-key activity))
+         (updated-at (cdr (assq 'updated-at activity)))
+         (kept (gethash key table)))
+    (if (and kept (equal updated-at
+                         (shipit-notifications-buffer--details-updated-at kept)))
+        kept
+      (puthash key (shipit-notifications-buffer--details-create
+                    :updated-at updated-at
+                    :expanded (and kept (shipit-notifications-buffer--details-expanded kept)))
+               table))))
+
+(defun shipit-notifications-buffer--answer-for (details part)
+  "Return (PART . VALUE) when PART of DETAILS came, else nil."
+  (and details
+       (assq part (shipit-notifications-buffer--details-answers details))))
+
+(defun shipit-notifications-buffer--feed-description (activity)
+  "Return the description that came with ACTIVITY, as with a feed entry.
+Nil when the details of ACTIVITY come from a server."
+  (let ((description (cdr (assq 'description activity))))
+    (and (shipit-notifications-buffer--notification-only-p activity)
+         (stringp description)
+         (not (string-empty-p description))
+         description)))
+
+(defun shipit-notifications-buffer--insert-details (activity details)
+  "Insert the details of ACTIVITY, with the parts of DETAILS that came."
+  (let ((description (shipit-notifications-buffer--feed-description activity))
+        (pr (shipit-notifications-buffer--answer-for details 'pr))
+        (events (shipit-notifications-buffer--answer-for details 'events)))
+    (if description
+        (shipit-notifications-buffer--insert-description description)
+      (shipit-notifications-buffer--insert-activity-details activity details)
+      (when (cdr pr)
+        (shipit-notifications-buffer--insert-pr-details (cdr pr)))
+      (when events
+        (shipit-notifications-buffer--insert-activity-section
+         (cdr events) (cdr (assq 'updated-at activity))
+         (cdr (assq 'repo activity))
+         (shipit-notifications-buffer--activity-number activity))))))
+
+(defun shipit-notifications-buffer--activity-number (activity)
+  "Return the number of the pull request or the issue of ACTIVITY."
+  (or (cdr (assq 'number activity))
+      (cdr (assq 'pr-number activity))))
+
+(defun shipit-notifications-buffer--detail-parts (activity)
+  "Return the parts of the details of ACTIVITY that a server gives."
+  (let ((type (or (cdr (assq 'type activity)) "pr"))
+        (repo (cdr (assq 'repo activity)))
+        (number (shipit-notifications-buffer--activity-number activity)))
+    (unless (shipit-notifications-buffer--feed-description activity)
+      (append
+       (when (and (equal type "pr") repo (integerp number))
+         '(pr))
+       (when (and (member type '("pr" "issue")) repo (integerp number)
+                  (cdr (assq 'updated-at activity)))
+         '(events))
+       (when (eq (cdr (assq 'source activity)) 'jira)
+         '(last))))))
+
+(defun shipit-notifications-buffer--ask-missing (activity details)
+  "Ask for each part of the details of ACTIVITY not yet asked for in DETAILS."
+  (dolist (part (shipit-notifications-buffer--detail-parts activity))
+    (unless (memq part (shipit-notifications-buffer--details-asked details))
+      (push part (shipit-notifications-buffer--details-asked details))
+      (shipit-notifications-buffer--ask activity details part))))
+
+(defun shipit-notifications-buffer--ask (activity details part)
+  "Ask a server for PART of the details of ACTIVITY, to keep in DETAILS."
+  (let ((callback (apply-partially #'shipit-notifications-buffer--answer
+                                   (current-buffer) activity details part)))
+    (condition-case err
+        (pcase part
+          ('pr (shipit-notifications-buffer--ask-pr activity callback))
+          ('events (shipit--fetch-recent-timeline-events-async
+                    (cdr (assq 'repo activity))
+                    (shipit-notifications-buffer--activity-number activity)
+                    callback))
+          ('last (shipit-notifications-buffer--ask-jira-last activity callback)))
+      (error
+       (shipit--debug-log "Asking for the %s of a notification failed: %s"
+                          part (error-message-string err))))))
+
+(defun shipit-notifications-buffer--ask-pr (activity callback)
+  "Fetch the pull request of ACTIVITY, and call CALLBACK with it."
+  (let ((repo (cdr (assq 'repo activity)))
+        (number (shipit-notifications-buffer--activity-number activity)))
+    (unless (shipit-pr--fetch-pr-async repo number callback)
+      ;; The backend has no fetch in the background.
+      (let* ((resolved (shipit-pr--resolve-for-repo repo))
+             (fetch (plist-get (car resolved) :fetch-pr)))
+        (when fetch
+          (funcall callback (funcall fetch (cdr resolved) number)))))))
+
+(defun shipit-notifications-buffer--ask-jira-last (activity callback)
+  "Fetch the last activity of the Jira issue of ACTIVITY for CALLBACK."
+  (require 'shipit-issue-jira)
+  (let ((key (cdr (assq 'number activity)))
+        (config (cdr (assq 'backend-config activity))))
+    (if (and key config)
+        (shipit-issue-jira--fetch-last-activity-async config key callback)
+      (shipit--debug-log "Last activity of %s: no %s" key
+                         (if key "config" "key")))))
+
+(defun shipit-notifications-buffer--answer (buffer activity details part value)
+  "Keep VALUE as PART of DETAILS, the details of ACTIVITY.
+Draw them again where BUFFER shows the details of that notification."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (push (cons part value) (shipit-notifications-buffer--details-answers details))
+      (shipit-notifications-buffer--redraw-details activity details))))
+
+(defun shipit-notifications-buffer--redraw-details (activity details)
+  "Draw DETAILS again in the notification of ACTIVITY, if it shows details.
+Nothing is drawn when DETAILS are those of an older version of it."
+  (let ((key (shipit-notifications-buffer--activity-key activity)))
+    (when (eq details (gethash key shipit-notifications-buffer--details))
+      (let ((entry (shipit-notifications-buffer--entry-of-key key)))
+        (when (and entry (shipit-notifications-buffer--section-has-content-p entry))
+          (shipit-notifications-buffer--replace-content
+           entry
+           (lambda ()
+             (shipit-notifications-buffer--insert-details (oref entry value) details))))))))
+
+(defun shipit-notifications-buffer--replace-content (section insert-fn)
+  "Replace the body of SECTION by what INSERT-FN inserts.
+SECTION stays folded if it was."
+  (let ((inhibit-read-only t)
+        (hidden (oref section hidden)))
+    (save-excursion
+      (delete-region (oref section content) (oref section end))
+      (oset section children nil)
+      (shipit-notifications-buffer--insert-content-into-section section insert-fn))
+    (when hidden
+      (shipit-notifications-buffer--toggle-with-icon-fix section))))
+
+(defun shipit-notifications-buffer--entry-at (pos)
+  "Return the `notification-entry' section at POS, or nil."
+  (let ((section (magit-section-at pos)))
+    (while (and section (not (eq (oref section type) 'notification-entry)))
+      (setq section (oref section parent)))
+    section))
+
+(defun shipit-notifications-buffer--entry-of-key (key)
+  "Return the `notification-entry' section of the notification KEY, or nil."
+  (catch 'found
+    (shipit-notifications-buffer--for-each-entry
+     (lambda (entry)
+       (when (equal key (shipit-notifications-buffer--activity-key (oref entry value)))
+         (throw 'found entry))))
+    nil))
+
+(defun shipit-notifications-buffer--note-expanded ()
+  "Note for each notification with details whether it shows them now."
+  (when shipit-notifications-buffer--details
+    (shipit-notifications-buffer--for-each-entry
+     (lambda (entry)
+       (let ((details (gethash (shipit-notifications-buffer--activity-key (oref entry value))
+                               shipit-notifications-buffer--details)))
+         (when (and details (shipit-notifications-buffer--section-has-content-p entry))
+           (setf (shipit-notifications-buffer--details-expanded details)
+                 (not (oref entry hidden)))))))))
+
+(defun shipit-notifications-buffer--forget-gone-details ()
+  "Forget the details of each notification that is no longer in the list."
+  (when (and shipit-notifications-buffer--details
+             (> (hash-table-count shipit-notifications-buffer--details) 0))
+    (let ((keys (make-hash-table :test 'equal)))
+      (dolist (activity (shipit-notifications-buffer--all-activities))
+        (puthash (shipit-notifications-buffer--activity-key activity) t keys))
+      (maphash (lambda (key _details)
+                 (unless (gethash key keys)
+                   (remhash key shipit-notifications-buffer--details)))
+               shipit-notifications-buffer--details))))
+
+(defun shipit-notifications-buffer--redraw-expanded ()
+  "Draw the details again of each notification that was expanded."
+  (when shipit-notifications-buffer--details
+    (shipit-notifications-buffer--for-each-entry
+     (lambda (entry)
+       (let ((details (gethash (shipit-notifications-buffer--activity-key (oref entry value))
+                               shipit-notifications-buffer--details)))
+         (when (and details (shipit-notifications-buffer--details-expanded details))
+           (shipit-notifications-buffer--load-section-content entry (oref entry value))))))))
 
 (defun shipit-notifications-buffer--extend-parent-ends (section new-pos)
   "Walk parent chain from SECTION and extend each parent's end to NEW-POS.
@@ -1722,63 +1921,9 @@ wrapper when group-by-repo is on) properly hides the expanded body."
       (oset section hidden nil)
       (goto-char saved-pos))))
 
-(defun shipit-notifications-buffer--fetch-and-insert-details (section activity)
-  "Fetch PR/Issue details for ACTIVITY and insert into SECTION."
-  (let* ((repo (cdr (assq 'repo activity)))
-         (number (or (cdr (assq 'number activity))
-                     (cdr (assq 'pr-number activity))))
-         (type (or (cdr (assq 'type activity)) "pr"))
-         (updated-at (cdr (assq 'updated-at activity))))
-    ;; Show basic details immediately
-    (shipit-notifications-buffer--insert-content-into-section
-     section
-     (lambda () (shipit-notifications-buffer--insert-activity-details activity)))
-    ;; PR-only: fetch rich PR metadata (labels, branch, author, draft state)
-    (when (and (string= type "pr") repo (integerp number))
-      (condition-case err
-          (let* ((resolved (shipit-pr--resolve-for-repo repo))
-                 (backend (car resolved))
-                 (config (cdr resolved))
-                 (fetch-fn (plist-get backend :fetch-pr)))
-            (when fetch-fn
-              (message "Fetching PR details...")
-              (let ((pr-data (funcall fetch-fn config number)))
-                (when pr-data
-                  (shipit-notifications-buffer--update-pr-details section pr-data)))
-              (message nil)))
-        (error
-         (shipit--debug-log "Failed to fetch PR details: %s" (error-message-string err)))))
-    ;; PR and Issue: fetch activity timeline async and insert events
-    ;; since the notification was triggered.
-    (when (and (or (string= type "pr") (string= type "issue"))
-               repo (integerp number) updated-at)
-      (condition-case err
-          (let ((buf (current-buffer))
-                (sect section))
-            (shipit--fetch-recent-timeline-events-async
-             repo number
-             (lambda (events)
-               (when (shipit-notifications-buffer--section-shown-p buf sect)
-                 (with-current-buffer buf
-                   (let ((inhibit-read-only t))
-                     (save-excursion
-                       (goto-char (marker-position (oref sect end)))
-                       (let ((magit-insert-section--parent sect))
-                         (shipit-notifications-buffer--insert-activity-section
-                          events updated-at repo number))
-                       (oset sect end (point-marker))
-                       (shipit-notifications-buffer--extend-parent-ends
-                        sect (point)))))))))
-        (error
-         (shipit--debug-log "Failed to fetch timeline events: %s"
-                            (error-message-string err)))))))
-
-(defun shipit-notifications-buffer--update-pr-details (section pr-data)
-  "Update SECTION with richer PR-DATA."
-  (let* ((inhibit-read-only t)
-         (content-pos (oref section content))
-         (end-pos (oref section end))
-         (state (cdr (assq 'state pr-data)))
+(defun shipit-notifications-buffer--insert-pr-details (pr-data)
+  "Insert the lines of PR-DATA, a pull request, at point."
+  (let* ((state (cdr (assq 'state pr-data)))
          (merged (cdr (assq 'merged pr-data)))
          (labels (cdr (assq 'labels pr-data)))
          (head (cdr (assq 'head pr-data)))
@@ -1788,54 +1933,48 @@ wrapper when group-by-repo is on) properly hides the expanded body."
          (body-text (cdr (assq 'body pr-data)))
          (draft (let ((d (cdr (assq 'draft pr-data))))
                   (and d (not (eq d :json-false))))))
-    (when (and content-pos end-pos)
-      (save-excursion
-        (goto-char (marker-position end-pos))
-        (let ((magit-insert-section--parent section))
-          (when author
-            (let* ((avatar-url (when user (cdr (assq 'avatar_url user))))
-                   (avatar (if (and (boundp 'shipit-show-avatars) shipit-show-avatars
-                                    avatar-url (fboundp 'shipit--create-avatar-display))
-                               (concat (shipit--create-avatar-display author avatar-url 16) " ")
-                             "")))
-              (insert "    Author: " avatar
-                      (propertize author 'font-lock-face 'shipit-username-face)
-                      "\n")))
-          (when (and body-text (stringp body-text) (not (string-empty-p body-text)))
-            (let ((desc-sect (magit-insert-section (notification-description body-text)
-                               (magit-insert-heading "    Description")
-                               (let ((body-start (point))
-                                     (rendered (shipit--render-body body-text)))
-                                 (insert rendered)
-                                 (let ((fill-column (- (or (window-body-width) 80) 6)))
-                                   (fill-region body-start (point)))
-                                 (indent-rigidly body-start (point) 6))
-                               (insert "\n"))))
-              (magit-section-hide desc-sect)))
-          (when state
-            (insert "    Status: "
-                    (propertize (cond (merged "merged")
-                                     ((string= state "closed") "closed")
-                                     (draft "draft")
-                                     (t "open"))
-                                'font-lock-face (cond (merged 'magit-tag)
-                                            ((string= state "closed") 'error)
-                                            (draft 'shadow)
-                                            (t 'success)))
-                    "\n"))
-          (when branch
-            (insert "    Branch: "
-                    (propertize branch 'font-lock-face 'magit-branch-remote)
-                    "\n"))
-          (when (and labels (> (length labels) 0))
-            (insert "    Labels: "
-                    (mapconcat (lambda (l)
-                                 (propertize (cdr (assq 'name l))
-                                             'font-lock-face 'magit-tag))
-                               labels ", ")
-                    "\n")))
-        (oset section end (point-marker))
-        (shipit-notifications-buffer--extend-parent-ends section (point))))))
+    (when author
+      (let* ((avatar-url (when user (cdr (assq 'avatar_url user))))
+             (avatar (if (and (boundp 'shipit-show-avatars) shipit-show-avatars
+                              avatar-url (fboundp 'shipit--create-avatar-display))
+                         (concat (shipit--create-avatar-display author avatar-url 16) " ")
+                       "")))
+        (insert "    Author: " avatar
+                (propertize author 'font-lock-face 'shipit-username-face)
+                "\n")))
+    (when (and body-text (stringp body-text) (not (string-empty-p body-text)))
+      (let ((desc-sect (magit-insert-section (notification-description body-text)
+                         (magit-insert-heading "    Description")
+                         (let ((body-start (point))
+                               (rendered (shipit--render-body body-text)))
+                           (insert rendered)
+                           (let ((fill-column (- (or (window-body-width) 80) 6)))
+                             (fill-region body-start (point)))
+                           (indent-rigidly body-start (point) 6))
+                         (insert "\n"))))
+        (magit-section-hide desc-sect)))
+    (when state
+      (insert "    Status: "
+              (propertize (cond (merged "merged")
+                                ((string= state "closed") "closed")
+                                (draft "draft")
+                                (t "open"))
+                          'font-lock-face (cond (merged 'magit-tag)
+                                                ((string= state "closed") 'error)
+                                                (draft 'shadow)
+                                                (t 'success)))
+              "\n"))
+    (when branch
+      (insert "    Branch: "
+              (propertize branch 'font-lock-face 'magit-branch-remote)
+              "\n"))
+    (when (and labels (> (length labels) 0))
+      (insert "    Labels: "
+              (mapconcat (lambda (l)
+                           (propertize (cdr (assq 'name l))
+                                       'font-lock-face 'magit-tag))
+                         labels ", ")
+              "\n"))))
 
 ;;; Activity timeline
 

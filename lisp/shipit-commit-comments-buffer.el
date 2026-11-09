@@ -142,7 +142,8 @@ support (the op is GitHub-only for now)."
     (unless comments-fn
       (user-error "Commit comments are not supported for this backend"))
     (list :config config
-          :compare (plist-get backend :fetch-compare)
+          :compare (or (plist-get backend :fetch-compare-with-all-files)
+                       (plist-get backend :fetch-compare))
           :comments comments-fn
           :commit (plist-get backend :fetch-commit)
           :checks (plist-get backend :fetch-checks)

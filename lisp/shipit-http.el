@@ -671,6 +671,50 @@ Returns the mutation result or nil on error."
      (lambda (error-msg)
        (message "Error: %s" error-msg)))))
 
+(defconst shipit--api-text-timeout 60
+  "Seconds to wait for an answer of `shipit--api-request-text'.
+A diff of a big branch is megabytes, which takes longer than JSON.")
+
+(defun shipit--response-text (endpoint)
+  "Return the body of the response to ENDPOINT in this buffer, as text.
+Signals an error when the response is not a 200."
+  (goto-char (point-min))
+  (let ((status (and (looking-at "HTTP/[0-9.]+ \\([0-9]+\\)")
+                     (string-to-number (match-string 1)))))
+    (unless (eql status 200)
+      (error "GitHub answered %s to %s" status endpoint))
+    (decode-coding-string
+     (buffer-substring-no-properties (search-forward "\n\n") (point-max))
+     'utf-8)))
+
+(defun shipit--api-request-text (endpoint accept)
+  "Return the body of GitHub's answer to a GET of ENDPOINT, as text.
+ACCEPT is the kind of content asked for, such as a diff, which is not
+JSON.  Signals an error when GitHub does not answer 200.
+
+url.el keeps one copy of each address, whatever was asked for.  The
+copy of ENDPOINT can be its JSON, so the request does not use the
+cache: with the date of that copy GitHub answers 304 Not Modified, and
+a stored text would take the place of the JSON."
+  (let* ((system-time-locale "C")
+         (url-request-method "GET")
+         (url-request-data nil)
+         (url-automatic-caching nil)
+         (url-request-extra-headers
+          (remove nil (list (shipit--get-auth-header)
+                            (cons "Accept" accept)
+                            ;; url-http sends no If-modified-since with this.
+                            '("Pragma" . "no-cache"))))
+         (buffer (url-retrieve-synchronously
+                  (concat (or shipit-api-url "https://api.github.com") endpoint)
+                  t t shipit--api-text-timeout)))
+    (unless buffer
+      (error "GitHub did not answer %s" endpoint))
+    (unwind-protect
+        (with-current-buffer buffer
+          (shipit--response-text endpoint))
+      (kill-buffer buffer))))
+
 (defun shipit--api-request (endpoint &optional params callback)
   "Make a GitHub API request to ENDPOINT with optional PARAMS.
 If CALLBACK is provided, make an async request."

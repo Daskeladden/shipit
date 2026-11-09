@@ -67,6 +67,10 @@
 ;;   :fetch-action-run-info   — (config run-id) → action run data
 ;;   :fetch-commit-check-runs — (config ref page per-page) → check runs response
 ;;   :fetch-compare           — (config base head) → compare data with merge_base_commit
+;;   :fetch-compare-with-all-files — (config base head) → compare data as
+;;                              :fetch-compare gives it, with every changed
+;;                              file and its patch, also those that its
+;;                              compare API leaves out
 ;;   :search-repos            — (config query) → list of repo alists ((full_name . "owner/repo") ...)
 ;;   :search-repos-request    — (config query) → (url headers normalizer) for curl-based live search
 ;;   :search-raw              — (config query page per-page) → search results

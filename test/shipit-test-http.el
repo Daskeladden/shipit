@@ -96,6 +96,12 @@ HEADERS is an alist of the headers it has beside its type."
 A function gives it from what the request sent, as a string."
   (if (functionp body) (funcall body url-request-data) body))
 
+(defun shipit-test-http--status-for (status)
+  "STATUS of an answer to the request that is made now.
+A function gives it, so that one address can answer each kind of
+content asked for with its own status."
+  (if (functionp status) (funcall status) status))
+
 (defun shipit-test-http--headers-for (headers)
   "HEADERS of an answer to the request that is made now.
 A function gives them, as an alist."
@@ -125,7 +131,7 @@ It asks for the body only when that changed, and gets 304 Not Modified."
     (shipit-test-http--record address)
     (if (shipit-test-http--unchanged-p headers)
         (shipit-test-http--response 304 "" headers)
-      (shipit-test-http--response (nth 1 answer)
+      (shipit-test-http--response (shipit-test-http--status-for (nth 1 answer))
                                   (shipit-test-http--body-for (nth 2 answer))
                                   headers))))
 
@@ -170,6 +176,7 @@ address matches PATTERN, a regexp, gets STATUS and BODY: a string as it
 is, anything else encoded as JSON, so an empty array is written [].
 BODY can be a function too: it gets what the request sent, as a string,
 and gives the body, so that the pages of one GraphQL query differ.
+STATUS can be a function of no arguments that gives it.
 HEADERS, which can be left out, is an alist of the headers of the
 answer, or a function of no arguments that gives it.  A request whose
 If-None-Match is the ETag of those headers gets 304 Not Modified and no

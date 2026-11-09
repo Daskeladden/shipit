@@ -14,6 +14,7 @@
 (require 'shipit-pr-github)
 (require 'shipit-commit-comments-buffer)
 (require 'shipit-pr-sections)
+(require 'shipit-test-http)
 ;; The shared comment renderer calls Jira mention decoration
 ;; unconditionally; in a real session shipit loads all backend modules.
 (require 'shipit-issue-jira)
@@ -796,6 +797,244 @@ THEN the message reports the unpushed commits."
                              (and (string-match-p "feature" m)
                                   (string-match-p "3 unpushed commit" m)))
                            messages)))))))
+
+;;; A branch that changes more files than the compare API lists
+
+(defun test-scc--cup-file (n)
+  "The name of the Nth changed file of a branch with many files."
+  (format "kitchen/cup-%03d.txt" n))
+
+(defun test-scc--cup-file-entry (n)
+  "The compare API's entry of the Nth changed file."
+  `((filename . ,(test-scc--cup-file n))
+    (status . "modified")
+    (additions . 1)
+    (deletions . 1)
+    (patch . "@@ -1 +1 @@\n-empty\n+full")))
+
+(defun test-scc--cup-file-diff (n)
+  "The part of a diff that changes the Nth file."
+  (let ((name (test-scc--cup-file n)))
+    (format "diff --git a/%s b/%s\nindex 1111111..2222222 100644\n--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-empty\n+full\n"
+            name name name name)))
+
+(defun test-scc--compare-of-cups (listed)
+  "A compare response that lists the first LISTED changed files."
+  `((ahead_by . 1)
+    (behind_by . 0)
+    (commits . ,(vector (test-scc--commit-entry test-scc--sha-quiet "Fill the cups" 0)))
+    (files . ,(vconcat (mapcar #'test-scc--cup-file-entry
+                               (number-sequence 1 listed))))))
+
+(defun test-scc--compare-without-patch-of (changed lacking)
+  "A compare response that lists CHANGED files, the LACKING-th without a patch.
+GitHub lists a file so when its diff is past a size budget: no patch,
+and no lines added or removed."
+  (let ((compare (test-scc--compare-of-cups changed)))
+    (aset (cdr (assq 'files compare)) (1- lacking)
+          `((filename . ,(test-scc--cup-file lacking))
+            (status . "modified")
+            (additions . 0)
+            (deletions . 0)))
+    compare))
+
+(defun test-scc--asks-for-diff-p ()
+  "Whether the request that is made now asks for a diff, not for JSON."
+  (equal "application/vnd.github.diff"
+         (cdr (assoc "Accept" url-request-extra-headers))))
+
+(defun test-scc--compare-answer (changed compare)
+  "GitHub's answer to a compare of a branch that changes CHANGED files.
+Asked for JSON, it gives COMPARE.  Asked for a diff, it gives the diff
+of all the files."
+  (lambda (_request)
+    (if (test-scc--asks-for-diff-p)
+        (mapconcat #'test-scc--cup-file-diff (number-sequence 1 changed) "")
+      (json-encode compare))))
+
+(defmacro test-scc--in-cups-branch-view (status answer &rest body)
+  "Run BODY in the branch view of feature in o/r.
+GitHub answers its compare with STATUS and ANSWER, as
+`shipit-test-http-answering' takes them.  BODY sees the messages of
+the view as `messages'."
+  (declare (indent 2))
+  `(let ((shipit-github-token "not-a-token")
+         (shipit--github-token-cache nil)
+         (shipit-pr-backend 'github)
+         (shipit-show-avatars nil)
+         (shipit-show-pr-checks nil))
+     (unwind-protect
+         (shipit-test-http-answering
+             (list (list "/repos/o/r/compare/master\\.\\.\\.feature\\'" ,status ,answer))
+           (test-scc--with-quiet-messages
+            (with-current-buffer (shipit-commit-comments-open-branch "o/r" "feature" "master")
+              ,@body)))
+       (test-scc--kill-buffer "*shipit-commit-comments: o/r feature*"))))
+
+(defun test-scc--text ()
+  "The text of this buffer."
+  (buffer-substring-no-properties (point-min) (point-max)))
+
+(defun test-scc--shown-file (name)
+  "Show the file NAME in the files section of this view; return its text."
+  (magit-section-show (test-scc--find-section 'pr-files))
+  (let ((file (test-scc--find-section 'pr-file name)))
+    (should file)
+    (magit-section-show file)
+    (buffer-substring-no-properties (oref file start) (oref file end))))
+
+(ert-deftest test-scc-open-branch-lists-every-file-past-the-compare-limit ()
+  "GIVEN a branch that changes 301 files, AND GitHub's compare that
+lists only the first 300 of them, the most it lists
+WHEN the user opens the branch view
+THEN the files section counts 301 files AND shows the diff of the
+last one."
+  (test-scc--in-cups-branch-view 200
+      (test-scc--compare-answer 301 (test-scc--compare-of-cups 300))
+    (should (string-match-p "Files Changed (301, \\+301 -301)" (test-scc--text)))
+    (should (string-match-p "\\+full" (test-scc--shown-file (test-scc--cup-file 301))))))
+
+(ert-deftest test-scc-open-branch-shows-the-diff-github-leaves-out ()
+  "GIVEN a branch that changes 2 files, AND GitHub's compare that lists
+both, the second without its patch, as it lists a file with a big diff
+WHEN the user opens the branch view
+THEN the files section counts the lines of both files AND shows the
+diff of the second."
+  (test-scc--in-cups-branch-view 200
+      (test-scc--compare-answer 2 (test-scc--compare-without-patch-of 2 2))
+    (should (string-match-p "Files Changed (2, \\+2 -2)" (test-scc--text)))
+    (should (string-match-p "\\+full" (test-scc--shown-file (test-scc--cup-file 2))))))
+
+(ert-deftest test-scc-open-branch-asks-for-no-diff-when-each-patch-is-listed ()
+  "GIVEN a branch that changes 2 files, AND GitHub's compare that lists
+both with their patches
+WHEN the user opens the branch view
+THEN the view asks GitHub for the compare once, and for no diff."
+  (test-scc--in-cups-branch-view 200
+      (test-scc--compare-answer 2 (test-scc--compare-of-cups 2))
+    (should (string-match-p "Files Changed (2, \\+2 -2)" (test-scc--text)))
+    (should (= 1 (length shipit-test-http-requests)))))
+
+(ert-deftest test-scc-open-branch-says-when-github-refuses-the-files-past-the-limit ()
+  "GIVEN a branch that changes 301 files, AND GitHub's compare that
+lists only the first 300 of them, AND GitHub refusing the diff of all
+of them
+WHEN the user opens the branch view
+THEN the files section shows the 300 files that the compare lists, AND
+a message says that only those are shown, and why."
+  (test-scc--in-cups-branch-view
+      (lambda () (if (test-scc--asks-for-diff-p) 406 200))
+      (lambda (_request)
+        (if (test-scc--asks-for-diff-p)
+            (json-encode '((message . "Sorry, this diff is too large")))
+          (json-encode (test-scc--compare-of-cups 300))))
+    (should (string-match-p "Files Changed (300, \\+300 -300)" (test-scc--text)))
+    (should (seq-find (lambda (m)
+                        (and (string-match-p "first 300 changed files" m)
+                             (string-match-p "406" m)))
+                      messages))))
+
+(ert-deftest test-scc-the-diff-of-all-files-skips-the-cache-of-the-compare ()
+  "GIVEN a branch that changes 301 files, AND url.el keeping GitHub's
+earlier JSON answer for the address of its compare
+WHEN the user opens the branch view, which asks that address for the
+diff of all the files
+THEN the request of the diff tells url.el to send no date of its copy,
+so that GitHub does not answer 304 Not Modified, AND url.el stores no
+copy of the diff, which would take the place of the JSON answer."
+  (let ((url-automatic-caching t)
+        (caching-for-diff 'not-asked))
+    (test-scc--in-cups-branch-view 200
+        (let ((answer (test-scc--compare-answer 301 (test-scc--compare-of-cups 300))))
+          (lambda (request)
+            (when (test-scc--asks-for-diff-p)
+              (setq caching-for-diff url-automatic-caching))
+            (funcall answer request)))
+      (let ((diff-headers (seq-find (lambda (headers)
+                                      (equal "application/vnd.github.diff"
+                                             (cdr (assoc "Accept" headers))))
+                                    shipit-test-http-headers)))
+        (should (equal "no-cache" (cdr (assoc "Pragma" diff-headers))))
+        (should (null caching-for-diff))))))
+
+(defconst test-scc--diff-of-each-kind
+  (concat
+   "diff --git a/kitchen/new-cup.txt b/kitchen/new-cup.txt\n"
+   "new file mode 100644\n"
+   "index 0000000..1111111\n"
+   "--- /dev/null\n"
+   "+++ b/kitchen/new-cup.txt\n"
+   "@@ -0,0 +1,2 @@\n"
+   "+coffee\n"
+   "+milk\n"
+   "diff --git a/kitchen/old-cup.txt b/kitchen/old-cup.txt\n"
+   "deleted file mode 100644\n"
+   "index 1111111..0000000\n"
+   "--- a/kitchen/old-cup.txt\n"
+   "+++ /dev/null\n"
+   "@@ -1 +0,0 @@\n"
+   "-tea\n"
+   "diff --git a/kitchen/mug.txt b/kitchen/cup.txt\n"
+   "similarity index 80%\n"
+   "rename from kitchen/mug.txt\n"
+   "rename to kitchen/cup.txt\n"
+   "index 1111111..2222222 100644\n"
+   "--- a/kitchen/mug.txt\n"
+   "+++ b/kitchen/cup.txt\n"
+   "@@ -1,2 +1,2 @@\n"
+   " coffee\n"
+   "-small\n"
+   "+big\n"
+   "diff --git a/kitchen/photo.png b/kitchen/photo.png\n"
+   "new file mode 100644\n"
+   "index 0000000..3333333\n"
+   "Binary files /dev/null and b/kitchen/photo.png differ\n"
+   "diff --git \"a/kitchen/caf\\303\\251.txt\" \"b/kitchen/caf\\303\\251.txt\"\n"
+   "index 1111111..2222222 100644\n"
+   "--- \"a/kitchen/caf\\303\\251.txt\"\n"
+   "+++ \"b/kitchen/caf\\303\\251.txt\"\n"
+   "@@ -1 +1 @@\n"
+   "-closed\n"
+   "+open\n"
+   "diff --git a/kitchen/big mug.txt b/kitchen/big mug.txt\n"
+   "index 1111111..2222222 100644\n"
+   "--- a/kitchen/big mug.txt\t\n"
+   "+++ b/kitchen/big mug.txt\t\n"
+   "@@ -1 +1 @@\n"
+   "-cold\n"
+   "+hot\n"
+   "\\ No newline at end of file\n")
+  "A diff with a file of each kind: added, removed, renamed, binary,
+with a name outside ASCII, and with a space in its name, which git
+ends with a tab on the lines of its two sides.")
+
+(ert-deftest test-scc-github-reads-each-kind-of-file-from-a-diff ()
+  "GIVEN GitHub's diff of a compare with a file of each kind: added,
+removed, renamed, binary, with a name outside ASCII and with a space
+in its name
+WHEN the GitHub backend reads the changed files from it
+THEN each file has the name, status, counts and previous name that
+the compare API gives such a file, AND its patch starts at its first
+hunk."
+  (let ((shipit-github-token "not-a-token")
+        (shipit--github-token-cache nil))
+    (shipit-test-http-answering
+        `(("/repos/o/r/compare/master\\.\\.\\.feature\\'" 200 ,test-scc--diff-of-each-kind))
+      (let ((files (shipit-pr-github--fetch-compare-diff-files
+                    '(:repo "o/r") "master" "feature")))
+        (should (equal (mapcar (lambda (file)
+                                 (mapcar (lambda (key) (cdr (assq key file)))
+                                         '(filename status additions deletions previous_filename)))
+                               files)
+                       '(("kitchen/new-cup.txt" "added" 2 0 nil)
+                         ("kitchen/old-cup.txt" "removed" 0 1 nil)
+                         ("kitchen/cup.txt" "renamed" 1 1 "kitchen/mug.txt")
+                         ("kitchen/photo.png" "added" 0 0 nil)
+                         ("kitchen/café.txt" "modified" 1 1 nil)
+                         ("kitchen/big mug.txt" "modified" 1 1 nil))))
+        (should (equal (cdr (assq 'patch (car files)))
+                       "@@ -0,0 +1,2 @@\n+coffee\n+milk"))
+        (should-not (assq 'patch (nth 3 files)))))))
 
 (provide 'test-shipit-commit-comments)
 ;;; test-shipit-commit-comments.el ends here

@@ -748,12 +748,148 @@ CONFIG provides :repo.  Returns file content as a string, or nil."
     (shipit--debug-log "GitHub PR backend: fetching file content %s at %s from %s" file-path ref repo)
     (shipit--fetch-file-content-from-github repo file-path ref)))
 
+(defun shipit-pr-github--compare-endpoint (config base head)
+  "The endpoint of the compare of BASE and HEAD in the repository of CONFIG."
+  (format "/repos/%s/compare/%s...%s" (plist-get config :repo) base head))
+
 (defun shipit-pr-github--fetch-compare (config base head)
   "Fetch compare data between BASE and HEAD commits using CONFIG."
-  (let* ((repo (plist-get config :repo))
-         (endpoint (format "/repos/%s/compare/%s...%s" repo base head)))
-    (shipit--debug-log "GitHub PR backend: fetching compare %s...%s in %s" base head repo)
-    (shipit--api-request endpoint)))
+  (shipit--debug-log "GitHub PR backend: fetching compare %s...%s in %s"
+                     base head (plist-get config :repo))
+  (shipit--api-request (shipit-pr-github--compare-endpoint config base head)))
+
+;;; A compare with more files than the compare API lists
+
+(defconst shipit-pr-github--compare-file-limit 300
+  "The most changed files that the compare API lists.
+GitHub documents this limit with the endpoint that compares two commits.")
+
+(defconst shipit-pr-github--diff-statuses
+  '(("new file mode " . "added")
+    ("deleted file mode " . "removed")
+    ("rename from " . "renamed")
+    ("copy from " . "copied"))
+  "The status of a file, by the line that tells it in its part of a diff.
+A file with none of these lines is modified.")
+
+(defun shipit-pr-github--diff-file-parts (diff)
+  "Split DIFF, the text of a git diff, into the part of each file.
+A part starts after `diff --git ', with the two paths."
+  (split-string (concat "\n" diff) "\ndiff --git " t))
+
+(defun shipit-pr-github--diff-header-value (header prefixes)
+  "Return the rest of the first line of HEADER that starts with one of PREFIXES."
+  (seq-some (lambda (line)
+              (seq-some (lambda (prefix)
+                          (when (string-prefix-p prefix line)
+                            (substring line (length prefix))))
+                        prefixes))
+            header))
+
+(defun shipit-pr-github--diff-unquote (path)
+  "Return PATH as a diff writes it, without the quotes of an unusual name.
+git puts a name with bytes outside ASCII in quotes, each such byte
+as an octal escape, which reads as a Lisp string."
+  (if (string-prefix-p "\"" path)
+      (decode-coding-string (car (read-from-string path)) 'utf-8)
+    path))
+
+(defun shipit-pr-github--diff-side-path (value prefix)
+  "Return the path that VALUE names without PREFIX, or nil for /dev/null.
+VALUE is a side of the diff of a file, such as a/kitchen/cup.txt.  git
+ends it with a tab when the name has a space, for the tools that apply
+a patch."
+  (let ((path (shipit-pr-github--diff-unquote (string-remove-suffix "\t" value))))
+    (unless (equal path "/dev/null")
+      (string-remove-prefix prefix path))))
+
+(defun shipit-pr-github--diff-git-line-path (line)
+  "Return the path of LINE, the paths after `diff --git '.
+Only a file whose diff has no other line with its path needs this,
+such as a binary file, and then both paths are the same."
+  (if (string-prefix-p "\"" line)
+      (string-remove-prefix "a/" (shipit-pr-github--diff-unquote line))
+    (substring line 2 (+ 2 (/ (- (length line) (length "a/ b/")) 2)))))
+
+(defun shipit-pr-github--diff-path (header moved side prefix)
+  "Return one path of the file whose diff has HEADER, nil when there is none.
+MOVED is the start of the line that names it in a rename or a copy,
+SIDE the start of the line of its side of the diff, and PREFIX the
+start of the path on that line."
+  (let ((moved-path (shipit-pr-github--diff-header-value header (list moved)))
+        (side-path (shipit-pr-github--diff-header-value header (list side))))
+    (cond (moved-path (shipit-pr-github--diff-unquote moved-path))
+          (side-path (shipit-pr-github--diff-side-path side-path prefix))
+          (t (shipit-pr-github--diff-git-line-path (car header))))))
+
+(defun shipit-pr-github--diff-status (header)
+  "Return the status of the file whose diff has HEADER."
+  (or (seq-some (lambda (entry)
+                  (when (shipit-pr-github--diff-header-value header (list (car entry)))
+                    (cdr entry)))
+                shipit-pr-github--diff-statuses)
+      "modified"))
+
+(defun shipit-pr-github--patch-count (patch char)
+  "Return how many lines of PATCH start with CHAR; 0 when PATCH is nil."
+  (cl-count-if (lambda (line) (string-prefix-p (string char) line))
+               (and patch (split-string patch "\n"))))
+
+(defun shipit-pr-github--file-from-diff (part)
+  "Return the entry of the file of PART as the compare API lists a file.
+PART is the diff of one file, without its `diff --git '.  Its patch
+starts at the first hunk, as the patch of the compare API does."
+  (let* ((hunks (string-match "^@@" part))
+         (header (split-string (substring part 0 hunks) "\n" t))
+         (patch (and hunks (string-remove-suffix "\n" (substring part hunks))))
+         (old (shipit-pr-github--diff-path header "rename from " "--- " "a/"))
+         (new (shipit-pr-github--diff-path header "rename to " "+++ " "b/"))
+         (status (shipit-pr-github--diff-status header)))
+    `((filename . ,(or new old))
+      (status . ,status)
+      ,@(when (member status '("renamed" "copied")) `((previous_filename . ,old)))
+      (additions . ,(shipit-pr-github--patch-count patch ?+))
+      (deletions . ,(shipit-pr-github--patch-count patch ?-))
+      ,@(when patch `((patch . ,patch))))))
+
+(defun shipit-pr-github--fetch-compare-diff-files (config base head)
+  "Fetch every file that differs between BASE and HEAD, using CONFIG.
+They come from the compare as a diff, which has no limit of files."
+  (mapcar #'shipit-pr-github--file-from-diff
+          (shipit-pr-github--diff-file-parts
+           (shipit--api-request-text
+            (shipit-pr-github--compare-endpoint config base head)
+            "application/vnd.github.diff"))))
+
+(defun shipit-pr-github--with-diff-files (config base head compare)
+  "Return COMPARE of BASE and HEAD with the files of its diff, using CONFIG.
+When GitHub does not give the diff, as for a diff it finds too big,
+COMPARE keeps the files that it lists, and a message says so."
+  (condition-case err
+      (cons (cons 'files (shipit-pr-github--fetch-compare-diff-files config base head))
+            (assq-delete-all 'files (copy-alist compare)))
+    (error
+     (message "shipit: Showing the files GitHub lists, the first %d changed files, some with no diff: %s"
+              shipit-pr-github--compare-file-limit (error-message-string err))
+     compare)))
+
+(defun shipit-pr-github--compare-lacks-files-p (compare)
+  "Return non-nil when COMPARE leaves out a changed file or its patch.
+The compare API lists 300 files at most.  It gives no patch for a file
+whose diff is past a size budget, and none for a binary file either:
+the two look the same."
+  (let ((files (append (cdr (assq 'files compare)) nil)))
+    (or (>= (length files) shipit-pr-github--compare-file-limit)
+        (seq-some (lambda (file) (null (cdr (assq 'patch file)))) files))))
+
+(defun shipit-pr-github--fetch-compare-with-all-files (config base head)
+  "Fetch the compare of BASE and HEAD using CONFIG, with every changed file.
+When the compare API leaves out a file or a patch, the files come from
+the compare as a diff instead."
+  (let ((compare (shipit-pr-github--fetch-compare config base head)))
+    (if (shipit-pr-github--compare-lacks-files-p compare)
+        (shipit-pr-github--with-diff-files config base head compare)
+      compare)))
 
 (defun shipit-pr-github--fetch-commit-comments (config sha)
   "Fetch commit comments for SHA using CONFIG.
@@ -2476,6 +2612,7 @@ data should pass it: this runs on every render of the section."
        :fetch-action-run-info #'shipit-pr-github--fetch-action-run-info
        :fetch-commit-check-runs #'shipit-pr-github--fetch-commit-check-runs
        :fetch-compare #'shipit-pr-github--fetch-compare
+       :fetch-compare-with-all-files #'shipit-pr-github--fetch-compare-with-all-files
        :fetch-file-content #'shipit-pr-github--fetch-file-content
        :search-raw #'shipit-pr-github--search-raw
        :list-prs #'shipit-pr-github--list-prs

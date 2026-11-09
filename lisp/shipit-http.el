@@ -4779,6 +4779,25 @@ REPO should be like \"owner/name\"."
      ;; Fallback
      (t (propertize state 'font-lock-face '(:weight bold))))))
 
+(defun shipit--pr-state-line (pr-data)
+  "The State line of the pull request PR-DATA, with its icon.
+A merged pull request shows as merged, not closed, and an open draft
+as draft."
+  (let* ((state (shipit--get-pr-actual-state pr-data))
+         (display-state (cond
+                         ((string= state "merged") "merged")
+                         ((string= state "closed") "closed")
+                         ((shipit--pr-draft-p pr-data) "draft")
+                         (t (or state "unknown"))))
+         (state-emoji (pcase display-state
+                        ("merged" "🎉")
+                        ("closed" "❌")
+                        ("draft" "🚧")
+                        (_ "✅"))))
+    (format "%s State:     %s"
+            (shipit--get-pr-state-icon display-state state-emoji)
+            (shipit--colorize-pr-state display-state))))
+
 (defun shipit--colorize-pr-state (state)
   "Apply appropriate color and styling to PR STATE string."
   (cond

@@ -54,6 +54,8 @@ when magit sections expand/collapse.")
 ;; Require shipit-pr-sections for section type definitions
 (require 'shipit-pr-sections)
 (require 'shipit-pr-linked-issue)
+(require 'shipit-page-views)
+(require 'shipit-pr-overview)
 
 ;; Forward declarations
 (declare-function shipit-open-repo-buffer "shipit-repo-buffer")
@@ -641,6 +643,8 @@ SPC closes the menu again."
     ("s" "Select PR" shipit-buffer-select-pr)
     ("L" "Toggle time format" shipit-buffer-toggle-timestamps-dwim)
     ("O" "Toggle sort order" shipit-toggle-section-order)
+    ("v" "Next view" shipit-page-view-next)
+    ("V" "Choose view" shipit-page-view-choose)
     ("M-w" "Copy URL or text" shipit-buffer-copy-dwim)
     ("o" "Open in browser" shipit-open-in-browser)
     ("w" "Repo subscription" shipit-repo-subscription)
@@ -670,6 +674,10 @@ with focused context and optimized performance.
   (setq-local shipit-page-menu-command #'shipit-pr-menu)
   (setq-local shipit--comments-rerender-function
               #'shipit-buffer--rerender-general-comments)
+  (shipit-page-view-setup :pr)
+  (setq-local shipit-page-view-redraw-function #'shipit-pr-overview-redraw)
+  ;; The summary and the waiting part need each answer of the forge.
+  (add-hook 'shipit-buffer-ready-hook #'shipit-page-view-apply-later nil t)
 
   ;; Re-bind keys to ensure they override parent bindings
   (define-key shipit-mode-map (kbd "RET") #'shipit--open-file-at-point)
@@ -1029,6 +1037,7 @@ REPO is the repository, PR-NUMBER is the PR number."
       ;; These only need the basic PR data - NO API CALLS here
       (shipit--debug-log "INCREMENTAL: Rendering immediate sections (no API calls)")
 
+      (shipit-pr-overview-insert-parts)
       (shipit--time-operation "insert title section"
         (shipit--insert-pr-title-section repo pr-data pr-number))
 
@@ -1103,26 +1112,9 @@ REPO is the repository, PR-NUMBER is the PR number."
         (shipit-pr-linked-issue--insert-section repo pr-number pr-data))
 
       ;; Insert simple state line from pr-data (no API call)
-      ;; Use shipit--get-pr-actual-state to show "merged" instead of "closed" for merged PRs
-      ;; Use shipit--colorize-pr-state to apply appropriate colors
-      ;; Priority: merged > closed > draft > open
       (shipit--time-operation "insert simple state"
-        (let* ((state (shipit--get-pr-actual-state pr-data))
-               (is-draft (shipit--pr-draft-p pr-data))
-               (display-state (cond
-                               ((string= state "merged") "merged")
-                               ((string= state "closed") "closed")
-                               (is-draft "draft")
-                               (t (or state "unknown"))))
-               (state-emoji (cond
-                             ((string= display-state "merged") "🎉")
-                             ((string= display-state "closed") "❌")
-                             ((string= display-state "draft") "🚧")
-                             (t "✅"))))
-          (magit-insert-section (pr-state nil)
-            (magit-insert-heading (format "%s State:     %s"
-                            (shipit--get-pr-state-icon display-state state-emoji)
-                            (shipit--colorize-pr-state display-state))))))
+        (magit-insert-section (pr-state nil)
+          (magit-insert-heading (shipit--pr-state-line pr-data))))
 
       ;; Insert subscription status (if backend supports it)
       (shipit--time-operation "insert subscription"
@@ -1228,6 +1220,9 @@ REPO is the repository, PR-NUMBER is the PR number."
                    (let ((magit-root-section (or magit-root-section root-section)))
                      ;; Check for new comments and establish baseline
                      (shipit--check-for-new-general-comments repo pr-number comments)
+                     ;; A comment posted in the page joins this cache, and
+                     ;; the section is drawn again from it.
+                     (shipit--cache-general-comments-with-dedup comments)
                      ;; Render comments immediately — reactions available on next refresh
                      (shipit--replace-general-comments-section-with-content
                       repo pr-number comments)
@@ -1370,6 +1365,7 @@ REPO is the repository, PR-NUMBER is the PR number."
                      (setq shipit--cached-resolved-threads
                            (or threads '()))
                      (setq shipit--resolved-comments-hash nil)
+                     (shipit-page-view-redraw)
                      ;; Re-render the files section if files data
                      ;; landed already.  When resolved-threads
                      ;; arrives first, the next files render reads

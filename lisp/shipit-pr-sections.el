@@ -872,7 +872,7 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
                    ;; For general comments at depth 0: 3 spaces + icon (2 chars) = 6 spaces
                    ;; For general comments with depth > 0, use standard calculation
                    ;; For inline comments, use standard calculation
-                   (body-indent (if (and (not is-inline) (= actual-depth 0))
+                   (body-indent (if (and (not is-inline) (= indent-depth 0))
                                     6  ; Align with username for top-level general comments (3 spaces + emoji which is 2 chars wide)
                                   (+ (if is-inline 3 3) (length thread-prefix) (length tree-indicator) 3))))
               (shipit--insert-comment-body-only comment body-indent status-comment-keymap file-path repo pr-number (or (cdr (assq 'line comment)) 0) t)
@@ -896,7 +896,7 @@ DEPTH-OFFSET is added to indentation (used for inline comments under reviews)."
             ;; Insert reactions with proper indentation (aligned with username, always shows with placeholder)
             (let ((reactions (shipit--format-comment-reactions comment is-inline)))
               (when reactions
-                (let ((reactions-indent (make-string (if (and (not is-inline) (= actual-depth 0))
+                (let ((reactions-indent (make-string (if (and (not is-inline) (= indent-depth 0))
                                                          6  ; Align with username for root general comments
                                                        (+ 3 (length thread-prefix) (length tree-indicator) 3))
                                                      ?\s))
@@ -1935,6 +1935,7 @@ REPO is the repository, PR-NUMBER is the PR number, COMMITS is the list of commi
 REPO is the repository, PR-NUMBER is the PR number, REVIEW-INFO is the
 review decision data alist from shipit--fetch-review-decision-async."
   (shipit--debug-log "ASYNC: Replacing approval placeholder")
+  (setq shipit--shown-review-info review-info)
   (condition-case err
       (let ((section (shipit--find-section-by-type 'approval)))
         (if section

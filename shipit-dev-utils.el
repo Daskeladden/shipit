@@ -18,6 +18,7 @@ Loading the files adds the functions back.")
 (defconst shipit-dev--load-files
   '("shipit-faces.el"
     "shipit-lib.el" "shipit-sections.el" "shipit-core.el" "shipit-cache.el" "shipit-comments.el"
+    "shipit-page-views.el"
     "shipit-custom-edit.el"
     "shipit-stack.el"
     "shipit-stack-plan.el"
@@ -36,6 +37,7 @@ Loading the files adds the functions back.")
     "shipit-pr-sections.el" "shipit-pr-actions.el" "shipit-actions-list.el"
     "shipit-pr-diff.el"
     "shipit-pr-linked-issue.el"
+    "shipit-pr-overview.el"
     "shipit-buffer.el" "shipit-commands.el"
     "shipit-review-history.el" "shipit-review-mode.el" "shipit-review-revision.el"
     "shipit-preview.el" "shipit-editor.el"

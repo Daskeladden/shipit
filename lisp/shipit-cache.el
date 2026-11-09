@@ -76,6 +76,14 @@ Calls the backend's :clear-discussions-cache if available."
 (defvar-local shipit--cached-review-decision nil
   "Cached review decision data for the current PR buffer.")
 
+;; The approval section is drawn straight from an answer of the forge,
+;; and the summary and the waiting part of the page are drawn again
+;; from the same answer, without asking again.
+
+(defvar-local shipit--shown-review-info nil
+  "The reviews that the approval section of this pull request page shows.
+An alist with the review decision and the latest review of each user.")
+
 
 (defvar shipit--cached-branch-prs (make-hash-table :test 'equal)
   "Hash table caching PR data for different branches.

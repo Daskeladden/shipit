@@ -36,6 +36,7 @@
 (declare-function shipit--search-prs-with-encoded-query "shipit-commands")
 (declare-function shipit--render-markdown "shipit-render")
 (declare-function shipit--add-general-comment-to-pr "shipit-http")
+(declare-function shipit-page-view-redraw "shipit-page-views")
 (declare-function shipit--add-comment-to-pr "shipit-http")
 (declare-function shipit--edit-comment "shipit-http")
 (declare-function shipit--edit-pr-description "shipit-http")
@@ -2505,6 +2506,10 @@ Inserts literal @ if cancelled or no users found."
          (t
           (when (fboundp 'shipit-buffer-refresh)
             (shipit-buffer-refresh))))))
+    ;; What waits for an answer is drawn from the comments, which changed.
+    (when (buffer-live-p source-buffer)
+      (with-current-buffer source-buffer
+        (shipit-page-view-redraw)))
     (message "Saved")))
 
 (defun shipit-editor-cancel ()

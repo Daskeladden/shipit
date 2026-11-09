@@ -209,6 +209,9 @@ test-unit: compile
 		-l test/test-shipit-custom-edit.el \
 		-l test/test-shipit-code-refs.el \
 		-l test/test-shipit-code-block-copy.el \
+		-l test/test-shipit-page-views.el \
+		-l test/test-shipit-page-views-cases.el \
+		-l test/test-shipit-pr-overview.el \
 		-f ert-run-tests-batch-and-exit
 
 # Run integration tests

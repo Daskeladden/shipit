@@ -26,6 +26,7 @@
 (require 'shipit-http)
 (require 'shipit-render)
 (require 'shipit-sections)
+(require 'shipit-page-views)
 (require 'imenu)
 
 ;; Forward declarations
@@ -111,6 +112,7 @@
 (put 'issue-attachments 'magit-section t)
 
 (put 'shipit-issue-metadata 'magit-section t)
+(put 'shipit-page-assignee 'magit-section t)
 
 (put 'issue-activity 'magit-section t)
 
@@ -208,6 +210,8 @@ SPC closes the menu again."
    ["Page"
     ("g" "Refresh" shipit-issue-buffer-refresh)
     ("L" "Toggle time format" shipit-toggle-timestamp-format)
+    ("v" "Next view" shipit-page-view-next)
+    ("V" "Choose view" shipit-page-view-choose)
     ("o" "Open in browser" shipit-open-in-browser)
     ("w" "Repo subscription" shipit-repo-subscription)
     ("$" "Process buffer" shipit-process-buffer)
@@ -256,6 +260,7 @@ Provides a read-only interface for viewing GitHub issues.
   (shipit--watch-videos)
   (setq-local shipit-page-url-function #'shipit-issue--browse-url)
   (setq-local shipit-page-menu-command #'shipit-issue-menu)
+  (shipit-page-view-setup :issue)
   (setq-local imenu-create-index-function #'shipit-issue--imenu-create-index)
   (add-hook 'imenu-after-jump-hook #'shipit--imenu-unfold-around-point nil t)
   (setq-local shipit--comments-rerender-function #'shipit-issue--rerender-comments)
@@ -414,6 +419,7 @@ see `shipit-issue--backend-of-buffer-for'."
           (erase-buffer)
           (magit-insert-section (shipit-issue)
             (shipit-issue--insert-header-section repo issue-data issue-number)
+            (shipit-issue--insert-assignee-part issue-data)
             (shipit-issue--insert-metadata-section repo issue-data)
             (shipit-issue--insert-description-section repo issue-data issue-number)
             (shipit-issue--insert-attachments-section issue-data)
@@ -561,6 +567,28 @@ see `shipit-issue--backend-of-buffer-for'."
                                                keymap ,shipit-issue-header-keymap
                                                help-echo "M-w: copy issue URL, M-;: shipit-dwim"))))
 
+(defun shipit-issue--insert-assignee-line (issue-data indent)
+  "Insert the line with the assignees of ISSUE-DATA, after INDENT.
+\\[shipit-dwim] on it changes them."
+  (let* ((assignees (cdr (assq 'assignees issue-data)))
+         (names (mapcar (lambda (a) (cdr (assq 'login a))) assignees))
+         (line-start (point)))
+    (insert (format "%s%s Assignee:  %s\n"
+                    indent
+                    (shipit--get-pr-field-icon "assignees" "👥")
+                    (if names
+                        (mapconcat (lambda (n)
+                                     (propertize n 'font-lock-face 'shipit-username-face))
+                                   names ", ")
+                      (propertize "Unassigned" 'font-lock-face 'font-lock-comment-face))))
+    (add-text-properties line-start (point) '(shipit-issue-assignee t))))
+
+(defun shipit-issue--insert-assignee-part (issue-data)
+  "Insert the assignee line of ISSUE-DATA as a part that only a view shows.
+See `shipit-page-views'."
+  (magit-insert-section (shipit-page-assignee)
+    (shipit-issue--insert-assignee-line issue-data "")))
+
 (defun shipit-issue--insert-metadata-section (repo issue-data)
   "Insert metadata section for ISSUE-DATA in REPO."
   (magit-insert-section (shipit-issue-metadata nil nil)
@@ -640,20 +668,7 @@ see `shipit-issue--backend-of-buffer-for'."
           (insert (format "   %s Updated:   %s\n"
                           (shipit--get-pr-field-icon "updated" "🔄")
                           (propertize formatted 'font-lock-face 'shipit-timestamp-face)))))
-      ;; Assignees
-      (let ((assignees (cdr (assq 'assignees issue-data))))
-        (let ((names (when (and assignees (> (length assignees) 0))
-                       (mapcar (lambda (a) (cdr (assq 'login a))) assignees)))
-              (line-start (point)))
-          (insert (format "   %s Assignee:  %s\n"
-                          (shipit--get-pr-field-icon "assignees" "👥")
-                          (if names
-                              (mapconcat (lambda (n)
-                                           (propertize n 'font-lock-face 'shipit-username-face))
-                                         names ", ")
-                            (propertize "Unassigned" 'font-lock-face 'font-lock-comment-face))))
-          (add-text-properties line-start (point)
-                               '(shipit-issue-assignee t))))
+      (shipit-issue--insert-assignee-line issue-data "   ")
       ;; Labels (always shown, like Assignee; editable via DWIM)
       (let ((labels (cdr (assq 'labels issue-data)))
             (line-start (point)))

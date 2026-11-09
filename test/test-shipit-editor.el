@@ -882,5 +882,34 @@ THEN shipit-editor--trigger-mr-reference is in the exclusion list."
       (when shipit-editor--completion-timer
         (cancel-timer shipit-editor--completion-timer)))))
 
+;;; A comment that the tracker refuses
+
+(ert-deftest test-shipit-editor-a-comment-that-github-refuses-stays-in-the-editor ()
+  "GIVEN the editor of a new comment on an issue of GitHub, with a
+comment written in it, AND GitHub refusing the comment
+WHEN the user saves it with C-c C-c
+THEN an error says that the comment was not added, AND the editor
+still holds the comment, so nothing is lost."
+  (require 'shipit-editor)
+  (require 'shipit-issues-buffer)
+  (require 'shipit-issue-github)
+  (require 'shipit-test-http)
+  (let ((shipit-github-token "not-a-token")
+        (shipit--github-token-cache nil)
+        (shipit-issue-backend 'github)
+        (shipit-issue-repo-backends nil))
+    (shipit-test-http-answering
+        '(("/repos/o/r/issues/7/comments\\'" 404 ((message . "Not Found"))))
+      (with-temp-buffer
+        (shipit-issue--add-comment-directly "o/r" 7))
+      (unwind-protect
+          (with-current-buffer shipit-editor--buffer-name
+            (insert "One cup, please.")
+            (let ((err (should-error (call-interactively (key-binding (kbd "C-c C-c") t)))))
+              (should (string-match-p "not added" (error-message-string err))))
+            (should (equal "One cup, please." (buffer-string))))
+        (when (get-buffer shipit-editor--buffer-name)
+          (kill-buffer shipit-editor--buffer-name))))))
+
 (provide 'test-shipit-editor)
 ;;; test-shipit-editor.el ends here

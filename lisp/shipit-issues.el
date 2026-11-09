@@ -61,14 +61,17 @@ Calls CALLBACK with the list of comments when done."
 
 (defun shipit-issues--add-comment (repo issue-id body)
   "Add a comment to issue ISSUE-ID in REPO via the active backend.
-BODY is the comment text.  Returns the created comment alist."
+BODY is the comment text.  Returns the created comment alist.  Signals
+an error when the tracker does not take the comment: the GitHub backend
+gives nil then, and the editor keeps the comment only on an error."
   (let* ((resolved (shipit-issue--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
          (fn (plist-get backend :add-comment)))
     (unless fn
       (error "Backend does not support :add-comment"))
-    (funcall fn config issue-id body)))
+    (or (funcall fn config issue-id body)
+        (error "Comment not added to issue %s, see *Messages* for why" issue-id))))
 
 (defun shipit-issues--edit-comment (repo comment-id body &optional issue-id)
   "Edit comment COMMENT-ID in REPO via the active backend.

@@ -557,6 +557,58 @@ its comments on the answer."
         (should (eq 'jira shipit-issue-backend))
         (should (string-match-p "A comment of the sandbox" (buffer-string)))))))
 
+;;; A reply on a page opened from a link of Jira
+
+(defun test-jira-sandbox--open-as-a-link-does (comment)
+  "Start the sandbox, give its first issue COMMENT, and open the issue.
+It is opened as a link or a notification of Jira opens it: with Jira
+handed over as the backend, under a name that names no tracker of its
+own.  Only the page knows that its issues are in Jira."
+  (let ((config (shipit-jira-sandbox-start)))
+    (shipit-issue-jira--add-comment config "PRJ-1" comment)
+    (setq shipit-issue-repo-backends
+          (cl-remove config shipit-issue-repo-backends :key #'cdr :test #'eq))
+    (shipit-issues-open-buffer "PRJ-1" shipit-jira-sandbox-repo 'jira config)))
+
+(defun test-jira-sandbox--pick-in-menu-of (keys pick)
+  "Press KEYS at point, and pick PICK in the menu that it shows."
+  (let ((completing-read-function
+         (lambda (_prompt collection &rest _)
+           (should (member pick (all-completions "" collection)))
+           pick)))
+    (call-interactively (key-binding (kbd keys) t))))
+
+(defun test-jira-sandbox--write-and-save (text)
+  "Write TEXT at the end of the open editor, and save it with C-c C-c."
+  (with-current-buffer shipit-editor--buffer-name
+    (goto-char (point-max))
+    (insert text)
+    (call-interactively (key-binding (kbd "C-c C-c") t))))
+
+(ert-deftest test-jira-sandbox-a-reply-on-a-page-opened-from-a-link-reaches-jira ()
+  "GIVEN a comment on the sandbox's first issue, AND the issue opened as
+a link or a notification of Jira opens it, under a name that names no
+tracker of its own, AND GitHub as the default tracker
+WHEN the user picks Reply to comment in the menu of M-; on the comment,
+writes a reply and saves it
+THEN Jira has the reply, AND the page shows it."
+  (skip-unless (executable-find "python3"))
+  (let ((auth-sources nil))
+    (test-jira-sandbox--with-page-opened-by
+        (test-jira-sandbox--open-as-a-link-does "Is the coffee ready?") page
+      (with-current-buffer page
+        (goto-char (point-min))
+        (search-forward "Is the coffee ready?")
+        (test-jira-sandbox--pick-in-menu-of "M-;" "Reply to comment"))
+      (test-jira-sandbox--write-and-save "It is brewing.")
+      ;; The page draws itself again from a timer: wait before any other
+      ;; request lets that timer run.
+      (test-jira-sandbox--wait-until-ready)
+      (with-current-buffer page
+        (should (string-match-p "It is brewing\\." (buffer-string))))
+      (should (string-match-p "It is brewing\\."
+                              (test-jira-sandbox--comment-body shipit-jira-sandbox--config))))))
+
 ;;; The order of the comments
 
 (defun test-jira-sandbox--open-with-comments (bodies)

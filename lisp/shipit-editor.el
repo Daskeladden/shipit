@@ -319,6 +319,17 @@ in as a markdown image, as shipit shows the images an issue has."
 ;;; Editor open
 
 ;;;###autoload
+(defun shipit-editor--use-issue-backend-of (buffer)
+  "Make this editor write issues through the issue backend of BUFFER.
+A page of an issue can have a backend of its own, as one opened from a
+link of Jira has, while its repository names none.  Then only that page
+knows where its comments go."
+  (when (buffer-live-p buffer)
+    (setq-local shipit-issue-backend
+                (buffer-local-value 'shipit-issue-backend buffer))
+    (setq-local shipit-issue-backend-config
+                (buffer-local-value 'shipit-issue-backend-config buffer))))
+
 (defun shipit-editor-open (context)
   "Open the shipit editor with CONTEXT.
 CONTEXT is a plist with:
@@ -381,6 +392,7 @@ CONTEXT is a plist with:
               shipit-editor--commit-index -1
               shipit-editor--pr-backend-id resolved-backend-id
               shipit-editor--pr-backend-config resolved-backend-config)
+        (shipit-editor--use-issue-backend-of source-buffer)
         ;; Backend-specific trigger keys (set here, not in mode body,
         ;; because each backend defines its own trigger characters)
         (local-set-key (kbd "#") #'shipit-editor--trigger-pr-reference)

@@ -132,6 +132,10 @@ Navigate with `TAB` to expand/collapse, `RET` to open, and `M-;` for context act
 
 `SPC` in a pull request buffer or an issue buffer opens a menu of the commands of the buffer, each on the key that the buffer has for it, and `SPC` closes it again. `O` toggles the order of the section at point between the oldest first and the newest first: the activity, the comments of an issue, or the general comments of a pull request. `shipit-activity-timeline-order` and `shipit-comments-order` set the order that a new session starts with. With meow, the two buffers start in the insert state, because meow takes `SPC` in its motion state.
 
+`C-u M-w` on a line of a code block copies the code of the block, in any shipit buffer. The lines of its fences are left out, and the indent that the page gives the block, so the code is as it was written. `M-w` without the prefix copies a region or a line, as it does elsewhere. In a code block, `M-;` offers Copy code block as its first choice. Embark takes the block as its first target, so its `w` copies the code too.
+
+When `C-u M-w` or Copy code block copies the code, the lines of the code flash with the pulse of Emacs. To flash them in another way, put a function of your own in `shipit-code-block-copy-functions`. The function gets the start and the end of the lines of code.
+
 ### Issue buffers
 
 | Key | Action |

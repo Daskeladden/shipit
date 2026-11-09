@@ -15,8 +15,9 @@ standard error, so what shipit asked for and the fake lacks shows there.
 
 Jira reads a description or a comment written through version 2 of its
 API as wiki markup, and gives it back through version 3 as its own
-document format.  The fake does the same for plain lines and for
-`!file.png!`, which embeds an attachment of the issue as an image.
+document format.  The fake does the same for plain lines, for
+`!file.png!`, which embeds an attachment of the issue as an image, and
+for `{code:LANGUAGE}...{code}`, which is a block of code.
 """
 
 import argparse
@@ -54,6 +55,9 @@ TRANSITIONS = [{"id": str(10 + int(status["id"])), "name": status["name"], "to":
 ISSUE_TYPES = [{"id": "10001", "name": "Bug"}, {"id": "10002", "name": "Task"}]
 
 EMBED = re.compile(r"!([^!|\n]+)(?:\|[^!\n]*)?!")
+# {code:python}...{code}, whose lines Jira keeps as they are written,
+# blank ones too.
+CODE = re.compile(r"\{code(?::([^}|]*))?(?:\|[^}]*)?\}\n?(.*?)\n?\{code\}", re.S)
 
 
 def now():
@@ -92,10 +96,18 @@ def media(filename):
                                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, filename))}}]}
 
 
-def to_adf(text):
-    """TEXT, wiki markup as version 2 takes it, in Jira's document format."""
+def code_block(language, code):
+    """An ADF code block of CODE, in LANGUAGE when one is named."""
+    block = {"type": "codeBlock", "content": [{"type": "text", "text": code}]}
+    if language:
+        block["attrs"] = {"language": language}
+    return block
+
+
+def prose_to_adf(text):
+    """The ADF blocks of TEXT, wiki markup that holds no code block."""
     blocks = []
-    for block in re.split(r"\n\s*\n", (text or "").strip()):
+    for block in re.split(r"\n\s*\n", text.strip()):
         start = 0
         for embed in EMBED.finditer(block):
             before = block[start:embed.start()].strip("\n")
@@ -106,6 +118,19 @@ def to_adf(text):
         rest = block[start:].strip("\n")
         if rest:
             blocks.append(paragraph(rest))
+    return blocks
+
+
+def to_adf(text):
+    """TEXT, wiki markup as version 2 takes it, in Jira's document format."""
+    text = text or ""
+    blocks = []
+    start = 0
+    for code in CODE.finditer(text):
+        blocks.extend(prose_to_adf(text[start:code.start()]))
+        blocks.append(code_block(code.group(1), code.group(2)))
+        start = code.end()
+    blocks.extend(prose_to_adf(text[start:]))
     return {"type": "doc", "version": 1, "content": blocks}
 
 

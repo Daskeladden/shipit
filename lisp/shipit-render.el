@@ -4462,6 +4462,179 @@ Group 1 is its indent, and group 2 its language, which can be empty.")
 (defconst shipit--code-fence-end-regexp "^[ \t]*```"
   "Regexp matching the fence that closes a code block.")
 
+;;; Copying a code block
+
+(defvar shipit-code-block-map (make-sparse-keymap)
+  "Keymap on each code block of a shipit buffer.")
+
+;; Outside the `defvar', so that loading this file again binds it in a
+;; keymap that exists already.
+(define-key shipit-code-block-map (kbd "M-w") #'shipit-code-block-kill-ring-save)
+
+(defconst shipit--code-block-open-regexp
+  "\\`\\([ \t]*\\)\\(?:```\\|#\\+begin_src\\_>\\)"
+  "Regexp matching the first line of a code block that has fences.
+Group 1 is the indent that the page gives the block.")
+
+(defconst shipit--code-block-close-regexp
+  "\\`[ \t]*\\(?:```\\|#\\+end_src\\)[ \t]*\\'"
+  "Regexp matching the last line of a code block that has fences.")
+
+(defun shipit--mark-code-block (start end background &optional priority)
+  "Mark START..END as a code block, with BACKGROUND when that is a color.
+PRIORITY is that of the overlay of the block, 10 when nil.  The mark is
+there without a background too, as the keys of the block need it.
+Return the overlay."
+  (let ((block (make-overlay start end)))
+    (overlay-put block 'priority (or priority 10))
+    (when background
+      (overlay-put block 'face `(:background ,background :extend t)))
+    (overlay-put block 'shipit-code-block t)
+    (overlay-put block 'keymap shipit-code-block-map)
+    block))
+
+(defun shipit--code-block-at (pos)
+  "The innermost code block at POS, an overlay, or nil.
+An org source block can stand inside a fenced one."
+  (car (sort (seq-filter (lambda (ov) (overlay-get ov 'shipit-code-block))
+                         (overlays-at pos))
+             (lambda (a b)
+               (< (- (overlay-end a) (overlay-start a))
+                  (- (overlay-end b) (overlay-start b)))))))
+
+(defun shipit--code-block-lines (block)
+  "The lines of BLOCK, an overlay, without the empty one after its last newline."
+  (let ((lines (split-string (buffer-substring-no-properties
+                              (overlay-start block) (overlay-end block))
+                             "\n")))
+    (if (equal "" (car (last lines)))
+        (butlast lines)
+      lines)))
+
+(defun shipit--code-block-fences (lines)
+  "How many of LINES are fences, at the start and at the end, as a cons.
+A code block of one line has its fences on that line, so none of its
+lines counts as a fence."
+  (if (and (cdr lines) (string-match-p shipit--code-block-open-regexp (car lines)))
+      (cons 1 (if (string-match-p shipit--code-block-close-regexp (car (last lines))) 1 0))
+    (cons 0 0)))
+
+(defun shipit--code-block-page-indent (fence)
+  "The indent that the page gives a code block whose first line is FENCE."
+  (string-match shipit--code-block-open-regexp fence)
+  (length (match-string 1 fence)))
+
+(defun shipit--code-block-smallest-indent (lines)
+  "The smallest indent of those of LINES that are not blank, or 0."
+  (let ((indents (mapcar (lambda (line) (- (length line) (length (string-trim-left line))))
+                         (seq-remove #'string-blank-p lines))))
+    (if indents (apply #'min indents) 0)))
+
+(defun shipit--code-block-unindent (lines indent)
+  "LINES, each without up to INDENT characters of white space at its start.
+Each line ends with a newline.  A blank line can have less white space
+than INDENT: the colored code that takes the place of the code drops it."
+  (let ((page-indent (format "\\`[ \t]\\{0,%d\\}" indent)))
+    (mapconcat (lambda (line) (concat (replace-regexp-in-string page-indent "" line) "\n"))
+               lines "")))
+
+(defun shipit--code-block-code (block)
+  "The code of BLOCK, an overlay, as it is written.
+The lines of its fences are left out, and the indent that the page
+gives the block.  A block without fences, written with an indent of
+four, loses the four as well."
+  (let* ((lines (shipit--code-block-lines block))
+         (fences (shipit--code-block-fences lines))
+         (code (seq-subseq lines (car fences) (- (length lines) (cdr fences)))))
+    (cond
+     ((and (null (cdr lines)) (string-match "```\\(.*?\\)```" (car lines)))
+      (concat (match-string 1 (car lines)) "\n"))
+     ((= 1 (car fences))
+      (shipit--code-block-unindent code (shipit--code-block-page-indent (car lines))))
+     (t
+      (shipit--code-block-unindent code (shipit--code-block-smallest-indent code))))))
+
+(defun shipit--code-block-code-region (block)
+  "The start and the end of the lines of code of BLOCK, an overlay, as a cons.
+The lines of its fences are left out.  The end is the start of the line
+after the last line of code, so that the region holds whole lines."
+  (let* ((lines (shipit--code-block-lines block))
+         (fences (shipit--code-block-fences lines)))
+    (save-excursion
+      (goto-char (overlay-start block))
+      (forward-line (car fences))
+      (cons (point)
+            (progn (forward-line (- (length lines) (car fences) (cdr fences)))
+                   (point))))))
+
+(defvar pulse-momentary-overlay)
+
+(defconst shipit--code-block-flash-priority 20
+  "Priority of the flash over a copied code block.
+It is above the priority of each code block, 10, or 15 for an org block,
+so that the background of the block does not hide the flash.")
+
+(defun shipit-code-block-pulse (start end)
+  "Flash the code from START to END with Emacs's pulse.
+This is the default of `shipit-code-block-copy-functions'."
+  (pulse-momentary-highlight-region start end)
+  ;; Pulse gives its overlay priority 1, below the background of the block.
+  (overlay-put pulse-momentary-overlay 'priority shipit--code-block-flash-priority))
+
+(defun shipit--code-block-show-copy (block)
+  "Run `shipit-code-block-copy-functions' on the lines of code of BLOCK."
+  (let ((region (shipit--code-block-code-region block)))
+    (run-hook-with-args 'shipit-code-block-copy-functions (car region) (cdr region))))
+
+(defun shipit-copy-code-block ()
+  "Copy the code of the code block at point.
+The lines of its fences and the indent that the page gives the block
+are left out, so the code is as it is written."
+  (interactive)
+  (let* ((block (or (shipit--code-block-at (point))
+                    (user-error "No code block at point")))
+         (code (shipit--code-block-code block))
+         (lines (cl-count ?\n code)))
+    (kill-new code)
+    (shipit--code-block-show-copy block)
+    (message "Copied %d line%s of code" lines (if (= lines 1) "" "s"))))
+
+(defun shipit--code-block-outside-command ()
+  "The command that the key of a code block's copy runs outside a code block."
+  (let* ((key (where-is-internal #'shipit-code-block-kill-ring-save
+                                 shipit-code-block-map t))
+         (maps (remq shipit-code-block-map (current-active-maps t)))
+         (command (lookup-key maps key t)))
+    (unless (commandp command)
+      (error "%s runs no command outside a code block" (key-description key)))
+    (or (command-remapping command nil maps) command)))
+
+(defun shipit-code-block-kill-ring-save (arg)
+  "With a prefix ARG, copy the code of the code block at point.
+Without one, run what this key runs outside a code block, so that M-w
+copies a region or a line as it does anywhere else."
+  (interactive "P")
+  (if arg
+      (shipit-copy-code-block)
+    (call-interactively (shipit--code-block-outside-command))))
+
+(defvar embark-target-finders)
+
+(defun shipit-code-block-embark-target ()
+  "The code block at point as a target of embark, or nil.
+Its text is the code that `shipit-copy-code-block' copies, so the copy
+action of embark copies that."
+  (when-let* ((block (shipit--code-block-at (point))))
+    `(shipit-code-block ,(shipit--code-block-code block)
+                        ,(overlay-start block) . ,(overlay-end block))))
+
+(defun shipit--code-block-embark-register ()
+  "Make embark take the code block at point as its first target."
+  (add-to-list 'embark-target-finders #'shipit-code-block-embark-target))
+
+(with-eval-after-load 'embark
+  (shipit--code-block-embark-register))
+
 (defun shipit--code-block-background ()
   "Return the background color of a code block, or nil.
 It is `shipit-code-block-background', or else the background of
@@ -4526,12 +4699,8 @@ blends with the surrounding prose."
               ;; Check if this is a single-line code block (closing backticks on same line)
               (if (re-search-forward "```" (line-end-position) t)
                   ;; Single-line code block - just apply background
-                  (when code-block-bg
-                    (let* ((block-end (min (1+ (line-end-position)) end))
-                           (ov (make-overlay block-start block-end)))
-                      (overlay-put ov 'priority 10)
-                      (overlay-put ov 'face `(:background ,code-block-bg :extend t))
-                      (overlay-put ov 'shipit-code-block t)))
+                  (shipit--mark-code-block
+                   block-start (min (1+ (line-end-position)) end) code-block-bg)
                 ;; Multi-line code block - find closing backticks
                 (end-of-line)
                 ;; Allow any leading whitespace for closing - the indent captured from opening
@@ -4554,64 +4723,48 @@ blends with the surrounding prose."
                         (when (and lang (< content-start content-end))
                           (shipit--apply-code-block-syntax-highlighting
                            content-start content-end lang)))
-                      ;; Apply background overlay
-                      (when code-block-bg
-                        (let ((ov (make-overlay block-start block-end)))
-                          (overlay-put ov 'priority 10)
-                          (overlay-put ov 'face `(:background ,code-block-bg :extend t))
-                          (overlay-put ov 'shipit-code-block t))))
+                      (shipit--mark-code-block block-start block-end code-block-bg))
                   ;; If closing backticks not found, style to end of region
-                  (when code-block-bg
-                    (let ((ov (make-overlay block-start end)))
-                      (overlay-put ov 'priority 10)
-                      (overlay-put ov 'face `(:background ,code-block-bg :extend t))
-                      (overlay-put ov 'shipit-code-block t)))))))
+                  (shipit--mark-code-block block-start end code-block-bg)))))
         ;; Second pass: Find indented code blocks by looking for markdown-pre-face
           ;; These are created by markdown-mode for 4-space indented code
           ;; Skip positions already inside fenced code blocks
-          (when code-block-bg
-            (goto-char start)
-            (let ((pos start)
-                  (block-start nil))
-              (while (< pos end)
-                ;; Skip if already inside a fenced code block overlay,
-                ;; or in the code of a table, which has its background
-                (if (or (shipit--point-in-code-block-overlay-p pos)
-                        (get-text-property pos 'shipit-table-code))
-                    (setq block-start nil)  ; Reset any pending block
-                  (let ((face (get-text-property pos 'face)))
-                    ;; Check if this position has markdown-pre-face
-                    (if (or (eq face 'markdown-pre-face)
-                            (and (listp face) (memq 'markdown-pre-face face)))
-                        ;; In a code block - record start of line
-                        (unless block-start
-                          (save-excursion
-                            (goto-char pos)
-                            (setq block-start (line-beginning-position))))
-                      ;; Not in a code block
-                      (when block-start
-                        ;; End of block - create overlay from block-start to end of last code line
+          (goto-char start)
+          (let ((pos start)
+                (block-start nil))
+            (while (< pos end)
+              ;; Skip if already inside a fenced code block overlay,
+              ;; or in the code of a table, which has its background
+              (if (or (shipit--point-in-code-block-overlay-p pos)
+                      (get-text-property pos 'shipit-table-code))
+                  (setq block-start nil)  ; Reset any pending block
+                (let ((face (get-text-property pos 'face)))
+                  ;; Check if this position has markdown-pre-face
+                  (if (or (eq face 'markdown-pre-face)
+                          (and (listp face) (memq 'markdown-pre-face face)))
+                      ;; In a code block - record start of line
+                      (unless block-start
                         (save-excursion
                           (goto-char pos)
-                          ;; Go back to end of previous line (last line of code block)
-                          (forward-line -1)
-                          (let ((block-end (line-end-position)))
-                            ;; Only create if non-empty
-                            (when (< block-start block-end)
-                              (setq found-indented (1+ found-indented))
-                              (let ((ov (make-overlay block-start block-end)))
-                                (overlay-put ov 'priority 10)
-                                (overlay-put ov 'face `(:background ,code-block-bg :extend t))
-                                (overlay-put ov 'shipit-code-block t)))))
-                        (setq block-start nil)))))
-                (setq pos (next-single-property-change pos 'font-lock-face nil end)))
-              ;; Handle block that extends to end of region
-              (when (and block-start (< block-start end))
-                (setq found-indented (1+ found-indented))
-                (let ((ov (make-overlay block-start end)))
-                  (overlay-put ov 'priority 10)
-                  (overlay-put ov 'face `(:background ,code-block-bg :extend t))
-                  (overlay-put ov 'shipit-code-block t)))))
+                          (setq block-start (line-beginning-position))))
+                    ;; Not in a code block
+                    (when block-start
+                      ;; End of block - create overlay from block-start to end of last code line
+                      (save-excursion
+                        (goto-char pos)
+                        ;; Go back to end of previous line (last line of code block)
+                        (forward-line -1)
+                        (let ((block-end (line-end-position)))
+                          ;; Only create if non-empty
+                          (when (< block-start block-end)
+                            (setq found-indented (1+ found-indented))
+                            (shipit--mark-code-block block-start block-end code-block-bg))))
+                      (setq block-start nil)))))
+              (setq pos (next-single-property-change pos 'font-lock-face nil end)))
+            ;; Handle block that extends to end of region
+            (when (and block-start (< block-start end))
+              (setq found-indented (1+ found-indented))
+              (shipit--mark-code-block block-start end code-block-bg)))
           ;; Third pass: org-mode source blocks (#+begin_src LANG / #+end_src)
           (goto-char start)
           (while (re-search-forward
@@ -4628,12 +4781,8 @@ blends with the surrounding prose."
                   (when (< content-start content-end)
                     (shipit--apply-code-block-syntax-highlighting
                      content-start content-end language))
-                  (when bg-color
-                    (let ((ov (make-overlay block-start block-end)))
-                      (overlay-put ov 'priority 15)
-                      (overlay-put ov 'face `(:background ,bg-color :extend t))
-                      (overlay-put ov 'shipit-code-block t)
-                      (overlay-put ov 'shipit-nested-code-block is-nested)))))))
+                  (overlay-put (shipit--mark-code-block block-start block-end bg-color 15)
+                               'shipit-nested-code-block is-nested)))))
           (shipit--debug-log "CODE-BLOCK-BG: Found %d fenced, %d indented, %d org blocks"
                              found-fenced found-indented found-org)
           ;; Inline-code styling (single backticks).  Runs after the

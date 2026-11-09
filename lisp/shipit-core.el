@@ -1637,6 +1637,15 @@ syntax highlighting."
   :type 'boolean
   :group 'shipit)
 
+(defcustom shipit-code-block-copy-functions '(shipit-code-block-pulse)
+  "Functions that run after a copy of the code of a code block.
+Each function gets two arguments: the start and the end of the lines of
+code that were copied.  The lines of the fences are not in that region.
+The default flashes the region with Emacs's pulse, as `M-w' flashes a
+region in many configurations."
+  :type 'hook
+  :group 'shipit)
+
 (defcustom shipit-inline-comment-icon-style 'emoji
   "Style of icons to use for inline comments.
 emoji: Use emoji icons (💬 for comments, 📋 for reviews)

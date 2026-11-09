@@ -748,5 +748,51 @@ THEN the one registered last runs."
     (shipit-dwim)
     (should (equal '(new) ran))))
 
+(defmacro test-pr-actions--in-code-block (&rest body)
+  "Run BODY on a line of a code block, with shipit's handler of code blocks alone.
+Nothing is copied yet."
+  (declare (indent 0))
+  `(let* ((code-block (or (assq 'code-block shipit--dwim-handlers)
+                          (error "No dwim handler of code blocks")))
+          (shipit--dwim-handlers (list code-block))
+          (kill-ring nil)
+          (interprogram-cut-function nil))
+     (with-temp-buffer
+       (insert "   Brew it:\n   ```sh\n   brew --cups 2\n   ```\n")
+       (shipit--apply-code-block-backgrounds-in-region (point-min) (point-max))
+       (goto-char (point-min))
+       (search-forward "--cups")
+       ,@body)))
+
+(ert-deftest test-shipit-dwim-in-a-code-block-runs-another-action-that-is-picked ()
+  "GIVEN a line of a code block, where another handler offers a menu of two
+actions
+WHEN `shipit-dwim' runs and the user picks the second action of that menu
+THEN the menu offers Copy code block first, AND the handler gets the
+action picked, AND nothing is copied."
+  (test-pr-actions--in-code-block
+    (let* ((picked nil)
+           (offered nil)
+           (completing-read-function
+            (lambda (_prompt collection &rest _)
+              (setq offered (all-completions "" collection))
+              "Drink")))
+      (shipit-register-dwim-handler
+       'test-menu (lambda () t)
+       (lambda () (setq picked (completing-read "Action: " '("Eat" "Drink") nil t))))
+      (shipit-dwim)
+      (should (equal '("Copy code block" "Eat" "Drink") offered))
+      (should (equal "Drink" picked))
+      (should-not kill-ring))))
+
+(ert-deftest test-shipit-dwim-in-a-code-block-copies-when-nothing-else-is-offered ()
+  "GIVEN a line of a code block, where no other handler offers anything
+WHEN `shipit-dwim' runs
+THEN the code of the block is copied, without asking."
+  (test-pr-actions--in-code-block
+    (let ((completing-read-function (lambda (&rest _) (error "Asked"))))
+      (shipit-dwim)
+      (should (equal "brew --cups 2\n" (current-kill 0))))))
+
 (provide 'test-shipit-pr-actions)
 ;;; test-shipit-pr-actions.el ends here

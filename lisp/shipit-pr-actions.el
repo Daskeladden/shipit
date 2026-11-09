@@ -1501,21 +1501,21 @@ there too does not win just because its file loaded later."
     (setq shipit--dwim-handlers
           (append before (list handler) (nthcdr (length before) others)))))
 
+(defun shipit--dwim-claims-p (handler)
+  "Non-nil when HANDLER, an entry of `shipit--dwim-handlers', claims point."
+  (funcall (alist-get 'matcher (cdr handler))))
+
+(defun shipit--dwim-run (handler)
+  "Run the action of HANDLER, an entry of `shipit--dwim-handlers'."
+  (shipit--debug-log "DWIM: Handler '%s' claimed context" (car handler))
+  (funcall (alist-get 'action (cdr handler))))
+
 (defun shipit-dwim ()
   "Execute the first handler that claims the current context."
   (interactive)
-  (let ((handler-found nil))
-    (dolist (handler shipit--dwim-handlers)
-      (unless handler-found
-        (let* ((name (car handler))
-               (spec (cdr handler))
-               (matcher (cdr (assq 'matcher spec)))
-               (action (cdr (assq 'action spec))))
-          (when (funcall matcher)
-            (shipit--debug-log "DWIM: Handler '%s' claimed context" name)
-            (funcall action)
-            (setq handler-found t)))))
-    (unless handler-found
+  (let ((handler (seq-find #'shipit--dwim-claims-p shipit--dwim-handlers)))
+    (if handler
+        (shipit--dwim-run handler)
       (when (fboundp 'shipit--debug-log)
         (shipit--debug-log "DWIM: No handler matched. Registered: %s Section: %s"
                            (mapcar #'car shipit--dwim-handlers)
@@ -1523,6 +1523,56 @@ there too does not win just because its file loaded later."
                              (let ((s (magit-current-section)))
                                (when s (oref s type))))))
       (error "No dwim handler claimed current context - add a handler for this case"))))
+
+;;; The code block at point
+
+(defconst shipit--copy-code-block-choice "Copy code block"
+  "The choice of a dwim menu that copies the code block at point.")
+
+(defun shipit--dwim-handler-after (name)
+  "The first handler after the one called NAME that claims point, or nil."
+  (seq-find #'shipit--dwim-claims-p
+            (cdr (memq (assq name shipit--dwim-handlers) shipit--dwim-handlers))))
+
+(defun shipit--offering-code-block-copy (read)
+  "READ, a `completing-read-function', with a choice to copy the code block.
+The choice comes first, and only in the first menu.  When the user
+picks it, the code is copied and `shipit--code-block-copied' is thrown,
+so the menu's own handler does not get the choice."
+  (let ((offered nil))
+    (lambda (prompt collection &optional predicate &rest args)
+      (if offered
+          (apply read prompt collection predicate args)
+        (setq offered t)
+        (let ((choice (apply read prompt
+                             (cons shipit--copy-code-block-choice
+                                   (all-completions "" collection predicate))
+                             nil args)))
+          (when (equal choice shipit--copy-code-block-choice)
+            (shipit-copy-code-block)
+            (throw 'shipit--code-block-copied nil))
+          choice)))))
+
+(defun shipit--code-block-dwim ()
+  "Offer to copy the code block at point before what point offers otherwise.
+The offer is the first choice of the menu of the next handler that
+claims point.  When no other handler claims point, the code is copied
+without asking."
+  (let ((next (shipit--dwim-handler-after 'code-block)))
+    (if (not next)
+        (shipit-copy-code-block)
+      (catch 'shipit--code-block-copied
+        (let ((completing-read-function
+               (shipit--offering-code-block-copy completing-read-function)))
+          (shipit--dwim-run next))))))
+
+;; Above all others: a code block stands inside a description or a
+;; comment, whose handlers claim it too.
+(shipit-register-dwim-handler
+ 'code-block
+ (lambda () (shipit--code-block-at (point)))
+ #'shipit--code-block-dwim
+ 100)
 
 ;; Register all dwim handlers with mutually exclusive matchers
 (shipit-register-dwim-handler

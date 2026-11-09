@@ -3670,5 +3670,108 @@ THEN the text in the block shows the link and the list, AND no tag."
             (should-not (string-match-p "<a \\|<li>\\|<ul>" text)))
         (kill-buffer)))))
 
+;;; Copying a code block
+
+(defun test-shipit-render--code-copied-at (text)
+  "Draw the code blocks of this buffer, copy the one at TEXT; what is copied."
+  (let ((kill-ring nil)
+        (interprogram-cut-function nil))
+    (shipit--apply-code-block-backgrounds-in-region (point-min) (point-max))
+    (goto-char (point-min))
+    (search-forward text)
+    (goto-char (match-beginning 0))
+    (shipit-copy-code-block)
+    (current-kill 0)))
+
+(ert-deftest test-shipit-render-an-org-source-block-is-copied-without-its-begin-and-end ()
+  "GIVEN a comment that holds an org source block, indented by the page
+WHEN the code of the block is copied on a line of it
+THEN the lines of begin_src and end_src are left out, AND the indent of
+the page is too, AND the code keeps its own indent."
+  (with-temp-buffer
+    (insert "   Run it:\n   #+begin_src sh\n   echo hi\n     echo there\n   #+end_src\n")
+    (should (equal "echo hi\n  echo there\n"
+                   (test-shipit-render--code-copied-at "echo there")))))
+
+(ert-deftest test-shipit-render-an-indented-code-block-is-copied-without-its-indent ()
+  "GIVEN a comment that holds a code block written with an indent of four,
+which markdown-mode shows in its face for code, AND no background for
+code blocks
+WHEN the code of the block is copied on a line of it
+THEN the indent of the page and the four of the block are left out, AND
+the code keeps its own indent."
+  (let ((shipit-code-block-background nil))
+    (with-temp-buffer
+      (insert "   Run it:\n\n")
+      (insert (propertize "       x = 1\n         y = 2\n"
+                          'face 'markdown-pre-face 'font-lock-face 'markdown-pre-face))
+      (insert "\n   Done.\n")
+      (should (equal "x = 1\n  y = 2\n"
+                     (test-shipit-render--code-copied-at "y = 2"))))))
+
+(defun test-shipit-render--code-flashed-at (text)
+  "Draw the code blocks of this buffer, copy the one at TEXT; the text that flashes."
+  (let* ((flashed nil)
+         (shipit-code-block-copy-functions
+          (list (lambda (start end)
+                  (setq flashed (buffer-substring-no-properties start end))))))
+    (test-shipit-render--code-copied-at text)
+    flashed))
+
+(ert-deftest test-shipit-render-the-lines-between-begin-and-end-of-an-org-block-flash ()
+  "GIVEN a comment that holds an org source block, indented by the page
+WHEN the code of the block is copied on a line of it
+THEN the lines between begin_src and end_src flash, as the page shows them."
+  (with-temp-buffer
+    (insert "   Run it:\n   #+begin_src sh\n   echo hi\n     echo there\n   #+end_src\n")
+    (should (equal "   echo hi\n     echo there\n"
+                   (test-shipit-render--code-flashed-at "echo there")))))
+
+(ert-deftest test-shipit-render-each-line-of-an-indented-code-block-flashes ()
+  "GIVEN a comment that holds a code block written with an indent of four,
+which markdown-mode shows in its face for code
+WHEN the code of the block is copied on a line of it
+THEN each whole line of the block flashes, AND no line around it does."
+  (let ((shipit-code-block-background nil))
+    (with-temp-buffer
+      (insert "   Run it:\n\n")
+      (insert (propertize "       x = 1\n         y = 2\n"
+                          'face 'markdown-pre-face 'font-lock-face 'markdown-pre-face))
+      (insert "\n   Done.\n")
+      (should (equal "       x = 1\n         y = 2\n"
+                     (test-shipit-render--code-flashed-at "y = 2"))))))
+
+(defvar pulse-momentary-overlay)
+
+(ert-deftest test-shipit-render-the-pulse-shows-over-the-background-of-a-code-block ()
+  "GIVEN a comment that holds a fenced code block with a background color
+WHEN the code of the block is copied on a line of it
+THEN the face that shows on that line is the face of the pulse, not the
+background of the block."
+  (let ((shipit-code-block-background "#272727")
+        (pulse-momentary-overlay nil))
+    (with-temp-buffer
+      (insert "   Run it:\n   ```sh\n   echo hi\n   ```\n")
+      (test-shipit-render--code-copied-at "echo hi")
+      (should (eq 'pulse-highlight-start-face (get-char-property (point) 'face))))))
+
+(ert-deftest test-shipit-render-a-code-block-of-one-line-is-copied ()
+  "GIVEN a comment that holds a code block whose fences stand on its one line
+WHEN the code of the block is copied
+THEN the code between the fences is copied as one line."
+  (with-temp-buffer
+    (insert "   ```echo hi```\n")
+    (should (equal "echo hi\n" (test-shipit-render--code-copied-at "echo")))))
+
+(ert-deftest test-shipit-render-no-code-block-to-copy-outside-one ()
+  "GIVEN a comment with a code block
+WHEN the code of a block is copied on a line outside the block
+THEN the user is told that there is no code block there."
+  (with-temp-buffer
+    (insert "   Run it:\n   ```sh\n   echo hi\n   ```\n")
+    (shipit--apply-code-block-backgrounds-in-region (point-min) (point-max))
+    (goto-char (point-min))
+    (should-error (shipit-copy-code-block) :type 'user-error)))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

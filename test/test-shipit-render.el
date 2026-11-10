@@ -3588,6 +3588,41 @@ and `b' are the keys of the popup."
               (should-not mode-line-format))
           (kill-buffer buffer))))))
 
+(defvar test-shipit-render--frame-parameters nil
+  "The parameters of the frame that a test made last, as Emacs sets them.")
+
+(defun test-shipit-render--make-frame (parameters)
+  "Stand in for `make-frame' with PARAMETERS, in a batch Emacs with no display.
+As in `make-frame', a parameter that is given wins over one of
+`default-frame-alist', and the hooks of `after-make-frame-functions'
+run on the new frame."
+  (setq test-shipit-render--frame-parameters (append parameters default-frame-alist))
+  (run-hook-with-args 'after-make-frame-functions (selected-frame))
+  (selected-frame))
+
+(defun test-shipit-render--pad-new-frame (_frame)
+  "Give the new frame a border and a divider of 30 pixels, as spacious-padding does."
+  (push '(internal-border-width . 30) test-shipit-render--frame-parameters)
+  (push '(right-divider-width . 30) test-shipit-render--frame-parameters))
+
+(ert-deftest test-shipit-render-a-preview-popup-keeps-its-thin-border ()
+  "A preview popup keeps its thin border when the user pads each new frame."
+  ;; GIVEN a configuration that gives each new frame a border and a
+  ;;   divider of 30 pixels, as spacious-padding does
+  ;; WHEN the preview popup of a pull request, AND that of an issue, is shown
+  ;; THEN each popup has a border of 1 pixel AND no divider
+  (let ((data '((title . "Order a coffee") (state . "open") (body . "Oat milk")))
+        (default-frame-alist '((internal-border-width . 30) (right-divider-width . 30)))
+        (after-make-frame-functions (list #'test-shipit-render--pad-new-frame)))
+    (dolist (show (list (lambda () (shipit--create-pr-preview-frame 1 data))
+                        (lambda () (shipit--create-issue-preview-frame 2 data))))
+      (setq test-shipit-render--frame-parameters nil)
+      (kill-buffer (test-shipit-render--popup-in-test-frame
+                     (cl-letf (((symbol-function 'make-frame) #'test-shipit-render--make-frame))
+                       (test-shipit-render--popup-buffer (funcall show)))))
+      (should (equal 1 (alist-get 'internal-border-width test-shipit-render--frame-parameters)))
+      (should (equal 0 (alist-get 'right-divider-width test-shipit-render--frame-parameters))))))
+
 ;;; Details blocks
 
 (defun test-shipit-render--insert-with-details (body insert-text)

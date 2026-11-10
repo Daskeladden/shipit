@@ -1741,7 +1741,7 @@ before creating a new one so retries don't accumulate frames."
          (target-h (cdr size))
          (parent-w (frame-pixel-width parent))
          (parent-h (frame-pixel-height parent))
-         (child (make-frame
+         (child (shipit--make-popup-frame
                  `((parent-frame . ,parent)
                    (no-accept-focus . nil)
                    (minibuffer . nil)
@@ -6097,6 +6097,20 @@ Each popup sets its own keys after this mode."
         cursor-type nil))
 
 ;;; Child frame for PR preview
+
+(defun shipit--make-popup-frame (parameters)
+  "Make a popup of shipit, a child frame with PARAMETERS, and return it.
+The popup has no window divider, and the hooks of
+`after-make-frame-functions' do not run for it."
+  ;; Those hooks are for the frames of the user.  A package that pads
+  ;; each frame, such as spacious-padding, sets a wide border there, and
+  ;; Emacs draws the border of a child frame with the grey face
+  ;; `child-frame-border'.  The padding also adds a divider to
+  ;; `default-frame-alist'.  Corfu and posframe make their popups the
+  ;; same way.
+  (let ((after-make-frame-functions nil))
+    (make-frame (append parameters
+                        '((right-divider-width . 0) (bottom-divider-width . 0))))))
 (defun shipit--create-pr-preview-frame (pr-number pr-data &optional anchor no-focus)
   "Create a child frame displaying PR information next to the cursor.
 ANCHOR, a (WINDOW . POSITION), puts it next to POSITION of WINDOW
@@ -6164,7 +6178,7 @@ that the mouse opens.  Return the frame."
          (popup-x (if (<= (+ popup-x-right popup-width-px) (+ frame-x frame-width))
                      popup-x-right
                    popup-x-left))
-         (frame (make-frame
+         (frame (shipit--make-popup-frame
                  `((parent-frame . ,anchor-frame)
                    ,@(when no-focus '((no-focus-on-map . t)))
                    (name . "shipit-pr-preview")
@@ -6531,7 +6545,7 @@ ISSUE-NUMBER is the issue number, ISSUE-DATA is the alist from the API."
          (popup-x (if (<= (+ popup-x-right popup-width-px) (+ frame-x frame-width))
                      popup-x-right
                    popup-x-left))
-         (frame (make-frame
+         (frame (shipit--make-popup-frame
                  `((parent-frame . ,(selected-frame))
                    (name . "shipit-issue-preview")
                    (width . ,width)

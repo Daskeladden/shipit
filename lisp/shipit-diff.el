@@ -53,6 +53,7 @@
 (declare-function magit-get-current-branch "magit-git")
 (declare-function shipit--get-worktree-status "shipit-worktree")
 (declare-function shipit--find-worktree-for-pr "shipit-worktree")
+(declare-function shipit--own-worktree-p "shipit-worktree")
 (declare-function shipit--get-repo-root "shipit-worktree")
 (declare-function shipit-review-mode "shipit-review-mode")
 
@@ -416,10 +417,19 @@ is available so the user spots where we landed."
               (when (fboundp 'pulse-momentary-highlight-one-line)
                 (pulse-momentary-highlight-one-line (point))))))))))))
 
+(defun shipit--out-of-sync-choices (worktree-path pr-number)
+  "How RET can open a file of PR-NUMBER when its worktree is out of sync.
+WORKTREE-PATH is that worktree.  To sync it runs `git reset --hard',
+so it is offered only for the worktree that shipit made, not yours."
+  (append '("from worktree (may differ from PR)" "at PR revision (read-only)")
+          (when (shipit--own-worktree-p worktree-path pr-number)
+            '("sync worktree first"))))
+
 (defun shipit--open-file-from-worktree-or-repo (file-path pr-data &optional line-number)
   "Open FILE-PATH based on worktree status.
 If worktree exists and is in-sync, open from worktree (editable).
-If worktree is out-of-sync, ask user what to do.
+If worktree is out-of-sync, ask user what to do.  It offers to sync
+only the worktree that shipit made, not yours.
 If no worktree, open the file at PR head revision (read-only).
 For cross-repo PRs (different repo than current), always opens read-only.
 PR-DATA provides context for worktree lookup and status checking.
@@ -430,11 +440,11 @@ If LINE-NUMBER is provided, position cursor on that line."
          ;; For cross-repo PRs, shipit--get-worktree-status will error - treat as 'none
          (status (when (fboundp 'shipit--get-worktree-status)
                    (condition-case nil
-                       (shipit--get-worktree-status pr-number pr-head-sha pr-repo)
+                       (shipit--get-worktree-status pr-number pr-head-sha pr-repo pr-data)
                      (user-error nil))))  ; Cross-repo PRs have no local worktree
          (worktree-path (when (and (memq status '(in-sync out-of-sync))
                                    (fboundp 'shipit--find-worktree-for-pr))
-                          (shipit--find-worktree-for-pr pr-number pr-repo))))
+                          (shipit--find-worktree-for-pr pr-number pr-repo pr-data))))
     (pcase status
       ('in-sync
        ;; Worktree is in sync - open editable file from worktree with review mode
@@ -463,9 +473,7 @@ If LINE-NUMBER is provided, position cursor on that line."
        (let ((choice (completing-read
                       (format "Worktree is out of sync. Open file: "
                               file-path)
-                      '("from worktree (may differ from PR)"
-                        "at PR revision (read-only)"
-                        "sync worktree first")
+                      (shipit--out-of-sync-choices worktree-path pr-number)
                       nil t)))
          (pcase choice
            ("from worktree (may differ from PR)"
@@ -518,7 +526,7 @@ If LINE-NUMBER is provided, position cursor on that line."
        ;; For cross-repo PRs, worktree lookup will fail - that's fine
        (let ((wt-path (when (fboundp 'shipit--find-worktree-for-pr)
                         (condition-case nil
-                            (shipit--find-worktree-for-pr pr-number pr-repo)
+                            (shipit--find-worktree-for-pr pr-number pr-repo pr-data)
                           (user-error nil)))))
          (shipit--open-file-at-revision file-path pr-head-sha line-number wt-path pr-repo))))))
 

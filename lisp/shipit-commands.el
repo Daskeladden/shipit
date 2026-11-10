@@ -1382,30 +1382,42 @@ operation completes or fails."
     (shipit--create-worktree-pr-async
      pr-number branch-name pr-head-sha (current-buffer))))
 
+(defun shipit--own-pr-worktree (pr-number pr-data)
+  "The worktree that shipit made for PR-NUMBER, whose data is PR-DATA.
+Signal a `user-error' when there is none.  When PR-NUMBER has a
+worktree of yours, the error says that it is left as it is."
+  (let ((worktrees (shipit--pr-worktrees pr-number
+                                         (shipit--pr-repo-name pr-data 'base)
+                                         pr-data)))
+    (or (plist-get worktrees :own)
+        (let ((yours (plist-get worktrees :yours)))
+          (if yours
+              (user-error "PR #%d has no worktree made by shipit; your worktree %s is left as it is"
+                          pr-number (shipit--worktree-folder yours))
+            (user-error "No worktree found for PR #%d" pr-number))))))
+
 (defun shipit--sync-pr-worktree ()
-  "Sync current PR worktree with latest changes."
+  "Sync the worktree that shipit made for the current PR with its head.
+A worktree of yours is never synced: the sync runs `git reset --hard'."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
          (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
-         (branch-name (cdr (assq 'ref (cdr (assq 'head pr-data)))))
-         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
+         (branch-name (cdr (assq 'ref (cdr (assq 'head pr-data))))))
     (unless pr-number
       (user-error "No PR at point"))
 
     (shipit--validate-pr-repo pr-repo)
 
-    (unless worktree-path
-      (user-error "No worktree found for PR #%d" pr-number))
-
-    (message "Syncing worktree...")
-    (if (shipit--sync-worktree worktree-path branch-name)
-        (progn
-          (message "Worktree synced successfully")
-          ;; Refresh the shipit buffer to show updated sync status
-          (when (derived-mode-p 'shipit-mode)
-            (shipit-buffer-refresh)))
-      (message "Failed to sync worktree. See debug log for details"))))
+    (let ((worktree-path (shipit--own-pr-worktree pr-number pr-data)))
+      (message "Syncing worktree...")
+      (if (shipit--sync-worktree worktree-path branch-name)
+          (progn
+            (message "Worktree synced successfully")
+            ;; Refresh the shipit buffer to show updated sync status
+            (when (derived-mode-p 'shipit-mode)
+              (shipit-buffer-refresh)))
+        (message "Failed to sync worktree. See debug log for details")))))
 
 (defun shipit--lfs-pull-all-worktree ()
   "Pull ALL LFS files into the current PR's worktree (async).
@@ -1413,13 +1425,15 @@ Useful when you want to actually build / run the code -- the
 LFS-tracked binaries the code reads typically weren't modified
 by the PR diff, so `l' (PR-changed only) would be a no-op.
 This pulls the full LFS set into the worktree so tests and
-tooling can find every fixture / asset they expect."
+tooling can find every fixture / asset they expect.
+The worktree is the one in use: the one that shipit made, else
+yours."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
          (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name
                              (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
-         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo))
+         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo pr-data))
          (repo (shipit--get-repo-from-remote)))
     (unless pr-number
       (user-error "No PR at point"))
@@ -1445,13 +1459,15 @@ work too (`git lfs pull --include\=' uses gitattributes-style
 glob patterns: `*\=', `**\=', `?\='; comma-separated for
 multiple).  Selection uses
 `completing-read-multiple\=' so vertico / consult / ido / ivy
-all work transparently with their usual filtering UI."
+all work transparently with their usual filtering UI.
+The worktree is the one in use: the one that shipit made, else
+yours."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
          (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name
                              (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
-         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo))
+         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo pr-data))
          (repo (shipit--get-repo-from-remote)))
     (unless pr-number
       (user-error "No PR at point"))
@@ -1480,7 +1496,9 @@ an async `make-process\='.  The Worktree section shows a live
 \"\u23f3 Pulling LFS ...\" phase line via
 `shipit-worktree--progress\=' and refreshes itself when the
 fetch completes or fails -- the natural companion to
-`shipit-worktree-skip-lfs\='."
+`shipit-worktree-skip-lfs\='.
+The worktree is the one in use: the one that shipit made, else
+yours."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
          (pr-data (shipit--current-buffer-pr-data))
@@ -1488,7 +1506,7 @@ fetch completes or fails -- the natural companion to
                              (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (base-sha (cdr (assq 'sha (cdr (assq 'base pr-data)))))
          (base-branch (cdr (assq 'ref (cdr (assq 'base pr-data)))))
-         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo))
+         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo pr-data))
          (repo (shipit--get-repo-from-remote)))
     (unless pr-number
       (user-error "No PR at point"))
@@ -1528,33 +1546,32 @@ fetch completes or fails -- the natural companion to
          pr-number repo worktree-path lfs-paths (current-buffer)))))))
 
 (defun shipit--delete-pr-worktree ()
-  "Delete the worktree for current PR."
+  "Delete the worktree that shipit made for the current PR.
+A worktree of yours is never deleted."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
          (pr-data (shipit--current-buffer-pr-data))
-         (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
-         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
+         (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data))))))))
     (unless pr-number
       (user-error "No PR at point"))
 
     (shipit--validate-pr-repo pr-repo)
 
-    (unless worktree-path
-      (user-error "No worktree found for PR #%d" pr-number))
-
-    (when (y-or-n-p (format "Delete worktree at %s? " worktree-path))
-      (message "Deleting worktree...")
-      (if (shipit--delete-worktree worktree-path)
-          (message "Worktree deleted successfully")
-        (message "Failed to delete worktree. See debug log for details")))))
+    (let ((worktree-path (shipit--own-pr-worktree pr-number pr-data)))
+      (when (y-or-n-p (format "Delete worktree at %s? " worktree-path))
+        (message "Deleting worktree...")
+        (if (shipit--delete-worktree worktree-path)
+            (message "Worktree deleted successfully")
+          (message "Failed to delete worktree. See debug log for details"))))))
 
 (defun shipit--open-pr-worktree-directory ()
-  "Open worktree directory in dired or new frame."
+  "Open the directory of the worktree of the current PR in Dired.
+That is the worktree in use: the one that shipit made, else yours."
   (interactive)
   (let* ((pr-number (shipit--get-current-pr-number))
          (pr-data (shipit--current-buffer-pr-data))
          (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
-         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
+         (worktree-path (shipit--find-worktree-for-pr pr-number pr-repo pr-data)))
     (unless pr-number
       (user-error "No PR at point"))
 

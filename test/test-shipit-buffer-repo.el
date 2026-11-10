@@ -140,7 +140,6 @@ THEN it is acme/widget."
     ;; Works on the worktrees of the repository in the directory.
     shipit--lfs-pull-all-worktree shipit--lfs-pull-prompted-worktree
     shipit--lfs-pull-pr-worktree
-    shipit-worktree--refresh-body-locally shipit--insert-worktree-section
     shipit--create-worktree-pr shipit--create-worktree-pr-async
     shipit--write-pr-info-to-worktree
     shipit-magit-worktrees-insert-section shipit-magit-worktrees-browse-pr

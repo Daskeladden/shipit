@@ -92,8 +92,6 @@ shipit-pr-actions.el:shipit--notification-pr-actions
 shipit-pr-actions.el:shipit--notifications-header-actions
 shipit-pr-actions.el:shipit--update-activity-header-indicator
 shipit-pr-actions.el:shipit--update-all-section-indicators
-shipit-pr-diff.el:shipit--get-diff-line-number-at-point
-shipit-pr-diff.el:shipit--get-repo-root
 shipit-pr-github.el:shipit-editor-insert-pr-reference
 shipit-pr-github.el:shipit--get-current-user
 shipit-pr-gitlab.el:shipit-comment-gitlab--normalize-reaction

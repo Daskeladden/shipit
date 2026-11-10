@@ -147,6 +147,7 @@ Each function is called with SECTION. Return non-nil if handled.")
 
 ;; Forward declarations for worktree functions
 (declare-function shipit--get-worktree-status "shipit-worktree")
+(declare-function shipit--no-clone-text "shipit-worktree")
 (declare-function shipit--find-worktree-for-pr "shipit-worktree")
 (declare-function shipit--get-pr-info-from-worktree "shipit-worktree")
 (declare-function shipit--get-repo-root "shipit-worktree")
@@ -1896,15 +1897,18 @@ exactly as it did before."
 
 (defun shipit--insert-worktree-section (pr-data)
   "Insert Worktree section for PR-DATA in current buffer.
-Shows status (in-sync, out-of-sync, none), path, and last synced time."
+Shows status (in-sync, out-of-sync, none), path, and last synced time.
+The status is that of the worktree in use.  The path of each worktree
+of the PR, shipit's own and yours, says whose it is."
   (let* ((pr-number (cdr (assq 'number pr-data)))
          (pr-head-sha (or (cdr (assq 'sha (cdr (assq 'head pr-data)))) (error "PR data missing head SHA")))
          (pr-repo (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base pr-data)))))))
          (status (condition-case _err
-                     (shipit--get-worktree-status pr-number pr-head-sha pr-repo)
+                     (shipit--get-worktree-status pr-number pr-head-sha pr-repo pr-data)
                    (error 'different-repo)))
-         (worktree-path (when (not (eq status 'different-repo))
-                          (shipit--find-worktree-for-pr pr-number (shipit--get-repo-from-remote))))
+         (worktrees (unless (eq status 'different-repo)
+                      (shipit--pr-worktrees pr-number pr-repo pr-data)))
+         (worktree-path (shipit--worktree-in-use worktrees))
          (status-icon (shipit--get-worktree-status-icon status
                         (pcase status
                           ('none "⭕")
@@ -1933,7 +1937,7 @@ Shows status (in-sync, out-of-sync, none), path, and last synced time."
                                                            (propertize (substring pr-head-sha 0 7) 'font-lock-face 'magit-hash)
                                                            ")")
                                                  ""))))
-                        ('different-repo "PR is from a different repository"))))
+                        ('different-repo (shipit--no-clone-text pr-repo)))))
     (magit-insert-section (shipit-worktree-section)
       (let ((heading-start (point)))
         (magit-insert-heading (format "%s Worktree" status-icon))
@@ -1944,12 +1948,42 @@ Shows status (in-sync, out-of-sync, none), path, and last synced time."
                                                shipit-repo ,pr-repo)))
       (magit-insert-section-body
         (shipit--insert-worktree-body
-         pr-data status status-text worktree-path progress
+         pr-data status status-text worktrees progress
          pr-number pr-repo)))))
 
+(defun shipit--insert-worktree-path-line (label path whose)
+  "Insert the line LABEL: PATH (WHOSE) of the Worktree section.
+PATH is shown relative to the repository root.  RET on it opens it
+in Dired."
+  (let ((keymap (make-sparse-keymap)))
+    (define-key keymap (kbd "RET")
+      (lambda () (interactive)
+        (if (file-directory-p path)
+            (dired path)
+          (user-error "Worktree path not found: %s" path))))
+    (insert (format "   %s: " label)
+            (propertize (directory-file-name
+                         (file-relative-name path (shipit--get-repo-root)))
+                        'font-lock-face 'shipit-filename-face
+                        'keymap keymap)
+            (format " (%s)\n" whose))))
+
+(defun shipit--insert-worktree-paths (worktrees)
+  "Insert the path of each of WORKTREES, and whose it is.
+WORKTREES is a plist of `shipit--pr-worktrees'.  When there are two,
+the first line is that of the worktree in use."
+  (let ((own (plist-get worktrees :own))
+        (yours (plist-get worktrees :yours)))
+    (cond ((and own yours)
+           (shipit--insert-worktree-path-line "Path" own "made by shipit, in use")
+           (shipit--insert-worktree-path-line "Also" yours "your worktree"))
+          (own (shipit--insert-worktree-path-line "Path" own "made by shipit"))
+          (yours (shipit--insert-worktree-path-line "Path" yours "your worktree")))))
+
 (defun shipit--insert-worktree-body
-    (pr-data status status-text worktree-path progress pr-number pr-repo)
+    (pr-data status status-text worktrees progress pr-number pr-repo)
   "Insert the body content of the Worktree section.
+WORKTREES is a plist of `shipit--pr-worktrees', or nil.
 Extracted from `shipit--insert-worktree-section\=' so the body
 can be re-rendered in place by
 `shipit-worktree--refresh-section-in-buffer\=' without
@@ -1957,26 +1991,14 @@ disturbing the surrounding magit-section identity (which the
 section navigator relies on -- a full section recreate
 strands the old object in the parent\='s children list and
 breaks `n\=' / `p\=')."
-  (let ((body-start (point)))
+  (let ((body-start (point))
+        (worktree-path (shipit--worktree-in-use worktrees)))
     ;; Phase line is rendered by an overlay (see
     ;; `shipit-worktree--progress-render') so this body insertion
     ;; doesn't have to know whether a progress operation is in flight.
     (insert (format "   Status: %s\n" status-text))
     (when worktree-path
-      (insert "   Path: ")
-      (let ((path-start (point))
-            (relative-path (file-relative-name worktree-path (shipit--get-repo-root))))
-        (insert relative-path)
-        (let ((path-end (point)))
-          (let ((path-keymap (make-sparse-keymap)))
-            (define-key path-keymap (kbd "RET")
-              (lambda () (interactive)
-                (if (file-directory-p worktree-path)
-                    (dired worktree-path)
-                  (user-error "Worktree path not found: %s" worktree-path))))
-            (put-text-property path-start path-end 'font-lock-face 'shipit-filename-face)
-            (put-text-property path-start path-end 'keymap path-keymap)))
-        (insert "\n"))
+      (shipit--insert-worktree-paths worktrees)
       (when-let* ((pr-info (shipit--get-pr-info-from-worktree worktree-path)))
         (when-let* ((created-at (plist-get pr-info :created-at)))
           (insert "   Created: ")

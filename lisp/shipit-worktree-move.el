@@ -42,22 +42,12 @@
     (unless (equal name "HEAD")
       name)))
 
-(defun shipit-worktree-move--worktree-entry (block)
-  "The worktree BLOCK of `git worktree list --porcelain' as (DIRECTORY . BRANCH)."
-  (let ((dir nil)
-        (branch nil))
-    (dolist (line (split-string block "\n" t))
-      (cond ((string-prefix-p "worktree " line)
-             (setq dir (file-name-as-directory (substring line (length "worktree ")))))
-            ((string-prefix-p "branch refs/heads/" line)
-             (setq branch (substring line (length "branch refs/heads/"))))))
-    (cons dir branch)))
-
 (defun shipit-worktree-move--worktrees ()
   "The worktrees of the repository as (DIRECTORY . BRANCH), the main one first.
 BRANCH is nil for a worktree on no branch."
-  (mapcar #'shipit-worktree-move--worktree-entry
-          (split-string (shipit--git-output "worktree" "list" "--porcelain") "\n\n" t)))
+  (mapcar (lambda (worktree)
+            (cons (plist-get worktree :path) (plist-get worktree :branch)))
+          (shipit--git-worktrees)))
 
 (defun shipit-worktree-move-worktree-of (branch)
   "The directory of the worktree that has BRANCH checked out, or nil.

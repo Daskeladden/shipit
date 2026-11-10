@@ -4,6 +4,53 @@
 (require 'shipit-worktree)
 (require 'shipit-commands)
 
+;;; Real repositories in temporary directories
+
+(defun test-shipit-worktree--git (&rest arguments)
+  "Run git with ARGUMENTS in `default-directory'; signal when it fails."
+  (unless (zerop (apply #'call-process "git" nil nil nil arguments))
+    (error "git %s failed in %s" (string-join arguments " ") default-directory)))
+
+(defun test-shipit-worktree--in-a-new-directory (function)
+  "Call FUNCTION in a new directory that is in no repository; remove it after.
+Git reads no settings of whoever runs the tests and looks for no
+repository above the directory.  Shipit remembers nothing of the
+directories of earlier tests."
+  (let* ((directory (file-name-as-directory
+                     (file-truename (make-temp-file "shipit-worktree-test-" t))))
+         (default-directory directory)
+         (process-environment
+          (append (list "GIT_CONFIG_GLOBAL=/dev/null" "GIT_CONFIG_NOSYSTEM=1"
+                        (concat "GIT_CEILING_DIRECTORIES="
+                                (directory-file-name
+                                 (file-name-directory (directory-file-name directory)))))
+                  process-environment))
+         (shipit--repo-from-remote-cache (make-hash-table :test 'equal))
+         (shipit--repo-root-cache (make-hash-table :test 'equal)))
+    (unwind-protect
+        (funcall function)
+      (delete-directory directory t))))
+
+(defun test-shipit-worktree--make-clone-of (repo)
+  "Make `default-directory' a repository whose remote origin names REPO at GitHub."
+  (test-shipit-worktree--git "init" "-q")
+  (test-shipit-worktree--git "remote" "add" "origin"
+                             (format "https://github.com/%s.git" repo)))
+
+(defmacro test-shipit-worktree--in-a-clone-of (repo &rest body)
+  "Run BODY in a new repository whose remote origin names REPO at GitHub.
+See `test-shipit-worktree--in-a-new-directory'."
+  (declare (indent 1))
+  `(test-shipit-worktree--in-a-new-directory
+    (lambda ()
+      (test-shipit-worktree--make-clone-of ,repo)
+      ,@body)))
+
+(defun test-shipit-worktree--no-clone-said (repo)
+  "What shipit says in `default-directory', which is no clone of REPO."
+  (format "%s is no clone of %s, so this pull request has no worktree here"
+          (abbreviate-file-name default-directory) repo))
+
 (ert-deftest shipit--get-worktree-path-test ()
   "Test constructing worktree path from PR number and branch."
   (let ((shipit-worktree-directory ".worktrees/"))
@@ -60,8 +107,7 @@ directory\"."
   (let ((shipit-worktree-directory ".worktrees/")
         (pr-number 123)
         (pr-head-sha "abc1234567890"))
-    (cl-letf (((symbol-function 'shipit--get-current-repo)
-               (lambda () "owner/repo")))
+    (test-shipit-worktree--in-a-clone-of "owner/repo"
       ;; Should return 'none if no worktree exists
       (should (eq 'none (shipit--get-worktree-status pr-number pr-head-sha "owner/repo"))))))
 
@@ -82,8 +128,7 @@ directory\"."
       (require 'shipit-buffer)
       (shipit-mode)
       ;; Mock section insertion - just verify it doesn't error and produces some output
-      (cl-letf (((symbol-function 'shipit--get-current-repo)
-                 (lambda () "owner/repo")))
+      (test-shipit-worktree--in-a-clone-of "owner/repo"
         (let ((inhibit-read-only t))
           (condition-case err
               (progn
@@ -116,32 +161,36 @@ directory\"."
   (should (or (eq t (shipit--open-worktree-directory "/fake/path"))
               (eq nil (shipit--open-worktree-directory "/fake/path")))))
 
-(ert-deftest shipit--get-current-repo-test ()
-  "Test getting current repository from git remote."
-  (let ((result (shipit--get-current-repo)))
-    (should (or (null result)
-                (and (stringp result)
-                     (string-match-p ".+/.+" result))))))
-
 (ert-deftest shipit--validate-pr-repo-matching-test ()
-  "Test validation when PR repo matches current repo."
-  (cl-letf (((symbol-function 'shipit--get-current-repo)
-             (lambda () "owner/repo")))
+  "A clone of the repository of a pull request validates."
+  ;; GIVEN a repository whose remote origin names owner/repo
+  ;; WHEN a pull request of owner/repo is validated there
+  ;; THEN it passes
+  (test-shipit-worktree--in-a-clone-of "owner/repo"
     (should (eq t (shipit--validate-pr-repo "owner/repo")))))
 
 (ert-deftest shipit--validate-pr-repo-mismatch-test ()
-  "Test validation raises error when PR repo doesn't match current repo."
-  (cl-letf (((symbol-function 'shipit--get-current-repo)
-             (lambda () "owner/repo")))
-    (should-error (shipit--validate-pr-repo "different/repo")
-                  :type 'user-error)))
+  "A clone of another repository does not validate."
+  ;; GIVEN a repository whose remote origin names owner/repo
+  ;; WHEN a pull request of different/repo is validated there
+  ;; THEN a user error says that the directory is no clone of
+  ;;   different/repo, so the pull request has no worktree here
+  (test-shipit-worktree--in-a-clone-of "owner/repo"
+    (should (equal (test-shipit-worktree--no-clone-said "different/repo")
+                   (cadr (should-error (shipit--validate-pr-repo "different/repo")
+                                       :type 'user-error))))))
 
 (ert-deftest shipit--validate-pr-repo-no-current-test ()
-  "Test validation raises error when current repo cannot be determined."
-  (cl-letf (((symbol-function 'shipit--get-current-repo)
-             (lambda () nil)))
-    (should-error (shipit--validate-pr-repo "owner/repo")
-                  :type 'user-error)))
+  "A directory that is in no repository does not validate."
+  ;; GIVEN a directory that is in no repository
+  ;; WHEN a pull request of owner/repo is validated there
+  ;; THEN a user error says that the directory is no clone of
+  ;;   owner/repo, so the pull request has no worktree here
+  (test-shipit-worktree--in-a-new-directory
+   (lambda ()
+     (should (equal (test-shipit-worktree--no-clone-said "owner/repo")
+                    (cadr (should-error (shipit--validate-pr-repo "owner/repo")
+                                        :type 'user-error)))))))
 
 (ert-deftest shipit--worktree-section-text-properties-test ()
   "Test that Worktree section sets proper text properties for DWIM handler."
@@ -152,8 +201,7 @@ directory\"."
     (with-temp-buffer
       (require 'shipit-buffer)
       (shipit-mode)
-      (cl-letf (((symbol-function 'shipit--get-current-repo)
-                 (lambda () "owner/repo")))
+      (test-shipit-worktree--in-a-clone-of "owner/repo"
         (let ((inhibit-read-only t))
           (condition-case err
               (progn
@@ -184,8 +232,7 @@ directory\"."
                       (base (repo (full_name . "owner/repo")))))
            (inhibit-read-only t)
            (shipit-worktree-directory ".worktrees/"))
-      (cl-letf (((symbol-function 'shipit--get-current-repo)
-                 (lambda () "owner/repo")))
+      (test-shipit-worktree--in-a-clone-of "owner/repo"
         (condition-case err
             (progn
               (shipit--insert-worktree-section pr-data)
@@ -225,9 +272,9 @@ directory\"."
           (with-temp-file temp-file
             (insert "test content"))
           (cl-letf (((symbol-function 'shipit--get-worktree-status)
-                     (lambda (_ _ _) 'in-sync))
+                     (lambda (_ _ _ &optional _) 'in-sync))
                     ((symbol-function 'shipit--find-worktree-for-pr)
-                     (lambda (_ _) temp-worktree))
+                     (lambda (_ _ &optional _) temp-worktree))
                     ((symbol-function 'find-file)
                      (lambda (path)
                        (setq find-file-called t)
@@ -251,9 +298,9 @@ directory\"."
     (make-directory (expand-file-name ".git" temp-worktree))
     (unwind-protect
         (cl-letf (((symbol-function 'shipit--get-worktree-status)
-                   (lambda (_ _ _) 'out-of-sync))
+                   (lambda (_ _ _ &optional _) 'out-of-sync))
                   ((symbol-function 'shipit--find-worktree-for-pr)
-                   (lambda (_ _) temp-worktree))
+                   (lambda (_ _ &optional _) temp-worktree))
                   ((symbol-function 'shipit--revision-exists-locally-p)
                    (lambda (_ _) t))  ; Mock revision check to return true
                   ((symbol-function 'completing-read)
@@ -279,9 +326,9 @@ directory\"."
          (temp-worktree (make-temp-file "shipit-worktree-test-" t)))
     (unwind-protect
         (cl-letf (((symbol-function 'shipit--get-worktree-status)
-                   (lambda (_ _ _) 'in-sync))
+                   (lambda (_ _ _ &optional _) 'in-sync))
                   ((symbol-function 'shipit--find-worktree-for-pr)
-                   (lambda (_ _) temp-worktree)))
+                   (lambda (_ _ &optional _) temp-worktree)))
           (should-error (shipit--open-file-from-worktree-or-repo file-path pr-data)
                         :type 'user-error))
       (delete-directory temp-worktree t))))
@@ -295,7 +342,7 @@ directory\"."
          (magit-find-file-called nil)
          (magit-find-file-args nil))
     (cl-letf (((symbol-function 'shipit--get-worktree-status)
-               (lambda (_ _ _) 'none))
+               (lambda (_ _ _ &optional _) 'none))
               ((symbol-function 'shipit--revision-exists-locally-p)
                (lambda (_ _) t))  ; Mock revision check to return true
               ((symbol-function 'magit-find-file)
@@ -329,9 +376,9 @@ directory\"."
             (put-text-property (point-min) (point-max) 'shipit-pr-data pr-data)
             (goto-char (point-min))
             (cl-letf (((symbol-function 'shipit--get-worktree-status)
-                       (lambda (_ _ _) 'in-sync))
+                       (lambda (_ _ _ &optional _) 'in-sync))
                       ((symbol-function 'shipit--find-worktree-for-pr)
-                       (lambda (_ _) temp-worktree))
+                       (lambda (_ _ &optional _) temp-worktree))
                       ((symbol-function 'find-file)
                        (lambda (path)
                          (setq find-file-called t)

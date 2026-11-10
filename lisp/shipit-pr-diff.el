@@ -96,6 +96,14 @@
 (declare-function shipit-pr--backend-id "shipit-pr-backends")
 (declare-function shipit--find-worktree-for-pr "shipit-worktree")
 (declare-function shipit--worktree-in-sync-p "shipit-worktree")
+(declare-function shipit--pr-worktrees "shipit-worktree")
+(declare-function shipit--own-worktree-p "shipit-worktree")
+(declare-function shipit--checkout-on-pr-branch-p "shipit-worktree")
+(declare-function shipit--get-repo-root "shipit-worktree")
+(declare-function shipit-worktree--progress-get "shipit-worktree")
+(declare-function shipit--create-worktree-pr-async "shipit-worktree")
+(declare-function shipit--goto-and-recenter-line "shipit-diff")
+(declare-function shipit--get-diff-line-number-at-point "shipit-diff")
 (declare-function shipit-dwim "shipit-pr-actions")
 (declare-function shipit-review-mode "shipit-review-mode")
 (declare-function shipit "shipit")
@@ -1974,11 +1982,14 @@ For PR files, shows PR diff with comments."
                                (format "%s~" short-sha)
                                short-sha))))
 
-(defun shipit--should-use-review-mode-p (pr-number pr-repo pr-head-sha)
+(defun shipit--should-use-review-mode-p (pr-number pr-repo pr-head-sha
+                                                    &optional pr-data)
   "Check if we should use review mode for this PR.
 Returns t if:
 1. A worktree exists for this PR
-2. The worktree is in-sync with current PR head"
+2. The worktree is in-sync with current PR head
+The worktree is the one in use, which is yours only with PR-DATA,
+see `shipit--find-worktree-for-pr'."
   (cond
    ((not (and (fboundp 'shipit--find-worktree-for-pr)
               (fboundp 'shipit--worktree-in-sync-p)))
@@ -1993,7 +2004,7 @@ Returns t if:
      pr-number (type-of pr-number))
     nil)
    (t
-    (let ((worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
+    (let ((worktree-path (shipit--find-worktree-for-pr pr-number pr-repo pr-data)))
       (shipit--debug-log
        "review-mode? pr=%s repo=%s head=%s worktree=%s"
        pr-number pr-repo
@@ -2002,12 +2013,16 @@ Returns t if:
       (and worktree-path
            (shipit--worktree-in-sync-p worktree-path pr-head-sha))))))
 
-(defun shipit--open-file-in-review-mode (file-path worktree-path pr-number pr-repo pr-head-sha pr-data)
+(defun shipit--open-file-in-review-mode (file-path worktree-path pr-number
+                                                   pr-repo pr-head-sha pr-data
+                                                   &optional line-number)
   "Open FILE-PATH from WORKTREE-PATH in review mode with PR context.
 FILE-PATH is relative to repo root.
 WORKTREE-PATH is absolute path to worktree directory.
 PR-NUMBER, PR-REPO, PR-HEAD-SHA are PR identifiers.
-PR-DATA is the full PR data object."
+PR-DATA is the full PR data object.
+LINE-NUMBER, when given, is the line where the window of the file
+puts point."
   (let ((full-file-path (expand-file-name file-path worktree-path)))
     (unless (file-exists-p full-file-path)
       (user-error "File not found in worktree: %s" full-file-path))
@@ -2036,7 +2051,11 @@ PR-DATA is the full PR data object."
           (shipit--debug-log "Opened file %s in review mode from worktree (base-sha=%s head-sha=%s)"
                              file-path
                              (substring (or shipit-review--base-sha "unknown") 0 7)
-                             (substring pr-head-sha 0 7))))
+                             (substring pr-head-sha 0 7)))
+        ;; Review mode selects the window of its legend, so point must
+        ;; move in the window that shows the file, not only in the buffer.
+        (when line-number
+          (shipit--goto-and-recenter-line line-number)))
       buf)))
 
 (defun shipit--head-sha-in (dir)
@@ -2050,48 +2069,279 @@ PR-DATA is the full PR data object."
           (and (not (string-empty-p sha)) sha))
       (error nil))))
 
-(defun shipit--pr-worktree-at-point ()
-  "Return the worktree of the pull request at point, or nil if it has none.
-The PR comes from the text properties at point, falling back to the
-buffer\='s own PR where a line did not inherit them."
+(defun shipit--pr-at-point ()
+  "Return the pull request at point, as a plist.
+The keys are :number, :repo, :head-sha, :branch and :data.  Each
+comes from the text properties at point, falling back to the PR
+of the buffer where a line did not inherit them."
   (let* ((buf-pr (bound-and-true-p shipit-buffer-pr-data))
-         (pr-number (or (get-text-property (point) 'shipit-pr-number)
-                        (cdr (assq 'number buf-pr))
-                        (bound-and-true-p shipit-buffer-pr-number)))
-         (repo (or (get-text-property (point) 'shipit-repo)
-                   (bound-and-true-p shipit-buffer-repo)))
-         (worktree (and pr-number
-                        (fboundp 'shipit--find-worktree-for-pr)
-                        (shipit--find-worktree-for-pr pr-number repo))))
-    (and worktree (file-directory-p worktree) worktree)))
+         (data (or (get-text-property (point) 'shipit-pr-data) buf-pr)))
+    (list :number (or (get-text-property (point) 'shipit-pr-number)
+                      (cdr (assq 'number buf-pr))
+                      (bound-and-true-p shipit-buffer-pr-number))
+          :repo (or (get-text-property (point) 'shipit-repo)
+                    (cdr (assq 'full_name
+                               (cdr (assq 'repo (cdr (assq 'base buf-pr))))))
+                    (bound-and-true-p shipit-buffer-repo))
+          :head-sha (or (get-text-property (point) 'shipit-pr-head-sha)
+                        (cdr (assq 'sha (cdr (assq 'head buf-pr)))))
+          :branch (cdr (assq 'ref (cdr (assq 'head data))))
+          :data data)))
+
+(defun shipit--pr-worktree (pr)
+  "Return the worktree in use of PR, or nil if it has none.
+That is shipit's own, else yours.  PR is a plist from
+`shipit--pr-at-point'."
+  (and (plist-get pr :number)
+       (shipit--find-worktree-for-pr (plist-get pr :number) (plist-get pr :repo)
+                                     (plist-get pr :data))))
+
+(defun shipit--pr-worktree-at-head-p (pr)
+  "Return non-nil when PR has a worktree at its head and its data is known.
+The worktree is the one in use.  PR is a plist from
+`shipit--pr-at-point'."
+  (and (plist-get pr :number)
+       (plist-get pr :head-sha)
+       (plist-get pr :data)
+       (shipit--should-use-review-mode-p (plist-get pr :number)
+                                         (plist-get pr :repo)
+                                         (plist-get pr :head-sha)
+                                         (plist-get pr :data))))
+
+(defun shipit--open-pr-file-in-review-mode (pr file-path &optional line-number)
+  "Open FILE-PATH from the worktree of PR in review mode, on LINE-NUMBER.
+PR is a plist from `shipit--pr-at-point'.  Signal an error when PR
+has no worktree."
+  (shipit--open-file-in-review-mode
+   file-path
+   (or (shipit--pr-worktree pr)
+       (error "PR #%s has no worktree" (plist-get pr :number)))
+   (plist-get pr :number) (plist-get pr :repo) (plist-get pr :head-sha)
+   (plist-get pr :data) line-number))
+
+(defun shipit--pr-worktree-being-made-p (pr)
+  "Return non-nil while the worktree of PR is being fetched or created.
+PR is a plist from `shipit--pr-at-point'."
+  (let ((progress (shipit-worktree--progress-get (plist-get pr :repo)
+                                                 (plist-get pr :number))))
+    (memq (plist-get progress :phase) '(fetching creating))))
+
+(defun shipit--clone-off-pr-head-p (pr-head-sha)
+  "Return non-nil when the HEAD of the clone is known and is not PR-HEAD-SHA."
+  (let ((clone-head (shipit--head-sha-in (shipit--get-repo-root))))
+    (and clone-head (not (string-equal clone-head pr-head-sha)))))
+
+(defvar shipit--pr-own-worktree-chosen (make-hash-table :test 'equal)
+  "Where C-RET opens the files of a pull request from, as chosen before.
+The key is the list of the repository and the number of the pull
+request.  The choices last until Emacs quits.
+
+The value is `your-worktree' when you chose your worktree over a
+review worktree.  C-RET then asks no more for that pull request.
+
+It is `checkout' when you said no to a new worktree while the main
+checkout had the branch of the pull request.  C-RET then asks no
+more, but only while the main checkout has that branch.")
+
+(defun shipit--pr-choice-key (pr)
+  "The key of PR in `shipit--pr-own-worktree-chosen'.
+PR is a plist from `shipit--pr-at-point'."
+  (list (plist-get pr :repo) (plist-get pr :number)))
+
+(defun shipit--pr-worktree-chosen-p (pr choice)
+  "Whether CHOICE was made before for PR.
+CHOICE is `your-worktree' or `checkout'.  PR is a plist from
+`shipit--pr-at-point'."
+  (eq choice (gethash (shipit--pr-choice-key pr) shipit--pr-own-worktree-chosen)))
+
+(defun shipit--remember-pr-worktree-choice (pr choice)
+  "Remember CHOICE for PR, `your-worktree' or `checkout'.
+PR is a plist from `shipit--pr-at-point'."
+  (puthash (shipit--pr-choice-key pr) choice shipit--pr-own-worktree-chosen))
+
+(defun shipit--worktree-offer-applies-p (pr)
+  "Return non-nil when C-RET offers to make a worktree for PR.
+That is when the number, the head and the branch of PR are known,
+PR has no worktree, neither shipit's own nor yours, and the
+directory is a clone of the repository of PR that is not at its
+head.  PR is a plist from `shipit--pr-at-point'."
+  (and (integerp (plist-get pr :number))
+       (plist-get pr :head-sha)
+       (plist-get pr :branch)
+       (not (shipit--pr-worktree pr))
+       (shipit--clone-off-pr-head-p (plist-get pr :head-sha))
+       (shipit--local-repo-matches-p (plist-get pr :repo))))
+
+(defun shipit--checkout-chosen-p (pr)
+  "Whether you said no to a worktree for PR on its branch, and are still on it.
+That is when the main checkout had the branch of PR when you said no,
+and still has it.  PR is a plist from `shipit--pr-at-point'."
+  (and (shipit--pr-worktree-chosen-p pr 'checkout)
+       (shipit--checkout-on-pr-branch-p (plist-get pr :data))))
+
+(defun shipit--worktree-offer-accepted-p (pr)
+  "Ask whether to make a worktree for PR, when the offer applies.
+Return non-nil when the answer is yes.  A no is remembered when the
+main checkout has the branch of PR.  Then the question does not come
+again for PR while the main checkout has that branch.  PR is a plist
+from `shipit--pr-at-point'."
+  (when (and (not (shipit--checkout-chosen-p pr))
+             (shipit--worktree-offer-applies-p pr))
+    (let ((yes (y-or-n-p (format "No worktree for PR #%d. Create one for review mode? "
+                                 (plist-get pr :number)))))
+      (when (and (not yes) (shipit--checkout-on-pr-branch-p (plist-get pr :data)))
+        (shipit--remember-pr-worktree-choice pr 'checkout))
+      yes)))
+
+(defun shipit--your-worktree-off-pr-head-p (pr)
+  "Return non-nil when PR has only your worktree, and it is not at its head.
+PR is a plist from `shipit--pr-at-point'."
+  (when (and (plist-get pr :number) (plist-get pr :head-sha) (plist-get pr :data))
+    (let* ((worktrees (shipit--pr-worktrees (plist-get pr :number) (plist-get pr :repo)
+                                            (plist-get pr :data)))
+           (yours (plist-get worktrees :yours)))
+      (and yours
+           (not (plist-get worktrees :own))
+           (not (shipit--worktree-in-sync-p yours (plist-get pr :head-sha)))))))
+
+(defconst shipit--which-worktree-choices
+  '((?w "your worktree" "Open the file from your worktree, as it is.")
+    (?r "a review worktree"
+        "Make a worktree at the head of the PR, and open the file from it in review mode."))
+  "What C-RET offers when your worktree is not at the head of the PR.")
+
+(defun shipit--choose-worktree (pr)
+  "Choose where to open the files of PR from, when your worktree is in use.
+Ask, unless your worktree was chosen before for PR.  Return
+`your-worktree', `review-worktree', or nil when nothing was chosen.
+PR is a plist from `shipit--pr-at-point'."
+  (if (shipit--pr-worktree-chosen-p pr 'your-worktree)
+      'your-worktree
+    (pcase (car (read-multiple-choice
+                 (format "Your worktree %s is not at the head of PR #%d. Open the file from"
+                         (shipit--worktree-folder (shipit--pr-worktree pr))
+                         (plist-get pr :number))
+                 shipit--which-worktree-choices))
+      (?w (shipit--remember-pr-worktree-choice pr 'your-worktree)
+          'your-worktree)
+      (?r 'review-worktree))))
+
+(defun shipit--open-file-from-your-worktree-or-new (pr file-path line-number)
+  "Open FILE-PATH of PR from your worktree or a new one, on LINE-NUMBER.
+Which one is asked, see `shipit--choose-worktree'.  Your worktree
+gives the plain file.  A review worktree is made in the background
+by `shipit--make-pr-worktree-then-open', and your worktree is left
+as it is.  PR is a plist from `shipit--pr-at-point'."
+  (pcase (shipit--choose-worktree pr)
+    ('your-worktree (shipit--open-file-from-tree file-path pr line-number))
+    ('review-worktree (shipit--make-pr-worktree-then-open pr file-path line-number))))
+
+(defun shipit--open-file-in-new-worktree (page pr file-path line-number)
+  "Open FILE-PATH from the new worktree of PR, when PAGE is still shown.
+PAGE is the buffer where C-RET was pressed.  The file opens in review
+mode, on LINE-NUMBER, in the selected window.  When that window shows
+another buffer, nothing opens and the echo area says that the worktree
+is ready.  PR is a plist from `shipit--pr-at-point'."
+  (if (eq (window-buffer (selected-window)) page)
+      (condition-case err
+          (shipit--open-pr-file-in-review-mode pr file-path line-number)
+        ;; This runs when the worktree is ready, long after C-RET, so
+        ;; the reason why the file cannot open is shown here.
+        (user-error (message "%s" (error-message-string err))))
+    (message "Worktree for PR #%d is ready" (plist-get pr :number))))
+
+(defun shipit--make-pr-worktree-then-open (pr file-path line-number)
+  "Make the worktree of PR in the background, then open FILE-PATH from it.
+The file opens in review mode on LINE-NUMBER when the worktree is
+ready.  The echo area says when the worktree cannot be made.
+PR is a plist from `shipit--pr-at-point'."
+  (let ((page (current-buffer))
+        (number (plist-get pr :number)))
+    (shipit--create-worktree-pr-async
+     number (plist-get pr :branch) (plist-get pr :head-sha) page
+     (lambda ()
+       (shipit--open-file-in-new-worktree page pr file-path line-number))
+     (lambda (_exit stderr-text)
+       (message "Could not make the worktree for PR #%d: %s"
+                number (string-trim (or stderr-text "")))))))
 
 (defun shipit--open-file-from-worktree-at-point ()
-  "Open the file at point from the filesystem, on the diff\='s current line.
-Uses plain `find-file\=' so LSP, xref and flycheck attach normally.
+  "Open the file at point, on the line of the diff at point.
 
-The file comes from the pull request\='s worktree when it has one:
-that worktree sits on the PR head, so the file is the version the
-diff describes.  Without one it comes from the repository root, which
-only matches when the clone is checked out on the PR branch.
+While the worktree of the pull request is being made, C-RET says so
+and opens nothing.
+
+The worktree in use is the one that shipit made, else yours: one
+that you made, anywhere, which has the branch of the pull request
+checked out, or whose HEAD is its head.  When it is at the head of
+the pull request, the file opens from it in review mode.
+
+When there is only your worktree, and it is not at the head, C-RET
+asks whether to open the file from your worktree or from a review
+worktree.  Your worktree opens the plain file, and C-RET asks no
+more for this pull request.  A review worktree is made by shipit in
+the background, and the file opens from it in review mode when it is
+ready.  Your worktree is left as it is.
+
+When there is no worktree and the clone is not at the head, C-RET
+asks whether to make one.  Yes makes the worktree in the background.
+When it is ready, the file opens from it in review mode, if the page
+is still shown.  No opens the file as below.  When the main checkout
+has the branch of the pull request, C-RET then asks no more for this
+pull request, as long as the main checkout has that branch.
+
+Else the file opens from the worktree in use, or from the clone when
+there is none.  See `shipit--open-file-from-tree'."
+  (interactive)
+  (let ((file-path (or (get-text-property (point) 'shipit-file-path)
+                       (user-error "No file at point")))
+        (pr (shipit--pr-at-point))
+        (line-number (shipit--get-diff-line-number-at-point)))
+    (cond
+     ((shipit--pr-worktree-being-made-p pr)
+      (message "The worktree for PR #%d is still being made"
+               (plist-get pr :number)))
+     ((shipit--pr-worktree-at-head-p pr)
+      (shipit--open-pr-file-in-review-mode pr file-path line-number))
+     ((shipit--your-worktree-off-pr-head-p pr)
+      (shipit--open-file-from-your-worktree-or-new pr file-path line-number))
+     ((shipit--worktree-offer-accepted-p pr)
+      (shipit--make-pr-worktree-then-open pr file-path line-number))
+     (t
+      (shipit--open-file-from-tree file-path pr line-number)))))
+
+(defun shipit--tree-differs-warning (head-sha pr-head-sha yours)
+  "The warning that the working tree at HEAD-SHA is not at PR-HEAD-SHA.
+YOURS is the folder of your worktree when the tree is yours, else nil."
+  (format "shipit: working tree HEAD %s%s differs from PR head %s — file content may not match diff"
+          (substring head-sha 0 7)
+          (if yours (format " (your worktree %s)" yours) "")
+          (substring pr-head-sha 0 7)))
+
+(defun shipit--open-file-from-tree (file-path pr line-number)
+  "Open FILE-PATH of PR from the filesystem, on LINE-NUMBER.
+Uses plain `find-file\=' so LSP, xref and flycheck attach normally.
+PR is a plist from `shipit--pr-at-point'.
+
+The file comes from the worktree in use of the pull request when it
+has one, see `shipit--pr-worktree'.  Without one it comes from the
+repository root, which only matches when the clone is checked out on
+the PR branch.
 
 Either way, when the tree\='s HEAD differs from the PR head, a short
-warning in the echo area says the content may not match the diff."
-  (interactive)
-  (let* ((file-path (or (get-text-property (point) 'shipit-file-path)
-                        (user-error "No file at point")))
-         (root (or (shipit--pr-worktree-at-point)
+warning in the echo area says the content may not match the diff.
+The warning names your worktree when the file comes from it."
+  (let* ((worktree (shipit--pr-worktree pr))
+         (yours (and worktree
+                     (not (shipit--own-worktree-p worktree (plist-get pr :number)))
+                     (shipit--worktree-folder worktree)))
+         (root (or worktree
                    (shipit--get-repo-root)
                    (user-error "Not in a git repository")))
-         (pr-head-sha (or (get-text-property (point) 'shipit-pr-head-sha)
-                          (and (boundp 'shipit-buffer-pr-data)
-                               shipit-buffer-pr-data
-                               (cdr (assq 'sha
-                                          (cdr (assq 'head
-                                                     shipit-buffer-pr-data)))))))
+         (pr-head-sha (plist-get pr :head-sha))
          (head-sha (shipit--head-sha-in root))
          (mismatch (and pr-head-sha head-sha
                         (not (string-equal head-sha pr-head-sha))))
-         (line-number (shipit--get-diff-line-number-at-point))
          (full-path (expand-file-name file-path root)))
     (shipit--debug-log
      "OPEN-WT: file=%s root=%s pr-head=%s wt-head=%s mismatch=%s line=%s"
@@ -2111,12 +2361,10 @@ warning in the echo area says the content may not match the diff."
       ;; (recentf, lsp bookkeeping, flycheck startup, etc.).
       (run-at-time
        0.2 nil
-       (lambda (h pr)
+       (lambda (warning)
          (shipit--debug-log "OPEN-WT: mismatch message firing now")
-         (message
-          "shipit: working tree HEAD %s differs from PR head %s — file content may not match diff"
-          (substring h 0 7) (substring pr 0 7)))
-       head-sha pr-head-sha))))
+         (message "%s" warning))
+       (shipit--tree-differs-warning head-sha pr-head-sha yours)))))
 
 (defun shipit--file-at-point ()
   "Open file from review mode if worktree available, otherwise open diff.
@@ -2127,28 +2375,19 @@ Falls back to `shipit-buffer-pr-data' when per-char text properties
 are missing (e.g. on newly-added files whose hunk lines inherited
 properties unevenly)."
   (interactive)
-  (let* ((buf-pr (and (boundp 'shipit-buffer-pr-data) shipit-buffer-pr-data))
-         (file-path (get-text-property (point) 'shipit-file-path))
-         (repo (or (get-text-property (point) 'shipit-repo)
-                   (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq 'base buf-pr))))))))
-         (pr-number (or (get-text-property (point) 'shipit-pr-number)
-                        (cdr (assq 'number buf-pr))))
-         (pr-head-sha (or (get-text-property (point) 'shipit-pr-head-sha)
-                          (cdr (assq 'sha (cdr (assq 'head buf-pr))))))
-         (pr-data (or (get-text-property (point) 'shipit-pr-data) buf-pr)))
+  (let ((file-path (get-text-property (point) 'shipit-file-path))
+        (pr (shipit--pr-at-point)))
     (cond
      ((not file-path)
       (or (shipit--try-overlay-action-at-point)
           (if (fboundp 'shipit-dwim)
               (shipit-dwim)
             (message "Cannot open file: no file at point"))))
-     ((and pr-number pr-head-sha pr-data
-           (shipit--should-use-review-mode-p pr-number repo pr-head-sha))
-      (let ((worktree-path (shipit--find-worktree-for-pr pr-number repo)))
-        (shipit--open-file-in-review-mode file-path worktree-path
-                                          pr-number repo pr-head-sha pr-data)))
-     ((and repo pr-number)
-      (shipit--open-pr-file-diff repo pr-number file-path))
+     ((shipit--pr-worktree-at-head-p pr)
+      (shipit--open-pr-file-in-review-mode pr file-path))
+     ((and (plist-get pr :repo) (plist-get pr :number))
+      (shipit--open-pr-file-diff (plist-get pr :repo) (plist-get pr :number)
+                                 file-path))
      (t
       (message "Cannot open file: missing PR context")))))
 

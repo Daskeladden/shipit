@@ -40,7 +40,7 @@
         (kill-buffer buffer)))))
 
 (defmacro test-soiw--with-repo (&rest body)
-  "Run BODY with a repository whose PR 7 has a linked worktree.
+  "Run BODY with a clone of o/r whose PR 7 has a linked worktree.
 `root' is the clone, where src/a.c reads \"main\"; `worktree' is the
 PR's worktree, where it reads \"pr\".  `default-directory' is the clone,
 as it is in a PR buffer."
@@ -51,6 +51,7 @@ as it is in a PR buffer."
      (unwind-protect
          (let ((default-directory root))
            (test-soiw--git root "init" "-q" "-b" "main")
+           (test-soiw--git root "remote" "add" "origin" "https://github.com/o/r.git")
            (test-soiw--git root "config" "user.email" "t@example.com")
            (test-soiw--git root "config" "user.name" "t")
            (test-soiw--write (expand-file-name "src/a.c" root) "main\n")

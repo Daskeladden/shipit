@@ -212,6 +212,10 @@ test-unit: compile
 		-l test/test-shipit-page-views.el \
 		-l test/test-shipit-page-views-cases.el \
 		-l test/test-shipit-pr-overview.el \
+		-l test/test-shipit-worktree-offer.el \
+		-l test/test-shipit-worktree-offer-cases.el \
+		-l test/test-shipit-pr-worktree-found.el \
+		-l test/test-shipit-pr-worktree-found-cases.el \
 		-f ert-run-tests-batch-and-exit
 
 # Run integration tests

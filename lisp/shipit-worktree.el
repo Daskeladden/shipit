@@ -249,46 +249,27 @@ that magit and project.el know, in their order."
   (seq-some (lambda (directory) (shipit--clone-root directory repo))
             (cons default-directory (shipit--known-repositories))))
 
-(defun shipit--get-current-repo ()
-  "Get current repository from git remote origin.
-Returns the full repo name (owner/repo format), or nil if unable to determine."
-  (condition-case err
-      (let* ((remote-url (shell-command-to-string "git config --get remote.origin.url"))
-             (clean-url (string-trim remote-url)))
-        (cond
-         ((string-match "github\\.com[:/]\\([^/]+\\)/\\([^/\n]+\\)" clean-url)
-          (let ((owner (match-string 1 clean-url))
-                (repo (match-string 2 clean-url)))
-            (when (string-suffix-p ".git" repo)
-              (setq repo (substring repo 0 -4)))
-            (format "%s/%s" owner repo)))
-         (t nil)))
-    (error
-     (shipit--debug-log "Failed to get current repo: %s" err)
-     nil)))
+(defun shipit--clone-here-p (repo)
+  "Whether `default-directory' is in a clone of REPO, as owner/name.
+Any remote of the clone may name REPO, see `shipit--clone-of-p'.
+A nil REPO has no clone."
+  (and repo (shipit--clone-of-p default-directory repo)))
+
+(defun shipit--no-clone-text (pr-repo)
+  "The words that say why `default-directory' is no clone of PR-REPO.
+PR-REPO is a repository as owner/name, or nil when it is not known."
+  (if pr-repo
+      (format "%s is no clone of %s" (abbreviate-file-name default-directory) pr-repo)
+    "The repository of this pull request is not known"))
 
 (defun shipit--validate-pr-repo (pr-repo)
-  "Validate that PR-REPO matches the current repository.
-Returns t if they match, raises user-error with clear message if not.
-
-When the call site is inside a shipit PR buffer, the buffer-local
-`shipit-buffer-repo' is the authoritative answer -- it was
-captured at buffer-creation time and never drifts.  Trusting it
-first avoids spurious \"different repository\" errors when the
-buffer\\='s `default-directory' has been changed by something
-unrelated (e.g.  `shipit-reload\\=' from inside the shipit project
-itself).  Only when there\\='s no buffer-local context do we fall
-back to querying `git remote' via `shipit--get-current-repo'.
-
-Comparison is case-insensitive since GitHub repository names are."
-  (let* ((buf-repo (and (boundp 'shipit-buffer-repo) shipit-buffer-repo))
-         (current-repo (or buf-repo (shipit--get-current-repo))))
-    (cond
-     ((not current-repo)
-      (user-error "Cannot determine current repository from git remote"))
-     ((not (string-equal (downcase current-repo) (downcase pr-repo)))
-      (user-error "PR is from repository '%s' but current repository is '%s'" pr-repo current-repo))
-     (t t))))
+  "Return t when `default-directory' is in a clone of PR-REPO, as owner/name.
+Else signal a `user-error'.  PR-REPO is the base repository of a pull
+request.  Only a clone of it has worktrees of the pull request, see
+`shipit--pr-worktrees'."
+  (or (shipit--clone-here-p pr-repo)
+      (user-error "%s, so this pull request has no worktree here"
+                  (shipit--no-clone-text pr-repo))))
 
 (defun shipit--worktree-exists-p (worktree-path)
   "Check if worktree exists at WORKTREE-PATH."
@@ -361,74 +342,140 @@ falsely-out-of-sync result can be diagnosed."
                           worktree-path (error-message-string err))
        nil))))
 
-(defun shipit--main-worktree-root ()
-  "Return the main worktree\='s root directory, even from a linked worktree.
-`shipit--get-repo-root\=' returns whichever working tree the
-caller is currently in -- inside a linked worktree, that\='s
-the worktree itself, not the main repo.  But the
-`.worktrees/\=' subtree (where shipit creates PR worktrees)
-lives in the MAIN worktree, so callers that need to enumerate
-existing PR worktrees must resolve the main root.
+;;; The worktrees of a pull request
+;;
+;; A worktree counts for a pull request only when:
+;; - the directory is in a clone of the base repository of the pull
+;;   request, that is, one of its remotes names that repository;
+;; - git lists the worktree;
+;; - and its folder exists.
+;; In a clone of another repository the pull request has no worktree,
+;; also when that repository has worktrees with the same names.
+;;
+;; Shipit's own worktree of pull request N has a folder whose name
+;; starts with pr-N-.
+;; Your worktree is one that you made, anywhere and with any name.  It
+;; has the branch of the pull request checked out, or its HEAD is the
+;; head of the pull request.
+;; The main checkout never counts.
+;; When both exist, shipit's own is in use.
 
-Uses `git rev-parse --git-common-dir\=' (returns the shared
-`.git\='); the main worktree is one directory above that.
-Returns nil when not in a git working tree."
+(defun shipit--pr-number-integer (pr-number)
+  "PR-NUMBER as an integer, also when it is a numeric string, else nil."
+  (cond ((integerp pr-number) pr-number)
+        ((and (stringp pr-number) (string-match-p "\\`[0-9]+\\'" pr-number))
+         (string-to-number pr-number))))
+
+(defun shipit--own-worktree-p (path pr-number)
+  "Whether the worktree at PATH is the one that shipit made for PR-NUMBER."
+  (string-prefix-p (format "pr-%s-" pr-number) (shipit--worktree-folder path)))
+
+(defun shipit--git-config-value (key)
+  "The value of the git setting KEY in `default-directory', or nil."
   (with-temp-buffer
-    (when (zerop (process-file "git" nil t nil
-                               "rev-parse" "--git-common-dir"))
-      (let* ((common (string-trim (buffer-string)))
-             (gitdir (directory-file-name (expand-file-name common))))
-        (and gitdir
-             (string-suffix-p ".git" gitdir)
-             (file-name-as-directory (file-name-directory gitdir)))))))
+    (when (zerop (process-file "git" nil '(t nil) nil "config" "--get" key))
+      (string-trim (buffer-string)))))
 
-(defun shipit--find-worktree-for-pr (pr-number _pr-repo)
-  "Find worktree directory for PR-NUMBER.
-Returns path if found, nil otherwise.  Tolerant of PR-NUMBER as
-an integer or a numeric string."
-  (let* ((pr-num (cond ((integerp pr-number) pr-number)
-                       ((and (stringp pr-number)
-                             (string-match-p "^[0-9]+$" pr-number))
-                        (string-to-number pr-number))
-                       (t nil)))
-         ;; Always use the MAIN worktree's root -- the `.worktrees/'
-         ;; subtree lives there, not in linked worktrees.  Falls back
-         ;; to `shipit--get-repo-root' when not in a git working tree
-         ;; at all (so the helper still works in tests / non-git
-         ;; contexts).
-         (repo-root (or (shipit--main-worktree-root)
-                        (shipit--get-repo-root)))
-         (worktrees-dir (and repo-root
-                             (expand-file-name shipit-worktree-directory
-                                               repo-root))))
-    (shipit--debug-log
-     "find-worktree-for-pr: pr=%S repo-root=%s worktrees-dir=%s exists=%s"
-     pr-number (or repo-root "nil") (or worktrees-dir "nil")
-     (and worktrees-dir (file-directory-p worktrees-dir)))
-    (when (and pr-num worktrees-dir (file-directory-p worktrees-dir))
-      (let ((pattern (format "pr-%d-" pr-num)))
-        (condition-case err
-            (let ((hit (car (seq-filter
-                             (lambda (dir)
-                               (string-prefix-p pattern
-                                                (file-name-nondirectory dir)))
-                             (directory-files worktrees-dir t "^pr-")))))
-              (shipit--debug-log
-               "find-worktree-for-pr: pattern=%s -> %s"
-               pattern (or hit "no match"))
-              hit)
-          (error
-           (shipit--debug-log
-            "find-worktree-for-pr: error scanning %s: %S"
-            worktrees-dir err)
-           nil))))))
+(defun shipit--remote-repo (remote)
+  "The repository, as owner/name, of REMOTE.
+REMOTE is the name of a git remote, or an address."
+  (shipit--parse-repo-from-url
+   (or (shipit--git-config-value (format "remote.%s.url" remote)) remote)))
 
-(defun shipit--get-worktree-status (pr-number pr-head-sha pr-repo)
+(defun shipit--branch-tracks-repo-p (branch repo)
+  "Whether BRANCH pushes to or pulls from REPO, as owner/name.
+That is when branch.BRANCH.pushRemote, remote.pushDefault or
+branch.BRANCH.remote names a remote of REPO, or an address of it."
+  (seq-some (lambda (key)
+              (when-let* ((remote (shipit--git-config-value key))
+                          (found (shipit--remote-repo remote)))
+                (string-equal-ignore-case found repo)))
+            (list (format "branch.%s.pushRemote" branch)
+                  "remote.pushDefault"
+                  (format "branch.%s.remote" branch))))
+
+(defun shipit--pr-repo-name (pr-data side)
+  "The repository of SIDE of the pull request PR-DATA, as owner/name.
+SIDE is `head' or `base'."
+  (cdr (assq 'full_name (cdr (assq 'repo (cdr (assq side pr-data)))))))
+
+(defun shipit--branch-of-pr-p (branch pr-data)
+  "Whether BRANCH is the head branch of the pull request PR-DATA.
+BRANCH must have the name of the head branch.  And the pull request
+must come from this repository, or BRANCH must track the repository
+it comes from: a branch that only has the name of a branch of a
+fork does not count."
+  (let ((head-repo (shipit--pr-repo-name pr-data 'head))
+        (base-repo (shipit--pr-repo-name pr-data 'base)))
+    (and branch head-repo
+         (equal branch (cdr (assq 'ref (cdr (assq 'head pr-data)))))
+         (or (and base-repo (string-equal-ignore-case head-repo base-repo))
+             (shipit--branch-tracks-repo-p branch head-repo)))))
+
+(defun shipit--worktree-of-pr-p (worktree pr-data)
+  "Whether WORKTREE has the pull request PR-DATA checked out.
+That is when its HEAD is the head of the pull request, or its branch
+is the head branch.  WORKTREE is a plist of `shipit--git-worktrees'."
+  (let ((head-sha (cdr (assq 'sha (cdr (assq 'head pr-data))))))
+    (or (and head-sha (equal head-sha (plist-get worktree :head)))
+        (shipit--branch-of-pr-p (plist-get worktree :branch) pr-data))))
+
+(defun shipit--linked-worktrees ()
+  "The worktrees that git lists here, but the main one, whose folders exist."
+  (seq-filter (lambda (worktree) (file-directory-p (plist-get worktree :path)))
+              (cdr (shipit--git-worktrees))))
+
+(defun shipit--pr-worktrees (pr-number pr-repo &optional pr-data)
+  "The worktrees of the pull request PR-NUMBER, as (:own PATH :yours PATH).
+:own is the worktree that shipit made, and :yours one that you made.
+Each is nil when there is none.  Yours is found only with PR-DATA, the
+pull request as the forge gives it.  PR-NUMBER is an integer or a
+numeric string.
+
+PR-REPO is the base repository of the pull request, as owner/name.
+Both are nil when `default-directory' is in no clone of PR-REPO, or
+when PR-REPO is nil."
+  (let* ((number (shipit--pr-number-integer pr-number))
+         (worktrees (and number
+                         (shipit--clone-here-p pr-repo)
+                         (shipit--linked-worktrees)))
+         (own-p (lambda (worktree)
+                  (shipit--own-worktree-p (plist-get worktree :path) number)))
+         (yours-p (lambda (worktree)
+                    (and (not (funcall own-p worktree))
+                         (shipit--worktree-of-pr-p worktree pr-data)))))
+    (list :own (plist-get (seq-find own-p worktrees) :path)
+          :yours (and pr-data (plist-get (seq-find yours-p worktrees) :path)))))
+
+(defun shipit--worktree-in-use (worktrees)
+  "The worktree in use of WORKTREES, as `shipit--pr-worktrees' gives them.
+That is shipit's own when it exists, else yours."
+  (or (plist-get worktrees :own) (plist-get worktrees :yours)))
+
+(defun shipit--find-worktree-for-pr (pr-number pr-repo &optional pr-data)
+  "The worktree in use for the pull request PR-NUMBER of PR-REPO, or nil.
+That is the one that shipit made, else one that you made, which is
+found only with PR-DATA.  PR-REPO is the base repository of the pull
+request, as owner/name.  See `shipit--pr-worktrees'."
+  (let ((worktree (shipit--worktree-in-use
+                   (shipit--pr-worktrees pr-number pr-repo pr-data))))
+    (shipit--debug-log "find-worktree-for-pr: pr=%S -> %s" pr-number (or worktree "none"))
+    worktree))
+
+(defun shipit--checkout-on-pr-branch-p (pr-data)
+  "Whether the main checkout has the head branch of PR-DATA checked out.
+The branch must belong to the pull request, see `shipit--branch-of-pr-p'."
+  (shipit--branch-of-pr-p (plist-get (car (shipit--git-worktrees)) :branch) pr-data))
+
+(defun shipit--get-worktree-status (pr-number pr-head-sha pr-repo &optional pr-data)
   "Get worktree status for PR-NUMBER.
-PR-REPO should be the full repo name from PR data.
+PR-REPO is the base repository of the PR, as owner/name.  Signal a
+`user-error' when `default-directory' is in no clone of it, see
+`shipit--validate-pr-repo'.  The worktree is the one in use, which is
+yours only with PR-DATA, see `shipit--find-worktree-for-pr'.
 Returns one of: \\='none, \\='in-sync, \\='out-of-sync"
   (shipit--validate-pr-repo pr-repo)
-  (let ((worktree-path (shipit--find-worktree-for-pr pr-number pr-repo)))
+  (let ((worktree-path (shipit--find-worktree-for-pr pr-number pr-repo pr-data)))
     (if (not worktree-path)
         'none
       (if (shipit--worktree-in-sync-p worktree-path pr-head-sha)
@@ -842,12 +889,10 @@ so this never blocks on the network."
                                                 (cdr (assq 'base pr-data)))))))
                  (status (condition-case _err
                              (shipit--get-worktree-status
-                              pr-number pr-head-sha pr-repo)
+                              pr-number pr-head-sha pr-repo pr-data)
                            (error 'different-repo)))
-                 (worktree-path
-                  (when (not (eq status 'different-repo))
-                    (shipit--find-worktree-for-pr
-                     pr-number (shipit--get-repo-from-remote))))
+                 (worktrees (unless (eq status 'different-repo)
+                              (shipit--pr-worktrees pr-number pr-repo pr-data)))
                  (status-text
                   (pcase status
                     ('none "No worktree checked out")
@@ -867,7 +912,7 @@ so this never blocks on the network."
                                           (propertize (substring pr-head-sha 0 7)
                                                       'font-lock-face 'magit-hash)
                                           ")"))
-                    ('different-repo "PR is from a different repository")))
+                    ('different-repo (shipit--no-clone-text pr-repo))))
                  (progress nil)
                  (content-pos (and (oref section content)
                                    (marker-position (oref section content))))
@@ -882,7 +927,7 @@ so this never blocks on the network."
                   (oset section washer nil))
                 (goto-char content-pos)
                 (shipit--insert-worktree-body
-                 pr-data status status-text worktree-path
+                 pr-data status status-text worktrees
                  progress pr-number pr-repo)
                 (oset section end (point-marker))
                 (oset section content (copy-marker content-pos))
@@ -982,9 +1027,31 @@ behaviour."
     (process-put proc 'shipit-stderr (or stderr-buf out-buf))
     proc))
 
+(defun shipit--worktree-registered-but-missing-p (repo-root worktree-path)
+  "Whether git lists WORKTREE-PATH as a worktree of REPO-ROOT with no folder."
+  (and (not (file-exists-p worktree-path))
+       (let ((default-directory (file-name-as-directory repo-root))
+             (wanted (file-truename (file-name-as-directory worktree-path))))
+         (seq-some (lambda (worktree)
+                     (equal wanted (file-truename (plist-get worktree :path))))
+                   (shipit--git-worktrees)))))
+
+(defun shipit--worktree-add-args (repo-root worktree-path pr-head-sha)
+  "The arguments of git that add the worktree WORKTREE-PATH at PR-HEAD-SHA.
+REPO-ROOT is the repository that the worktree belongs to."
+  (append '("worktree" "add")
+          ;; Git refuses to add a worktree where it still lists one whose
+          ;; folder was deleted by hand.  --force lets it use the place
+          ;; again.  It changes nothing else here: the worktree gets a
+          ;; commit, not a branch that could be checked out elsewhere.
+          (when (shipit--worktree-registered-but-missing-p repo-root worktree-path)
+            '("--force"))
+          (list worktree-path pr-head-sha)))
+
 (defun shipit--create-worktree-pr (pr-number branch-name pr-head-sha)
   "Create a worktree for PR-NUMBER with BRANCH-NAME at PR-HEAD-SHA.
-Returns (path . success) on success, or nil on error."
+Returns (path . success) on success, or nil on error.  A place where
+git still lists a worktree whose folder is gone is used again."
   (let* ((repo-root (shipit--get-repo-root))
          (worktree-path (shipit--get-worktree-path pr-number branch-name)))
     (unless repo-root
@@ -1072,9 +1139,9 @@ Returns (path . success) on success, or nil on error."
             (with-current-buffer output-buffer
               (erase-buffer))
             (shipit--debug-log "git worktree add %s %s" worktree-path pr-head-sha)
-            (let ((exit (shipit--worktree--git
-                         repo-root output-buffer
-                         "worktree" "add" worktree-path pr-head-sha)))
+            (let ((exit (apply #'shipit--worktree--git repo-root output-buffer
+                                (shipit--worktree-add-args
+                                 repo-root worktree-path pr-head-sha))))
               (shipit--debug-log
                "PHASE: worktree-add done in %.2fs (exit=%d)"
                (float-time (time-subtract (current-time) t-add)) exit)
@@ -1125,7 +1192,7 @@ Returns (path . success) on success, or nil on error."
        nil))))
 
 (defun shipit--create-worktree-pr-async (pr-number branch-name pr-head-sha pr-buffer
-                                                    &optional on-done)
+                                                    &optional on-done on-failed)
   "Async variant of `shipit--create-worktree-pr\='.
 Kicks off the fetch (if needed) and the `git worktree add\=' as
 chained `make-process\=' calls, updating
@@ -1136,7 +1203,14 @@ callers should check / observe progress via the section.
 ON-DONE, when non-nil, is a function called (inside PR-BUFFER
 if still live) once the worktree is ready and metadata is
 written -- used to resume work that needed the worktree once a
-freshly-created worktree is available."
+freshly-created worktree is available.
+
+ON-FAILED, when non-nil, is a function of (EXIT STDERR-TEXT),
+called when the fetch or the `git worktree add' fails.
+STDERR-TEXT can be nil.
+
+A place where git still lists a worktree whose folder is gone is
+used again."
   (let* ((repo-root (or (shipit--get-repo-root)
                         (user-error "Not in a git repository")))
          (worktree-path (shipit--get-worktree-path pr-number branch-name))
@@ -1187,8 +1261,8 @@ freshly-created worktree is available."
             (shipit-worktree--refresh-section-in-buffer pr-buffer)
             (shipit-worktree--start-git-async
              repo pr-number repo-root
-             (list "worktree" "add" worktree-path pr-head-sha)
-             env finish nil)))
+             (shipit--worktree-add-args repo-root worktree-path pr-head-sha)
+             env finish on-failed)))
          ;; Step 1a: handle a pre-existing worktree dir, deciding
          ;; whether to short-circuit to FINISH or fall through.  Returns
          ;; non-nil when the caller should proceed with fetch / add.
@@ -1243,7 +1317,7 @@ freshly-created worktree is available."
                                          (list "--filter=blob:none"))
                                     (list remote refspec))))
                   (shipit-worktree--start-git-async
-                   repo pr-number repo-root args env start-add nil))))))))
+                   repo pr-number repo-root args env start-add on-failed))))))))
     (funcall prep)))
 
 (defun shipit--lfs-pull-all-worktree-async (pr-number repo worktree-path pr-buffer)

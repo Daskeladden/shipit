@@ -731,6 +731,35 @@ An error when git fails, with what it said."
         (error "shipit: git %s failed: %s" (string-join args " ") (buffer-string)))
       (buffer-string))))
 
+(defun shipit--git-worktree-entry (block)
+  "The worktree BLOCK of `git worktree list --porcelain' as a plist.
+The keys are :path, a directory name, :head, the commit, and :branch,
+the short name of the branch, or nil on no branch."
+  (let ((worktree (list :path nil :head nil :branch nil)))
+    (dolist (line (split-string block "\n" t))
+      (pcase line
+        ((rx bos "worktree " (let path (+ anything)))
+         (setq worktree (plist-put worktree :path (file-name-as-directory path))))
+        ((rx bos "HEAD " (let head (+ anything)))
+         (setq worktree (plist-put worktree :head head)))
+        ((rx bos "branch refs/heads/" (let branch (+ anything)))
+         (setq worktree (plist-put worktree :branch branch)))))
+    worktree))
+
+(defun shipit--git-worktrees ()
+  "The worktrees that git lists for the repository of `default-directory'.
+The main worktree comes first.  Each is a plist, as
+`shipit--git-worktree-entry' gives it.  Nil when the directory is in
+no git repository."
+  (with-temp-buffer
+    (when (zerop (process-file "git" nil '(t nil) nil "worktree" "list" "--porcelain"))
+      (mapcar #'shipit--git-worktree-entry
+              (split-string (buffer-string) "\n\n" t)))))
+
+(defun shipit--worktree-folder (path)
+  "The name of the folder of the worktree at PATH."
+  (file-name-nondirectory (directory-file-name path)))
+
 (defun shipit--git-change (&rest args)
   "Run git with ARGS, a command that changes something; its output.
 Logged to the process buffer, as by `shipit--run-git'.  An error when

@@ -2557,7 +2557,10 @@ When the content has been swapped to a historical SHA via
 `shipit-review--present-content-at-sha', the title shows that
 SHA (e.g. `@ f02312b6') instead of the fixed `Head' label so
 B\\='s header tracks the actual revision the buffer is
-showing."
+showing.
+
+After the title comes the folder of the worktree that holds the
+file, so it is clear which worktree is reviewed."
   (let* ((pr-number (and shipit-review--pr-data
                          (cdr (assq 'number shipit-review--pr-data))))
          (file-name (or (and buffer-file-name
@@ -2578,7 +2581,8 @@ showing."
          (sha shipit-review--showing-historical-sha)
          (label (if sha
                     (format "@ %s" (substring sha 0 (min 7 (length sha))))
-                  "Head")))
+                  "Head"))
+         (worktree (shipit-review--worktree-folder)))
     (setq-local header-line-format
                 (list
                  " "
@@ -2589,9 +2593,18 @@ showing."
                   (format "*PR#%s %s: %s*"
                           (or pr-number "?") label file-name)
                   'face title-face)
+                 (if worktree
+                     (propertize (format "  in %s" worktree) 'face title-face)
+                   "")
                  "    "
                  (propertize "Type ? for help"
                              'face 'shadow)))))
+
+(defun shipit-review--worktree-folder ()
+  "The folder of the worktree that holds the file of this buffer, or nil."
+  (when-let* ((root (and buffer-file-name
+                         (locate-dominating-file buffer-file-name ".git"))))
+    (shipit--worktree-folder root)))
 
 (defun shipit-review--parse-diff-hunk-header (header)
   "Parse a unified diff hunk header like '@@ -10,5 +15,7 @@'.

@@ -158,5 +158,47 @@ THEN it names the same version."
                  (test-registration--emacs-version
                   "README.md" "^Emacs \\([0-9.]+\\)\\+"))))
 
+;;; The hook points of the README
+
+(defun test-registration--readme-section (heading)
+  "The text of the section of the README under HEADING, a line as `## Name'.
+It ends before the next heading of that level.  Finding none is an error."
+  (let* ((text (test-registration--file-text "README.md"))
+         (start (or (string-match (concat "^" (regexp-quote heading) "$") text)
+                    (error "No section %s in the README" heading))))
+    (substring text start (string-match "^## " text (1+ start)))))
+
+(defun test-registration--readme-hook-points ()
+  "The hook points that the README names, each as (NAME . FILE).
+A hook point is a row of a table in the section Extending shipit.  Its
+first cell names it, and its second cell names its file.  Finding none
+is an error."
+  (let ((text (test-registration--readme-section "## Extending shipit"))
+        (start 0)
+        (rows '()))
+    (while (string-match "^| `\\(shipit-[a-z0-9-]+\\)` | `\\(shipit[a-z0-9-]*\\)` |"
+                         text start)
+      (push (cons (match-string 1 text) (match-string 2 text)) rows)
+      (setq start (match-end 0)))
+    (or (nreverse rows)
+        (error "No hook point in the README"))))
+
+(defun test-registration--defined-in-p (name file)
+  "Non-nil when lisp/FILE.el defines the variable or the function NAME."
+  (string-match-p
+   (format "^(def\\(?:var\\|var-local\\|custom\\|un\\) %s[ \n]" (regexp-quote name))
+   (test-registration--file-text (format "lisp/%s.el" file))))
+
+(ert-deftest test-shipit-readme-hook-points-are-in-the-code ()
+  "GIVEN the hook points that the README names for other packages, each
+with the file that the README names for it
+WHEN the files are read
+THEN each file defines its hook point, so the README names nothing
+that is gone or that moved to another file."
+  (should (equal '()
+                 (seq-remove (lambda (row)
+                               (test-registration--defined-in-p (car row) (cdr row)))
+                             (test-registration--readme-hook-points)))))
+
 (provide 'test-shipit-file-registration)
 ;;; test-shipit-file-registration.el ends here

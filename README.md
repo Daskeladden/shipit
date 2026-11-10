@@ -243,6 +243,124 @@ Each poll asks GitHub for the names of all branches in one request. GitHub sends
 (setq shipit-pinned-comment-preview-lines 4)    ; lines shown before "View full"
 ```
 
+## Extending shipit
+
+Another package can add to shipit through its hook points. A hook point is a variable or a function that shipit offers to other packages for one purpose. shipit does not require such a package, and it works the same without one.
+
+The tables below name each hook point and its file. The docstring of a hook point says more: `C-h v` shows it for a variable, and `C-h f` for a function. A name with two dashes, such as `shipit--dwim-handlers`, is internal, so do not use it from another package.
+
+`shipit-init` loads the files of shipit, and then it runs `shipit-init-hook`. Load your package there:
+
+```elisp
+(add-hook 'shipit-init-hook (lambda () (require 'my-package)))
+```
+
+`add-hook` works before the file of a hook is loaded. A list or a function is not there before its file is loaded. To wait for the file, use `with-eval-after-load` with its name, as the example at the end of this section does.
+
+### Add to a page
+
+| Hook point | File | Use |
+|------------|------|-----|
+| `shipit-buffer-ready-hook` | `shipit-buffer` | Runs in a pull request buffer after each refresh, once all sections are drawn. A function can add a section at the end of the buffer. shipit adds its section Pending Review through this hook too. To draw after it, give `add-hook` a depth of 90. |
+| `shipit-preview-ready-hook` | `shipit-preview` | Runs in a preview each time the preview is drawn. A function can add sections at the end of the buffer. |
+| `shipit-run-steps-drawn-functions` | `shipit-core` | Runs each time the jobs and steps of a workflow run of a pull request are drawn. Each function gets the section that they are under, the repository, the number of the pull request and the id of the run. It can add sections under the log lines. |
+
+In a pull request buffer, `shipit-buffer-repo`, `shipit-buffer-pr-number` and `shipit-buffer-pr-data` hold the repository, the number and the data of the pull request.
+
+### Keep marks in Files Changed
+
+| Hook point | File | Use |
+|------------|------|-----|
+| `shipit-files-section-refreshed-hook` | `shipit-file-filter` | Runs in a pull request buffer after shipit drew only Files Changed again, as after a change of the filter. It does not run after a refresh of the whole page. The redraw removes what your package put inside the file sections, so a function puts it back. |
+| `shipit-file-diff-refreshed-hook` | `shipit-pr-sections` | Runs in a pull request buffer each time shipit draws the diff of one file again, as after a new comment on a line. A function puts back what your package put inside that file section. |
+| `shipit-files-section-shown-hook` | `shipit-sections` | Runs each time the Files Changed section of a buffer is shown. A function paints its marks on the file headings again. |
+| `shipit-files-show-only-filters` | `shipit-file-filter` | A list of filters for Files Changed, each `(MODE DESCRIPTION PREDICATE)`. PREDICATE runs in the pull request buffer. It gets the name of a file and returns non-nil for a file to show. `(shipit-files-show-only MODE)` turns the filter on, and the filter line then says DESCRIPTION. |
+
+### Act at point
+
+| Hook point | File | Use |
+|------------|------|-----|
+| `shipit-register-dwim-handler` | `shipit-pr-actions` | A function: `(shipit-register-dwim-handler NAME MATCHER ACTION &optional PRIORITY)`. `M-;` calls ACTION of the first handler whose MATCHER returns non-nil. Both get no arguments. A handler with a higher PRIORITY is asked first, and the default is 0. |
+| `shipit-diff-line-actions` | `shipit-pr-actions` | A list of `(LABEL . COMMAND)`. Each adds a choice to the menu that `M-;` shows on a line of a diff. The menu calls COMMAND interactively, with point on that line. |
+| `shipit-open-at-point-functions` | `shipit-diff` | `RET` calls these functions before its own handling. Only links and references come first. A function gets no arguments. If it handled point, it returns non-nil. |
+| `shipit-delete-at-point-functions` | `shipit-pr-actions` | `k` calls these functions before it looks for a posted comment. A function gets no arguments. It deletes its own kind of text at point and returns non-nil. |
+| `shipit-review-actions-legend-extra-sections` | `shipit-review-mode` | A list of `(HEADING (KEY DESCRIPTION) ...)`. Each adds a section to the full legend of the keys of review mode. |
+
+### Answer a question of shipit
+
+If one of these two functions is set, shipit calls it. Each holds nil until a package sets it.
+
+| Hook point | File | Use |
+|------------|------|-----|
+| `shipit-branch-name-suggester` | `shipit-core` | A function that suggests the name of a new branch. It gets a text that describes the work, such as its commit messages, and a callback. It calls the callback with the name. If it has no name, it calls the callback with nil. `shipit-worktree-move-work` and the stacked preview ask it. They turn the answer into a valid branch name, and the user can change it. |
+| `shipit-issue-similar-finder` | `shipit-issues-buffer` | A function that finds work items related to an issue. It gets the issue buffer, the issue and a callback. It calls the callback with the items and with a note, or nil. With a finder, the issue buffer has a section Similar Work Items. |
+
+### React to an event
+
+| Hook point | File | Use |
+|------------|------|-----|
+| `shipit-init-hook` | `shipit` | Runs at the end of `shipit-init`. |
+| `shipit-issue-created-hook` | `shipit-issue-create` | Runs after shipit created an issue from the buffer of a new issue. Each function gets the number or the key of the issue, and the repository. |
+| `shipit-worktree-move-functions` | `shipit-worktree-move` | Runs after the work of a checkout moved to a worktree. Each function gets the directory of the checkout and the directory of the worktree. |
+| `shipit-notifications-poll-hook` | `shipit-notifications` | Runs each time shipit polls for notifications. shipit logs a function that fails, and the other functions still run. |
+| `shipit-code-block-copy-functions` | `shipit-core` | Runs after a copy of the code of a code block. Each function gets the start and the end of the copied lines. |
+
+To put a notification of your own among those of shipit, see [Notifications from other packages](#notifications-from-other-packages).
+
+### Add a backend
+
+A backend is the code that talks to one forge or one issue tracker. shipit keeps its backends in registries, and a package can register one of its own.
+
+| Hook point | File | Use |
+|------------|------|-----|
+| `shipit-pr-register-backend` | `shipit-pr-backends` | Registers a backend for pull requests. |
+| `shipit-comment-register-backend` | `shipit-comment-backends` | Registers a backend for the comments of pull requests. |
+| `shipit-issue-register-backend` | `shipit-issue-backends` | Registers a backend for issues. |
+| `shipit-issue-register-notification-source` | `shipit-issue-backends` | Registers a backend that gives notifications and has no issues. |
+| `shipit-discussion-register-backend` | `shipit-discussion-backends` | Registers a backend for discussions. |
+
+Each of these functions takes an id, which is a symbol, and a property list of the operations of the backend. The commentary at the start of each file lists the operations and their arguments.
+
+A backend whose pictures and videos need more than their address adds a function to these lists. For each list, the first answer that is not nil counts.
+
+| Hook point | File | Use |
+|------------|------|-----|
+| `shipit-image-auth-functions` | `shipit-core` | Each function gets the URL of an image or a video. If the URL is on its own site, it returns an alist of the headers to log in with. If not, it returns nil. |
+| `shipit-media-url-functions` | `shipit-core` | Each function gets the URL of an attachment. If the URL is on its own site, it returns a URL that a player can fetch with no login. If not, it returns nil. |
+| `shipit-video-url-functions` | `shipit-core` | Each function gets a URL that names no file. If the URL is a video on its own site, it returns non-nil. |
+| `shipit-video-fold-functions` | `shipit-core` | Each function gets the URL of a video. If the site of the video shows it in a section that folds, the function returns non-nil. Any other video gets a Play button. |
+
+### Example
+
+This example adds a section at the end of each pull request buffer, and a choice to the menu of a diff line.
+
+```elisp
+(require 'magit-section)
+
+(defun my-notes-insert ()
+  "Add a section with a note at the end of the pull request buffer."
+  (let ((inhibit-read-only t)
+        (magit-insert-section--parent magit-root-section))
+    (save-excursion
+      (goto-char (point-max))
+      (magit-insert-section (my-notes)
+        (magit-insert-heading "My notes")
+        (insert (format "A note on pull request %s of %s.\n"
+                        shipit-buffer-pr-number shipit-buffer-repo))))))
+
+(add-hook 'shipit-buffer-ready-hook #'my-notes-insert 90)
+
+(defun my-notes-line ()
+  "Say which line of the buffer the note is for."
+  (interactive)
+  (message "A note for line %s" (line-number-at-pos)))
+
+(with-eval-after-load 'shipit-pr-actions
+  (add-to-list 'shipit-diff-line-actions '("Note this line" . my-notes-line)))
+```
+
+The wiki page [Extending shipit](https://github.com/Daskeladden/shipit/wiki/Extending-shipit) has more examples. They build a small package for notes on a pull request, one hook point at a time.
+
 ## Troubleshooting
 
 `M-x shipit-doctor` checks your token, API access, and rate limits.

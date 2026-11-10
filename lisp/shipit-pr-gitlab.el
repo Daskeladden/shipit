@@ -53,9 +53,13 @@
       (user . ((login . ,(cdr (assq 'username author)))
                (avatar_url . ,(cdr (assq 'avatar_url author)))))
       (head . ((ref . ,(cdr (assq 'source_branch gitlab-mr)))
-               (sha . ,(cdr (assq 'sha gitlab-mr)))))
+               (sha . ,(cdr (assq 'sha gitlab-mr)))
+               ,@(shipit-pr-gitlab--repo-entry
+                  (shipit-pr-gitlab--source-project-path gitlab-mr))))
       (base . ((ref . ,(cdr (assq 'target_branch gitlab-mr)))
-               ,@(when base-sha `((sha . ,base-sha)))))
+               ,@(when base-sha `((sha . ,base-sha)))
+               ,@(shipit-pr-gitlab--repo-entry
+                  (shipit-pr-gitlab--target-project-path gitlab-mr))))
       (comments . ,(or (cdr (assq 'user_notes_count gitlab-mr)) 0))
       (labels . ,labels)
       (assignees . ,assignees)
@@ -98,6 +102,65 @@ Returns list of ((login . USERNAME) (avatar_url . URL))."
               `((login . ,(cdr (assq 'username assignee)))
                 (avatar_url . ,(cdr (assq 'avatar_url assignee)))))
             (append assignees-raw nil))))
+
+;;; Normalization — the project of each side of an MR
+
+(defconst shipit-pr-gitlab--full-reference-regexp
+  (rx bos (group (+ nonl)) "!" (+ digit) eos)
+  "Matches the full reference of a merge request, such as group/project!7.
+The first group is the path of the project.")
+
+(defconst shipit-pr-gitlab--web-url-regexp
+  (rx bos (or "http" "https") "://" (+ (not (any "/"))) "/"
+      (group (+? nonl)) (? "/-") "/merge_requests/" (+ digit) eos)
+  "Matches the web address of a merge request.
+That is https://HOST/PATH/-/merge_requests/IID, or the same without
+the /- on an older server.  The first group is the PATH of the
+project.")
+
+(defun shipit-pr-gitlab--path-from-reference (reference)
+  "The project path in REFERENCE, the full reference of a merge request.
+REFERENCE is like group/project!7.  Nil when REFERENCE is nil or has
+another shape."
+  (when (and reference
+             (string-match shipit-pr-gitlab--full-reference-regexp reference))
+    (match-string 1 reference)))
+
+(defun shipit-pr-gitlab--path-from-web-url (web-url)
+  "The project path in WEB-URL, the web address of a merge request.
+Nil when WEB-URL is nil or has another shape."
+  (when (and web-url (string-match shipit-pr-gitlab--web-url-regexp web-url))
+    (match-string 1 web-url)))
+
+(defun shipit-pr-gitlab--target-project-path (gitlab-mr)
+  "The path of the project that GITLAB-MR merges into, like group/project.
+It comes from the full reference of the merge request, else from its
+web address.  Nil when neither gives one."
+  (or (shipit-pr-gitlab--path-from-reference
+       (cdr (assq 'full (cdr (assq 'references gitlab-mr)))))
+      (shipit-pr-gitlab--path-from-web-url (cdr (assq 'web_url gitlab-mr)))))
+
+(defun shipit-pr-gitlab--same-project-p (gitlab-mr)
+  "Whether GITLAB-MR comes from a branch of the project it merges into.
+Nil when its data lacks the id of either project."
+  (let ((source (cdr (assq 'source_project_id gitlab-mr)))
+        (target (cdr (assq 'target_project_id gitlab-mr))))
+    (and source target (equal source target))))
+
+(defun shipit-pr-gitlab--source-project-path (gitlab-mr)
+  "The path of the project that GITLAB-MR comes from, or nil.
+The data of a merge request names the source project only by its id,
+so the path is known only when it is the target project.  A merge
+request from a fork has none."
+  (and (shipit-pr-gitlab--same-project-p gitlab-mr)
+       (shipit-pr-gitlab--target-project-path gitlab-mr)))
+
+(defun shipit-pr-gitlab--repo-entry (path)
+  "The repo entry of the head or the base of a normalized merge request.
+A list that holds the entry for the project at PATH, or nil when PATH
+is nil."
+  (when path
+    `((repo . ((full_name . ,path))))))
 
 ;;; Normalization — Pipeline jobs to common shipit check shape
 
@@ -1913,8 +1976,11 @@ deduplicating by path. Returns normalized repo alists."
        :create-reference-overlays #'shipit-pr-gitlab--create-reference-overlays
        :hash-insert-reference-fn #'shipit-editor-insert-issue-reference
        :browse-repo-url (lambda (config)
-                          (let ((url (or (plist-get config :url) "https://gitlab.com")))
-                            (format "%s/%s" url (plist-get config :repo))))))
+                          ;; GitLab serves its pages on the server of its API.
+                          (format "%s/%s"
+                                  (string-trim-right
+                                   (or (plist-get config :api-url) "https://gitlab.com") "/")
+                                  (plist-get config :repo)))))
 
 (provide 'shipit-pr-gitlab)
 ;;; shipit-pr-gitlab.el ends here

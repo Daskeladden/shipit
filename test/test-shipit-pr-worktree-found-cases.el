@@ -125,16 +125,18 @@ clone of the kitchen, whatever repository that is a clone of."
          (magit-repository-directories nil))
      (test-pr-worktree-found--on-the-page-of-pr-8 ,given ,@body)))
 
-(defun test-pr-worktree-found-cases--no-clone-text ()
-  "The words that say that the clone is no clone of o/r."
-  (format "%s is no clone of o/r"
+(defun test-pr-worktree-found-cases--no-clone-text (&optional repo)
+  "The words that say that the clone is no clone of REPO, o/r when left out."
+  (format "%s is no clone of %s"
           (abbreviate-file-name
-           (file-name-as-directory (file-truename (test-worktree-offer--path "clone/"))))))
+           (file-name-as-directory (file-truename (test-worktree-offer--path "clone/"))))
+          (or repo "o/r")))
 
-(defun test-pr-worktree-found-cases--no-clone-said ()
-  "What the worktree menu says on the page in the clone, which is no clone of o/r."
+(defun test-pr-worktree-found-cases--no-clone-said (&optional repo)
+  "What the worktree menu says on the page in the clone, which is no clone of REPO.
+REPO is o/r when left out."
   (format "%s, so this pull request has no worktree here"
-          (test-pr-worktree-found-cases--no-clone-text)))
+          (test-pr-worktree-found-cases--no-clone-text repo)))
 
 (defun test-pr-worktree-found-cases--head-of-pr-8-coffee ()
   "The commit that the worktree .worktrees/pr-8-coffee of the clone is at."

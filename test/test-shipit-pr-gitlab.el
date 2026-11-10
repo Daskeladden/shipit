@@ -184,6 +184,129 @@ THEN draft is t."
                (shipit-pr-gitlab--normalize-mr mr))))
     (should (eq t (cdr (assq 'draft pr))))))
 
+;;; The repository of each side of a merge request
+
+(defun test-gitlab--mr-with (fields &rest without)
+  "The MR of `test-gitlab--make-mr-data' with FIELDS, an alist, set.
+The fields named in WITHOUT are left out."
+  (append fields
+          (seq-remove (lambda (field)
+                        (or (assq (car field) fields) (memq (car field) without)))
+                      (test-gitlab--make-mr-data))))
+
+(defun test-gitlab--side (mr side)
+  "SIDE, `head' or `base', of MR once it is normalized."
+  (cdr (assq side (shipit-pr-gitlab--normalize-mr mr))))
+
+(defun test-gitlab--repo-of (mr side)
+  "The repository that SIDE, `head' or `base', of MR names once normalized, or nil."
+  (cdr (assq 'full_name (cdr (assq 'repo (test-gitlab--side mr side))))))
+
+(defun test-gitlab--mr-of-reference (reference &rest fields)
+  "An MR whose full reference is REFERENCE, with FIELDS too, and no web address."
+  (test-gitlab--mr-with (cons `(references (short . "!7") (full . ,reference)) fields)
+                        'web_url))
+
+(defun test-gitlab--mr-at (web-url)
+  "An MR whose web address is WEB-URL, and which has no references."
+  (test-gitlab--mr-with `((web_url . ,web-url)) 'references))
+
+(ert-deftest test-shipit-pr-gitlab-normalize-mr-base-repo-from-reference ()
+  "The base of a merge request names its project, read from its full reference."
+  ;; GIVEN a merge request whose full reference is group/project!7, and
+  ;;   no web address
+  ;; WHEN it is normalized
+  ;; THEN its base names the repository group/project
+  (require 'shipit-pr-gitlab)
+  (should (equal "group/project"
+                 (test-gitlab--repo-of (test-gitlab--mr-of-reference "group/project!7")
+                                       'base))))
+
+(ert-deftest test-shipit-pr-gitlab-normalize-mr-base-repo-of-a-subgroup ()
+  "The base of a merge request in a subgroup names the whole path of its project."
+  ;; GIVEN a merge request whose full reference is group/sub/project!7
+  ;; WHEN it is normalized
+  ;; THEN its base names the repository group/sub/project
+  (require 'shipit-pr-gitlab)
+  (should (equal "group/sub/project"
+                 (test-gitlab--repo-of (test-gitlab--mr-of-reference "group/sub/project!7")
+                                       'base))))
+
+(ert-deftest test-shipit-pr-gitlab-normalize-mr-base-repo-from-web-url ()
+  "Without references, the base of a merge request names the project of its web address."
+  ;; GIVEN a merge request without references, whose web address is
+  ;;   .../group/sub/project/-/merge_requests/7
+  ;; WHEN it is normalized
+  ;; THEN its base names the repository group/sub/project
+  (require 'shipit-pr-gitlab)
+  (should (equal "group/sub/project"
+                 (test-gitlab--repo-of
+                  (test-gitlab--mr-at
+                   "https://gitlab.example.com/group/sub/project/-/merge_requests/7")
+                  'base))))
+
+(ert-deftest test-shipit-pr-gitlab-normalize-mr-base-repo-from-old-web-url ()
+  "The web address of an older server, without /-/, names the project too."
+  ;; GIVEN a merge request without references, whose web address is
+  ;;   .../group/project/merge_requests/7, as an older server gives it
+  ;; WHEN it is normalized
+  ;; THEN its base names the repository group/project
+  (require 'shipit-pr-gitlab)
+  (should (equal "group/project"
+                 (test-gitlab--repo-of
+                  (test-gitlab--mr-at "https://gitlab.example.com/group/project/merge_requests/7")
+                  'base))))
+
+(ert-deftest test-shipit-pr-gitlab-normalize-mr-head-repo-of-the-same-project ()
+  "A merge request from a branch of its own project names that project on both sides."
+  ;; GIVEN a merge request of group/project whose source and target
+  ;;   project are the same, by their ids
+  ;; WHEN it is normalized
+  ;; THEN its head names the repository group/project, as its base does
+  (require 'shipit-pr-gitlab)
+  (let ((mr (test-gitlab--mr-of-reference "group/project!7"
+                                          '(source_project_id . 5)
+                                          '(target_project_id . 5))))
+    (should (equal "group/project" (test-gitlab--repo-of mr 'head)))
+    (should (equal "group/project" (test-gitlab--repo-of mr 'base)))))
+
+(ert-deftest test-shipit-pr-gitlab-normalize-mr-no-head-repo-from-a-fork ()
+  "A merge request from a fork names no repository for its head."
+  ;; GIVEN a merge request of group/project whose source project is
+  ;;   another one, a fork, by its id
+  ;; WHEN it is normalized
+  ;; THEN its head names no repository, as the data has no path of the
+  ;;   fork
+  ;; AND its base names group/project
+  (require 'shipit-pr-gitlab)
+  (let ((mr (test-gitlab--mr-of-reference "group/project!7"
+                                          '(source_project_id . 6)
+                                          '(target_project_id . 5))))
+    (should-not (assq 'repo (test-gitlab--side mr 'head)))
+    (should (equal "group/project" (test-gitlab--repo-of mr 'base)))))
+
+(ert-deftest test-shipit-pr-gitlab-normalize-mr-no-head-repo-without-project-ids ()
+  "A merge request whose data has no project ids names no repository for its head."
+  ;; GIVEN a merge request of group/project without the ids of its source
+  ;;   and target project
+  ;; WHEN it is normalized
+  ;; THEN its head names no repository
+  (require 'shipit-pr-gitlab)
+  (should-not (assq 'repo (test-gitlab--side (test-gitlab--mr-of-reference "group/project!7")
+                                             'head))))
+
+(ert-deftest test-shipit-pr-gitlab-normalize-mr-no-repo-without-a-path ()
+  "A merge request with neither references nor web address names no repository."
+  ;; GIVEN a merge request from a branch of its own project, with neither
+  ;;   references nor a web address
+  ;; WHEN it is normalized
+  ;; THEN neither its head nor its base names a repository
+  (require 'shipit-pr-gitlab)
+  (let ((mr (test-gitlab--mr-with '((source_project_id . 5) (target_project_id . 5))
+                                  'references 'web_url)))
+    (should-not (assq 'repo (test-gitlab--side mr 'head)))
+    (should-not (assq 'repo (test-gitlab--side mr 'base)))))
+
 ;;; Update translation tests
 
 (ert-deftest test-shipit-pr-gitlab-translate-update-state-open-sends-reopen ()
@@ -2573,6 +2696,17 @@ THEN the info has the count under the name that the repo page reads."
                                  (shipit-pr-gitlab--fetch-repo-info
                                   '(:api-url "https://gitlab.com" :token "test-token"
                                     :project-path "group/project"))))))))
+
+(ert-deftest test-shipit-pr-gitlab-repo-address-is-on-the-server-of-the-settings ()
+  "The web address of a project is on the GitLab server that the settings name."
+  ;; GIVEN the settings of a project on the GitLab server gitlab.example.com
+  ;; WHEN the backend gives the web address of the project
+  ;; THEN the address is on gitlab.example.com, and not on gitlab.com
+  (require 'shipit-pr-gitlab)
+  (let ((address-of (plist-get (cdr (assq 'gitlab shipit-pr-backends)) :browse-repo-url)))
+    (should (equal "https://gitlab.example.com/kitchen/menu/cups"
+                   (funcall address-of '(:api-url "https://gitlab.example.com/"
+                                         :repo "kitchen/menu/cups"))))))
 
 (provide 'test-shipit-pr-gitlab)
 ;;; test-shipit-pr-gitlab.el ends here

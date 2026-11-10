@@ -76,14 +76,17 @@ gives nil then, and the editor keeps the comment only on an error."
 (defun shipit-issues--edit-comment (repo comment-id body &optional issue-id)
   "Edit comment COMMENT-ID in REPO via the active backend.
 BODY is the new comment text, and ISSUE-ID the issue the comment is on.
-Returns the updated comment alist."
+Returns the updated comment alist.  Signals an error when the tracker
+does not take the change: a backend gives nil then, and the editor
+keeps the text only on an error."
   (let* ((resolved (shipit-issue--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
          (fn (plist-get backend :edit-comment)))
     (unless fn
       (error "Backend does not support :edit-comment"))
-    (funcall fn config comment-id body issue-id)))
+    (or (funcall fn config comment-id body issue-id)
+        (error "Comment %s not changed, see *Messages* for why" comment-id))))
 
 (defun shipit-issues--attachment-uploader (repo)
   "The function that attaches a file to an issue of REPO.
@@ -112,14 +115,19 @@ Returns the reaction alist or nil."
 
 (defun shipit-issues--update-description (repo issue-number body)
   "Update the description of issue ISSUE-NUMBER in REPO via the active backend.
-BODY is the new description text."
+BODY is the new description text.  Returns what the backend gives,
+which is not nil.  Signals an error when the tracker does not take the
+change: a backend gives nil then, and the editor keeps the text only
+on an error."
   (let* ((resolved (shipit-issue--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
          (fn (plist-get backend :update-description)))
     (unless fn
       (error "Backend does not support :update-description"))
-    (funcall fn config issue-number body)))
+    (or (funcall fn config issue-number body)
+        (error "Description of issue %s not changed, see *Messages* for why"
+               issue-number))))
 
 (defun shipit-issues--fetch-pinned-comment-async (repo issue-number callback)
   "Fetch the pinned comment for ISSUE-NUMBER in REPO asynchronously.

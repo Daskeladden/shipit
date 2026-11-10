@@ -217,6 +217,19 @@ own id, and Jira finds a comment only under its issue."
       (shipit-editor-save))
     (should (equal "After" (test-jira-sandbox--comment-body config)))))
 
+;;; A saved description
+
+(ert-deftest test-jira-sandbox-a-saved-description-counts-as-saved ()
+  "GIVEN the sandbox, which answers a change of an issue with no text,
+as Jira does
+WHEN shipit saves a new description of the issue
+THEN the save counts as done, AND Jira keeps the new text."
+  (test-jira-sandbox--with config
+    (should (shipit-issues--update-description
+             shipit-jira-sandbox-repo "PRJ-1" "Two cups, please."))
+    (should (string-match-p "Two cups, please."
+                            (test-jira-sandbox--description config)))))
+
 ;;; Pasting a picture
 
 (defconst test-jira-sandbox--png

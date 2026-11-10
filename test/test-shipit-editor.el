@@ -911,5 +911,58 @@ still holds the comment, so nothing is lost."
         (when (get-buffer shipit-editor--buffer-name)
           (kill-buffer shipit-editor--buffer-name))))))
 
+(defmacro test-shipit-editor--on-a-github-issue (answers &rest body)
+  "Run BODY with the GitHub issue backend, GitHub giving ANSWERS.
+Kill the editor that BODY leaves open."
+  (declare (indent 1))
+  `(progn
+     (require 'shipit-editor)
+     (require 'shipit-issues-buffer)
+     (require 'shipit-issue-github)
+     (require 'shipit-test-http)
+     (let ((shipit-github-token "not-a-token")
+           (shipit--github-token-cache nil)
+           (shipit-issue-backend 'github)
+           (shipit-issue-repo-backends nil))
+       (shipit-test-http-answering ,answers
+         (unwind-protect
+             (progn ,@body)
+           (when (get-buffer shipit-editor--buffer-name)
+             (kill-buffer shipit-editor--buffer-name)))))))
+
+(ert-deftest test-shipit-editor-an-edit-that-github-refuses-stays-in-the-editor ()
+  "GIVEN the editor on a comment of an issue of GitHub, with the comment
+changed in it, AND GitHub refusing the change
+WHEN the user saves it with C-c C-c
+THEN an error says that the comment was not changed, AND the editor
+still holds the changed text, so nothing is lost."
+  (test-shipit-editor--on-a-github-issue
+      '(("/repos/o/r/issues/comments/100\\'" 403 ((message . "Forbidden"))))
+    (with-temp-buffer
+      (setq-local shipit-issue-buffer-number 7)
+      (shipit-issue--edit-comment-interactive "o/r" 100 "One cup, please."))
+    (with-current-buffer shipit-editor--buffer-name
+      (goto-char (point-max))
+      (insert " And one more.")
+      (let ((err (should-error (call-interactively (key-binding (kbd "C-c C-c") t)))))
+        (should (string-match-p "not changed" (error-message-string err))))
+      (should (equal "One cup, please. And one more." (buffer-string))))))
+
+(ert-deftest test-shipit-editor-a-description-that-github-refuses-stays-in-the-editor ()
+  "GIVEN the editor on the description of an issue of GitHub, with a new
+text in it, AND GitHub refusing the change
+WHEN the user saves it with C-c C-c
+THEN an error says that the description was not changed, AND the
+editor still holds the new text, so nothing is lost."
+  (test-shipit-editor--on-a-github-issue
+      '(("/repos/o/r/issues/7\\'" 403 ((message . "Forbidden"))))
+    (with-temp-buffer
+      (shipit-issue--edit-description "o/r" 7))
+    (with-current-buffer shipit-editor--buffer-name
+      (insert "Two cups, please.")
+      (let ((err (should-error (call-interactively (key-binding (kbd "C-c C-c") t)))))
+        (should (string-match-p "not changed" (error-message-string err))))
+      (should (equal "Two cups, please." (buffer-string))))))
+
 (provide 'test-shipit-editor)
 ;;; test-shipit-editor.el ends here

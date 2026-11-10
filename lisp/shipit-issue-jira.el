@@ -1055,12 +1055,15 @@ text.  Returns the normalized comment alist."
 
 (defun shipit-issue-jira--update-description (config issue-key body)
   "Update the description of Jira issue ISSUE-KEY using CONFIG.
-BODY is the new description text.
-Returns the API response."
+BODY is the new description text.  Returns t.  Signals an error when
+Jira refuses the change."
   (let* ((path (format "/rest/api/2/issue/%s" issue-key))
          (data `((fields . ((description . ,(shipit-issue-jira--wiki-images config body)))))))
     (shipit--debug-log "Jira backend: updating description for %s" issue-key)
-    (shipit-issue-jira--api-request-put config path data)))
+    ;; Jira answers a change of an issue with status 204 and no text,
+    ;; so the answer cannot say that the change is done.
+    (shipit-issue-jira--api-request-put config path data)
+    t))
 
 (defcustom shipit-issue-jira-reactions-endpoint
   "/rest/internal/2/reactions/view"

@@ -30,7 +30,6 @@ shipit-diff.el:shipit--edit-comment
 shipit-diff.el:shipit--fetch-file-content-from-github
 shipit-diff.el:shipit-post-review
 shipit-diff.el:shipit--refresh-after-comment-operation
-shipit-diff.el:shipit--refresh-after-comment-operation-with-hook
 shipit-diff.el:shipit--remove-reaction-from-comment
 shipit-diff.el:shipit--remove-reaction-from-pr
 shipit-diff.el:shipit--reply-to-general-comment

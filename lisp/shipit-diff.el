@@ -160,10 +160,7 @@ DIFF-HUNK provides context to help locate the correct hunk."
           ;; Sub-case 1b: Normal inline comment (has both file path and line number)
           ((and effective-file-path effective-line-number)
            (shipit--add-comment-to-pr pr-number effective-file-path effective-line-number input (or side "RIGHT"))
-           (shipit--refresh-after-comment-operation-with-hook
-            t  ; inline comment = t
-            'comment-added
-            `((pr-number . ,pr-number) (file-path . ,effective-file-path) (line . ,effective-line-number) (body . ,input)))
+           (shipit--refresh-after-comment-operation t)  ; inline comment = t
            (message "Added inline comment")
            t)
           ;; Sub-case 1c: In inline section but no context - prompt for both file and line
@@ -172,20 +169,14 @@ DIFF-HUNK provides context to help locate the correct hunk."
                   (target-line (read-number "Line number for inline comment: ")))
              (when (and (not (string-empty-p target-file)) target-line (> target-line 0))
                (shipit--add-comment-to-pr pr-number target-file target-line input (or side "RIGHT"))
-               (shipit--refresh-after-comment-operation-with-hook
-                t  ; inline comment = t
-                'comment-added
-                `((pr-number . ,pr-number) (file-path . ,target-file) (line . ,target-line) (body . ,input)))
+               (shipit--refresh-after-comment-operation t)  ; inline comment = t
                (message "Added inline comment to %s at line %d" target-file target-line)
                t)))))
         ;; Case 2: General comment (in general section)
         (t
          (progn
            (shipit--add-general-comment-to-pr pr-number input)
-           (shipit--refresh-after-comment-operation-with-hook
-            nil  ; inline comment = nil
-            'general-comment-added
-            `((pr-number . ,pr-number) (body . ,input)))
+           (shipit--refresh-after-comment-operation nil)  ; inline comment = nil
            (message "Added general comment")
            t)))))
 
@@ -206,10 +197,7 @@ DIFF-HUNK provides context to help locate the correct hunk."
               (is-review (string= comment-type "review"))
               (is-inline-comment (and (not in-general) (not is-review))))
          (shipit--edit-comment comment-id input is-inline-comment is-review)
-         (shipit--refresh-after-comment-operation-with-hook
-          is-inline-comment
-          'comment-edited
-          `((comment-id . ,comment-id) (new-body . ,input)))
+         (shipit--refresh-after-comment-operation is-inline-comment)
          (message "Comment updated")
          t))
       (t nil)))
@@ -222,10 +210,7 @@ DIFF-HUNK provides context to help locate the correct hunk."
          (when (yes-or-no-p (format "Delete comment: %s? "
                                     (truncate-string-to-width (or (cdr comment-info) "") 40)))
            (shipit--delete-comment comment-id is-inline-comment)
-           (shipit--refresh-after-comment-operation-with-hook
-            is-inline-comment
-            'comment-deleted
-            `((comment-id . ,comment-id)))
+           (shipit--refresh-after-comment-operation is-inline-comment)
            (message "Comment deleted")
            t))))
 

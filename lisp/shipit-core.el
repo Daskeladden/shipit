@@ -1091,28 +1091,6 @@ with incomplete font support. When nil, preserves original emoji formatting."
   :type 'boolean
   :group 'shipit)
 
-(defcustom shipit-dwim-hook nil
-  "Hook run when shipit-dwim is invoked.
-Functions in this hook are called with the current point position and context information.
-Each function receives these arguments:
-- point: The buffer position where shipit-dwim was invoked
-- context: A symbol indicating the context ('pr-header, 'comment, 'no-data, 'general)
-- bounds: Cons cell (start . end) of the relevant region, or nil if not applicable
-
-This can be used to highlight regions, provide visual feedback, or perform other actions.
-
-Example usage with built-in pulse:
-  (add-hook 'shipit-dwim-hook 'shipit--highlight-region-with-pulse)
-
-Or create your own highlighting function:
-  (defun my-highlight-function (point context bounds)
-    (when bounds
-      (message \"Highlighting %s region at %s-%s\" context (car bounds) (cdr bounds))
-      (pulse-momentary-highlight-region (car bounds) (cdr bounds))))
-  (add-hook 'shipit-dwim-hook 'my-highlight-function)"
-  :type 'hook
-  :group 'shipit)
-
 (defvar shipit--debug-log-file (expand-file-name "shipit-debug.log" user-emacs-directory)
   "Path to the shipit debug log file.")
 
@@ -1337,63 +1315,6 @@ Parses timing entries and builds a tree showing parent-child relationships."
             (insert "  - Operations without timing instrumentation\n")
             (insert "  - Network/IO wait time not tracked\n"))
           (display-buffer output-buffer))))))
-
-;; Helper functions for shipit-dwim-hook
-
-(defun shipit--highlight-region-with-pulse (point context bounds)
-  "Highlight shipit region using built-in pulse.
-POINT is the cursor position, CONTEXT is the shipit context, BOUNDS is (start . end)."
-  (when bounds
-    ;; Save the buffer reference to pulse in the correct buffer
-    (let ((original-buffer (current-buffer)))
-      (run-with-timer 0.01 nil
-                      (lambda ()
-                        (with-current-buffer original-buffer
-                          (pulse-momentary-highlight-region (car bounds) (cdr bounds))))))
-
-(defun shipit--highlight-modified-region-with-pulse (action context bounds)
-  "Highlight modified shipit region using built-in pulse.
-ACTION is the action type, CONTEXT is additional info, BOUNDS is (start . end)."
-  (shipit--debug-log "Post-action hook called: action=%s context=%s bounds=%s" action context bounds)
-  (when (memq action '(comment-added comment-edited general-comment-added comment-deleted))
-    (let* ((is-inline-comment (cdr (assq 'is-inline-comment context))))
-      (shipit--debug-log "Successfully processed %s comment action: %s"
-                         (if is-inline-comment "inline" "general") action)
-      ;; Content-aware pulsing: search all comment regions for the right type
-      (let ((found-match nil)
-            (total-comments 0))
-        (save-excursion
-          (goto-char (point-min))
-          ;; First, check if General Comments section exists at all
-          (if (re-search-forward "General Comments" nil t)
-              (shipit--debug-log "Found General Comments section header")
-            (shipit--debug-log "WARNING: No General Comments section found in buffer"))
-          (goto-char (point-min))
-          (let ((pos nil))
-            (while (setq pos (text-property-search-forward 'shipit-comment))
-              (setq total-comments (1+ total-comments)))
-            (shipit--debug-log "Total comment regions found: %d" total-comments)
-            (goto-char (point-min))
-            (while (and (not found-match) (setq pos (text-property-search-forward 'shipit-comment)))
-              (let* ((start (prop-match-beginning pos))
-                     (end (prop-match-end pos))
-                     (content (buffer-substring-no-properties start (min end (+ start 100)))))
-                (shipit--debug-log "Checking comment content: %s" content)
-                (if is-inline-comment
-                    ;; For inline comments, look for "Line X:" pattern
-                    (when (string-match "Line [0-9]+:" content)
-                      (shipit--debug-log "Found matching inline comment, pulsing")
-                      (pulse-momentary-highlight-region start end)
-                      (setq found-match t))
-                  ;; For general comments, avoid "Line X:" pattern
-                  (when (not (string-match "Line [0-9]+:" content))
-                    (shipit--debug-log "Found matching general comment, pulsing")
-                    (pulse-momentary-highlight-region start end)
-                    (setq found-match t)))))))
-        (unless found-match
-          (shipit--debug-log "No matching %s comment found for pulsing"
-                             (if is-inline-comment "inline" "general"))))
-      (message "Comment %s successfully" (if (eq action 'comment-edited) "updated" "added")))))))
 
 (defvar shipit--expected-suite-count 0
   "Expected number of suites to process.")

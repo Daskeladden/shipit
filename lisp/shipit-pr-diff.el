@@ -81,7 +81,6 @@
 (declare-function shipit--apply-comment-face-selectively "shipit-http")
 (declare-function shipit--toggle-reaction-interactive "shipit-pr-actions")
 (declare-function shipit--edit-comment-interactive "shipit-commands")
-(declare-function shipit--highlight-region-with-pulse "shipit-core")
 (declare-function shipit--simple-comment-dialog "shipit-pr-actions")
 (declare-function shipit--mark-commit-as-read "shipit-pr-sections")
 (declare-function shipit--in-pr-section-p "shipit-pr-actions")
@@ -168,8 +167,6 @@
 (defvar shipit-render-markdown)
 (defvar shipit-expand-code-urls)
 (defvar shipit-enable-mouse-navigation)
-(defvar shipit-dwim-hook)
-(defvar shipit-post-action-hook)
 (defvar magit-buffer-revision)
 (defvar magit-diff-mode-map)
 (defvar magit-revision-mode-map)
@@ -1165,21 +1162,6 @@ Only activates if we're in a shipit PR context (shipit-buffer-pr-number is set).
     (when (fboundp 'advice-add)
       (advice-add 'magit-visit-thing :around #'shipit--advice-magit-visit-thing)
       (advice-add 'magit-show-commit :around #'shipit--advice-magit-show-commit))))
-
-;; Automatically enable highlighting when global mode is activated
-(defun shipit--setup-highlighting ()
-  "Set up pre-action and post-action highlighting hooks."
-  ;; Only the pre-action pulse remains.  The post-action one was
-  ;; registered here for a function that no longer exists, so running
-  ;; the hook raised `void-function'.
-  (add-hook 'shipit-dwim-hook #'shipit--highlight-region-with-pulse))
-
-(defun shipit--teardown-highlighting ()
-  "Remove pre-action and post-action highlighting hooks."
-  (remove-hook 'shipit-dwim-hook #'shipit--highlight-region-with-pulse))
-
-;; Set up highlighting when shipit is loaded
-(shipit--setup-highlighting)
 
 (defun shipit--format-comment-as-text (comment &optional is-inline)
   "Format COMMENT as insertable text with proper styling and interactive elements.

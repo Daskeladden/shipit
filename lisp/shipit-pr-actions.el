@@ -81,7 +81,6 @@
 (defvar shipit-current-repo)
 (defvar shipit-reaction-choices)
 (defvar shipit--explicit-pr-operation)
-(defvar shipit-post-action-hook)
 
 ;;; Region A: Reactions/Comment dialog
 
@@ -299,21 +298,6 @@ IS-INLINE-COMMENT indicates if this was an inline comment operation."
       (shipit--display-inline-comments t)))
    ;; Default fallback - no-op
    (t nil)))
-
-(defun shipit--refresh-after-comment-operation-with-hook (is-inline-comment action context)
-  "Wrapper for refresh that runs post-action hook after refresh completes.
-IS-INLINE-COMMENT indicates if this was an inline comment operation.
-ACTION and CONTEXT are passed to the post-action hook."
-  (shipit--refresh-after-comment-operation is-inline-comment)
-  ;; Run post-action hook after refresh, with delay to ensure inline comments are displayed
-  (run-with-timer (if is-inline-comment 0.5 0.3) nil
-                  (lambda ()
-                    ;; Add is-inline-comment to context for proper buffer selection
-                    (let ((enhanced-context (if context
-                                                (cons `(is-inline-comment . ,is-inline-comment) context)
-                                              `((is-inline-comment . ,is-inline-comment)))))
-                      (run-hook-with-args 'shipit-post-action-hook action enhanced-context nil)))))
-
 
 (defun shipit--in-pr-section-p ()
   "Return non-nil if point is inside any part of the shipit PR section area."

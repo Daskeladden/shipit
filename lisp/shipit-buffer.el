@@ -248,9 +248,13 @@ after this many seconds so callers waiting on it can proceed."
 
 (defvar shipit-buffer-ready-hook nil
   "Hook run (in the PR buffer) when all pending async sections finish rendering.
-Add buffer-local one-shot handlers with `add-hook' and a third argument of t.
 Fires exactly once per refresh cycle; `shipit-buffer--reset-pending-sections'
-clears the fired flag so subsequent refreshes can fire again.")
+clears the fired flag so subsequent refreshes can fire again.
+A function for one buffer only is added with t as the LOCAL argument of
+`add-hook', which is its fourth argument.
+Another package adds a function here to draw a section of its own at
+the end of the buffer.  shipit draws its Pending Review section in this
+way, so a DEPTH of 90 in `add-hook' draws a section after that one.")
 
 (defvar-local shipit-buffer--pending-async-sections nil
   "Set of section names the current refresh is still waiting on.

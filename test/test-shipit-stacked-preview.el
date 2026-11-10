@@ -1145,6 +1145,9 @@ which ask git for more."
                    ((symbol-function 'shipit--insert-processed-commit-section) #'ignore)
                    ((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
                    ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) nil))
+                   ;; The buffer has the directory of the test run, which can
+                   ;; be a clone that someone works in, so no fetch runs there.
+                   ((symbol-function 'shipit-stacked-preview--fetch) #'ignore)
                    ((symbol-function 'shipit-stack-plan--pr-for-branch)
                     (lambda (_repo branch) (cdr (assoc branch ,prs)))))
            (with-current-buffer ,buffer
@@ -1154,6 +1157,21 @@ which ask git for more."
              (shipit-stacked-preview--render)
              ,@body))
        (kill-buffer ,buffer))))
+
+(ert-deftest test-stacked-drawn-stack-refresh-asks-git-for-no-fetch ()
+  "GIVEN a stack drawn by the helper, in the directory of the test run
+WHEN the preview is refreshed
+THEN git is not asked to fetch, so the run leaves the clone that it
+runs in as it is."
+  (let ((layers (test-stacked--layers "one"))
+        (asked nil))
+    (test-stacked--with-drawn-stack preview layers nil nil
+      (cl-letf (((symbol-function 'call-process)
+                 (lambda (_program &optional _infile _destination _display &rest args)
+                   (push args asked)
+                   0)))
+        (shipit-stacked-preview-refresh))
+      (should-not (seq-filter (lambda (args) (member "fetch" args)) asked)))))
 
 ;;;; The state of a layer, as data
 

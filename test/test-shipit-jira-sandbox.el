@@ -350,14 +350,19 @@ THEN Jira embeds the picture, AND the image the description had."
   "Run BODY in a buffer that writes a new issue of the sandbox, titled.
 Its draft is not kept for a later test."
   (declare (indent 0))
-  `(let ((shipit-issue-create--drafts (make-hash-table :test 'equal)))
-     (with-current-buffer (shipit-issue-create-buffer shipit-jira-sandbox-repo
-                                                      '(:title "A picture"))
-       (unwind-protect
-           (progn ,@body)
-         (when (buffer-live-p (current-buffer))
-           (remove-hook 'kill-buffer-hook #'shipit-issue-create--save-draft t)
-           (kill-buffer))))))
+  (let ((buffer (make-symbol "buffer")))
+    `(let* ((shipit-issue-create--drafts (make-hash-table :test 'equal))
+            (,buffer (shipit-issue-create-buffer shipit-jira-sandbox-repo
+                                                 '(:title "A picture"))))
+       (with-current-buffer ,buffer
+         (unwind-protect
+             (progn ,@body)
+           ;; Making the issue kills its buffer.  Then the current buffer
+           ;; is another one, which is not this macro's to kill.
+           (when (buffer-live-p ,buffer)
+             (with-current-buffer ,buffer
+               (remove-hook 'kill-buffer-hook #'shipit-issue-create--save-draft t))
+             (kill-buffer ,buffer)))))))
 
 (ert-deftest test-jira-sandbox-paste-into-a-new-issue ()
   "GIVEN a new issue being written, and a picture on the clipboard

@@ -1380,7 +1380,7 @@ operation completes or fails."
     (shipit--validate-pr-repo pr-repo)
     (message "Creating worktree for PR #%d in the background..." pr-number)
     (shipit--create-worktree-pr-async
-     pr-number branch-name pr-head-sha (current-buffer))))
+     pr-repo pr-number branch-name pr-head-sha (current-buffer))))
 
 (defun shipit--own-pr-worktree (pr-number pr-data)
   "The worktree that shipit made for PR-NUMBER, whose data is PR-DATA.
@@ -1411,7 +1411,7 @@ A worktree of yours is never synced: the sync runs `git reset --hard'."
 
     (let ((worktree-path (shipit--own-pr-worktree pr-number pr-data)))
       (message "Syncing worktree...")
-      (if (shipit--sync-worktree worktree-path branch-name)
+      (if (shipit--sync-worktree worktree-path pr-repo pr-number branch-name)
           (progn
             (message "Worktree synced successfully")
             ;; Refresh the shipit buffer to show updated sync status

@@ -536,12 +536,21 @@ the user looks at can be another one: ask `shipit--repo-for-buffer'."
         (puthash dir result shipit--repo-from-remote-cache)
         result)))))
 
-(defun shipit--remote-urls ()
-  "Return the URL of each git remote of the directory."
-  (mapcar (lambda (line) (substring line (1+ (string-search " " line))))
+(defun shipit--remotes ()
+  "Return each git remote of the directory, as (NAME . URL).
+In the order of the settings of git."
+  (mapcar (lambda (line)
+            (let ((space (string-search " " line)))
+              ;; Each line is remote.NAME.url URL, and NAME can hold dots.
+              (cons (substring line (length "remote.") (- space (length ".url")))
+                    (substring line (1+ space)))))
           ;; git exits with 1 when no key matches, so without remotes.
           (process-lines-ignore-status
            "git" "config" "--get-regexp" "^remote\\..*\\.url$")))
+
+(defun shipit--remote-urls ()
+  "Return the URL of each git remote of the directory."
+  (mapcar #'cdr (shipit--remotes)))
 
 (defun shipit--repos-from-remotes ()
   "Return the repository of each git remote of the directory.
@@ -551,11 +560,29 @@ repository that two remotes name is listed once."
    (delq nil (cons (shipit--get-repo-from-remote)
                    (mapcar #'shipit--parse-repo-from-url (shipit--remote-urls))))))
 
+(defun shipit--remote-naming (repo)
+  "Return the name of the git remote of the directory that names REPO, or nil.
+REPO is an owner/name path, compared without regard to case.  Origin
+comes first when it names REPO too."
+  (let ((naming (seq-filter (lambda (remote)
+                              (when-let* ((named (shipit--parse-repo-from-url (cdr remote))))
+                                (string-equal-ignore-case named repo)))
+                            (shipit--remotes))))
+    (car (or (assoc "origin" naming) (car naming)))))
+
+(defun shipit--repos-of-directory (directory)
+  "Return the repository of each git remote of DIRECTORY, as owner/name.
+Nil when DIRECTORY does not exist, or is in no repository.  See
+`shipit--repos-from-remotes'."
+  (when (file-directory-p directory)
+    (let ((default-directory (file-name-as-directory directory)))
+      (shipit--repos-from-remotes))))
+
 (defun shipit--clone-of-p (directory repo)
   "Whether the repository at DIRECTORY has a remote for REPO, as owner/name.
-A directory that is in no repository is a clone of nothing."
-  (let ((default-directory (file-name-as-directory directory)))
-    (and (member-ignore-case repo (shipit--repos-from-remotes)) t)))
+A directory that is in no repository is a clone of nothing.  A clone
+of a fork of REPO counts only for `shipit--clone-here-p'."
+  (and (member-ignore-case repo (shipit--repos-of-directory directory)) t))
 
 (defconst shipit--buffer-repo-variables
   '(shipit-buffer-repo

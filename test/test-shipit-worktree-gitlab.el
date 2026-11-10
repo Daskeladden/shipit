@@ -32,6 +32,7 @@
 (require 'url-vars)
 (require 'shipit-pr-gitlab)
 (require 'shipit-comment-gitlab)
+(require 'shipit-test-http)
 (require 'test-shipit-pr-worktree-found-cases)
 
 ;;; The kitchen: a forge of a GitLab project, a seed and a clone
@@ -125,46 +126,13 @@ reactions of the description and a query of GraphQL."
 
 ;;; GitLab, answered at curl
 
-(defun test-worktree-gitlab--option (args option)
-  "The value that follows OPTION in ARGS, the arguments of curl, or nil."
-  (cadr (member option args)))
-
-(defun test-worktree-gitlab--answer-curl (answers destination args)
-  "Answer the request of curl with ARGS from ANSWERS, into the buffer DESTINATION.
-A request that asks with -D for the headers gets a status line there.
-Curl exits with 0 for each status, as it does without --fail."
-  (let* ((url-request-method (test-worktree-gitlab--option args "-X"))
-         (url-request-data (test-worktree-gitlab--option args "-d"))
-         (url-request-extra-headers nil)
-         (address (car (last args)))
-         (answer (shipit-test-http--find answers address))
-         (headers-file (test-worktree-gitlab--option args "-D")))
-    (shipit-test-http--record address)
-    (when headers-file
-      (with-temp-file headers-file
-        (insert (format "HTTP/1.1 %d\n" (nth 1 answer)))))
-    (with-current-buffer destination
-      (insert (decode-coding-string
-               (shipit-test-http--body (shipit-test-http--body-for (nth 2 answer)))
-               'utf-8)))
-    0))
-
-(defun test-worktree-gitlab--curl-stand-in (answers)
-  "A stand-in for `call-process' that answers curl from ANSWERS.
-Each other program runs, as before."
-  (let ((call-process (symbol-function 'call-process)))
-    (lambda (program &optional infile destination display &rest args)
-      (if (equal program "curl")
-          (test-worktree-gitlab--answer-curl answers destination args)
-        (apply call-process program infile destination display args)))))
-
 (defun test-worktree-gitlab--answering (scenario)
   "Run SCENARIO, a function, with GitLab and GitHub answered at curl and url.el.
 A request that no answer covers fails it, as in `shipit-test-http-answering'."
   (let ((answers (test-worktree-gitlab--answers)))
     (shipit-test-http-answering answers
       (cl-letf (((symbol-function 'call-process)
-                 (test-worktree-gitlab--curl-stand-in answers)))
+                 (shipit-test-http-curl-stand-in answers)))
         (funcall scenario)))))
 
 ;;; A scenario

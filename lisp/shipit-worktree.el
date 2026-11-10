@@ -18,8 +18,6 @@
 (require 'shipit-pr-backends)
 (require 'json)
 
-(declare-function shipit--get-repo-from-remote "shipit-core")
-
 (defcustom shipit-worktree-fetch-blobless nil
   "When non-nil, `git fetch\=' for PR refs uses `--filter=blob:none\='.
 Blobless fetch downloads commits and trees without file contents;
@@ -234,26 +232,62 @@ editing `COMMIT_EDITMSG\=')."
               (append (and (fboundp 'magit-list-repos) (magit-list-repos))
                       (project-known-project-roots))))
 
-(defun shipit--clone-root (directory repo)
-  "The root of the working tree that DIRECTORY is in, when a clone of REPO.
-With a slash at its end.  Else nil."
-  (when (and (file-directory-p directory) (shipit--clone-of-p directory repo))
+(defun shipit--clone-root (directory)
+  "The root of the working tree that DIRECTORY is in, with a slash at its end.
+Nil when DIRECTORY is nil or in no working tree."
+  (when directory
     (let ((default-directory (file-name-as-directory directory)))
       (when-let* ((root (shipit--get-repo-root)))
         (file-name-as-directory root)))))
 
+(defun shipit--repos-reader ()
+  "A function of a directory that gives the repositories of its remotes.
+It reads the remotes of each directory once, see
+`shipit--repos-of-directory'."
+  (let ((read (make-hash-table :test 'equal)))
+    (lambda (directory)
+      (let ((known (gethash directory read 'shipit--unknown)))
+        (if (eq known 'shipit--unknown)
+            (puthash directory (shipit--repos-of-directory directory) read)
+          known)))))
+
+(defun shipit--names-repo-p (repos repo)
+  "Whether REPOS, the repositories of the remotes of a directory, hold REPO.
+Each is owner/name, compared without regard to case."
+  (and (member-ignore-case repo repos) t))
+
+(defun shipit--names-fork-of-p (directory repos repo)
+  "Whether one of REPOS is a fork of REPO, each as owner/name.
+REPOS are the repositories of the remotes of DIRECTORY.  The forge of
+DIRECTORY says what is a fork, see `shipit--fork-of-p'."
+  (let ((default-directory (file-name-as-directory directory)))
+    (and (seq-some (lambda (candidate) (shipit--fork-of-p candidate repo)) repos) t)))
+
 (defun shipit--local-clone-of (repo)
   "The root of a local clone of REPO, as owner/name, or nil when none is known.
 The repository of the current directory comes first, and then those
-that magit and project.el know, in their order."
-  (seq-some (lambda (directory) (shipit--clone-root directory repo))
-            (cons default-directory (shipit--known-repositories))))
+that magit and project.el know, in their order.  The first of them
+with a remote that names REPO wins.  When none has one, the first with
+a remote that names a fork of REPO wins, see `shipit--clone-here-p'."
+  (let ((repos-of (shipit--repos-reader))
+        (directories (cons default-directory (shipit--known-repositories))))
+    (shipit--clone-root
+     (or (seq-find (lambda (directory)
+                     (shipit--names-repo-p (funcall repos-of directory) repo))
+                   directories)
+         (seq-find (lambda (directory)
+                     (shipit--names-fork-of-p directory (funcall repos-of directory) repo))
+                   directories)))))
 
 (defun shipit--clone-here-p (repo)
   "Whether `default-directory' is in a clone of REPO, as owner/name.
-Any remote of the clone may name REPO, see `shipit--clone-of-p'.
-A nil REPO has no clone."
-  (and repo (shipit--clone-of-p default-directory repo)))
+That is when one of its remotes names REPO, or a fork of REPO.  The
+forge says what is a fork, and is asked only when no remote names
+REPO, see `shipit--fork-of-p'.  A nil REPO has no clone."
+  (and repo
+       (let ((repos (shipit--repos-of-directory default-directory)))
+         (or (shipit--names-repo-p repos repo)
+             (shipit--names-fork-of-p default-directory repos repo)))))
 
 (defun shipit--no-clone-text (pr-repo)
   "The words that say why `default-directory' is no clone of PR-REPO.
@@ -346,7 +380,8 @@ falsely-out-of-sync result can be diagnosed."
 ;;
 ;; A worktree counts for a pull request only when:
 ;; - the directory is in a clone of the base repository of the pull
-;;   request, that is, one of its remotes names that repository;
+;;   request, that is, one of its remotes names that repository, or a
+;;   fork of it that has its name, as the forge says;
 ;; - git lists the worktree;
 ;; - and its folder exists.
 ;; In a clone of another repository the pull request has no worktree,
@@ -1048,8 +1083,11 @@ REPO-ROOT is the repository that the worktree belongs to."
             '("--force"))
           (list worktree-path pr-head-sha)))
 
-(defun shipit--create-worktree-pr (pr-number branch-name pr-head-sha)
-  "Create a worktree for PR-NUMBER with BRANCH-NAME at PR-HEAD-SHA.
+(defun shipit--create-worktree-pr (pr-repo pr-number branch-name pr-head-sha)
+  "Create a worktree for PR-NUMBER of PR-REPO with BRANCH-NAME at PR-HEAD-SHA.
+PR-REPO is the base repository of the pull request, as owner/name.
+The pull request is fetched from where the backend says for PR-REPO,
+see `shipit-pr--fetch-remote-and-refspec'.
 Returns (path . success) on success, or nil on error.  A place where
 git still lists a worktree whose folder is gone is used again."
   (let* ((repo-root (shipit--get-repo-root))
@@ -1096,18 +1134,9 @@ git still lists a worktree whose folder is gone is used again."
           ;;    `shipit-worktree-fetch-blobless\=' is non-nil so we
           ;;    pull commits + trees without blobs; blobs stream in
           ;;    lazily during worktree checkout / file open.
-          (let* ((repo-slug (shipit--get-repo-from-remote))
-                 (resolved (shipit-pr--resolve-for-repo (or repo-slug "")))
-                 (backend (car resolved))
-                 (config (cdr resolved))
-                 (refspec-fn (plist-get backend :refspec-for-pr))
-                 (remote-fn (plist-get backend :remote-for-fetch))
-                 (refspec (if refspec-fn
-                              (funcall refspec-fn config pr-number branch-name)
-                            (error "Backend %s missing :refspec-for-pr" (shipit-pr--backend-id))))
-                 (remote (if remote-fn
-                             (funcall remote-fn config repo-slug)
-                           "origin")))
+          (let* ((source (shipit-pr--fetch-remote-and-refspec pr-repo pr-number branch-name))
+                 (remote (car source))
+                 (refspec (cdr source)))
             (cond
              ((shipit--worktree--commit-present-p repo-root pr-head-sha)
               (shipit--debug-log
@@ -1179,6 +1208,7 @@ git still lists a worktree whose folder is gone is used again."
           ;; Write PR metadata
           (shipit--write-pr-info-to-worktree worktree-path
                                              (list :pr-number pr-number
+                                                   :repo pr-repo
                                                    :branch branch-name
                                                    :pr-head-sha pr-head-sha
                                                    :created-at (format-time-string "%FT%T%z")))
@@ -1191,14 +1221,19 @@ git still lists a worktree whose folder is gone is used again."
        (shipit--debug-log "Failed to create worktree: %s" err)
        nil))))
 
-(defun shipit--create-worktree-pr-async (pr-number branch-name pr-head-sha pr-buffer
-                                                    &optional on-done on-failed)
+(defun shipit--create-worktree-pr-async (repo pr-number branch-name pr-head-sha pr-buffer
+                                              &optional on-done on-failed)
   "Async variant of `shipit--create-worktree-pr\='.
 Kicks off the fetch (if needed) and the `git worktree add\=' as
 chained `make-process\=' calls, updating
 `shipit-worktree--progress\=' and refreshing the Worktree
 section in PR-BUFFER between phases.  Returns immediately;
 callers should check / observe progress via the section.
+
+REPO is the base repository of the pull request PR-NUMBER, as
+owner/name.  The progress is kept under REPO, where the Worktree
+section looks for it.  The pull request is fetched from where the
+backend says for REPO, see `shipit-pr--fetch-remote-and-refspec'.
 
 ON-DONE, when non-nil, is a function called (inside PR-BUFFER
 if still live) once the worktree is ready and metadata is
@@ -1214,20 +1249,10 @@ used again."
   (let* ((repo-root (or (shipit--get-repo-root)
                         (user-error "Not in a git repository")))
          (worktree-path (shipit--get-worktree-path pr-number branch-name))
-         (repo (shipit--get-repo-from-remote))
          (env (and shipit-worktree-skip-lfs (list "GIT_LFS_SKIP_SMUDGE=1")))
-         (resolved (shipit-pr--resolve-for-repo (or repo "")))
-         (backend (car resolved))
-         (config (cdr resolved))
-         (refspec-fn (plist-get backend :refspec-for-pr))
-         (remote-fn (plist-get backend :remote-for-fetch))
-         (refspec (if refspec-fn
-                      (funcall refspec-fn config pr-number branch-name)
-                    (error "Backend %s missing :refspec-for-pr"
-                           (shipit-pr--backend-id))))
-         (remote (if remote-fn
-                     (funcall remote-fn config repo)
-                   "origin"))
+         (source (shipit-pr--fetch-remote-and-refspec repo pr-number branch-name))
+         (remote (car source))
+         (refspec (cdr source))
          ;; Step 3 of the chain: write metadata + clear progress + final refresh.
          (finish
           (lambda ()
@@ -1235,6 +1260,7 @@ used again."
                 (shipit--write-pr-info-to-worktree
                  worktree-path
                  (list :pr-number pr-number
+                       :repo repo
                        :branch branch-name
                        :pr-head-sha pr-head-sha
                        :created-at (format-time-string "%FT%T%z")))
@@ -1498,13 +1524,18 @@ treats any porcelain output as `worktree has uncommitted changes'."
           (write-region (point-min) (point-max) exclude))))))
 
 (defun shipit--write-pr-info-to-worktree (worktree-path pr-info)
-  "Write .shipit-pr-info.json to WORKTREE-PATH with PR-INFO plist."
+  "Write .shipit-pr-info.json to WORKTREE-PATH with PR-INFO plist.
+PR-INFO has :pr-number, :repo, :branch, :pr-head-sha and :created-at.
+:repo is the base repository of the pull request, as owner/name, which
+can be another one than that of the remote origin of the clone.
+Signal an error when PR-INFO has no :repo."
   (let* ((info-file (expand-file-name ".shipit-pr-info.json" worktree-path))
          (json-data `((pr_number . ,(plist-get pr-info :pr-number))
                       (branch . ,(plist-get pr-info :branch))
                       (pr_head_sha . ,(plist-get pr-info :pr-head-sha))
                       (created_at . ,(plist-get pr-info :created-at))
-                      (repo . ,(shipit--get-repo-from-remote))))
+                      (repo . ,(or (plist-get pr-info :repo)
+                                   (error "No repository for the PR of %s" worktree-path)))))
          (json-str (json-encode json-data)))
     (with-temp-file info-file
       (insert json-str))
@@ -1512,13 +1543,36 @@ treats any porcelain output as `worktree has uncommitted changes'."
     ;; should never count as untracked work that blocks sync.
     (shipit--worktree-exclude-pr-info worktree-path)))
 
-(defun shipit--sync-worktree (worktree-path branch-name)
-  "Sync WORKTREE-PATH with latest changes from BRANCH-NAME.
+(defun shipit--sync-fetch-source (pr-repo pr-number branch-name)
+  "Where Sync worktree fetches the pull request PR-NUMBER of PR-REPO from.
+That is (REMOTE . REFSPEC).  REMOTE is the git remote of the directory
+that names PR-REPO.  When there is none, as in a clone of a fork,
+REMOTE is what the backend says for PR-REPO.  REFSPEC is what the
+backend says for PR-NUMBER and BRANCH-NAME, see
+`shipit-pr--fetch-remote-and-refspec'."
+  (let ((source (shipit-pr--fetch-remote-and-refspec pr-repo pr-number branch-name)))
+    (cons (or (shipit--remote-naming pr-repo) (car source))
+          (cdr source))))
+
+(defun shipit--sync-fetch (pr-repo pr-number branch-name)
+  "Fetch the pull request PR-NUMBER of PR-REPO into `default-directory'.
+BRANCH-NAME is its branch.  FETCH_HEAD then points at its head.
+Signal an error when git fails.  See `shipit--sync-fetch-source'."
+  (let* ((source (shipit--sync-fetch-source pr-repo pr-number branch-name))
+         (exit (call-process "git" nil nil nil "fetch" (car source) (cdr source))))
+    (unless (= exit 0)
+      (error "git fetch %s %s failed (exit %d)" (car source) (cdr source) exit))))
+
+(defun shipit--sync-worktree (worktree-path pr-repo pr-number branch-name)
+  "Sync WORKTREE-PATH with the head of the pull request PR-NUMBER of PR-REPO.
+PR-REPO is the base repository of the pull request, as owner/name, and
+BRANCH-NAME is its branch.
 Aborts when the worktree has uncommitted changes -- the sync
 runs `git reset --hard' which would silently destroy them.
 
-Strategy: `git fetch origin BRANCH' then `git reset --hard
-FETCH_HEAD'.  No merge, no rebase, no conflict resolution -- the
+Strategy: `git fetch REMOTE REFSPEC' then `git reset --hard
+FETCH_HEAD', see `shipit--sync-fetch-source' for REMOTE and
+REFSPEC.  No merge, no rebase, no conflict resolution -- the
 worktree is treated as a read-only mirror of what the PR author
 pushed.  This eliminates the merge-conflict class that
 `git pull' produced whenever the author force-pushed (rewrote
@@ -1558,13 +1612,9 @@ sync didn\\='t happen."
         ;; future syncs + the user\='s own `git status\=' calls don\='t
         ;; surface it.
         (shipit--worktree-exclude-pr-info worktree-path)
-        ;; Fetch the PR branch.  FETCH_HEAD points to the freshly
-        ;; fetched tip regardless of whether a tracking ref exists.
-        (let ((exit (call-process "git" nil nil nil
-                                  "fetch" "origin" branch-name)))
-          (unless (= exit 0)
-            (error "git fetch origin %s failed (exit %d)"
-                   branch-name exit)))
+        ;; FETCH_HEAD points to the freshly fetched tip regardless of
+        ;; whether a tracking ref exists.
+        (shipit--sync-fetch pr-repo pr-number branch-name)
         ;; Move the worktree's branch pointer to the fetched tip.
         ;; No merge step, so a force-push can't produce conflicts.
         (let ((exit (call-process "git" nil nil nil
@@ -1577,7 +1627,7 @@ sync didn\\='t happen."
                              (shell-command-to-string "git rev-parse HEAD"))))
             (shipit--write-pr-info-to-worktree
              worktree-path
-             (plist-put pr-info :pr-head-sha latest-sha))))
+             (plist-put (plist-put pr-info :pr-head-sha latest-sha) :repo pr-repo))))
         t)
     (error
      (shipit--debug-log "Failed to sync worktree: %s" err)

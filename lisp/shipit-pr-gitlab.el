@@ -1682,6 +1682,13 @@ The access comes from the project itself or from its group."
                   (and (numberp level) (>= level 40))))
               '(project_access group_access))))
 
+(defun shipit-pr-gitlab--parent (project)
+  "The project that PROJECT, GitLab's data, was forked from, as GitHub names it.
+That is ((full_name . PATH)), or nil when PROJECT is no fork."
+  (when-let* ((path (cdr (assq 'path_with_namespace
+                               (cdr (assq 'forked_from_project project))))))
+    `((full_name . ,path))))
+
 (defun shipit-pr-gitlab--fetch-repo-info (config)
   "Fetch repository metadata using CONFIG.
 Normalizes GitLab fields to match the expected format."
@@ -1702,6 +1709,7 @@ Normalizes GitLab fields to match the expected format."
           (visibility . ,(cdr (assq 'visibility data)))
           (archived . ,(eq t (cdr (assq 'archived data))))
           (fork . ,(and (cdr (assq 'forked_from_project data)) t))
+          (parent . ,(shipit-pr-gitlab--parent data))
           (stargazers_count . ,(cdr (assq 'star_count data)))
           (permissions . ((admin . ,(shipit-pr-gitlab--administered-p data)))))))))
 

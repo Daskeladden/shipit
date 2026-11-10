@@ -217,6 +217,8 @@ test-unit: compile
 		-l test/test-shipit-pr-worktree-found.el \
 		-l test/test-shipit-pr-worktree-found-cases.el \
 		-l test/test-shipit-worktree-gitlab.el \
+		-l test/test-shipit-fork-clone.el \
+		-l test/test-shipit-fork-clone-cases.el \
 		-f ert-run-tests-batch-and-exit
 
 # Run integration tests

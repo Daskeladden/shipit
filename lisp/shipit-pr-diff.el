@@ -33,6 +33,8 @@
 (require 'shipit-render)
 (require 'shipit-comments)
 (require 'shipit-pr-backends)
+;; For what a clone of the repository of a pull request is, and its worktrees.
+(require 'shipit-worktree)
 (require 'shipit-rounded-section)
 
 (eval-when-compile
@@ -648,7 +650,7 @@ remote is only looked up when something is actually missing."
     (when (seq-remove #'shipit--sha-exists-locally-p shas)
       ;; A fetch into another repository would bring most of the history
       ;; of REPO along with the commit.
-      (unless (or (null repo) (shipit--clone-of-p default-directory repo))
+      (unless (or (null repo) (shipit--clone-here-p repo))
         (user-error "%s is no clone of %s, so its commits are not fetched here"
                     (abbreviate-file-name default-directory) repo))
       (let ((missing (shipit--ensure-shas-local
@@ -671,17 +673,9 @@ fails."
                  (not (y-or-n-p (format "Fetch PR #%s from %s? "
                                         pr-number (or repo "origin")))))
         (user-error "Aborted: required SHAs not in local repo"))
-      (let* ((resolved (shipit-pr--resolve-for-repo repo))
-             (backend (car resolved))
-             (config (cdr resolved))
-             (refspec-fn (plist-get backend :refspec-for-pr))
-             (remote-fn (plist-get backend :remote-for-fetch))
-             (refspec (if refspec-fn
-                          (funcall refspec-fn config pr-number head-ref)
-                        (error "Backend %s missing :refspec-for-pr" (shipit-pr--backend-id))))
-             (remote (if remote-fn
-                         (funcall remote-fn config repo)
-                       "origin"))
+      (let* ((source (shipit-pr--fetch-remote-and-refspec repo pr-number head-ref))
+             (remote (car source))
+             (refspec (cdr source))
              (cmd (format "git fetch %s %s 2>&1" (shell-quote-argument remote) refspec)))
         (message "Fetching PR #%s from %s (please wait)..." pr-number (or repo "origin"))
         (let ((output (shell-command-to-string cmd)))
@@ -2164,13 +2158,14 @@ PR is a plist from `shipit--pr-at-point'."
 That is when the number, the head and the branch of PR are known,
 PR has no worktree, neither shipit's own nor yours, and the
 directory is a clone of the repository of PR that is not at its
-head.  PR is a plist from `shipit--pr-at-point'."
+head.  See `shipit--clone-here-p' for what a clone is.  PR is a plist
+from `shipit--pr-at-point'."
   (and (integerp (plist-get pr :number))
        (plist-get pr :head-sha)
        (plist-get pr :branch)
        (not (shipit--pr-worktree pr))
        (shipit--clone-off-pr-head-p (plist-get pr :head-sha))
-       (shipit--local-repo-matches-p (plist-get pr :repo))))
+       (shipit--clone-here-p (plist-get pr :repo))))
 
 (defun shipit--checkout-chosen-p (pr)
   "Whether you said no to a worktree for PR on its branch, and are still on it.
@@ -2258,7 +2253,7 @@ PR is a plist from `shipit--pr-at-point'."
   (let ((page (current-buffer))
         (number (plist-get pr :number)))
     (shipit--create-worktree-pr-async
-     number (plist-get pr :branch) (plist-get pr :head-sha) page
+     (plist-get pr :repo) number (plist-get pr :branch) (plist-get pr :head-sha) page
      (lambda ()
        (shipit--open-file-in-new-worktree page pr file-path line-number))
      (lambda (_exit stderr-text)

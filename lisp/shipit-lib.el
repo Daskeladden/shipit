@@ -27,6 +27,7 @@
 
 ;; External dependency - magit-git functions
 (declare-function magit-git-exit-code "magit-git")
+(declare-function shipit-pr--fetch-remote-and-refspec "shipit-pr-backends")
 
 ;;; Git utilities
 
@@ -78,17 +79,9 @@ REPO is the repo (owner/name) to fetch from.  If nil, uses origin.
 HEAD-REF is the source branch name (used by GitLab backend).
 CALLBACK is called with t for success, nil for failure."
   (let* ((process-name (format "shipit-fetch-pr-%s" pr-number))
-         (resolved (shipit-pr--resolve-for-repo (or repo "")))
-         (backend (car resolved))
-         (config (cdr resolved))
-         (refspec-fn (plist-get backend :refspec-for-pr))
-         (remote-fn (plist-get backend :remote-for-fetch))
-         (refspec (if refspec-fn
-                      (funcall refspec-fn config pr-number head-ref)
-                    (error "Backend %s missing :refspec-for-pr" (shipit-pr--backend-id))))
-         (remote (if remote-fn
-                     (funcall remote-fn config repo)
-                   (error "Backend %s missing :remote-for-fetch" (shipit-pr--backend-id)))))
+         (source (shipit-pr--fetch-remote-and-refspec repo pr-number head-ref))
+         (remote (car source))
+         (refspec (cdr source)))
     (if (not refspec)
         (progn
           (shipit--debug-log "Cannot fetch PR ref: no refspec for backend")

@@ -20,6 +20,10 @@
 ;; must.  Code that does not leaves one buffer for each request, for the
 ;; life of Emacs.  So the whole form fails as well when a response is
 ;; still alive at its end.
+;;
+;; Shipit runs curl for each request to GitLab that waits for its
+;; answer.  `shipit-test-http-curl-stand-in' answers curl from the same
+;; answers, inside `shipit-test-http-answering'.
 
 ;;; Code:
 
@@ -199,6 +203,42 @@ alive when BODY ends fails the form too."
                       (shipit-test-http--retrieve ,table)))
              ,@body)
          (shipit-test-http--check)))))
+
+;;; curl
+
+(defun shipit-test-http--curl-option (args option)
+  "The value that follows OPTION in ARGS, the arguments of curl, or nil."
+  (cadr (member option args)))
+
+(defun shipit-test-http--answer-curl (answers destination args)
+  "Answer the request of curl with ARGS from ANSWERS, into the buffer DESTINATION.
+A request that asks with -D for the headers gets a status line there.
+Curl exits with 0 for each status, as it does without --fail."
+  (let* ((url-request-method (shipit-test-http--curl-option args "-X"))
+         (url-request-data (shipit-test-http--curl-option args "-d"))
+         (url-request-extra-headers nil)
+         (address (car (last args)))
+         (answer (shipit-test-http--find answers address))
+         (headers-file (shipit-test-http--curl-option args "-D")))
+    (shipit-test-http--record address)
+    (when headers-file
+      (with-temp-file headers-file
+        (insert (format "HTTP/1.1 %d\n" (shipit-test-http--status-for (nth 1 answer))))))
+    (with-current-buffer destination
+      (insert (decode-coding-string
+               (shipit-test-http--body (shipit-test-http--body-for (nth 2 answer)))
+               'utf-8)))
+    0))
+
+(defun shipit-test-http-curl-stand-in (answers)
+  "A stand-in for `call-process' that answers curl from ANSWERS.
+ANSWERS are as `shipit-test-http-answering' takes them, and the stand-in
+must run inside it.  Each other program runs, as before."
+  (let ((call-process (symbol-function 'call-process)))
+    (lambda (program &optional infile destination display &rest args)
+      (if (equal program "curl")
+          (shipit-test-http--answer-curl answers destination args)
+        (apply call-process program infile destination display args)))))
 
 (provide 'shipit-test-http)
 ;;; shipit-test-http.el ends here

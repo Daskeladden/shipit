@@ -3,6 +3,7 @@
 (require 'ert)
 (require 'shipit-worktree)
 (require 'shipit-commands)
+(require 'shipit-test-http)
 
 ;;; Real repositories in temporary directories
 
@@ -141,15 +142,20 @@ directory\"."
   (should (fboundp 'shipit-worktree)))
 
 (ert-deftest shipit--create-worktree-pr-test ()
-  "Test creating a worktree for a PR branch."
-  ;; This needs mocking of git commands
-  (should (or (listp (shipit--create-worktree-pr 123 "feature-branch" "abc1234"))
-              (eq nil (shipit--create-worktree-pr 123 "feature-branch" "abc1234")))))
+  "A worktree is not made for a pull request whose commit git cannot fetch."
+  ;; GIVEN a new clone of owner/repo, where git may not use the network
+  ;; WHEN a worktree is made for a pull request whose commit is not there
+  ;; THEN it gives nil, and the folder of the worktree is not made
+  (test-shipit-worktree--in-a-clone-of "owner/repo"
+    ;; Git refuses each address but a file, so the fetch stays off the network.
+    (let ((process-environment (cons "GIT_ALLOW_PROTOCOL=file" process-environment)))
+      (should-not (shipit--create-worktree-pr "owner/repo" 123 "feature-branch" "abc1234"))
+      (should-not (file-directory-p (shipit--get-worktree-path 123 "feature-branch"))))))
 
 (ert-deftest shipit--sync-worktree-test ()
   "Test syncing worktree with latest PR commits."
-  (should (or (eq t (shipit--sync-worktree "/fake/path" "feature-branch"))
-              (eq nil (shipit--sync-worktree "/fake/path" "feature-branch")))))
+  (should (or (eq t (shipit--sync-worktree "/fake/path" "owner/repo" 123 "feature-branch"))
+              (eq nil (shipit--sync-worktree "/fake/path" "owner/repo" 123 "feature-branch")))))
 
 (ert-deftest shipit--delete-worktree-test ()
   "Test deleting a worktree."
@@ -169,16 +175,34 @@ directory\"."
   (test-shipit-worktree--in-a-clone-of "owner/repo"
     (should (eq t (shipit--validate-pr-repo "owner/repo")))))
 
+(defmacro test-shipit-worktree--when-github-says-no-fork (repo &rest body)
+  "Run BODY while GitHub says that REPO, as owner/name, is no fork.
+Shipit asks GitHub about a repository of the clone that has the name
+of the repository of a pull request.  It remembers no answer about a
+fork from an earlier test."
+  (declare (indent 1))
+  `(let ((shipit-github-token "not-a-token")
+         (shipit--github-token-cache nil)
+         (shipit-pr-backend 'github)
+         (shipit-pr-backend-config nil)
+         (shipit--forked-from-cache (make-hash-table :test 'equal)))
+     (shipit-test-http-answering
+         (list (list (concat "/repos/" (regexp-quote ,repo) "\\'") 200
+                     (list (cons 'full_name ,repo) (cons 'fork :json-false))))
+       ,@body)))
+
 (ert-deftest shipit--validate-pr-repo-mismatch-test ()
   "A clone of another repository does not validate."
   ;; GIVEN a repository whose remote origin names owner/repo
+  ;; AND GitHub says that owner/repo is no fork
   ;; WHEN a pull request of different/repo is validated there
   ;; THEN a user error says that the directory is no clone of
   ;;   different/repo, so the pull request has no worktree here
   (test-shipit-worktree--in-a-clone-of "owner/repo"
-    (should (equal (test-shipit-worktree--no-clone-said "different/repo")
-                   (cadr (should-error (shipit--validate-pr-repo "different/repo")
-                                       :type 'user-error))))))
+    (test-shipit-worktree--when-github-says-no-fork "owner/repo"
+      (should (equal (test-shipit-worktree--no-clone-said "different/repo")
+                     (cadr (should-error (shipit--validate-pr-repo "different/repo")
+                                         :type 'user-error)))))))
 
 (ert-deftest shipit--validate-pr-repo-no-current-test ()
   "A directory that is in no repository does not validate."

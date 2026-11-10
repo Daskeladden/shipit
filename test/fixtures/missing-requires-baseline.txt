@@ -62,8 +62,6 @@ shipit-issue-jira.el:shipit-gh-etag--save-cache
 shipit-issues-buffer.el:shipit--get-repo-root
 shipit-issues-buffer.el:shipit-repo-buffer--insert-markdown-as-sections
 shipit-lib.el:shipit--debug-log
-shipit-lib.el:shipit-pr--backend-id
-shipit-lib.el:shipit-pr--resolve-for-repo
 shipit-notifications-buffer.el:shipit-open-releases-buffer
 shipit-notifications-buffer.el:shipit-repo-subscription
 shipit-notifications.el:shipit-discussions-open-buffer

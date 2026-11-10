@@ -613,6 +613,17 @@ a repository without a clone still shows what the forge gives."
   (or (shipit--local-clone-of repo)
       (file-name-as-directory (or (shipit--get-repo-root) default-directory))))
 
+(defun shipit-buffer--directory-for-page (repo backend-id backend-config)
+  "The directory of a new pull request buffer of REPO.
+That is what `shipit-buffer--directory-for' gives for REPO.
+BACKEND-ID and BACKEND-CONFIG, when non-nil, are the backend and its
+settings for the buffer, as `shipit-open-pr-buffer' takes them.  The
+forge of the buffer is the one that says whether a clone of a fork is
+a clone of REPO, and the buffer does not exist yet."
+  (let ((shipit-pr-backend (or backend-id shipit-pr-backend))
+        (shipit-pr-backend-config (or backend-config shipit-pr-backend-config)))
+    (shipit-buffer--directory-for repo)))
+
 (defun shipit-buffer--rerender-general-comments ()
   "Draw the general comments of this pull request again, in the order set.
 They are drawn from what the buffer holds."
@@ -813,7 +824,7 @@ BACKEND-CONFIG, when non-nil, overrides `shipit-pr-backend-config'."
      (t
       (shipit--debug-log "Creating new shipit buffer: %s (backend: %s)" buffer-name (or backend-id "default"))
       (let ((buffer (generate-new-buffer buffer-name))
-            (repo-root (shipit-buffer--directory-for repo)))
+            (repo-root (shipit-buffer--directory-for-page repo backend-id backend-config)))
         (with-current-buffer buffer
           (shipit-mode)
           ;; Set default-directory to repo root for git commands

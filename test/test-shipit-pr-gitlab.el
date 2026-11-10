@@ -9,6 +9,7 @@
 (require 'cl-lib)
 (require 'shipit-core)
 (require 'shipit-pr-backends)
+(require 'shipit-test-http)
 
 ;;; Test data helpers
 
@@ -2696,6 +2697,51 @@ THEN the info has the count under the name that the repo page reads."
                                  (shipit-pr-gitlab--fetch-repo-info
                                   '(:api-url "https://gitlab.com" :token "test-token"
                                     :project-path "group/project"))))))))
+
+(defmacro test-gitlab--answering-at-curl (answers &rest body)
+  "Run BODY with GitLab answering each request of curl from ANSWERS.
+ANSWERS are as `shipit-test-http-answering' takes them."
+  (declare (indent 1))
+  (let ((table (make-symbol "answers")))
+    `(let ((,table ,answers))
+       (shipit-test-http-answering ,table
+         (cl-letf (((symbol-function 'call-process)
+                    (shipit-test-http-curl-stand-in ,table)))
+           ,@body)))))
+
+(defun test-gitlab--project-answer (path project)
+  "GitLab's answer about the project at PATH, whose data is PROJECT."
+  (list (concat (regexp-quote (concat "gitlab.example.com/api/v4/projects/"
+                                      (url-hexify-string path)))
+                "\\'")
+        200 project))
+
+(defun test-gitlab--repo-info-of (path)
+  "The repository info of the GitLab project at PATH, as the backend gives it."
+  (shipit-pr-gitlab--fetch-repo-info
+   (list :api-url "https://gitlab.example.com" :token "not-a-token" :project-path path)))
+
+(ert-deftest test-shipit-pr-gitlab-repo-info-names-the-project-it-was-forked-from ()
+  "The repository info of a fork names the project that it was forked from, as its parent."
+  ;; GIVEN the GitLab project me/cups, which was forked from
+  ;;   kitchen/menu/cups
+  ;; AND the GitLab project kitchen/menu/cups, which is no fork
+  ;; WHEN the repository info of each is fetched
+  ;; THEN that of me/cups names kitchen/menu/cups as its parent
+  ;; AND that of kitchen/menu/cups names no parent
+  (require 'shipit-pr-gitlab)
+  (test-gitlab--answering-at-curl
+      (list (test-gitlab--project-answer
+             "me/cups" '((id . 9) (path_with_namespace . "me/cups") (namespace (name . "me"))
+                         (forked_from_project (id . 5)
+                                              (path_with_namespace . "kitchen/menu/cups"))))
+            (test-gitlab--project-answer
+             "kitchen/menu/cups" '((id . 5) (path_with_namespace . "kitchen/menu/cups")
+                                   (namespace (name . "menu")))))
+    (should (equal "kitchen/menu/cups"
+                   (cdr (assq 'full_name
+                              (cdr (assq 'parent (test-gitlab--repo-info-of "me/cups")))))))
+    (should-not (cdr (assq 'parent (test-gitlab--repo-info-of "kitchen/menu/cups"))))))
 
 (ert-deftest test-shipit-pr-gitlab-repo-address-is-on-the-server-of-the-settings ()
   "The web address of a project is on the GitLab server that the settings name."

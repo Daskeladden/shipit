@@ -76,6 +76,12 @@
 ;;   :search-raw              — (config query page per-page) → search results
 ;;   :refspec-for-pr          — (config pr-number head-ref) → refspec string
 ;;   :remote-for-fetch        — (config repo) → remote name or URL
+;;   :fetch-repo-info         — (config) → repository alist as GitHub
+;;                              gives it, or nil when the forge did not
+;;                              answer.  For a fork, parent and source
+;;                              each hold the full_name of the repository
+;;                              that it was forked from, and of the first
+;;                              repository of its chain
 ;;   :pr-type-label           — string, e.g. "Pull Request" or "Merge Request"
 ;;   :editor-extra-keys       — alist of (key-string . command) for editor keybindings
 ;;   :editor-reference-hints  — string for editor header line, e.g. "#: PR" or "#: Issue, !: MR"
@@ -208,6 +214,102 @@ When backend has :inject-project-path, also populates :project-path from REPO."
                (not (plist-get config :project-id)))
       (setq config (plist-put config :project-path repo)))
     (cons backend-plist config)))
+
+(defun shipit-pr--resolve-for-other-repo (repo)
+  "Resolve the PR backend and config for REPO, whatever project the settings name.
+As `shipit-pr--resolve-for-repo', but the config names REPO also when
+the settings name a project, such as the settings of the page of a
+merge request."
+  (let ((shipit-pr-backend-config
+         (cl-loop for (key value) on shipit-pr-backend-config by #'cddr
+                  unless (memq key '(:project-path :project-id))
+                  append (list key value))))
+    (shipit-pr--resolve-for-repo repo)))
+
+(defun shipit-pr--fetch-remote-and-refspec (repo pr-number head-ref)
+  "Where to fetch the pull request PR-NUMBER of REPO from, as (REMOTE . REFSPEC).
+REPO is owner/name, or nil when it is not known.  REMOTE is what the
+backend's :remote-for-fetch gives for REPO, or \"origin\" when the
+backend has none.  REFSPEC is what its :refspec-for-pr gives for
+PR-NUMBER and HEAD-REF, the branch of the pull request.  Signal an
+error when the backend has no :refspec-for-pr."
+  (let* ((resolved (shipit-pr--resolve-for-repo (or repo "")))
+         (backend (car resolved))
+         (config (cdr resolved))
+         (refspec-fn (or (plist-get backend :refspec-for-pr)
+                         (error "Backend %s missing :refspec-for-pr" (shipit-pr--backend-id))))
+         (remote-fn (plist-get backend :remote-for-fetch)))
+    (cons (if remote-fn (funcall remote-fn config repo) "origin")
+          (funcall refspec-fn config pr-number head-ref))))
+
+;;; Forks
+;;
+;; A clone of a fork counts as a clone of the repository that the fork
+;; came from, see `shipit--clone-here-p'.  Only the forge knows where a
+;; fork came from.  Shipit asks it only about a repository with the name
+;; of the other one, so a fork that was given another name does not
+;; count.
+
+(defvar shipit--forked-from-cache (make-hash-table :test 'equal)
+  "The repositories that a repository was forked from, as the forge said.
+The key is the list of the backend and the repository, as owner/name
+in lower case.  The value is a list of owner/name paths, or nil for a
+repository that is no fork.  A question that the forge did not answer
+leaves no entry, so the forge is asked again the next time.  Cleared
+by `shipit-clear-all-caches'.")
+
+(defun shipit--repo-name (repo)
+  "The name of REPO, the last part of its owner/name path."
+  (car (last (split-string repo "/"))))
+
+(defun shipit--same-repo-name-p (repo other)
+  "Whether REPO and OTHER, each as owner/name, have the same name, in any case."
+  (string-equal-ignore-case (shipit--repo-name repo) (shipit--repo-name other)))
+
+(defun shipit-pr--fetch-repo-info-quietly (repo)
+  "The data that the forge gives about REPO, as owner/name, or nil.
+Nil when the forge gives no answer, and when the backend has no
+:fetch-repo-info.  A failed request goes to the debug log, so that it
+does not break what asked."
+  (let* ((resolved (shipit-pr--resolve-for-other-repo repo))
+         (fetch (plist-get (car resolved) :fetch-repo-info)))
+    (when fetch
+      (condition-case err
+          (or (funcall fetch (cdr resolved))
+              (progn (shipit--debug-log "The forge gave no data about %s" repo)
+                     nil))
+        (error
+         (shipit--debug-log "Asking the forge about %s failed: %s"
+                            repo (error-message-string err))
+         nil)))))
+
+(defun shipit--fork-sources (info)
+  "The repositories that the forge's data INFO says its repository came from.
+That is its parent and its source, the first repository of its chain,
+as owner/name, without nil and without duplicates."
+  (delete-dups
+   (delq nil (mapcar (lambda (key) (cdr (assq 'full_name (cdr (assq key info)))))
+                     '(parent source)))))
+
+(defun shipit--forked-from (repo)
+  "The repositories that REPO, as owner/name, was forked from, as the forge says.
+That is its parent and the first repository of its chain.  Nil when
+REPO is no fork, or when the forge gave no answer.  An answer is
+remembered in `shipit--forked-from-cache', and no answer is not."
+  (let* ((key (list (shipit-pr--backend-id) (downcase repo)))
+         (known (gethash key shipit--forked-from-cache 'shipit--unknown)))
+    (if (not (eq known 'shipit--unknown))
+        known
+      (when-let* ((info (shipit-pr--fetch-repo-info-quietly repo)))
+        (puthash key (shipit--fork-sources info) shipit--forked-from-cache)))))
+
+(defun shipit--fork-of-p (fork repo)
+  "Whether FORK was forked from REPO, each as owner/name, as the forge says.
+REPO must be the parent of FORK or the first repository of its chain.
+The forge is asked only when FORK has the name of REPO."
+  (and (shipit--same-repo-name-p fork repo)
+       (member-ignore-case repo (shipit--forked-from fork))
+       t))
 
 ;;; Output contracts — define required fields per operation
 

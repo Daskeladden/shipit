@@ -239,6 +239,8 @@ This function should be called before accessing any cache to prevent nil errors.
     (clrhash shipit--detect-backend-cache))
   (when (boundp 'shipit--repo-root-cache)
     (clrhash shipit--repo-root-cache))
+  (when (boundp 'shipit--forked-from-cache)
+    (clrhash shipit--forked-from-cache))
   (when (boundp 'shipit-issue-gitbug--checkouts)
     (clrhash shipit-issue-gitbug--checkouts))
   (when (boundp 'shipit-worktree--lfs-status-cache)

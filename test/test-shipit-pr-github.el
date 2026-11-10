@@ -8,9 +8,11 @@
 
 (require 'ert)
 (require 'cl-lib)
+(require 'seq)
 (require 'shipit-core)
 (require 'shipit-pr-backends)
 (require 'shipit-pr-github)
+(require 'shipit-test-http)
 ;; The search path reaches query builders living outside the backend;
 ;; under make an earlier file loads them, alone nothing did.
 (require 'shipit-commands)
@@ -172,6 +174,45 @@ GitHub shows no video there."
                 (concat upload "\n\nhttps://example.com/cup.mp4\n")))))
     (should (string-match-p "^🎥 Video ▸$" out))
     (should (string-match-p "^\\[> Play Video\\]$" out))))
+
+;;; Forks
+
+(defvar shipit--forked-from-cache)
+
+(defmacro test-github--answering (answers &rest body)
+  "Run BODY with GitHub giving ANSWERS, and nothing remembered about forks.
+ANSWERS are as `shipit-test-http-answering' takes them."
+  (declare (indent 1))
+  `(let ((shipit-github-token "not-a-token")
+         (shipit--github-token-cache nil)
+         (shipit-pr-backend 'github)
+         (shipit-pr-backend-config nil)
+         (shipit--forked-from-cache (make-hash-table :test 'equal)))
+     (shipit-test-http-answering ,answers
+       ,@body)))
+
+(defun test-github--times-asked-about (repo)
+  "How often GitHub was asked about REPO itself, as owner/name."
+  (seq-count (lambda (request)
+               (string-match-p (concat "/repos/" (regexp-quote repo) "\\'") (cadr request)))
+             shipit-test-http-requests))
+
+(ert-deftest test-github-a-fork-of-a-fork-is-one-of-its-parent-and-its-source ()
+  "A fork of a fork is a fork of its parent and of the first repository of its chain."
+  ;; GIVEN GitHub says that me/r is a fork of guest/r, and that the first
+  ;;   repository of its chain is o/r
+  ;; WHEN shipit asks whether me/r is a fork of guest/r, of o/r and of
+  ;;   pots/r
+  ;; THEN it is a fork of guest/r and of o/r, and not of pots/r
+  ;; AND GitHub was asked about me/r once
+  (test-github--answering
+      '(("/repos/me/r\\'" 200 ((full_name . "me/r") (fork . t)
+                               (parent (full_name . "guest/r"))
+                               (source (full_name . "o/r")))))
+    (should (shipit--fork-of-p "me/r" "guest/r"))
+    (should (shipit--fork-of-p "me/r" "o/r"))
+    (should-not (shipit--fork-of-p "me/r" "pots/r"))
+    (should (= 1 (test-github--times-asked-about "me/r")))))
 
 (provide 'test-shipit-pr-github)
 ;;; test-shipit-pr-github.el ends here

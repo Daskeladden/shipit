@@ -140,8 +140,6 @@ THEN it is acme/widget."
     ;; Works on the worktrees of the repository in the directory.
     shipit--lfs-pull-all-worktree shipit--lfs-pull-prompted-worktree
     shipit--lfs-pull-pr-worktree
-    shipit--create-worktree-pr shipit--create-worktree-pr-async
-    shipit--write-pr-info-to-worktree
     shipit-magit-worktrees-insert-section shipit-magit-worktrees-browse-pr
     shipit-magit-worktrees-copy-pr-url shipit-magit-worktrees-remove-merged
     ;; The issue tracker of an issue page is not where its pull requests are.

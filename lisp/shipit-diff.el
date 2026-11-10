@@ -500,7 +500,7 @@ If LINE-NUMBER is provided, position cursor on that line."
            ("sync worktree first"
             (when (fboundp 'shipit--sync-worktree)
               (let ((branch (cdr (assq 'ref (cdr (assq 'head pr-data))))))
-                (if (shipit--sync-worktree worktree-path branch)
+                (if (shipit--sync-worktree worktree-path pr-repo pr-number branch)
                     (let ((full-path (expand-file-name file-path worktree-path)))
                       (cond
                        ((file-exists-p full-path)

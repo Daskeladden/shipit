@@ -3138,14 +3138,11 @@ backend of them.")
 (defun shipit--run-poll-hook ()
   "Run `shipit-notifications-poll-hook'.
 A function that fails is logged, and the others still run."
-  (run-hook-wrapped
+  (shipit--run-hook-reporting-errors
    'shipit-notifications-poll-hook
-   (lambda (function)
-     (condition-case err
-         (funcall function)
-       (error (shipit--debug-log "Poll hook %s failed: %s"
-                                 function (error-message-string err))))
-     nil)))
+   (lambda (function err)
+     (shipit--debug-log "Poll hook %s failed: %s"
+                        function (error-message-string err)))))
 
 (defun shipit--poll-backend-notifications ()
   "Poll configured backends that have :notifications and merge results.

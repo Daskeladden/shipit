@@ -460,6 +460,18 @@ THEN what stands on that hook runs."
         (shipit--poll-backend-notifications)))
     (should (= 1 ran))))
 
+(ert-deftest test-explore-a-poll-function-that-fails-stops-no-other ()
+  "GIVEN two functions on the hook of a poll: the first one fails, and the
+second one counts its runs
+WHEN shipit runs the hook of a poll
+THEN no error is signalled, AND the second function ran once."
+  (let* ((ran 0)
+         (shipit-notifications-poll-hook
+          (list (lambda () (error "The cup is broken"))
+                (lambda () (cl-incf ran)))))
+    (shipit--run-poll-hook)
+    (should (= 1 ran))))
+
 (ert-deftest test-explore-the-notification-opens-explore ()
   "GIVEN the notification of new entries in the notifications buffer
 WHEN it is opened

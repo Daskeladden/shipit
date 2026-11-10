@@ -796,6 +796,19 @@ git fails, with what it said."
       (error "shipit: git %s failed: %s" (string-join args " ") output))
     output))
 
+(defun shipit--run-hook-reporting-errors (hook report &rest args)
+  "Call each function of HOOK with ARGS.
+A function that signals an error does not stop the others.  REPORT is
+called with that function and with the error, and the next function
+runs."
+  (run-hook-wrapped
+   hook
+   (lambda (function)
+     (condition-case err
+         (apply function args)
+       (error (funcall report function err)))
+     nil)))
+
 (defvar shipit-branch-name-suggester nil
   "A function that suggests a name for a new branch, or nil for none.
 It is called in the buffer of the work with DESCRIPTION, text that

@@ -38,8 +38,19 @@
 (defvar shipit-issue-created-hook nil
   "Hook run after `shipit-issue-create--submit' successfully creates an issue.
 Each function is called with two arguments: the new issue NUMBER (or
-backend key) and the REPO string.  Handlers should be idempotent; a
-failing handler does not abort the normal post-create flow.")
+backend key) and the REPO string.  Handlers should be idempotent.  A
+handler that fails is named in the echo area.  The other handlers and
+the normal post-create flow still run.")
+
+(defun shipit-issue-create--run-created-hook (number repo)
+  "Run `shipit-issue-created-hook' for the new issue NUMBER of REPO.
+The issue is made by now, so a function that fails must stop nothing."
+  (shipit--run-hook-reporting-errors
+   'shipit-issue-created-hook
+   (lambda (function err)
+     (message "Issue %s is made, but %s failed: %s"
+              number function (error-message-string err)))
+   number repo))
 
 ;;; Buffer-local state
 
@@ -566,7 +577,7 @@ Includes only fields that have values set."
             ;; Remove save-draft hook before killing to avoid re-saving
             (remove-hook 'kill-buffer-hook #'shipit-issue-create--save-draft t)
             (message "Created issue %s" number)
-            (run-hook-with-args 'shipit-issue-created-hook number repo)
+            (shipit-issue-create--run-created-hook number repo)
             (kill-buffer (current-buffer))
             (shipit-issues-open-buffer number repo))
         (error

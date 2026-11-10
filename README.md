@@ -300,7 +300,7 @@ If one of these two functions is set, shipit calls it. Each holds nil until a pa
 | Hook point | File | Use |
 |------------|------|-----|
 | `shipit-init-hook` | `shipit` | Runs at the end of `shipit-init`. |
-| `shipit-issue-created-hook` | `shipit-issue-create` | Runs after shipit created an issue from the buffer of a new issue. Each function gets the number or the key of the issue, and the repository. |
+| `shipit-issue-created-hook` | `shipit-issue-create` | Runs after shipit created an issue from the buffer of a new issue. Each function gets the number or the key of the issue, and the repository. shipit names a function that fails in the echo area, and the other functions still run. |
 | `shipit-worktree-move-functions` | `shipit-worktree-move` | Runs after the work of a checkout moved to a worktree. Each function gets the directory of the checkout and the directory of the worktree. |
 | `shipit-notifications-poll-hook` | `shipit-notifications` | Runs each time shipit polls for notifications. shipit logs a function that fails, and the other functions still run. |
 | `shipit-code-block-copy-functions` | `shipit-core` | Runs after a copy of the code of a code block. Each function gets the start and the end of the copied lines. |

@@ -544,5 +544,37 @@ Git looks for no repository above the kitchen."
     (should (test-worktree-offer--in-review-mode-p
              (test-pr-worktree-found--in-my-worktree "brew.sh")))))
 
+;;; A clone whose remote has an address with a scheme
+
+(defconst test-pr-worktree-found-cases--ssh-address "ssh://git@github.com/o/r.git"
+  "The address of o/r at GitHub in the form that starts with ssh://.")
+
+(defun test-pr-worktree-found-cases--origin-with-an-ssh-scheme ()
+  "Give the clone, on main, an origin with an address that starts with ssh://.
+Git rewrites that address to the forge too, so a fetch from origin works."
+  (test-worktree-offer--clone-on-main)
+  (test-worktree-offer--git "clone" "config" "remote.origin.url"
+                            test-pr-worktree-found-cases--ssh-address)
+  (test-worktree-offer--git "clone" "config" "--add"
+                            (format "url.%s.insteadOf" (test-worktree-offer--path "forge.git"))
+                            test-pr-worktree-found-cases--ssh-address))
+
+(ert-deftest test-pr-worktree-found-cases-checkout-in-a-clone-with-an-ssh-scheme-origin ()
+  "Checkout in worktree makes the worktree in a clone whose origin starts with ssh://."
+  ;; GIVEN the page of pull request 8 of o/r, in a clone of o/r whose
+  ;;   origin has the address ssh://git@github.com/o/r.git
+  ;; WHEN I run "Checkout in worktree" of the worktree menu
+  ;; THEN the Worktree section does not say that the clone is no clone of o/r
+  ;; AND the command does not refuse
+  ;; AND when the worktree is ready, it is at the head of the PR
+  (test-pr-worktree-found-cases--on-the-page-in-the-clone
+      #'test-pr-worktree-found-cases--origin-with-an-ssh-scheme
+    (should-not (string-search "is no clone of" (test-worktree-offer--worktree-section)))
+    (should-not (test-pr-worktree-found--run-from-the-worktree-menu
+                 #'shipit--checkout-pr-worktree))
+    (test-pr-worktree-found--wait-until-ready)
+    (should (equal (test-worktree-offer--sha "coffee")
+                   (test-pr-worktree-found-cases--head-of-pr-8-coffee)))))
+
 (provide 'test-shipit-pr-worktree-found-cases)
 ;;; test-shipit-pr-worktree-found-cases.el ends here

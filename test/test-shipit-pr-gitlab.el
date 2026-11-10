@@ -1102,6 +1102,28 @@ THEN returns the full nested path."
   (should (string= "org/subgroup/project"
                     (shipit--parse-repo-from-url "git@gitlab.com:org/subgroup/project.git\n"))))
 
+(ert-deftest test-shipit-parse-repo-from-url-ssh-scheme ()
+  "GIVEN a remote URL that starts with ssh://
+WHEN calling shipit--parse-repo-from-url
+THEN returns owner/repo, as for the form git@host:owner/repo."
+  (should (equal "owner/repo"
+                 (shipit--parse-repo-from-url "ssh://git@github.com/owner/repo.git\n"))))
+
+(ert-deftest test-shipit-parse-repo-from-url-ssh-scheme-with-a-port ()
+  "GIVEN a remote URL that starts with ssh:// and names a port
+WHEN calling shipit--parse-repo-from-url
+THEN returns the full path of the project, without the port."
+  (should (equal "kitchen/menu/cups"
+                 (shipit--parse-repo-from-url
+                  "ssh://git@gitlab.example.com:2222/kitchen/menu/cups.git\n"))))
+
+(ert-deftest test-shipit-parse-repo-from-url-git-scheme ()
+  "GIVEN a remote URL that starts with git://
+WHEN calling shipit--parse-repo-from-url
+THEN returns owner/repo."
+  (should (equal "owner/repo"
+                 (shipit--parse-repo-from-url "git://github.com/owner/repo.git\n"))))
+
 ;;; Backend infrastructure ops tests
 
 (ert-deftest test-shipit-pr-github-refspec-for-pr ()

@@ -484,25 +484,25 @@ to this maximum level to maintain readability.")
   "Internal variable to prevent void-variable errors during evaluation.")
 
 
+(defconst shipit--remote-url-path-regexps
+  '("\\(?:ssh\\|git\\|https?\\)://[^/]+/\\(.+\\)"
+    "git@[^:]+:\\(.+\\)")
+  "Regexps for the URL of a git remote; group 1 is the path of its repository.
+The first is for a URL with a scheme, as ssh://git@host:2222/path/to/repo.git
+and https://host/path/to/repo.git.  The second is for git@host:path/to/repo.git.
+The one with a scheme comes first, because the other one reads the
+port of ssh://git@host:2222/path as the start of the path.")
+
 (defun shipit--parse-repo-from-url (url)
   "Parse owner/repo path from git remote URL.
 Matches any git host (GitHub, GitLab, self-hosted) using SSH or HTTPS.
+SSH is git@host:path, or ssh://git@host/path with or without a port.
 For nested paths (e.g. gitlab.com:org/subgroup/project), returns the full path."
   (let ((clean-url (string-trim url)))
-    (cond
-     ;; SSH: git@host:path/to/repo.git
-     ((string-match "git@[^:]+:\\(.+\\)" clean-url)
-      (let ((path (match-string 1 clean-url)))
-        (when (string-suffix-p ".git" path)
-          (setq path (substring path 0 -4)))
-        path))
-     ;; HTTPS: https://host/path/to/repo.git
-     ((string-match "https?://[^/]+/\\(.+\\)" clean-url)
-      (let ((path (match-string 1 clean-url)))
-        (when (string-suffix-p ".git" path)
-          (setq path (substring path 0 -4)))
-        path))
-     (t nil))))
+    (seq-some (lambda (regexp)
+                (when (string-match regexp clean-url)
+                  (string-remove-suffix ".git" (match-string 1 clean-url))))
+              shipit--remote-url-path-regexps)))
 
 (defvar shipit--repo-from-remote-cache (make-hash-table :test 'equal)
   "Hash of `default-directory' -> cached `owner/name' repo string.

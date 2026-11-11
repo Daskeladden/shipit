@@ -2977,6 +2977,41 @@ not rendered, and test-stubs provides a stand-in by its name."
     (should (equal "https://example.com/demo-render-test.mp4"
                    (test-shipit-render--video-url-of out)))))
 
+;;; A first line that markdown-mode takes as metadata
+
+(defun test-shipit-render--metadata-faces (rendered)
+  "The faces of metadata that the rendered string RENDERED has."
+  (let ((found nil))
+    (dotimes (i (length rendered))
+      (dolist (face (ensure-list (get-text-property i 'face rendered)))
+        (when (memq face '(markdown-metadata-key-face markdown-metadata-value-face))
+          (cl-pushnew face found))))
+    found))
+
+(ert-deftest test-shipit-render-markdown-first-line-with-a-colon-is-text ()
+  "A first line of words, a colon and text is drawn as text."
+  ;; GIVEN a markdown body whose first line is words, a colon and text,
+  ;;   with an underscore inside a word of the text
+  ;; WHEN it is rendered
+  ;; THEN no part of it is drawn as metadata
+  ;; AND the backslash that shipit puts before the underscore is hidden
+  (skip-unless (and (require 'markdown-mode nil t) (boundp 'markdown-mode-version)))
+  (let* ((out (shipit--render-markdown-uncached
+               "Request to the kitchen: make a cup_of_coffee.\nNote: it is hot."))
+         (backslash (string-search "\\_" out)))
+    (should-not (test-shipit-render--metadata-faces out))
+    (should backslash)
+    (should (get-text-property backslash 'invisible out))))
+
+(ert-deftest test-shipit-render-markdown-first-line-with-a-percent-is-text ()
+  "A first line that starts with a percent sign is drawn as text."
+  ;; GIVEN a markdown body whose first line starts with a percent sign
+  ;; WHEN it is rendered
+  ;; THEN no part of it is drawn as metadata
+  (skip-unless (and (require 'markdown-mode nil t) (boundp 'markdown-mode-version)))
+  (should-not (test-shipit-render--metadata-faces
+               (shipit--render-markdown-uncached "% of the cups are clean."))))
+
 (defun test-shipit-render--page-of (file-url)
   "Return the text of the local page FILE-URL, and delete the page."
   (let ((file (url-filename (url-generic-parse-url file-url))))

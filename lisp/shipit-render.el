@@ -6734,6 +6734,23 @@ Value is the propertized rendered string.  Size capped by
          (numbered (shipit--auto-increment-ordered-lists escaped)))
     (shipit--apply-layout-markers numbered)))
 
+(defvar markdown-mode-font-lock-keywords)
+
+(defconst shipit--markdown-metadata-matchers
+  '(markdown-match-declarative-metadata markdown-match-pandoc-metadata)
+  "The matchers of markdown-mode for the metadata lines that no forge knows.
+markdown-mode draws a first line as \"Name: text\" or \"% text\" as
+metadata, as MultiMarkdown and Pandoc read it.  A forge shows such a
+line as text.")
+
+(defun shipit--draw-no-metadata ()
+  "Make markdown-mode draw no line of this buffer as metadata.
+It takes out the rules of `shipit--markdown-metadata-matchers'."
+  (font-lock-remove-keywords
+   nil (seq-filter (lambda (keyword)
+                     (memq (car-safe keyword) shipit--markdown-metadata-matchers))
+                   markdown-mode-font-lock-keywords)))
+
 (defun shipit--render-markdown-uncached (text)
   "Render markdown TEXT without consulting the cache.
 This is the actual rendering implementation; callers should use
@@ -6749,6 +6766,7 @@ This is the actual rendering implementation; callers should use
               ;; Note: Don't process images yet - they'll be done after markdown rendering
               (insert (shipit--prepare-markdown text))
               (delay-mode-hooks (markdown-mode))
+              (shipit--draw-no-metadata)
               (font-lock-ensure)
               (shipit--hide-heading-hashes)
               (shipit--draw-horizontal-rules)

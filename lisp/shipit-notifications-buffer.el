@@ -1353,6 +1353,7 @@ icon matches GitHub's web UI for deployment review requests."
                                  ("invitation" "IN")
                                  ("external" "NT")
                                  ("branch" "BR")
+                                 ("confluence" "CF")
                                  (_ "??"))))
          (cache shipit-notifications-buffer--render-cache)
          (repo-width (or (and cache (plist-get cache :repo-width))
@@ -1426,6 +1427,7 @@ activity of a Jira issue."
                        ("alert" "Security Alert")
                        ("invitation" "Repository Invitation")
                        ("external" "Notification")
+                       ("confluence" "Page")
                        (_ type)))
          (hide-number-p (shipit-notifications-buffer--numberless-p activity))
          (number-str (cond

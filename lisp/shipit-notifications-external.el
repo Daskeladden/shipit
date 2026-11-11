@@ -124,12 +124,6 @@ back itself, as when a newer one took its place."
   (setq shipit-external--read
         (seq-filter (shipit-external--other-p activity) shipit-external--read)))
 
-(defun shipit-external--mark-read (activity)
-  "Take ACTIVITY, a pushed notification, off the notifications of shipit."
-  (shipit--mark-notification-read
-   (cdr (assq 'number activity)) (cdr (assq 'repo activity)) t "external")
-  (shipit--rerender-notifications-buffer-if-visible))
-
 (defun shipit-external--open (_config activity)
   "Open ACTIVITY, a pushed notification, and mark it as read.
 Its own function opens it, or else a browser at its address.  No server
@@ -140,7 +134,7 @@ it.  One that cannot be opened stays."
     (cond (open (funcall open))
           (url (browse-url url))
           (t (user-error "This notification has nothing to open")))
-    (shipit-external--mark-read activity)))
+    (shipit--mark-activity-read-and-rerender activity)))
 
 (shipit-issue-register-notification-source
  'external

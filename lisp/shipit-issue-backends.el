@@ -62,6 +62,8 @@
 ;;
 ;; Optional plist keys (for notifications):
 ;;   :notifications     — (config since) → list of notification activities
+;;   :notifications-async — (config since callback) → calls CALLBACK once,
+;;                        with the list; a poll prefers it to :notifications
 ;;   :mark-notification-read — (config activity) → marks notification as read
 ;;   :read-notifications — () → the notifications that were read, from a
 ;;                         backend that has no server to hold them; the
@@ -70,6 +72,12 @@
 ;;                        place of what shipit opens for its type
 ;;   :notification-only — non-nil for a backend that has no issues: see
 ;;                        `shipit-issue-register-notification-source'
+;;
+;; A notification activity can have the key `revision': a value that
+;; changes each time the thing it is about changes, such as the version
+;; number of a page.  A notification that was marked as read comes back
+;; as unread when a poll brings it with another revision.  One without
+;; `revision' stays read for the session.
 
 ;;; Code:
 

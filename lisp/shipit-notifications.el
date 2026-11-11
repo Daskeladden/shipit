@@ -238,6 +238,13 @@ These are filtered from API responses to prevent race conditions
 where GitHub's eventual consistency hasn't propagated yet.
 Key is notification ID, value is timestamp when marked read.")
 
+(defvar shipit--locally-marked-read-revisions (make-hash-table :test 'equal)
+  "The revision that each notification of a backend had when it was read.
+Key is the key of `shipit--notification-activity-key', value is the
+`revision' of the activity.  Only a notification with a revision has an
+entry.  A poll that brings the notification with another revision makes
+it unread again, see `shipit--merge-backend-notifications'.")
+
 (defvar shipit--backend-last-poll-time nil
   "ISO8601 timestamp of last backend notification poll.")
 
@@ -1846,6 +1853,17 @@ Use this when notifications you expect to see are missing."
       (goto-char (point-min)))
     (display-buffer buf)))
 
+(defun shipit--remove-keys-with-prefix (prefix table)
+  "Remove each entry of TABLE whose key starts with PREFIX.
+Return how many were removed."
+  (let ((removed 0))
+    (maphash (lambda (k _v)
+               (when (string-prefix-p prefix (format "%s" k))
+                 (remhash k table)
+                 (cl-incf removed)))
+             table)
+    removed))
+
 (defun shipit-notifications-clear-locally-marked-read (&optional repo)
   "Forget the session-local mark-read tracking.
 With no argument, clear every entry.  When REPO is supplied
@@ -1854,7 +1872,8 @@ whose key starts with REPO are removed.
 
 Backend activities (Jira, RSS, GitLab todos) have no server-side
 read state, so once auto-mark hides one it stays hidden until
-the cache is cleared or Emacs is restarted.  Use this command to
+the cache is cleared or Emacs is restarted.  One with a revision
+comes back by itself when the revision changes.  Use this command to
 recover items that an over-broad auto-mark rule swept up."
   (interactive
    (list (when current-prefix-arg
@@ -1874,13 +1893,10 @@ recover items that an over-broad auto-mark rule swept up."
               (hash-table-p shipit--locally-marked-read-notifications)))
     (message "No locally-marked-read cache to clear"))
    (repo
-    (let ((removed 0)
-          (prefix (concat repo ":")))
-      (maphash (lambda (k _v)
-                 (when (string-prefix-p prefix (format "%s" k))
-                   (remhash k shipit--locally-marked-read-notifications)
-                   (cl-incf removed)))
-               shipit--locally-marked-read-notifications)
+    (let* ((prefix (concat repo ":"))
+           (removed (shipit--remove-keys-with-prefix
+                     prefix shipit--locally-marked-read-notifications)))
+      (shipit--remove-keys-with-prefix prefix shipit--locally-marked-read-revisions)
       (when (boundp 'shipit--backend-last-poll-time)
         (setq shipit--backend-last-poll-time nil))
       (message "Cleared %d locally-marked-read entr%s for %s (watermark reset)"
@@ -1888,6 +1904,7 @@ recover items that an over-broad auto-mark rule swept up."
    (t
     (let ((n (hash-table-count shipit--locally-marked-read-notifications)))
       (clrhash shipit--locally-marked-read-notifications)
+      (clrhash shipit--locally-marked-read-revisions)
       (when (boundp 'shipit--backend-last-poll-time)
         (setq shipit--backend-last-poll-time nil))
       (message "Cleared %d locally-marked-read entr%s (watermark reset)"
@@ -2627,12 +2644,22 @@ what was read gives its own with `:read-notifications'."
            for read = (plist-get plist :read-notifications)
            when read append (funcall read)))
 
+(defun shipit--keep-read-revision (activity-key activity)
+  "Keep the revision of ACTIVITY, which is read now, under ACTIVITY-KEY.
+For an activity without a revision, forget one that was kept."
+  (let ((revision (cdr (assq 'revision activity))))
+    (if revision
+        (puthash activity-key revision shipit--locally-marked-read-revisions)
+      (remhash activity-key shipit--locally-marked-read-revisions))))
+
 (defun shipit--apply-local-mark-as-read (activity-key activity)
   "Apply the local-state side of marking ACTIVITY (at ACTIVITY-KEY) as read.
 Server-side mark is the caller's responsibility; this just:
 - adds notification-id and activity-key to
   `shipit--locally-marked-read-notifications' so the next poll's
   merge skips them,
+- keeps the revision of the activity, when it has one, so that a poll
+  that brings another revision makes it unread again,
 - removes the activity from `shipit--notification-pr-activities',
 - decrements the mention count when the activity was a mention,
 - recomputes the modeline unread bell.
@@ -2649,6 +2676,7 @@ stays consistent regardless of how the network PATCH was issued."
       (puthash notification-id (float-time) shipit--locally-marked-read-notifications))
     (when activity-key
       (puthash activity-key (float-time) shipit--locally-marked-read-notifications)
+      (shipit--keep-read-revision activity-key activity)
       (remhash activity-key shipit--notification-pr-activities))
     (when (string= reason "mention")
       (setq shipit--mention-prs
@@ -2753,6 +2781,7 @@ TYPE is \"pr\" or \"issue\" (defaults to \"pr\" for backward compatibility)."
           (when notification-id
             (puthash notification-id (float-time) shipit--locally-marked-read-notifications))
           (puthash activity-key (float-time) shipit--locally-marked-read-notifications)
+          (shipit--keep-read-revision activity-key activity)
           ;; Remove from local cache
           (remhash activity-key shipit--notification-pr-activities)
           ;; Update mention tracking if this was a mention
@@ -2785,6 +2814,13 @@ TYPE is \"pr\" or \"issue\" (defaults to \"pr\" for backward compatibility)."
         ;; In interactive mode, show error to user
         (user-error "Could not find notification ID for %s %s"
                     (if (string= type "pr") "PR" "Issue") number)))))
+
+(defun shipit--mark-activity-read-and-rerender (activity)
+  "Mark ACTIVITY as read, and draw the notifications buffer again.
+The notifications are not fetched again from the servers."
+  (shipit--mark-notification-read
+   (cdr (assq 'number activity)) (cdr (assq 'repo activity)) t (cdr (assq 'type activity)))
+  (shipit--rerender-notifications-buffer-if-visible))
 
 (defun shipit--preview-pr (pr-number repo)
   "Show preview popup for PR-NUMBER in REPO."
@@ -3245,28 +3281,56 @@ its own, so each keeps what the other gave."
   (seq-remove (lambda (mention) (cdr (assq 'backend-id mention)))
               shipit--mention-prs))
 
+(defun shipit--changed-since-read-p (key activity)
+  "Whether ACTIVITY has another revision than when it was read.
+KEY is the key of ACTIVITY.  An activity without a revision, or one
+read without a revision, has not changed as far as shipit can tell."
+  (let ((revision (cdr (assq 'revision activity)))
+        (read-revision (gethash key shipit--locally-marked-read-revisions)))
+    (and revision read-revision (not (equal revision read-revision)))))
+
+(defun shipit--forget-read-mark (key)
+  "Forget that the notification with KEY was marked as read."
+  (remhash key shipit--locally-marked-read-notifications)
+  (remhash key shipit--locally-marked-read-revisions))
+
+(defun shipit--add-backend-notification (key activity)
+  "Keep ACTIVITY, a notification of a backend, as unread under KEY.
+Return t."
+  (shipit--debug-log "Backend merge: adding %s (reason=%s)"
+                     key (cdr (assq 'reason activity)))
+  (puthash key activity shipit--notification-pr-activities)
+  t)
+
+(defun shipit--merge-one-backend-notification (activity)
+  "Keep ACTIVITY as unread, unless it was marked as read and has not changed.
+Return non-nil when it is kept."
+  (let ((key (shipit--notification-activity-key
+              (cdr (assq 'repo activity))
+              (or (cdr (assq 'type activity)) "issue")
+              (cdr (assq 'number activity)))))
+    (cond
+     ((not (gethash key shipit--locally-marked-read-notifications))
+      (shipit--add-backend-notification key activity))
+     ((shipit--changed-since-read-p key activity)
+      (shipit--debug-log "Backend merge: %s changed since it was read" key)
+      (shipit--forget-read-mark key)
+      (shipit--add-backend-notification key activity))
+     (t
+      (shipit--debug-log "Backend merge: skipping locally-marked-read %s" key)
+      nil))))
+
 (defun shipit--merge-backend-notifications (activities)
   "Merge backend notification ACTIVITIES into the global hash table.
-Each activity should be an alist with keys: number, type, subject, reason, repo."
+Each activity should be an alist with keys: number, type, subject, reason, repo.
+One that was marked as read is left out, unless its `revision' changed
+since then."
   (unless shipit--notification-pr-activities
     (setq shipit--notification-pr-activities (make-hash-table :test 'equal)))
-  (let ((received (length (or activities '())))
-        (added 0)
-        (skipped 0))
-    (dolist (activity activities)
-      (let* ((repo (cdr (assq 'repo activity)))
-             (type (or (cdr (assq 'type activity)) "issue"))
-             (number (cdr (assq 'number activity)))
-             (reason (cdr (assq 'reason activity)))
-             (key (shipit--notification-activity-key repo type number)))
-        (if (gethash key shipit--locally-marked-read-notifications)
-            (progn
-              (shipit--debug-log "Backend merge: skipping locally-marked-read %s" key)
-              (cl-incf skipped))
-          (shipit--debug-log "Backend merge: adding %s (reason=%s)" key reason)
-          (puthash key activity shipit--notification-pr-activities)
-          (cl-incf added))))
-    (shipit--debug-log "Backend merge: received=%d added=%d skipped=%d" received added skipped))
+  (let ((received (length activities))
+        (added (cl-count-if #'shipit--merge-one-backend-notification activities)))
+    (shipit--debug-log "Backend merge: received=%d added=%d skipped=%d"
+                       received added (- received added)))
   ;; Apply auto-mark rules so backend activities (Jira, RSS, GitLab todos)
   ;; honor the rules immediately.  Without this they would only get
   ;; auto-marked when the next GitHub poll happens to run, leaving them

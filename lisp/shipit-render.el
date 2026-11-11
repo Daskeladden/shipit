@@ -8120,6 +8120,7 @@ Returns (octicon . color) or nil."
     ("invitation" '("mail" . "#0366d6"))                 ; Blue
     ("external"   '("inbox" . "#8250df"))                ; Purple
     ("branch"     '("git-branch" . "#28a745"))           ; Green
+    ("confluence" '("file" . "#0366d6"))                 ; Blue
     (_ nil)))
 
 (defun shipit--get-notification-type-icon (type emoji-fallback)

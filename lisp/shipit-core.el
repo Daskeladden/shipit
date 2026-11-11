@@ -1429,9 +1429,10 @@ Example for use-package:
   :group 'shipit)
 
 (defconst shipit-issue-backend-features
-  '((jira    . shipit-issue-jira)
-    (gitlab  . shipit-issue-gitlab)
-    (git-bug . shipit-issue-gitbug))
+  '((jira       . shipit-issue-jira)
+    (gitlab     . shipit-issue-gitlab)
+    (git-bug    . shipit-issue-gitbug)
+    (confluence . shipit-notifications-confluence))
   "Alist mapping issue backend IDs to their feature (require) names.
 Used by `shipit-init' for deferred loading of non-default backends.
 GitHub is always loaded, so it is not listed here.")

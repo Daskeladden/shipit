@@ -169,6 +169,26 @@ A force push in the Activity section opens to its commits, the old ones paired w
 
 The dashboard requires the current repo to resolve to a Jira backend. Set up the mapping via `shipit-issue-repo-backends` as shown in the Authentication section, or see the [Backend Configuration wiki page](https://github.com/Daskeladden/shipit/wiki/Backend-Configuration).
 
+### Notifications from Confluence
+
+When someone else changes a page of Confluence Cloud that mentions you or that you watch, shipit can show it as a notification. Blog posts count as pages here. Each such page is one row in the notifications buffer, under the name of its space. To switch this on, add an entry for the site to `shipit-issue-repo-backends`:
+
+```elisp
+(add-to-list 'shipit-issue-repo-backends
+             '("confluence" :backend confluence
+               :base-url "https://example.atlassian.net"))
+```
+
+The login is the same auth-source entry as for Jira on that site. The machine is the host of the site, the login is your email, and the password is an API token:
+
+```
+machine example.atlassian.net login you@example.com password your-api-token
+```
+
+`RET` on a row opens the page in the browser and marks the row as read. Confluence keeps no read state, so shipit keeps it for the session. When the page changes again, a row that you read comes back as unread. A change that you made yourself gives no unread row, as for Jira.
+
+Each poll asks the search of Confluence for the pages that changed since the poll before. This has limits. A comment on a page gives no notification. A page that mentions you comes up again at each later change by another person. That change does not have to be about you. After a start of Emacs, the first poll looks back one hour, so an older change is not shown. And the search of Confluence can leave out a page that you watch only through its space. This is a known fault of that search.
+
 ### Notifications from other packages
 
 Another package can put a notification among those of shipit. It then stands in the notifications buffer and in the count of the mode line. `RET` opens it, which also marks it as read.

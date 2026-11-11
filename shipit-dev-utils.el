@@ -58,6 +58,7 @@ Loading the files adds the functions back.")
     "shipit-actions-timeline.el"
     "shipit-notifications-rss.el"
     "shipit-notifications-external.el"
+    "shipit-notifications-confluence.el"
     "shipit-explore.el"
     "shipit-explore-buffer.el"
     "shipit-branches.el"

@@ -59,6 +59,7 @@ Loading the files adds the functions back.")
     "shipit-notifications-rss.el"
     "shipit-notifications-external.el"
     "shipit-notifications-confluence.el"
+    "shipit-confluence-search.el"
     "shipit-explore.el"
     "shipit-explore-buffer.el"
     "shipit-branches.el"

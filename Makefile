@@ -181,6 +181,8 @@ test-unit: compile
 		-l test/test-shipit-notifications-external.el \
 		-l test/test-shipit-notifications-confluence.el \
 		-l test/test-shipit-notifications-confluence-cases.el \
+		-l test/test-shipit-confluence-search.el \
+		-l test/test-shipit-confluence-search-cases.el \
 		-l test/test-shipit-explore.el \
 		-l test/test-shipit-explore-buffer.el \
 		-l test/test-shipit-branches.el \

@@ -243,7 +243,9 @@ Replaces shipit-enable and shipit-setup with simpler, more reliable loading."
    ("e" "Explore" shipit-explore)
    ("B" "Branches" shipit-branches)
    ("A" "Atlassian dashboard" shipit-atlassian-dashboard
-    :if shipit-atlassian-dashboard-available-p)]
+    :if shipit-atlassian-dashboard-available-p)
+   ("w" "Search Confluence" shipit-confluence-search
+    :if shipit-confluence-search-available-p)]
   ["Issues" :if (lambda () shipit-issues-enabled)
    ("i" "Search issues" shipit-issues--quick-search)
    ("I" "Advanced issue search" shipit-advanced-issue-search)

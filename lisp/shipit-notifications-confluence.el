@@ -27,6 +27,9 @@
 ;;
 ;; The login is the entry of auth-source for the host of `:base-url',
 ;; the same one that Jira uses there.
+;;
+;; The command `shipit-confluence-search' asks the same search for the
+;; pages that hold some words, with `shipit-confluence--find-pages'.
 
 ;;; Code:
 (require 'cl-lib)
@@ -48,7 +51,11 @@
   "The path at which Confluence says who the user is.")
 
 (defconst shipit-confluence--result-limit 50
-  "How many pages one search asks for.")
+  "How many pages one search of the notifications asks for.")
+
+(defconst shipit-confluence--content-types "type in (page, blogpost)"
+  "The CQL condition that keeps the pages and the blog posts.
+So the search gives no comment and no attachment.")
 
 (defconst shipit-confluence--first-look-back 60
   "How many minutes the first poll of a session looks back.")
@@ -86,6 +93,12 @@ asks for again."
   "Signal when CONFIG names no Confluence site."
   (unless (stringp (plist-get config :base-url))
     (user-error "The Confluence backend needs :base-url, the address of the site")))
+
+(defun shipit-confluence--configs ()
+  "The config of each Confluence site in `shipit-issue-repo-backends'."
+  (cl-loop for (_pattern . config) in shipit-issue-repo-backends
+           when (eq (plist-get config :backend) 'confluence)
+           collect config))
 
 ;;; Requests
 
@@ -128,6 +141,28 @@ CALLBACK gets nil when the request failed or READ signalled."
    (lambda (answer)
      (funcall callback (shipit-confluence--read-safely read answer path)))))
 
+;; url.el sets it in the buffer of each response.
+(defvar url-http-response-status)
+
+(defun shipit-confluence--answer-in (buffer)
+  "The answer in BUFFER, a response of a Confluence site, as (STATUS . JSON).
+JSON is nil when the body is no JSON."
+  (with-current-buffer buffer
+    (let ((status (and (boundp 'url-http-response-status) url-http-response-status)))
+      (unless (integerp status)
+        (error "shipit: the answer of Confluence has no HTTP status"))
+      (shipit-issue-jira--goto-response-body)
+      (shipit-issue-jira--decode-response-body)
+      (cons status (shipit-issue-jira--read-json "Confluence")))))
+
+(defun shipit-confluence--get (config path)
+  "Send a GET of PATH to the site of CONFIG, and wait for the answer.
+Returns the answer as (STATUS . JSON), or nil when no answer came.  A
+site without a login signals the error of the Jira backend."
+  (shipit-issue-jira--request "GET" config path
+                              '(("Content-Type" . "application/json")) nil
+                              #'shipit-confluence--answer-in))
+
 ;;; Who the user is
 
 (defun shipit-confluence--account-id-of (answer)
@@ -165,14 +200,15 @@ session."
   "The CQL of the pages and blog posts with CONDITION, changed in MINUTES.
 The time is relative to now on purpose: Confluence reads an absolute
 time in the time zone of the profile of the user."
-  (format "%s and type in (page, blogpost) and lastmodified >= now(\"-%dm\")"
-          condition minutes))
+  (format "%s and %s and lastmodified >= now(\"-%dm\")"
+          condition shipit-confluence--content-types minutes))
 
-(defun shipit-confluence--search-address (cql)
-  "The path and query of a search for CQL."
+(defun shipit-confluence--search-address (cql &optional limit)
+  "The path and query of a search for CQL that asks for LIMIT pages.
+LIMIT is `shipit-confluence--result-limit' when it is nil."
   (format "%s?cql=%s&limit=%d&expand=content.version,content.space"
           shipit-confluence--search-path (url-hexify-string cql)
-          shipit-confluence--result-limit))
+          (or limit shipit-confluence--result-limit)))
 
 (defun shipit-confluence--log-if-cut (answer)
   "Write to the debug log when ANSWER of a search lacks pages that it found.
@@ -230,24 +266,24 @@ BASE is the address that the path of the page starts from."
       (revision . ,.content.version.number)
       (updated-at . ,.content.version.when))))
 
-(defun shipit-confluence--complete-p (activity)
-  "Whether ACTIVITY has what a row of the notifications buffer shows.
-One without is left out, and the debug log says so."
-  (or (cl-every (lambda (key) (stringp (alist-get key activity)))
-                '(repo number subject browse-url))
-      (progn
-        (shipit--debug-log "Confluence: leaving out a page without a space, id or title: %S"
-                           activity)
-        nil)))
+(defun shipit-confluence--complete-p (page keys)
+  "Whether PAGE, an alist, has text at each of KEYS.
+When it has not, the debug log names the keys that it lacks."
+  (let ((missing (seq-remove (lambda (key) (stringp (alist-get key page))) keys)))
+    (when missing
+      (shipit--debug-log "Confluence: leaving out a page without %S: %S" missing page))
+    (null missing)))
 
 (defun shipit-confluence--activities (config account-id reason answer)
   "The notifications of the pages in ANSWER, a search at the site of CONFIG.
 REASON is why the search found them.  ACCOUNT-ID is the user, or nil
-when the site did not say who the user is."
+when the site did not say who the user is.  A page without the space,
+the id, the title or the address that its row shows is left out."
   (shipit-confluence--log-if-cut answer)
   (let ((base (shipit-confluence--base config answer)))
     (seq-filter
-     #'shipit-confluence--complete-p
+     (lambda (activity)
+       (shipit-confluence--complete-p activity '(repo number subject browse-url)))
      (mapcar (lambda (result)
                (shipit-confluence--activity
                 config base result (shipit-confluence--reason result account-id reason)))
@@ -299,6 +335,65 @@ nothing signals once the first request is sent."
      config
      (lambda (account-id)
        (shipit-confluence--search-both config account-id minutes callback)))))
+
+;;; The pages that hold some words
+
+(defun shipit-confluence--cql-text (text)
+  "TEXT as a string of CQL, in double quotes.
+Each backslash and each double quote of TEXT gets a backslash before it."
+  (concat "\""
+          (replace-regexp-in-string "[\\\"]" (lambda (char) (concat "\\" char)) text t t)
+          "\""))
+
+(defun shipit-confluence--words-cql (words)
+  "The CQL of the pages and blog posts whose title or text holds WORDS.
+This is the search of the site, which gives the best match first.  The
+search reads WORDS with its own syntax, so a phrase in double quotes
+stays a phrase."
+  (format "siteSearch ~ %s and %s"
+          (shipit-confluence--cql-text words) shipit-confluence--content-types))
+
+(defun shipit-confluence--page (base result)
+  "The page of RESULT, a result of a search, as an alist.
+BASE is the address that the path of the page starts from.  The title
+is the one of the content, because the title of the result itself holds
+the marks with which the search shows the words that it found."
+  (let-alist result
+    `((id . ,.content.id)
+      (title . ,.content.title)
+      (space . ,(or .content.space.name .resultGlobalContainer.title))
+      (url . ,(and .content._links.webui (concat base .content._links.webui)))
+      (changed . ,.lastModified))))
+
+(defun shipit-confluence--pages (config answer)
+  "The pages in ANSWER, the JSON of a search at the site of CONFIG.
+A page without an id, a title or an address is left out."
+  (let ((base (shipit-confluence--base config answer)))
+    (seq-filter (lambda (page) (shipit-confluence--complete-p page '(id title url)))
+                (mapcar (lambda (result) (shipit-confluence--page base result))
+                        (alist-get 'results answer)))))
+
+(defun shipit-confluence--check-search (answer)
+  "Signal unless ANSWER, the (STATUS . JSON) of a search, can give pages.
+ANSWER is nil when the site did not answer."
+  (unless answer
+    (user-error "Confluence did not answer the search"))
+  (when (>= (car answer) 400)
+    (user-error "Confluence refused the search (%d)" (car answer)))
+  (unless (consp (cdr answer))
+    (user-error "Confluence answered the search with no JSON")))
+
+(defun shipit-confluence--find-pages (config words limit)
+  "The pages and blog posts of the site of CONFIG that hold WORDS.
+WORDS can be in the title or in the text.  The pages are at most LIMIT,
+in the order of Confluence, the best match first.  Each is an alist of
+its `id', `title', `space', `url', and `changed', the time of its last
+change.  A search that fails signals a `user-error'."
+  (let ((answer (shipit-confluence--get
+                 config (shipit-confluence--search-address
+                         (shipit-confluence--words-cql words) limit))))
+    (shipit-confluence--check-search answer)
+    (shipit-confluence--pages config (cdr answer))))
 
 ;;; Opening
 

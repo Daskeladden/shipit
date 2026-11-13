@@ -1951,9 +1951,7 @@ back is called while the minibuffer is in use."
 
 (defun shipit-atlassian-kanban--consult-available-p ()
   "Return non-nil when consult is there to read a card with a preview."
-  (and (require 'consult nil t)
-       (fboundp 'consult--read)
-       t))
+  (shipit--consult-available-p 'consult--read))
 
 (defun shipit-atlassian-kanban--read-card (candidates)
   "Ask which of CANDIDATES to go to; return its issue key, or nil.

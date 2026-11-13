@@ -189,6 +189,18 @@ machine example.atlassian.net login you@example.com password your-api-token
 
 Each poll asks the search of Confluence for the pages that changed since the poll before. This has limits. A comment on a page gives no notification. A page that mentions you comes up again at each later change by another person. That change does not have to be about you. After a start of Emacs, the first poll looks back one hour, so an older change is not shown. And the search of Confluence can leave out a page that you watch only through its space. This is a known fault of that search.
 
+### Search Confluence
+
+`M-x shipit-confluence-search`, or `w` in the menu of shipit, searches the pages of Confluence Cloud for words. It uses the same site entry in `shipit-issue-repo-backends` and the same login as the notifications from Confluence. When the option holds several Confluence sites, it first asks which site to search.
+
+Each row shows the title of a page and the name of its space. Next to the row is the time of the last change of the page. The rows are in the order that Confluence gives, the best match first.
+
+With consult there is one prompt. Its rows follow your typing from the third character on, which is the default of `consult-async-min-input`. Without consult there are two prompts: first you type the words, then you choose one of the pages that Confluence found for them.
+
+The words go to the search of Confluence as you typed them. So `"coffee menu"` in double quotes finds the phrase, and `coff*` finds the words that start with coff. `RET` on a row opens the page in the browser.
+
+The search has limits. It shows the first 25 pages and blog posts. It finds no comments and no attachments. And shipit does not show a page itself: it opens the page in the browser.
+
 ### Notifications from other packages
 
 Another package can put a notification among those of shipit. It then stands in the notifications buffer and in the count of the mode line. `RET` opens it, which also marks it as read.

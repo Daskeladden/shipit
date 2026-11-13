@@ -915,10 +915,11 @@ response, and signals an error on a 4xx/5xx status."
                            '(("Content-Type" . "application/json"))
                            (when data (encode-coding-string (json-encode data) 'utf-8))))
 
-(defun shipit-issue-jira--send (method config path headers bytes)
-  "Send a METHOD request to the Jira REST API at PATH using CONFIG.
+(defun shipit-issue-jira--request (method config path headers bytes read)
+  "Send a METHOD request to the site of CONFIG at PATH, and wait for the answer.
 HEADERS come before the login, and BYTES, when given, are the body.
-Returns as `shipit-issue-jira--api-request-send' does."
+Returns what READ gives for the buffer of the response, which is killed
+after.  Returns nil, and READ is not called, when no response came."
   (let* ((url (shipit-issue-jira--build-url config path))
          (auth (shipit-issue-jira--auth-header config))
          (url-request-method method)
@@ -934,8 +935,16 @@ Returns as `shipit-issue-jira--api-request-send' does."
           (shipit--debug-log "Jira API: no response buffer for %s %s" method url)
           nil)
       (unwind-protect
-          (shipit-issue-jira--read-response buffer method path)
+          (funcall read buffer)
         (kill-buffer buffer)))))
+
+(defun shipit-issue-jira--send (method config path headers bytes)
+  "Send a METHOD request to the Jira REST API at PATH using CONFIG.
+HEADERS come before the login, and BYTES, when given, are the body.
+Returns as `shipit-issue-jira--api-request-send' does."
+  (shipit-issue-jira--request
+   method config path headers bytes
+   (lambda (buffer) (shipit-issue-jira--read-response buffer method path))))
 
 (defun shipit-issue-jira--api-request-post (config path data)
   "Make a POST request to Jira REST API using CONFIG at PATH with DATA.

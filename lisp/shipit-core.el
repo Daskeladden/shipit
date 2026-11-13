@@ -2526,6 +2526,15 @@ every subsequent call reuses it via `erase-buffer'."
                          (substring word 1)))
                (split-string name " ") " ")))
 
+;;; Consult
+
+(defun shipit--consult-available-p (&rest functions)
+  "Return non-nil when consult loads and defines each of FUNCTIONS.
+FUNCTIONS are the functions of consult that the caller uses.  Most are
+internal to consult, so a version of consult can lack one."
+  (and (require 'consult nil t)
+       (cl-every #'fboundp functions)))
+
 ;;; Star indicator
 
 (declare-function shipit--get-pr-field-icon "shipit-render" (field-type emoji-fallback))

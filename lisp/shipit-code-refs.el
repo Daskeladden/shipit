@@ -611,9 +611,7 @@ the picker with \\[keyboard-quit] to keep your typed prefix in place."
 
 (defun shipit-code-refs--consult-available-p ()
   "Return non-nil when consult's dynamic-collection API is available."
-  (and (require 'consult nil t)
-       (fboundp 'consult--read)
-       (fboundp 'consult--dynamic-collection)))
+  (shipit--consult-available-p 'consult--read 'consult--dynamic-collection))
 
 (defun shipit-code-refs--create-label (project)
   "Return the pseudo-candidate label that opens the create buffer."

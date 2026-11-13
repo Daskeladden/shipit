@@ -2639,5 +2639,18 @@ Returns t on success, nil if section not found."
           (magit-section-update-highlight))
         t))))
 
+;;; Embark
+
+(defvar embark-general-map)
+
+(defun shipit--embark-keep-general-actions (keymap)
+  "Make KEYMAP, the embark actions of one kind of target, keep the general ones.
+Embark gives a kind of target that has a keymap of its own only that
+keymap.  Without this, the general actions of embark, such as export,
+collect and act on all, are gone from that kind of target.  A key of
+KEYMAP wins over the same key of the general actions.  Call this when
+embark is loaded."
+  (set-keymap-parent keymap embark-general-map))
+
 (provide 'shipit-core)
 ;;; shipit-core.el ends here

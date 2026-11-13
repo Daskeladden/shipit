@@ -266,5 +266,31 @@ opens the issue, also in a list of candidates."
     (should (eq 'shipit-code-refs-embark-open-issue
                 (alist-get 'shipit-issue-ref embark-default-action-overrides)))))
 
+(defvar embark-general-map)
+
+(ert-deftest test-code-refs-embark-an-issue-key-keeps-the-general-actions ()
+  "An issue key offers the general actions of embark too."
+  ;; GIVEN embark with its general actions, of which A acts on all rows
+  ;; and w copies the target
+  ;; WHEN the issue keys set themselves up for embark
+  ;; THEN an issue key offers the act-on-all of embark
+  ;; AND w on an issue key still copies the key, not the general copy
+  (let ((embark-general-map (make-sparse-keymap))
+        (embark-target-finders nil)
+        (embark-keymap-alist nil)
+        (embark-default-action-overrides nil))
+    (define-key embark-general-map (kbd "A") 'embark-act-all)
+    (define-key embark-general-map (kbd "w") 'embark-copy-as-kill)
+    (unwind-protect
+        (progn
+          (shipit-code-refs--embark-setup)
+          (should (eq 'embark-act-all
+                      (lookup-key shipit-code-refs-embark-keymap (kbd "A"))))
+          (should (eq 'shipit-code-refs-embark-copy-key
+                      (lookup-key shipit-code-refs-embark-keymap (kbd "w"))))
+          (should (eq 'shipit-code-refs-embark-keymap
+                      (alist-get 'shipit-issue-ref embark-keymap-alist))))
+      (set-keymap-parent shipit-code-refs-embark-keymap nil))))
+
 (provide 'test-shipit-code-refs)
 ;;; test-shipit-code-refs.el ends here

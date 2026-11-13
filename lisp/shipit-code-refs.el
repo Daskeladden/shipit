@@ -953,8 +953,16 @@ command that made the list."
   (add-to-list 'embark-default-action-overrides
                '(shipit-issue-ref . shipit-code-refs-embark-open-issue)))
 
-(with-eval-after-load 'embark
+(defun shipit-code-refs--embark-setup ()
+  "Make embark offer the actions on an issue key.
+An issue key keeps the general actions of embark.  On a row of a list
+of issues the key is the first target, so without them embark could
+not export that list or act on all its rows from there."
+  (shipit--embark-keep-general-actions shipit-code-refs-embark-keymap)
   (shipit-code-refs--embark-register))
+
+(with-eval-after-load 'embark
+  (shipit-code-refs--embark-setup))
 
 ;;;###autoload
 (defun shipit-code-refs-diagnose ()

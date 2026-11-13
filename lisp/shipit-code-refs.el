@@ -249,18 +249,52 @@ backend\='s do, the key\='s own backend answers instead."
     (when browse-fn
       (funcall browse-fn (cdr resolved) key))))
 
+(defun shipit-code-refs--repo-claims-key-p (repo key)
+  "Non-nil when REPO is given and the issue backend of REPO claims KEY."
+  (and repo
+       (shipit-issue--claims-key-p (shipit-issue--resolve-for-repo repo) key)))
+
+(defun shipit-code-refs--open-through (resolved)
+  "Where to open an issue through RESOLVED, (BACKEND-PLIST . CONFIG).
+The value is (LABEL BACKEND-ID CONFIG), the arguments after the key for
+`shipit-issues-open-buffer'.  LABEL, the label of CONFIG, stands for
+the repository, as when a notification of Jira opens its issue."
+  (let ((config (cdr resolved)))
+    (list (shipit-issue--config-label config)
+          (car (rassq (car resolved) shipit-issue-backends))
+          config)))
+
+(defun shipit-code-refs--where-to-open (key)
+  "The arguments after issue KEY for `shipit-issues-open-buffer'.
+They say where KEY opens, in this order:
+- the repository of this buffer, when its issue backend claims KEY;
+- a configured backend that claims KEY by its project, see
+  `shipit-code-refs--open-through';
+- the repository of this buffer;
+- else a `user-error'."
+  ;; Embark runs the action in the buffer that a command started from,
+  ;; which can be of no repository or of another one.  The key still
+  ;; says which tracker it belongs to.
+  (let* ((repo (shipit-code-refs--current-repo))
+         (by-key (and (not (shipit-code-refs--repo-claims-key-p repo key))
+                      (shipit-issue--resolve-for-key key))))
+    (cond
+     (by-key (shipit-code-refs--open-through by-key))
+     (repo (list repo))
+     (t (user-error "Cannot determine repository from current buffer")))))
+
 ;;;###autoload
 (defun shipit-code-refs-open-issue (&optional key)
-  "Open the shipit issue buffer for KEY (defaults to key at point)."
+  "Open the shipit issue buffer for KEY (defaults to key at point).
+The repository of the buffer opens it, unless the key belongs to
+another tracker; see `shipit-code-refs--where-to-open'."
   (interactive)
-  (let ((key (or key (shipit-code-refs-key-at-point)))
-        (repo (shipit-code-refs--current-repo)))
-    (cond
-     ((not key) (user-error "No issue key at point"))
-     ((not repo) (user-error "Cannot determine repository from current buffer"))
-     (t
-      (require 'shipit-issues-buffer)
-      (shipit-issues-open-buffer key repo)))))
+  (let ((key (or key (shipit-code-refs-key-at-point))))
+    (unless key
+      (user-error "No issue key at point"))
+    (require 'shipit-issues-buffer)
+    (apply #'shipit-issues-open-buffer key
+           (shipit-code-refs--where-to-open key))))
 
 ;;;###autoload
 (defun shipit-code-refs-browse-issue (&optional key)

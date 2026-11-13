@@ -1976,9 +1976,7 @@ CONFIG provides context for display name."
          (status-category (cdr (assq 'key
                                      (cdr (assq 'statusCategory status-obj)))))
          (base-url (plist-get config :base-url))
-         (display-name (or (plist-get config :display-name)
-                           (car (plist-get config :project-keys))
-                           "jira")))
+         (display-name (or (shipit-issue--config-label config) "jira")))
     (shipit--debug-log "Jira activity built: key=%s reason=%s components=%S"
                        key reason components)
     `((repo . ,display-name)

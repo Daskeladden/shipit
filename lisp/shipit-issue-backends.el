@@ -267,6 +267,14 @@ says which tracker it belongs to."
                                                backend-id))))
                       (cons backend (copy-sequence config-plist))))))
 
+(defun shipit-issue--config-label (config)
+  "The name that stands for the repository of an issue of backend CONFIG.
+It is the `:display-name' of CONFIG, else its first project key, else
+nil.  An issue that is not of a repository, such as one found by its
+key alone, opens in a buffer under this name."
+  (or (plist-get config :display-name)
+      (car (plist-get config :project-keys))))
+
 (defun shipit-issue--all-reference-patterns (repo)
   "Return reference patterns for REPO from the resolved backend.
 Each element is (BACKEND-ID REGEX GROUP EXTRACTOR)."

@@ -250,6 +250,143 @@ so the whole way to it runs as it is."
                 (should (eq issue (window-buffer (selected-window)))))))
         (kill-buffer issue)))))
 
+;;; Open an issue key in the tracker that claims it
+
+(defmacro test-code-refs--in-buffer-of-no-repo (&rest body)
+  "Run BODY in a buffer that is about no repository.
+Its directory is a new empty one, so no git remote names a repository."
+  (declare (indent 0))
+  `(let ((default-directory (file-name-as-directory
+                             (make-temp-file "shipit-no-repo-" t))))
+     (unwind-protect
+         (with-temp-buffer ,@body)
+       (delete-directory default-directory t))))
+
+(defmacro test-code-refs--in-buffer-of-repo (repo &rest body)
+  "Run BODY in a buffer that is about REPO."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (setq-local shipit-buffer-repo ,repo)
+     ,@body))
+
+(defmacro test-code-refs--with-open-issue (var repo key &rest body)
+  "Run BODY with VAR bound to the buffer of the issue KEY of REPO.
+The buffer is open before BODY runs.  An issue buffer that is open
+already needs no request to the backend, so the whole way to it runs
+as it is.  The windows are as before after BODY, and the buffer is
+killed."
+  (declare (indent 3))
+  `(let ((,var (get-buffer-create (shipit-issue-buffer-name ,repo ,key))))
+     (unwind-protect
+         (save-current-buffer
+           (save-window-excursion ,@body))
+       (kill-buffer ,var))))
+
+(defun test-code-refs--shows-p (buffer)
+  "Non-nil when the selected window shows BUFFER."
+  (eq buffer (window-buffer (selected-window))))
+
+(defun test-code-refs--tracker-of (buffer)
+  "The issue backend that BUFFER reads through, and the site of its config."
+  (with-current-buffer buffer
+    (list shipit-issue-backend
+          (plist-get shipit-issue-backend-config :base-url))))
+
+(ert-deftest test-code-refs-open-from-no-repo-finds-the-tracker-of-the-key ()
+  "Open of a key in a buffer of no repository uses the tracker of the key."
+  ;; GIVEN the Jira tracker of the acme repositories, whose project keys
+  ;; are PRJ and OTH
+  ;; AND a buffer that is about no repository
+  ;; AND the issue PRJ-95 open already in a buffer under the label PRJ
+  (test-code-refs--with-backends
+    (test-code-refs--in-buffer-of-no-repo
+      (test-code-refs--with-open-issue issue "PRJ" "PRJ-95"
+        ;; WHEN the issue key PRJ-95 is opened
+        (shipit-code-refs-open-issue "PRJ-95")
+        ;; THEN the window shows the buffer of PRJ-95 under the label PRJ
+        (should (test-code-refs--shows-p issue))
+        ;; AND that buffer reads through the Jira tracker of acme
+        (should (equal '(jira "https://acme.atlassian.net")
+                       (test-code-refs--tracker-of issue)))))))
+
+(ert-deftest test-code-refs-open-from-another-repo-finds-the-tracker-of-the-key ()
+  "Open of a key from a repository that does not claim it uses its tracker."
+  ;; GIVEN the Jira tracker of the acme repositories, whose project keys
+  ;; are PRJ and OTH
+  ;; AND a buffer of other/place, whose issues are at GitHub
+  ;; AND the issue PRJ-95 open already in a buffer under the label PRJ
+  (test-code-refs--with-backends
+    (test-code-refs--in-buffer-of-repo "other/place"
+      (test-code-refs--with-open-issue issue "PRJ" "PRJ-95"
+        ;; WHEN the issue key PRJ-95 is opened
+        (shipit-code-refs-open-issue "PRJ-95")
+        ;; THEN the window shows the buffer of PRJ-95 under the label PRJ
+        (should (test-code-refs--shows-p issue))
+        ;; AND that buffer reads through the Jira tracker of acme
+        (should (equal '(jira "https://acme.atlassian.net")
+                       (test-code-refs--tracker-of issue)))))))
+
+(ert-deftest test-code-refs-open-in-a-repo-that-claims-the-key-stays-there ()
+  "Open of a key in a buffer of a repository that claims it opens it there."
+  ;; GIVEN a buffer of acme/door, whose Jira tracker claims PRJ
+  ;; AND the issue PRJ-95 of acme/door open already in a buffer
+  (test-code-refs--with-backends
+    (test-code-refs--in-buffer-of-repo "acme/door"
+      (test-code-refs--with-open-issue issue "acme/door" "PRJ-95"
+        ;; WHEN the issue key PRJ-95 is opened
+        (shipit-code-refs-open-issue "PRJ-95")
+        ;; THEN the window shows the buffer of PRJ-95 of acme/door, as
+        ;; before
+        (should (test-code-refs--shows-p issue))
+        ;; AND that buffer reads through the Jira tracker of acme
+        (should (equal '(jira "https://acme.atlassian.net")
+                       (test-code-refs--tracker-of issue)))))))
+
+(ert-deftest test-code-refs-open-of-an-unclaimed-key-from-no-repo-is-an-error ()
+  "Open of a key that no tracker claims, in a buffer of no repository, fails."
+  ;; GIVEN a buffer that is about no repository
+  ;; AND no configured tracker whose project keys hold XYZ
+  ;; WHEN the issue key XYZ-7 is opened
+  ;; THEN that is a user error, as before
+  (test-code-refs--with-backends
+    (test-code-refs--in-buffer-of-no-repo
+      (should-error (shipit-code-refs-open-issue "XYZ-7") :type 'user-error))))
+
+(ert-deftest test-code-refs-embark-open-from-no-repo-finds-the-tracker-of-the-key ()
+  "The embark action open finds the tracker of a key from no repository."
+  ;; GIVEN a buffer that is about no repository, as the buffer that a
+  ;; prompt started from can be
+  ;; AND the issue PRJ-95 open already in a buffer under the label PRJ
+  (test-code-refs--with-backends
+    (test-code-refs--in-buffer-of-no-repo
+      (test-code-refs--with-open-issue issue "PRJ" "PRJ-95"
+        ;; WHEN o in the embark actions of an issue key gets PRJ-95 at
+        ;; its prompt
+        (test-code-refs--act "o" "PRJ-95")
+        ;; THEN the window shows the buffer of PRJ-95 under the label PRJ
+        (should (test-code-refs--shows-p issue))))))
+
+(ert-deftest test-code-refs-label-of-a-tracker-config ()
+  "The label of a tracker config: its display name, else its first project key."
+  ;; GIVEN a tracker config with the display name "Door works" and the
+  ;; project keys PRJ and OTH
+  ;; WHEN its label is asked for
+  ;; THEN it is "Door works"
+  (should (equal "Door works"
+                 (shipit-issue--config-label
+                  '(:display-name "Door works" :project-keys ("PRJ" "OTH")))))
+  ;; GIVEN a tracker config with the project keys PRJ and OTH and no
+  ;; display name
+  ;; WHEN its label is asked for
+  ;; THEN it is PRJ
+  (should (equal "PRJ"
+                 (shipit-issue--config-label '(:project-keys ("PRJ" "OTH")))))
+  ;; GIVEN a tracker config with neither
+  ;; WHEN its label is asked for
+  ;; THEN there is none
+  (should-not (shipit-issue--config-label
+               '(:base-url "https://acme.atlassian.net"))))
+
 (ert-deftest test-code-refs-embark-offers-the-actions-on-an-issue-key ()
   "GIVEN embark with a target finder, a keymap and a default action of
 its own

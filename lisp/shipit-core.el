@@ -2639,6 +2639,26 @@ Returns t on success, nil if section not found."
           (magit-section-update-highlight))
         t))))
 
+;;; Rows of an issue list
+
+(defun shipit--issue-row (text repo number)
+  "Return a copy of TEXT that is a row of an issue list, for NUMBER of REPO.
+Three text properties cover the whole copy.  `shipit-repo' names REPO,
+and `shipit-issue-number' names NUMBER, a key such as PRJ-7 or a number
+such as 12.  `shipit-issue-row' marks the text as a row: the header of
+an issue buffer names its issue with the other two as well, and is no
+row.  The actions of embark on a row read its issue from these."
+  (unless (and repo number)
+    (error "A row of an issue list needs its repository and its issue, not %S and %S"
+           repo number))
+  ;; Embark runs an action in the window that the list started from, so
+  ;; the row itself must say which issue it is.  Embark keeps these
+  ;; properties in its export buffer and in a selection.
+  (propertize text
+              'shipit-issue-row t
+              'shipit-repo repo
+              'shipit-issue-number number))
+
 ;;; Embark
 
 (defvar embark-general-map)

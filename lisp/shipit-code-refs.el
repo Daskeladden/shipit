@@ -567,25 +567,31 @@ Forces a fresh backend fetch on the next completion attempt."
                shipit-code-refs--capf-cache)
       (message "shipit-code-refs: completion cache cleared for %s" repo))))
 
-(defun shipit-code-refs--enriched-candidates (candidates)
-  "Reformat CANDIDATES as `KEY  TITLE [STATE]' with key as a text property.
-Keeps the bare key accessible as `shipit-issue-key' so the caller can
-recover it regardless of how the completion framework returns the
-selection."
+(defun shipit-code-refs--enriched-candidates (candidates repo)
+  "Reformat CANDIDATES, issue keys of REPO, as rows `KEY  TITLE [STATE]'.
+Each row is a row of an issue list that names its key and REPO, see
+`shipit--issue-row', because the pickers offer the rows in the same
+completion category as the issue search, and embark offers the actions
+of that search on them.  Each row also keeps the bare key as
+`shipit-issue-key', so the caller can recover it regardless of how the
+completion framework returns the selection."
   (mapcar
    (lambda (c)
      (let ((title (or (get-text-property 0 'shipit-issue-title c) ""))
            (state (or (get-text-property 0 'shipit-issue-state c) "")))
-       (propertize
-        (format "%-14s  %s%s"
-                c
-                title
-                (if (string-empty-p state)
-                    ""
-                  (format " [%s]"
-                          (propertize state
-                                      'face 'font-lock-type-face))))
-        'shipit-issue-key c)))
+       (shipit--issue-row
+        (propertize
+         (format "%-14s  %s%s"
+                 c
+                 title
+                 (if (string-empty-p state)
+                     ""
+                   (format " [%s]"
+                           (propertize state
+                                       'face 'font-lock-type-face))))
+         'shipit-issue-key c)
+        repo
+        (substring-no-properties c))))
    candidates))
 
 (defun shipit-code-refs--choose-project (keys)
@@ -628,7 +634,8 @@ selected the `+ Create new' entry, or nil on cancel."
                   (shipit-code-refs--enriched-candidates
                    (if (string-empty-p input)
                        (shipit-code-refs--capf-cached-candidates project repo)
-                     (shipit-code-refs--search-candidates project repo input))))))
+                     (shipit-code-refs--search-candidates project repo input))
+                   repo))))
          (choice (consult--read
                   (consult--dynamic-collection fetch-fn
                     :min-input 0
@@ -654,7 +661,8 @@ entry, or nil on cancel."
          (all-candidates
           (cons create-label
                 (shipit-code-refs--enriched-candidates
-                 (shipit-code-refs--search-candidates project repo ""))))
+                 (shipit-code-refs--search-candidates project repo "")
+                 repo)))
          (search-cache (make-hash-table :test 'equal))
          (completion-fn
           (lambda (string predicate action)
@@ -671,7 +679,7 @@ entry, or nil on cancel."
                               project repo string)))
                   (when fresh
                     (dolist (c (shipit-code-refs--enriched-candidates
-                                fresh))
+                                fresh repo))
                       (unless (member c all-candidates)
                         (setq all-candidates
                               (append all-candidates (list c))))))))

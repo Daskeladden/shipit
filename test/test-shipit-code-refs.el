@@ -15,6 +15,7 @@
 (require 'shipit-core)
 (require 'shipit-issue-backends)
 (require 'shipit-issues-buffer)
+(require 'shipit-issues)
 (require 'shipit-code-refs)
 
 (defvar embark-target-finders)
@@ -326,6 +327,71 @@ opens the issue, also in a list of candidates."
                   'shipit-repo "acme/door")
     (should (equal '(shipit-issue-ref "PRJ-1")
                    (take 2 (shipit-code-refs-embark-target))))))
+
+;;; The rows of the picker that inserts an issue reference
+
+(defun test-code-refs--candidate (key title state)
+  "The issue KEY with TITLE and STATE, as the search of the picker finds it."
+  (propertize key 'shipit-issue-title title 'shipit-issue-state state))
+
+(defun test-code-refs--picker-row (repo key)
+  "The row that the picker of an issue reference in REPO shows for KEY."
+  (car (shipit-code-refs--enriched-candidates
+        (list (test-code-refs--candidate key "Oil the hinge" "To Do"))
+        repo)))
+
+(defun test-code-refs--issue-of-each-character (row)
+  "What each character of ROW says of its issue, without repeats.
+Each is (ROW-MARK REPO NUMBER), from the text properties of a row of an
+issue list."
+  (delete-dups
+   (mapcar (lambda (position)
+             (list (get-text-property position 'shipit-issue-row row)
+                   (get-text-property position 'shipit-repo row)
+                   (get-text-property position 'shipit-issue-number row)))
+           (number-sequence 0 (1- (length row))))))
+
+(defun test-code-refs--row-action (key rows)
+  "Run the action on KEY of a row of an issue list on ROWS, as embark does."
+  (funcall (lookup-key shipit-issues-embark-map (kbd key)) rows))
+
+(ert-deftest test-code-refs-picker-row-names-its-issue ()
+  "A row of the picker of an issue reference names its repository and key."
+  ;; GIVEN the issue PRJ-95 "Oil the hinge", found by the search of the
+  ;; picker of an issue reference in acme/door
+  ;; WHEN the picker makes its row
+  ;; THEN each character of the row, from the first to the last, marks
+  ;; it as a row of an issue list and names acme/door and PRJ-95
+  ;; AND the row still holds the key that the picker inserts
+  (let ((row (test-code-refs--picker-row "acme/door" "PRJ-95")))
+    (should (equal '((t "acme/door" "PRJ-95"))
+                   (test-code-refs--issue-of-each-character row)))
+    (should (equal "PRJ-95" (get-text-property 0 'shipit-issue-key row)))))
+
+(ert-deftest test-code-refs-picker-row-copy-key-copies-its-key ()
+  "The copy-key action on a row of the reference picker copies its key."
+  ;; GIVEN the row of PRJ-95 that the picker of an issue reference in
+  ;; acme/door shows
+  ;; WHEN w of the actions on a row of an issue list runs on it
+  ;; THEN the kill ring holds PRJ-95
+  (test-code-refs--with-own-kill-ring
+    (test-code-refs--row-action
+     "w" (list (test-code-refs--picker-row "acme/door" "PRJ-95")))
+    (should (equal "PRJ-95" (car kill-ring)))))
+
+(ert-deftest test-code-refs-picker-create-row-names-no-issue ()
+  "The row of the reference picker that creates an issue names no issue."
+  ;; GIVEN the picker of an issue reference for the project PRJ
+  ;; WHEN it makes its row that creates a new issue
+  ;; THEN no character of that row names an issue
+  ;; AND w of the actions on a row tells that the row names no issue
+  (let ((row (shipit-code-refs--create-label "PRJ")))
+    (should (equal '((nil nil nil))
+                   (test-code-refs--issue-of-each-character row)))
+    (test-code-refs--with-own-kill-ring
+      (should-error (test-code-refs--row-action "w" (list row))
+                    :type 'user-error)
+      (should-not kill-ring))))
 
 (provide 'test-shipit-code-refs)
 ;;; test-shipit-code-refs.el ends here

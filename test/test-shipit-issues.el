@@ -529,6 +529,37 @@ THEN they are ordered by numeric suffix descending."
     (should (equal "acme/door" (get-text-property 0 'shipit-repo row)))
     (should (eql 12 (get-text-property 0 'shipit-issue-number row)))))
 
+(ert-deftest test-shipit-issues--issue-row-names-its-issue-on-each-character ()
+  "Text made a row of an issue list names its issue on each character."
+  ;; GIVEN the text "PRJ-7 Fix the door", whose last word has a face
+  (let* ((text (concat "PRJ-7 Fix the " (propertize "door" 'face 'bold)))
+         ;; WHEN it is made the row of the issue PRJ-7 of acme/door
+         (row (shipit--issue-row text "acme/door" "PRJ-7")))
+    ;; THEN each character of the row marks it as a row of an issue list
+    ;; and names acme/door and PRJ-7
+    (dotimes (position (length row))
+      (should (equal '(t "acme/door" "PRJ-7")
+                     (list (get-text-property position 'shipit-issue-row row)
+                           (get-text-property position 'shipit-repo row)
+                           (get-text-property position 'shipit-issue-number row)))))
+    ;; AND the row keeps the text and its face
+    (should (equal text row))
+    (should (eq 'bold (get-text-property (1- (length row)) 'face row)))
+    ;; AND the text that was given is left as it was
+    (should-not (get-text-property 0 'shipit-issue-row text))))
+
+(ert-deftest test-shipit-issues--issue-row-needs-its-repo-and-number ()
+  "Text is no row of an issue list without its repository and its issue."
+  ;; GIVEN the text "PRJ-7 Fix the door"
+  ;; WHEN it is made a row with no repository
+  ;; THEN that is an error
+  (should (eq 'error (car (should-error
+                           (shipit--issue-row "PRJ-7 Fix the door" nil "PRJ-7")))))
+  ;; WHEN it is made a row with no issue
+  ;; THEN that is an error
+  (should (eq 'error (car (should-error
+                           (shipit--issue-row "PRJ-7 Fix the door" "acme/door" nil))))))
+
 ;;; Dynamic Fetch Tests
 
 (ert-deftest test-shipit-issues--dynamic-fetch-jira-key ()

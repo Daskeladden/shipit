@@ -458,10 +458,8 @@ For Jira keys like \"PRJ-42\", extracts the numeric suffix."
 (defun shipit-issues--build-candidates (issues repo lookup-table)
   "Build completion candidates from ISSUES for REPO.
 Populates LOOKUP-TABLE and returns a list of candidate strings.  Each
-candidate carries REPO as its text property `shipit-repo' and the number
-of its issue as `shipit-issue-number'.  The property `shipit-issue-row'
-marks it as a row of an issue list: an issue buffer puts the other two
-on its own text too."
+candidate is a row of an issue list that names its issue and REPO; see
+`shipit--issue-row'."
   (let ((sorted (sort (copy-sequence issues)
                       (lambda (a b)
                         (> (shipit-issues--sort-key (cdr (assq 'number a)))
@@ -469,19 +467,13 @@ on its own text too."
     (mapcar (lambda (issue)
               (let* ((number (cdr (assq 'number issue)))
                      (title (string-trim (or (cdr (assq 'title issue)) "")))
-                     ;; Embark runs an action in the window that the
-                     ;; search started from, so the row itself must say
-                     ;; which issue it is.  Embark keeps these properties
-                     ;; in its export buffer and in a selection.  The
-                     ;; lookup table still finds the row, because `equal'
-                     ;; ignores text properties.
-                     (candidate (propertize
+                     ;; The lookup table still finds the row, because
+                     ;; `equal' ignores text properties.
+                     (candidate (shipit--issue-row
                                  (format "%s %s"
                                          (shipit-issues--format-issue-id number)
                                          title)
-                                 'shipit-issue-row t
-                                 'shipit-repo repo
-                                 'shipit-issue-number number)))
+                                 repo number)))
                 (puthash candidate
                          (list :number number :repo repo :data issue)
                          lookup-table)

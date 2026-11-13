@@ -888,6 +888,7 @@ content hangs on `syntax-ppss'."
 (declare-function embark-define-keymap "embark")
 (defvar embark-target-finders)
 (defvar embark-keymap-alist)
+(defvar embark-default-action-overrides)
 
 (defun shipit-code-refs-embark-target ()
   "Embark target finder: return the issue-key at point.
@@ -896,19 +897,64 @@ Category is `shipit-issue-ref', value is the bare key string."
                        (shipit-code-refs-key-at-point))))
     `(shipit-issue-ref ,key . ,(bounds-of-thing-at-point 'symbol))))
 
-(defvar shipit-code-refs-embark-keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "o") #'shipit-code-refs-open-issue)
-    (define-key map (kbd "b") #'shipit-code-refs-browse-issue)
-    (define-key map (kbd "u") #'shipit-code-refs-copy-url)
-    (define-key map (kbd "w") #'shipit-code-refs-copy-key)
-    map)
+(defun shipit-code-refs--read-key ()
+  "Ask for an issue key and return it without surrounding spaces.
+Signal a `user-error' when the answer is empty."
+  (let ((key (string-trim (read-string "Issue key: "))))
+    (when (string-empty-p key)
+      (user-error "No issue key given"))
+    key))
+
+;; Embark gives its target to an action only as the answer to the
+;; prompt of the action.  For a candidate in a list, embark runs the
+;; action in the window that the list came from.  An action that read
+;; the key at point would find no key there, or another key.  So these
+;; actions ask for the key.
+
+(defun shipit-code-refs-embark-open-issue (key)
+  "Open the shipit issue buffer for issue KEY, asked for at a prompt."
+  (interactive (list (shipit-code-refs--read-key)))
+  (shipit-code-refs-open-issue key))
+
+(defun shipit-code-refs-embark-browse-issue (key)
+  "Browse issue KEY, asked for at a prompt, in the backend's web UI."
+  (interactive (list (shipit-code-refs--read-key)))
+  (shipit-code-refs-browse-issue key))
+
+(defun shipit-code-refs-embark-copy-url (key)
+  "Copy the browse URL of issue KEY, asked for at a prompt, to the kill ring."
+  (interactive (list (shipit-code-refs--read-key)))
+  (shipit-code-refs-copy-url key))
+
+(defun shipit-code-refs-embark-copy-key (key)
+  "Copy issue KEY, asked for at a prompt, to the kill ring."
+  (interactive (list (shipit-code-refs--read-key)))
+  (shipit-code-refs-copy-key key))
+
+(defvar shipit-code-refs-embark-keymap (make-sparse-keymap)
   "Embark keymap for `shipit-issue-ref' targets.")
 
-(with-eval-after-load 'embark
+;; A reload of this file keeps the value of the `defvar'.  The keys are
+;; set here, so that a reload sets them again.
+(define-key shipit-code-refs-embark-keymap (kbd "RET") #'shipit-code-refs-embark-open-issue)
+(define-key shipit-code-refs-embark-keymap (kbd "o") #'shipit-code-refs-embark-open-issue)
+(define-key shipit-code-refs-embark-keymap (kbd "b") #'shipit-code-refs-embark-browse-issue)
+(define-key shipit-code-refs-embark-keymap (kbd "u") #'shipit-code-refs-embark-copy-url)
+(define-key shipit-code-refs-embark-keymap (kbd "w") #'shipit-code-refs-embark-copy-key)
+
+(defun shipit-code-refs--embark-register ()
+  "Make embark offer `shipit-code-refs-embark-keymap' on an issue key.
+The default action on an issue key opens the issue.  This holds also in
+a list of candidates, where embark would otherwise run again the
+command that made the list."
   (add-to-list 'embark-target-finders #'shipit-code-refs-embark-target)
   (add-to-list 'embark-keymap-alist
-               '(shipit-issue-ref . shipit-code-refs-embark-keymap)))
+               '(shipit-issue-ref . shipit-code-refs-embark-keymap))
+  (add-to-list 'embark-default-action-overrides
+               '(shipit-issue-ref . shipit-code-refs-embark-open-issue)))
+
+(with-eval-after-load 'embark
+  (shipit-code-refs--embark-register))
 
 ;;;###autoload
 (defun shipit-code-refs-diagnose ()

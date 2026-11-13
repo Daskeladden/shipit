@@ -922,5 +922,39 @@ WHEN checking its value
 THEN includes parent."
   (should (string-match-p "parent" shipit-issue-jira--fields)))
 
+(ert-deftest test-jira-refusal-tells-the-words-about-a-field ()
+  "A refusal that names a field tells the field and the words of Jira."
+  ;; GIVEN a Jira site that refuses the move of PRJ-1 with an empty list
+  ;; of messages and one message about the field resolution
+  ;; WHEN the issue moves
+  ;; THEN the error tells the field and the words of Jira about it
+  (test-jira-transitions--with-site
+      '(("/rest/api/2/issue/PRJ-1/transitions\\'" 400
+         ((errorMessages . [])
+          (errors . ((resolution . "Field 'resolution' cannot be set."))))))
+    (let ((err (should-error (shipit-issue-jira--api-request-post
+                              test-jira-transitions--config
+                              "/rest/api/2/issue/PRJ-1/transitions"
+                              '((transition . ((id . "31"))))))))
+      (should (string-search "resolution: Field 'resolution' cannot be set."
+                             (error-message-string err))))))
+
+(ert-deftest test-jira-refusal-tells-the-general-messages ()
+  "A refusal with general messages tells each of them."
+  ;; GIVEN a Jira site that refuses the move of PRJ-1 with two general
+  ;; messages and no message about a field
+  ;; WHEN the issue moves
+  ;; THEN the error tells both messages, as plain words
+  (test-jira-transitions--with-site
+      '(("/rest/api/2/issue/PRJ-1/transitions\\'" 400
+         ((errorMessages . ["Not allowed" "Ask an admin"])
+          (errors . ()))))
+    (let ((err (should-error (shipit-issue-jira--api-request-post
+                              test-jira-transitions--config
+                              "/rest/api/2/issue/PRJ-1/transitions"
+                              '((transition . ((id . "31"))))))))
+      (should (string-search "failed (400): Not allowed; Ask an admin"
+                             (error-message-string err))))))
+
 (provide 'test-jira-fields-transitions)
 ;;; test-jira-fields-transitions.el ends here

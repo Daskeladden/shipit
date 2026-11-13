@@ -885,6 +885,17 @@ Returns parsed JSON as alist."
             (shipit-issue-jira--read-json "Jira API"))
         (kill-buffer buffer)))))
 
+(defun shipit-issue-jira--refusal-text (parsed)
+  "The words of Jira in PARSED, the body of a refusal, as one line.
+Jira puts general messages in `errorMessages', a list, and a message
+about a field in `errors', under the name of the field.  The list is
+often empty and the field message holds the reason."
+  (string-join
+   (append (append (cdr (assq 'errorMessages parsed)) nil)
+           (mapcar (lambda (entry) (format "%s: %s" (car entry) (cdr entry)))
+                   (cdr (assq 'errors parsed))))
+   "; "))
+
 (defun shipit-issue-jira--read-response (buffer method path)
   "Parse the JSON body of the response in BUFFER to a METHOD on PATH.
 Returns the parsed alist, or nil for an empty body.  Signals an error
@@ -902,8 +913,7 @@ carrying Jira\\='s messages when the status is 400 or above."
                  (>= url-http-response-status 400))
         (error "Jira API %s %s failed (%d): %s"
                method path url-http-response-status
-               (or (cdr (assq 'errorMessages parsed))
-                   (cdr (assq 'errors parsed)))))
+               (shipit-issue-jira--refusal-text parsed)))
       parsed)))
 
 (defun shipit-issue-jira--api-request-send (method config path &optional data)

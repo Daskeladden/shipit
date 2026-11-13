@@ -18,6 +18,11 @@ API as wiki markup, and gives it back through version 3 as its own
 document format.  The fake does the same for plain lines, for
 `!file.png!`, which embeds an attachment of the issue as an image, and
 for `{code:LANGUAGE}...{code}`, which is a block of code.
+
+The move to Done needs a resolution, as in a common workflow of Jira,
+and the other moves take none.  As in Jira, the moves list their fields
+only when the request asks for `expand=transitions.fields`, and a move
+that is sent a resolution it does not take is refused.
 """
 
 import argparse
@@ -49,7 +54,20 @@ STATUSES = [
     {"id": "5", "name": "Done", "statusCategory": {"key": "done", "name": "Done"}},
 ]
 
-TRANSITIONS = [{"id": str(10 + int(status["id"])), "name": status["name"], "to": status}
+RESOLUTIONS = [{"id": "1", "name": "Done"}, {"id": "2", "name": "Won't Do"},
+               {"id": "3", "name": "Duplicate"}]
+
+RESOLUTION_FIELD = {"required": True, "name": "Resolution", "key": "resolution",
+                    "operations": ["set"], "allowedValues": RESOLUTIONS}
+
+
+def fields_of_move(status):
+    """The fields on the screen of the move to STATUS, by their keys."""
+    return {"resolution": RESOLUTION_FIELD} if status["name"] == "Done" else {}
+
+
+TRANSITIONS = [{"id": str(10 + int(status["id"])), "name": status["name"], "to": status,
+                "fields": fields_of_move(status)}
                for status in STATUSES]
 
 ISSUE_TYPES = [{"id": "10001", "name": "Bug"}, {"id": "10002", "name": "Task"}]
@@ -155,8 +173,8 @@ class Store:
         stamp = now()
         issue = {"id": str(next(self.ids)), "key": f"{project}-{number}", "project": project,
                  "summary": summary, "type": issue_type, "description": description,
-                 "status": STATUSES[0], "priority": "Medium", "created": stamp,
-                 "updated": stamp, "comments": [], "attachments": []}
+                 "status": STATUSES[0], "resolution": None, "priority": "Medium",
+                 "created": stamp, "updated": stamp, "comments": [], "attachments": []}
         self.issues[issue["key"]] = issue
         return issue
 
@@ -203,6 +221,7 @@ def issue_json(issue, base):
                 "summary": issue["summary"],
                 "description": to_adf(issue["description"]),
                 "status": issue["status"],
+                "resolution": issue["resolution"] and {"name": issue["resolution"]},
                 "issuetype": next(t for t in ISSUE_TYPES if t["name"] == issue["type"]),
                 "priority": {"name": issue["priority"]},
                 "project": {"key": issue["project"], "name": "Sandbox"},
@@ -258,6 +277,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def refuse(self, status, message):
         self.send_json(status, {"errorMessages": [message], "errors": {}})
+
+    def refuse_fields(self, status, errors):
+        """Refuse with ERRORS, the words of Jira for each field, by its key."""
+        self.send_json(status, {"errorMessages": [], "errors": errors})
 
     def read_body(self):
         return self.rfile.read(int(self.headers.get("Content-Length") or 0))
@@ -361,20 +384,75 @@ def create_issue(h, query):
                       "self": f"{h.base}/rest/api/2/issue/{issue['id']}"})
 
 
+def expands(query, name):
+    """Whether QUERY asks to expand NAME, as expand=transitions.fields does."""
+    return any(name in value.split(",") for value in query.get("expand", []))
+
+
+def transition_json(transition, with_fields):
+    """TRANSITION as Jira lists it, with its screen and its fields only WITH_FIELDS."""
+    listed = {key: transition[key] for key in ("id", "name", "to")}
+    if with_fields:
+        listed["hasScreen"] = bool(transition["fields"])
+        listed["fields"] = transition["fields"]
+    return listed
+
+
+def allowed_value(field, value):
+    """The value of FIELD that VALUE, as {"id": ...} or {"name": ...}, names, or None."""
+    return next((allowed for allowed in field["allowedValues"]
+                 if value.get("id") == allowed["id"] or value.get("name") == allowed["name"]),
+                None)
+
+
+def resolution_problem(transition, value):
+    """What Jira says against VALUE as the resolution of TRANSITION, or None.
+
+    VALUE is the resolution that the request sets, or None for none.
+    The words for a value that the field does not allow are the fake's
+    own; the other two are those of Jira."""
+    field = transition["fields"].get("resolution")
+    if field is None:
+        return None if value is None else ("Field 'resolution' cannot be set. It is not on"
+                                           " the appropriate screen, or unknown.")
+    if value is None:
+        return f"{field['name']} is required." if field["required"] else None
+    if allowed_value(field, value) is None:
+        return f"Resolution '{value.get('name') or value.get('id')}' is not allowed here."
+    return None
+
+
+def resolution_after(transition, value):
+    """The name of the resolution of an issue after TRANSITION, which set VALUE.
+
+    A move out of Done clears the resolution, as the workflow of Jira does."""
+    if transition["to"]["name"] != "Done":
+        return None
+    return allowed_value(transition["fields"]["resolution"], value)["name"]
+
+
 def get_transitions(h, key, query):
     if h.issue_or_refuse(key):
-        h.send_json(200, {"transitions": TRANSITIONS})
+        with_fields = expands(query, "transitions.fields")
+        h.send_json(200, {"transitions": [transition_json(t, with_fields)
+                                          for t in TRANSITIONS]})
 
 
 def do_transition(h, key, query):
     issue = h.issue_or_refuse(key)
     if not issue:
         return
-    wanted = h.read_json().get("transition", {}).get("id")
+    body = h.read_json()
+    wanted = body.get("transition", {}).get("id")
     transition = next((t for t in TRANSITIONS if t["id"] == wanted), None)
     if not transition:
         return h.refuse(400, f"Transition id '{wanted}' is not valid for this issue.")
+    resolution = body.get("fields", {}).get("resolution")
+    problem = resolution_problem(transition, resolution)
+    if problem:
+        return h.refuse_fields(400, {"resolution": problem})
     issue["status"] = transition["to"]
+    issue["resolution"] = resolution_after(transition, resolution)
     issue["updated"] = now()
     h.send_json(204)
 

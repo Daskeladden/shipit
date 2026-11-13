@@ -795,5 +795,160 @@ THEN point is on that comment, AND the comments are unfolded."
                    (point)
                    (test-jira-sandbox--place-of "Second said")))))))
 
+;;; The moves of an issue and its resolution
+
+(defun test-jira-sandbox--moves (config query)
+  "The moves of the sandbox's first issue, as the sandbox lists them.
+QUERY is the query of the request, with its question mark, or empty."
+  (append (cdr (assq 'transitions
+                     (shipit-issue-jira--api-request
+                      config (concat "/rest/api/2/issue/PRJ-1/transitions" query))))
+          nil))
+
+(defun test-jira-sandbox--name-of (alist)
+  "The name in ALIST, a move or a value as Jira lists it."
+  (cdr (assq 'name alist)))
+
+(defun test-jira-sandbox--screen-of (move)
+  "MOVE as (NAME HAS-SCREEN FIELDS), FIELDS the names of its fields."
+  (list (test-jira-sandbox--name-of move)
+        (cdr (assq 'hasScreen move))
+        (mapcar #'car (cdr (assq 'fields move)))))
+
+(defun test-jira-sandbox--resolution-of-move (move)
+  "Whether MOVE needs a resolution, and the names it allows, as (REQUIRED NAMES)."
+  (let ((field (cdr (assq 'resolution (cdr (assq 'fields move))))))
+    (list (cdr (assq 'required field))
+          (mapcar #'test-jira-sandbox--name-of (cdr (assq 'allowedValues field))))))
+
+(defun test-jira-sandbox--move-id (config name)
+  "The id of the move NAME of the sandbox's first issue, as shipit reads it."
+  (cdr (assq 'id (cl-find name (shipit-issue-jira--get-transitions config "PRJ-1")
+                          :key #'test-jira-sandbox--name-of :test #'equal))))
+
+(defun test-jira-sandbox--move (config name &optional resolution)
+  "Make the move NAME of the sandbox's first issue, with RESOLUTION, as shipit does."
+  (shipit-issue-jira--transition-status
+   config "PRJ-1" (test-jira-sandbox--move-id config name) resolution))
+
+(defun test-jira-sandbox--refusal-of-move (config name &optional resolution)
+  "What shipit says when the sandbox refuses the move NAME with RESOLUTION.
+Fails when the sandbox makes the move."
+  (cadr (should-error (test-jira-sandbox--move config name resolution))))
+
+(defun test-jira-sandbox--state-of (config)
+  "The state and the resolution of the sandbox's first issue.
+The value is (STATE RESOLUTION), RESOLUTION nil when Jira gives it as
+null.  Fails when the issue has no field resolution."
+  (let* ((fields (cdr (assq 'fields (shipit-issue-jira--api-request
+                                     config "/rest/api/3/issue/PRJ-1"))))
+         (resolution (or (assq 'resolution fields)
+                         (ert-fail (list "The issue has no field resolution" fields)))))
+    (list (test-jira-sandbox--name-of (cdr (assq 'status fields)))
+          (test-jira-sandbox--name-of (cdr resolution)))))
+
+(ert-deftest test-jira-sandbox-moves-list-their-fields-when-asked ()
+  "The moves of an issue list their screens and fields when asked to."
+  ;; GIVEN the sandbox, whose first issue is in To Do
+  (test-jira-sandbox--with config
+    ;; WHEN the moves of that issue are asked for with their fields
+    (let ((moves (test-jira-sandbox--moves config "?expand=transitions.fields")))
+      ;; THEN the moves to To Do and In Progress have no screen and no
+      ;; fields, AND the move to Done has a screen with the resolution
+      (should (equal '(("To Do" :json-false nil)
+                       ("In Progress" :json-false nil)
+                       ("Done" t (resolution)))
+                     (mapcar #'test-jira-sandbox--screen-of moves)))
+      ;; AND the move to Done needs a resolution, one of Done, Won't Do
+      ;; and Duplicate
+      (should (equal '(t ("Done" "Won't Do" "Duplicate"))
+                     (test-jira-sandbox--resolution-of-move (car (last moves))))))))
+
+(ert-deftest test-jira-sandbox-moves-list-no-fields-unless-asked ()
+  "The moves of an issue list no screens and no fields unless asked to."
+  ;; GIVEN the sandbox
+  (test-jira-sandbox--with config
+    ;; WHEN the moves of its first issue are asked for without their fields
+    (let ((moves (test-jira-sandbox--moves config "")))
+      ;; THEN the moves to To Do, In Progress and Done are listed
+      (should (equal '("To Do" "In Progress" "Done")
+                     (mapcar #'test-jira-sandbox--name-of moves)))
+      ;; AND none tells its screen or its fields, as in Jira
+      (should-not (cl-some (lambda (move)
+                             (or (assq 'hasScreen move) (assq 'fields move)))
+                           moves)))))
+
+(ert-deftest test-jira-sandbox-a-move-to-done-keeps-its-resolution ()
+  "A move to Done with a resolution that it allows sets that resolution."
+  ;; GIVEN the sandbox, whose first issue is in To Do with no resolution
+  (test-jira-sandbox--with config
+    (should (equal '("To Do" nil) (test-jira-sandbox--state-of config)))
+    ;; WHEN shipit moves the issue to Done with the resolution Won't Do
+    (test-jira-sandbox--move config "Done" "Won't Do")
+    ;; THEN the issue is in Done, with the resolution Won't Do
+    (should (equal '("Done" "Won't Do") (test-jira-sandbox--state-of config)))))
+
+(ert-deftest test-jira-sandbox-a-move-to-done-gets-the-default-resolution ()
+  "A move to Done that names no resolution gets the default one of shipit."
+  ;; GIVEN the sandbox, whose first issue is in To Do
+  ;; AND shipit set to send its default resolution Done on a move to a
+  ;; closed state
+  (let ((shipit-issue-jira-set-resolution-on-done t)
+        (shipit-issue-jira-default-resolution "Done"))
+    (test-jira-sandbox--with config
+      ;; WHEN shipit moves the issue to Done and names no resolution
+      (test-jira-sandbox--move config "Done")
+      ;; THEN the issue is in Done, with the resolution Done
+      (should (equal '("Done" "Done") (test-jira-sandbox--state-of config))))))
+
+(ert-deftest test-jira-sandbox-a-move-to-done-needs-a-resolution ()
+  "A move to Done without a resolution is refused, as Jira refuses it."
+  ;; GIVEN the sandbox, whose first issue is in To Do
+  ;; AND shipit set to send no resolution of its own
+  (let ((shipit-issue-jira-set-resolution-on-done nil))
+    (test-jira-sandbox--with config
+      ;; WHEN shipit moves the issue to Done without a resolution
+      ;; THEN the sandbox refuses, and says that the resolution is required
+      (should (string-match-p "resolution: Resolution is required\\."
+                              (test-jira-sandbox--refusal-of-move config "Done")))
+      ;; AND the issue stays in To Do with no resolution
+      (should (equal '("To Do" nil) (test-jira-sandbox--state-of config))))))
+
+(ert-deftest test-jira-sandbox-a-move-to-done-refuses-a-resolution-it-does-not-allow ()
+  "A move to Done with a resolution that it does not allow is refused."
+  ;; GIVEN the sandbox, whose first issue is in To Do
+  (test-jira-sandbox--with config
+    ;; WHEN shipit moves the issue to Done with the resolution Fixed, which
+    ;; the move does not allow
+    ;; THEN the sandbox refuses, and names the resolution Fixed
+    (should (string-match-p "resolution: .*Fixed"
+                            (test-jira-sandbox--refusal-of-move config "Done" "Fixed")))
+    ;; AND the issue stays in To Do with no resolution
+    (should (equal '("To Do" nil) (test-jira-sandbox--state-of config)))))
+
+(ert-deftest test-jira-sandbox-a-move-without-the-field-refuses-a-resolution ()
+  "A move whose screen has no resolution is refused when it sets one."
+  ;; GIVEN the sandbox, whose first issue is in To Do
+  (test-jira-sandbox--with config
+    ;; WHEN shipit moves the issue to In Progress with the resolution Done
+    ;; THEN the sandbox refuses, and says that the move cannot set it
+    (should (string-match-p
+             (regexp-quote "resolution: Field 'resolution' cannot be set. It is not on the appropriate screen, or unknown.")
+             (test-jira-sandbox--refusal-of-move config "In Progress" "Done")))
+    ;; AND the issue stays in To Do with no resolution
+    (should (equal '("To Do" nil) (test-jira-sandbox--state-of config)))))
+
+(ert-deftest test-jira-sandbox-a-move-out-of-done-clears-the-resolution ()
+  "A move out of Done clears the resolution of the issue."
+  ;; GIVEN the sandbox, whose first issue is moved to Done with the
+  ;; resolution Done
+  (test-jira-sandbox--with config
+    (test-jira-sandbox--move config "Done" "Done")
+    (should (equal '("Done" "Done") (test-jira-sandbox--state-of config)))
+    ;; WHEN shipit moves the issue to In Progress
+    (test-jira-sandbox--move config "In Progress")
+    ;; THEN the issue is in In Progress with no resolution
+    (should (equal '("In Progress" nil) (test-jira-sandbox--state-of config)))))
+
 (provide 'test-shipit-jira-sandbox)
 ;;; test-shipit-jira-sandbox.el ends here

@@ -6,6 +6,7 @@
 ;; - Normalizer: issue-type field, assignees (plural) format
 ;; - Status face helper: various Jira states → correct faces
 ;; - Transition normalization
+;; - The resolutions that a move takes, and the resolution it sends
 
 ;;; Code:
 
@@ -13,6 +14,7 @@
 (require 'shipit-issue-jira)
 (require 'shipit-issue-backends)
 (require 'shipit-issues-buffer)
+(require 'shipit-test-http)
 
 ;;; ADF taskList / taskItem Tests
 
@@ -294,6 +296,259 @@ WHEN checking for transition support
 THEN returns nil."
   (let ((plist '(:name "Test")))
     (should-not (shipit-issue--backend-has-transitions-p plist))))
+
+;;; The resolutions that a move takes, and the resolution it sends
+
+(defconst test-jira-transitions--config '(:base-url "https://acme.atlassian.net")
+  "The config of a repository whose issues are on a Jira site.")
+
+(defun test-jira-transitions--resolution-field (names)
+  "The field resolution on the screen of a move that allows the resolutions NAMES."
+  `((required . t)
+    (name . "Resolution")
+    (key . "resolution")
+    (operations . ["set"])
+    (allowedValues . ,(vconcat (mapcar (lambda (name) `((name . ,name))) names)))))
+
+(defun test-jira-transitions--listed (id name category &optional resolutions)
+  "The move ID to the state NAME of CATEGORY, as Jira lists it with its fields.
+RESOLUTIONS are the names of the resolutions that the move allows, in
+the order of Jira.  Without them the move has no screen, and Jira gives
+an empty object for its fields.  `json-encode' writes an empty hash
+table as that object, and nil as null."
+  `((id . ,id)
+    (name . ,name)
+    (to . ((name . ,name) (statusCategory . ((key . ,category)))))
+    (hasScreen . ,(if resolutions t :json-false))
+    (fields . ,(if resolutions
+                   `((resolution . ,(test-jira-transitions--resolution-field resolutions)))
+                 (make-hash-table)))))
+
+(defun test-jira-transitions--without-fields (move)
+  "MOVE as Jira lists it when the request does not ask for the fields."
+  (assq-delete-all 'fields (copy-alist move)))
+
+(defun test-jira-transitions--answers (&rest moves)
+  "Jira's answers for the issue PRJ-1, which offers MOVES, as Jira lists them.
+As Jira does, it lists the fields of the moves only for a request that
+asks for them, and answers a move with no content."
+  (let ((without-fields (mapcar #'test-jira-transitions--without-fields moves)))
+    `(("/rest/api/2/issue/PRJ-1/transitions\\?expand=transitions\\.fields\\'" 200
+       ((transitions . ,(vconcat moves))))
+      ("/rest/api/2/issue/PRJ-1/transitions\\'" 200
+       ,(lambda (sent)
+          (if sent "" `((transitions . ,(vconcat without-fields)))))))))
+
+(defmacro test-jira-transitions--with-site (answers &rest body)
+  "Run BODY with the Jira site answering from ANSWERS, and a login for it."
+  (declare (indent 1))
+  `(cl-letf (((symbol-function 'auth-source-search)
+              (lambda (&rest _)
+                (list (list :user "someone@example.com" :secret "secret")))))
+     (shipit-test-http-answering ,answers
+       ,@body)))
+
+(defun test-jira-transitions--methods ()
+  "The methods of the requests that Jira got, oldest first."
+  (mapcar #'car shipit-test-http-requests))
+
+(defun test-jira-transitions--sent-moves ()
+  "The moves that Jira got, oldest first, each as the alist it sent."
+  (cl-loop for (method _address) in shipit-test-http-requests
+           for body in shipit-test-http-bodies
+           when (equal method "POST")
+           collect (json-parse-string (decode-coding-string body 'utf-8)
+                                      :object-type 'alist)))
+
+(defun test-jira-transitions--move (id &optional resolution)
+  "A move with the id ID, as Jira gets it, with RESOLUTION when non-nil."
+  `((transition . ((id . ,id)))
+    ,@(when resolution `((fields . ((resolution . ((name . ,resolution)))))))))
+
+(defun test-jira-transitions--moves-of-prj-1 ()
+  "The moves of the issue PRJ-1, as the Jira backend gives them."
+  (shipit-issue--get-transitions (cdr (assq 'jira shipit-issue-backends))
+                                 test-jira-transitions--config "PRJ-1"))
+
+(defun test-jira-transitions--resolutions-of (name moves)
+  "The resolutions that the move NAME of MOVES takes, as the backend gives them.
+Fails when MOVES have no move NAME."
+  (alist-get 'resolutions
+             (or (seq-find (lambda (move) (equal name (alist-get 'name move))) moves)
+                 (ert-fail (list "No move with this name" name moves)))))
+
+(ert-deftest test-jira-moves-are-asked-for-with-their-fields ()
+  "The request for the moves of an issue asks for the fields of each move."
+  ;; GIVEN the issue PRJ-1 on a Jira site
+  ;; WHEN the Jira backend is asked for the moves of PRJ-1
+  ;; THEN Jira gets one request: for the moves, together with their
+  ;; fields
+  (test-jira-transitions--with-site
+      (test-jira-transitions--answers
+       (test-jira-transitions--listed "31" "Done" "done"))
+    (test-jira-transitions--moves-of-prj-1)
+    (should (equal shipit-test-http-requests
+                   '(("GET" "https://acme.atlassian.net/rest/api/2/issue/PRJ-1/transitions?expand=transitions.fields"))))))
+
+(ert-deftest test-jira-moves-carry-their-resolutions-with-the-default-first ()
+  "A move carries the resolutions it allows, the default first."
+  ;; GIVEN the issue PRJ-1, whose move to Done allows the resolutions
+  ;; Won't Do, Done and Duplicate, in this order from Jira
+  ;; AND the default resolution Done
+  ;; WHEN the Jira backend is asked for the moves of PRJ-1
+  ;; THEN the move to Done carries Done first, then Won't Do and
+  ;; Duplicate
+  (let ((shipit-issue-jira-default-resolution "Done"))
+    (test-jira-transitions--with-site
+        (test-jira-transitions--answers
+         (test-jira-transitions--listed "31" "Done" "done"
+                                        '("Won't Do" "Done" "Duplicate")))
+      (should (equal (test-jira-transitions--resolutions-of
+                      "Done" (test-jira-transitions--moves-of-prj-1))
+                     '("Done" "Won't Do" "Duplicate"))))))
+
+(ert-deftest test-jira-moves-carry-their-resolutions-in-the-order-of-jira ()
+  "Without the default among them, the resolutions of a move keep Jira's order."
+  ;; GIVEN the issue PRJ-1, whose move to Done allows the resolutions
+  ;; Won't Do, Done and Duplicate, in this order from Jira
+  ;; AND the default resolution Fixed, which the move does not allow
+  ;; WHEN the Jira backend is asked for the moves of PRJ-1
+  ;; THEN the move to Done carries Won't Do, Done and Duplicate, in this
+  ;; order
+  (let ((shipit-issue-jira-default-resolution "Fixed"))
+    (test-jira-transitions--with-site
+        (test-jira-transitions--answers
+         (test-jira-transitions--listed "31" "Done" "done"
+                                        '("Won't Do" "Done" "Duplicate")))
+      (should (equal (test-jira-transitions--resolutions-of
+                      "Done" (test-jira-transitions--moves-of-prj-1))
+                     '("Won't Do" "Done" "Duplicate"))))))
+
+(ert-deftest test-jira-move-with-empty-fields-carries-no-resolutions ()
+  "A move whose fields are an empty object takes no resolution."
+  ;; GIVEN the issue PRJ-1, whose move to Done has no screen, so that
+  ;; Jira lists its fields as an empty object
+  ;; WHEN the Jira backend is asked for the moves of PRJ-1
+  ;; THEN the move to Done carries no resolutions
+  (test-jira-transitions--with-site
+      (test-jira-transitions--answers
+       (test-jira-transitions--listed "31" "Done" "done"))
+    (should-not (test-jira-transitions--resolutions-of
+                 "Done" (test-jira-transitions--moves-of-prj-1)))))
+
+(ert-deftest test-jira-move-without-fields-carries-no-resolutions ()
+  "A move that Jira lists without its fields takes no resolution."
+  ;; GIVEN the issue PRJ-1, whose move to Done allows Done, but which
+  ;; Jira lists without its fields
+  ;; WHEN the Jira backend is asked for the moves of PRJ-1
+  ;; THEN the move to Done carries no resolutions
+  (test-jira-transitions--with-site
+      (test-jira-transitions--answers
+       (test-jira-transitions--without-fields
+        (test-jira-transitions--listed "31" "Done" "done" '("Done"))))
+    (should-not (test-jira-transitions--resolutions-of
+                 "Done" (test-jira-transitions--moves-of-prj-1)))))
+
+(ert-deftest test-jira-move-sends-the-resolution-given ()
+  "A move with a resolution sends that resolution, and asks for nothing first."
+  ;; GIVEN the issue PRJ-1, whose move to Done allows Done and Won't Do
+  ;; WHEN it moves to Done with the resolution Won't Do
+  ;; THEN Jira gets one request: the move to Done with Won't Do
+  (let ((shipit-issue-jira-set-resolution-on-done t)
+        (shipit-issue-jira-default-resolution "Done"))
+    (test-jira-transitions--with-site
+        (test-jira-transitions--answers
+         (test-jira-transitions--listed "31" "Done" "done" '("Done" "Won't Do")))
+      (shipit-issue-jira--transition-status
+       test-jira-transitions--config "PRJ-1" "31" "Won't Do")
+      (should (equal (test-jira-transitions--methods) '("POST")))
+      (should (equal (test-jira-transitions--sent-moves)
+                     (list (test-jira-transitions--move "31" "Won't Do")))))))
+
+(ert-deftest test-jira-move-to-done-sends-the-default-resolution ()
+  "A move to Done that allows the default resolution sends it, when none is given."
+  ;; GIVEN the issue PRJ-1, whose move to Done takes a resolution and
+  ;; allows Won't Do and Done
+  ;; AND the default resolution Done
+  ;; WHEN it moves to Done with no resolution given
+  ;; THEN Jira is asked for the moves of the issue first
+  ;; AND the move to Done sends the resolution Done
+  (let ((shipit-issue-jira-set-resolution-on-done t)
+        (shipit-issue-jira-default-resolution "Done"))
+    (test-jira-transitions--with-site
+        (test-jira-transitions--answers
+         (test-jira-transitions--listed "31" "Done" "done" '("Won't Do" "Done")))
+      (shipit-issue-jira--transition-status test-jira-transitions--config "PRJ-1" "31")
+      (should (equal (test-jira-transitions--methods) '("GET" "POST")))
+      (should (equal (test-jira-transitions--sent-moves)
+                     (list (test-jira-transitions--move "31" "Done")))))))
+
+(ert-deftest test-jira-move-that-takes-no-resolution-sends-none ()
+  "A move to Done that takes no resolution sends none, which Jira would refuse."
+  ;; GIVEN the issue PRJ-1, whose move to Done has no screen and takes
+  ;; no resolution
+  ;; AND the default resolution Done
+  ;; WHEN it moves to Done with no resolution given
+  ;; THEN Jira gets the move to Done
+  ;; AND the request of the move has no fields at all
+  (let ((shipit-issue-jira-set-resolution-on-done t)
+        (shipit-issue-jira-default-resolution "Done"))
+    (test-jira-transitions--with-site
+        (test-jira-transitions--answers
+         (test-jira-transitions--listed "31" "Done" "done"))
+      (shipit-issue-jira--transition-status test-jira-transitions--config "PRJ-1" "31")
+      (let ((sent (test-jira-transitions--sent-moves)))
+        (should (equal sent (list (test-jira-transitions--move "31"))))
+        (should-not (assq 'fields (car sent)))))))
+
+(ert-deftest test-jira-move-sends-no-resolution-that-the-move-does-not-allow ()
+  "A move to Done that does not allow the default resolution sends none."
+  ;; GIVEN the issue PRJ-1, whose move to Done takes a resolution and
+  ;; allows only Won't Do and Duplicate
+  ;; AND the default resolution Done
+  ;; WHEN it moves to Done with no resolution given
+  ;; THEN the move to Done sends no resolution
+  (let ((shipit-issue-jira-set-resolution-on-done t)
+        (shipit-issue-jira-default-resolution "Done"))
+    (test-jira-transitions--with-site
+        (test-jira-transitions--answers
+         (test-jira-transitions--listed "31" "Done" "done" '("Won't Do" "Duplicate")))
+      (shipit-issue-jira--transition-status test-jira-transitions--config "PRJ-1" "31")
+      (should (equal (test-jira-transitions--sent-moves)
+                     (list (test-jira-transitions--move "31")))))))
+
+(ert-deftest test-jira-move-that-does-not-close-sends-no-resolution ()
+  "A move to In Progress sends no resolution, even when it allows the default."
+  ;; GIVEN the issue PRJ-1, whose move to In Progress takes a resolution
+  ;; and allows Done
+  ;; AND the default resolution Done
+  ;; WHEN it moves to In Progress with no resolution given
+  ;; THEN the move to In Progress sends no resolution
+  (let ((shipit-issue-jira-set-resolution-on-done t)
+        (shipit-issue-jira-default-resolution "Done"))
+    (test-jira-transitions--with-site
+        (test-jira-transitions--answers
+         (test-jira-transitions--listed "21" "In Progress" "indeterminate" '("Done")))
+      (shipit-issue-jira--transition-status test-jira-transitions--config "PRJ-1" "21")
+      (should (equal (test-jira-transitions--sent-moves)
+                     (list (test-jira-transitions--move "21")))))))
+
+(ert-deftest test-jira-move-to-done-sends-no-resolution-when-switched-off ()
+  "With resolutions on a move switched off, a move to Done sends none."
+  ;; GIVEN the issue PRJ-1, whose move to Done allows Done
+  ;; AND the default resolution Done
+  ;; AND `shipit-issue-jira-set-resolution-on-done' is off
+  ;; WHEN it moves to Done with no resolution given
+  ;; THEN Jira gets one request: the move to Done with no resolution
+  (let ((shipit-issue-jira-set-resolution-on-done nil)
+        (shipit-issue-jira-default-resolution "Done"))
+    (test-jira-transitions--with-site
+        (test-jira-transitions--answers
+         (test-jira-transitions--listed "31" "Done" "done" '("Done")))
+      (shipit-issue-jira--transition-status test-jira-transitions--config "PRJ-1" "31")
+      (should (equal (test-jira-transitions--methods) '("POST")))
+      (should (equal (test-jira-transitions--sent-moves)
+                     (list (test-jira-transitions--move "31")))))))
 
 ;;; Jira fields constant includes issuetype
 

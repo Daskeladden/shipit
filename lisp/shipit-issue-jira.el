@@ -1551,15 +1551,14 @@ Translates shipit transient args to Jira Query Language."
 
 (defun shipit-issue-jira--normalize-transitions (raw)
   "Normalize RAW Jira transitions response to list of alists.
-Each alist has (id . STRING), (name . STRING), and
-(to . ((name . STRING) (id . STRING) (category . STRING))) --
-`category\=' is the `statusCategory.key\=' Jira returns on the
-target status (typical values: \"new\", \"indeterminate\",
-\"done\").  Callers that route moves by destination status use
-`name\=' / `id\=', and the dashboard\='s commit walker uses
-`category\=' to know when to also set `resolution\=' on a
-done-category transition (otherwise Jira boards filter the
-issue out by missing `resolutiondate\=')."
+Each alist has (id . STRING), (name . STRING),
+\(to . ((name . STRING) (id . STRING) (category . STRING))) and
+\(resolutions . NAMES).  `category' is the `statusCategory.key' Jira
+returns on the target status (typical values: \"new\",
+\"indeterminate\", \"done\").  NAMES are the resolutions that the move
+takes, as `shipit-issue-jira--move-resolutions' gives them, and nil for
+a move that takes none.  Callers that route moves by destination status
+use `name' and `id'."
   (let ((transitions (append (cdr (assq 'transitions raw)) nil)))
     (mapcar (lambda (tr)
               (let* ((to (cdr (assq 'to tr)))
@@ -1569,33 +1568,32 @@ issue out by missing `resolutiondate\=')."
                   (name . ,(cdr (assq 'name tr)))
                   (to . ((name . ,(cdr (assq 'name to)))
                          (id . ,(cdr (assq 'id to)))
-                         (category . ,category))))))
+                         (category . ,category)))
+                  (resolutions . ,(shipit-issue-jira--move-resolutions tr)))))
             transitions)))
 
 (defun shipit-issue-jira--get-transitions (config issue-id)
   "Fetch available transitions for Jira issue ISSUE-ID using CONFIG.
-Returns a normalized list of ((id . ID) (name . NAME)) alists."
-  (let* ((path (format "/rest/api/2/issue/%s/transitions" issue-id))
+Returns the moves as `shipit-issue-jira--normalize-transitions' gives
+them.  The request asks for the fields of each move too: Jira lists
+them only then, and they tell which resolutions the move takes."
+  (let* ((path (format "/rest/api/2/issue/%s/transitions?expand=transitions.fields"
+                       issue-id))
          (raw (shipit-issue-jira--api-request config path)))
     (shipit--debug-log "Jira backend: fetched transitions for %s" issue-id)
     (shipit-issue-jira--normalize-transitions raw)))
 
 (defcustom shipit-issue-jira-set-resolution-on-done t
-  "When non-nil, set `resolution\=' on transitions to Done-category statuses.
-Jira boards typically include a `resolutiondate >= -Nd\=' clause
-in their sub-filter so completed work auto-disappears after N
-days.  A bare transition through the REST API leaves the
-`resolution\=' field unset, so `resolutiondate\=' is never
-populated and the card silently drops off the board the moment
-it transitions to Done -- matching neither \"open\" nor
-\"recently closed\" predicates.
+  "When non-nil, a move to a closed state sends the default resolution.
+A closed state is one of the category \"done\".  The move sends
+`shipit-issue-jira-default-resolution' only when the move takes a
+resolution and allows that one.
 
-When this defcustom is non-nil (the default) shipit attaches
-`{\"resolution\": {\"name\": \"Done\"}}\=' to the transition
-body whenever the destination status\='s `statusCategory.key\='
-is `\"done\"\='.  Disable if your workflows expose a screen
-that prompts for a specific resolution and rejects the
-default."
+Many Jira boards hide a done card some days after it was resolved,
+with a clause like `resolutiondate >= -Nd' in their filter.  A move
+through the REST API that sends no resolution leaves the resolution
+unset.  Then Jira sets no resolution date, and the card drops off the
+board at once."
   :type 'boolean
   :group 'shipit)
 
@@ -1608,40 +1606,74 @@ use `Fixed\=', `Resolved\=', etc.)."
   :type 'string
   :group 'shipit)
 
-(defun shipit-issue-jira--transition-status (config issue-id transition-id)
+(defun shipit-issue-jira--default-first (names)
+  "NAMES with `shipit-issue-jira-default-resolution' first, when among them.
+The others keep their order."
+  (if (member shipit-issue-jira-default-resolution names)
+      (cons shipit-issue-jira-default-resolution
+            (remove shipit-issue-jira-default-resolution names))
+    names))
+
+(defun shipit-issue-jira--move-resolutions (transition)
+  "The names of the resolutions that TRANSITION takes, as Jira lists it.
+A move takes a resolution only when the field resolution is on its
+screen.  The names are the values that the field allows, with
+`shipit-issue-jira-default-resolution' first when it is among them.
+Nil when the move takes none, and when Jira lists the move without its
+fields."
+  (let ((field (cdr (assq 'resolution (cdr (assq 'fields transition))))))
+    (shipit-issue-jira--default-first
+     (mapcar (lambda (value) (cdr (assq 'name value)))
+             (cdr (assq 'allowedValues field))))))
+
+(defun shipit-issue-jira--transition-of (config issue-id transition-id)
+  "The move TRANSITION-ID that ISSUE-ID offers now, or nil.
+CONFIG names the site.  The move is as
+`shipit-issue-jira--get-transitions' gives it.  Nil too when Jira does
+not list the moves of the issue, or lists none with TRANSITION-ID."
+  (cl-find-if (lambda (tr)
+                (string-equal (or (cdr (assq 'id tr)) "") transition-id))
+              (ignore-errors
+                (shipit-issue-jira--get-transitions config issue-id))))
+
+(defun shipit-issue-jira--default-resolution-for (config issue-id transition-id)
+  "The resolution to send with TRANSITION-ID of ISSUE-ID when none is given.
+CONFIG names the site.  It is `shipit-issue-jira-default-resolution'
+when `shipit-issue-jira-set-resolution-on-done' is non-nil, the move
+leads to a state of the category \"done\", and the move allows that
+resolution.  Else it is nil: when the move needs a resolution, Jira
+says so in its own words."
+  (when shipit-issue-jira-set-resolution-on-done
+    (let* ((transition (shipit-issue-jira--transition-of
+                        config issue-id transition-id))
+           (category (cdr (assq 'category (cdr (assq 'to transition))))))
+      (and category
+           (string-equal-ignore-case category "done")
+           (member shipit-issue-jira-default-resolution
+                   (cdr (assq 'resolutions transition)))
+           shipit-issue-jira-default-resolution))))
+
+(defun shipit-issue-jira--transition-body (transition-id resolution)
+  "The body of a move with TRANSITION-ID that sets RESOLUTION, a name, or none."
+  `((transition . ((id . ,transition-id)))
+    ,@(when resolution
+        `((fields . ((resolution . ((name . ,resolution)))))))))
+
+(defun shipit-issue-jira--transition-status (config issue-id transition-id
+                                                    &optional resolution)
   "Transition Jira issue ISSUE-ID to status via TRANSITION-ID using CONFIG.
-Posts to the transitions endpoint.  When the destination
-status is in the `done\=' category and
-`shipit-issue-jira-set-resolution-on-done\=' is non-nil, also
-sets `resolution\=' to `shipit-issue-jira-default-resolution\='
-in the same call so Jira populates `resolutiondate\=' and
-boards keep the card visible per their `resolutiondate >= -Nd\='
-sub-filter clause."
-  (let* ((category (when shipit-issue-jira-set-resolution-on-done
-                     (let* ((transitions (ignore-errors
-                                           (shipit-issue-jira--get-transitions
-                                            config issue-id)))
-                            (matching (cl-find-if
-                                       (lambda (tr)
-                                         (string-equal
-                                          (or (cdr (assq 'id tr)) "")
-                                          transition-id))
-                                       transitions)))
-                       (and matching
-                            (cdr (assq 'category
-                                       (cdr (assq 'to matching))))))))
-         (set-resolution (and shipit-issue-jira-set-resolution-on-done
-                              category
-                              (string-equal-ignore-case category "done")))
-         (path (format "/rest/api/2/issue/%s/transitions" issue-id))
-         (data (if set-resolution
-                   `((transition . ((id . ,transition-id)))
-                     (fields . ((resolution . ((name . ,shipit-issue-jira-default-resolution))))))
-                 `((transition . ((id . ,transition-id)))))))
-    (shipit--debug-log
-     "Jira backend: transitioning %s with %s (target-category=%S set-resolution=%s)"
-     issue-id transition-id category set-resolution)
-    (shipit-issue-jira--api-request-post config path data)))
+Posts to the transitions endpoint.  RESOLUTION, the name of a
+resolution, is set in the same call.  Without it, the move sets what
+`shipit-issue-jira--default-resolution-for' gives, which takes a
+request for the moves of the issue."
+  (let ((resolution (or resolution
+                        (shipit-issue-jira--default-resolution-for
+                         config issue-id transition-id))))
+    (shipit--debug-log "Jira backend: transitioning %s with %s (resolution=%S)"
+                       issue-id transition-id resolution)
+    (shipit-issue-jira--api-request-post
+     config (format "/rest/api/2/issue/%s/transitions" issue-id)
+     (shipit-issue-jira--transition-body transition-id resolution))))
 
 (defun shipit-issue-jira-set-resolution (key &optional resolution)
   "Set the `Resolution\=' field on Jira issue KEY (e.g. \"PRJ-12776\").

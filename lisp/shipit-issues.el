@@ -265,12 +265,14 @@ Returns a list of ((id . ID) (name . NAME)) alists, or nil if unsupported."
          (config (cdr resolved)))
     (shipit-issue--get-transitions backend config issue-id)))
 
-(defun shipit-issues--transition-status (repo issue-id transition-id)
-  "Transition ISSUE-ID in REPO to status via TRANSITION-ID."
+(defun shipit-issues--transition-status (repo issue-id transition-id &optional resolution)
+  "Transition ISSUE-ID in REPO to status via TRANSITION-ID.
+RESOLUTION, when non-nil, is the name of the resolution that the move
+sets."
   (let* ((resolved (shipit-issue--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved)))
-    (shipit-issue--transition-status backend config issue-id transition-id)))
+    (shipit-issue--transition-status backend config issue-id transition-id resolution)))
 
 (defun shipit-issues--create-issue (repo title body)
   "Create a new issue in REPO with TITLE and BODY via the active backend.
@@ -455,7 +457,11 @@ For Jira keys like \"PRJ-42\", extracts the numeric suffix."
 
 (defun shipit-issues--build-candidates (issues repo lookup-table)
   "Build completion candidates from ISSUES for REPO.
-Populates LOOKUP-TABLE and returns a list of candidate strings."
+Populates LOOKUP-TABLE and returns a list of candidate strings.  Each
+candidate carries REPO as its text property `shipit-repo' and the number
+of its issue as `shipit-issue-number'.  The property `shipit-issue-row'
+marks it as a row of an issue list: an issue buffer puts the other two
+on its own text too."
   (let ((sorted (sort (copy-sequence issues)
                       (lambda (a b)
                         (> (shipit-issues--sort-key (cdr (assq 'number a)))
@@ -463,9 +469,19 @@ Populates LOOKUP-TABLE and returns a list of candidate strings."
     (mapcar (lambda (issue)
               (let* ((number (cdr (assq 'number issue)))
                      (title (string-trim (or (cdr (assq 'title issue)) "")))
-                     (candidate (format "%s %s"
-                                        (shipit-issues--format-issue-id number)
-                                        title)))
+                     ;; Embark runs an action in the window that the
+                     ;; search started from, so the row itself must say
+                     ;; which issue it is.  Embark keeps these properties
+                     ;; in its export buffer and in a selection.  The
+                     ;; lookup table still finds the row, because `equal'
+                     ;; ignores text properties.
+                     (candidate (propertize
+                                 (format "%s %s"
+                                         (shipit-issues--format-issue-id number)
+                                         title)
+                                 'shipit-issue-row t
+                                 'shipit-repo repo
+                                 'shipit-issue-number number)))
                 (puthash candidate
                          (list :number number :repo repo :data issue)
                          lookup-table)
@@ -613,6 +629,509 @@ the user types."
       (if info
           (shipit-issues-open-buffer (plist-get info :number) repo)
         (message "Could not extract issue from selection")))))
+
+;;; Embark: the rows of an issue list
+
+(defvar embark-target-finders)
+(defvar embark-keymap-alist)
+(defvar embark-multitarget-actions)
+(defvar embark-candidate-collectors)
+
+(defun shipit-issues--ordered-table (candidates)
+  "A completion table of CANDIDATES that keeps their order."
+  (let ((metadata '(metadata
+                    ;; Without these the completion UI sorts the
+                    ;; candidates itself.
+                    (display-sort-function . identity)
+                    (cycle-sort-function . identity))))
+    (lambda (string predicate action)
+      (if (eq action 'metadata)
+          metadata
+        (complete-with-action action candidates string predicate)))))
+
+(defun shipit-issues--read-ordered (prompt candidates)
+  "Ask with PROMPT for one of CANDIDATES, offered in their order.
+Says so when the answer is none of them, as an empty answer is."
+  (let ((answer (completing-read prompt (shipit-issues--ordered-table candidates)
+                                 nil t)))
+    (or (car (member answer candidates))
+        (user-error "Nothing picked"))))
+
+(defun shipit-issues--issue-label (number)
+  "Issue NUMBER as the user knows it: a key as it is, a number as #12."
+  (cl-etypecase number
+    (integer (format "#%d" number))
+    (string number)))
+
+(defun shipit-issues--count-issues (count)
+  "COUNT issues in words: \"1 issue\" or \"3 issues\"."
+  (format "%d issue%s" count (if (= count 1) "" "s")))
+
+(defun shipit-issues--no-issue (text)
+  "Say that TEXT, taken as a row of an issue list, does not name its issue."
+  (user-error "This row does not name its issue: %s"
+              (substring-no-properties text)))
+
+(defun shipit-issues--row-issue (row)
+  "The issue that ROW of the issue search names, as (NUMBER . REPO).
+The issue search puts the two on each row as text properties, together
+with `shipit-issue-row', which marks the text as a row.  Says so when
+ROW has no such mark: other lists of issues have rows of the same
+category that do not name their issue."
+  (unless (get-text-property 0 'shipit-issue-row row)
+    (shipit-issues--no-issue row))
+  (let ((number (get-text-property 0 'shipit-issue-number row))
+        (repo (get-text-property 0 'shipit-repo row)))
+    ;; Only the code that made the row can leave these out, so this is a
+    ;; bug and not a mistake of the user.
+    (unless (and number repo)
+      (error "A row of an issue list lacks its issue number or its repository: %S"
+             row))
+    (cons number repo)))
+
+(defun shipit-issues--issues-of-text (text)
+  "The issues that the rows in TEXT name, each as (NUMBER . REPO).
+TEXT is one value that embark hands an action: one row, or the text of
+a region over rows, with the notes between them.  The issues are in the
+order of the text, and the notes are left out.  Says so when TEXT holds
+no row."
+  (or (mapcar (lambda (row) (shipit-issues--row-issue (car row)))
+              (shipit-issues--rows-of-text text))
+      (shipit-issues--no-issue text)))
+
+(defun shipit-issues--issues-of-rows (rows)
+  "The issues that ROWS of an issue list name, each as (NUMBER . REPO).
+Each of ROWS is one row, or the text of a region that holds several.
+The issues are in the order of ROWS, and inside each in the order of
+its text.  All rows are read first, so a row that does not name its
+issue stops an action before it did anything."
+  (mapcan #'shipit-issues--issues-of-text rows))
+
+(defun shipit-issues--issue-url (issue)
+  "The web address of ISSUE, as (NUMBER . REPO), from the tracker of REPO."
+  (or (shipit-issue--url-for (cdr issue) (car issue))
+      (error "The issue tracker of %s gives no web address for %s"
+             (cdr issue) (shipit-issues--issue-label (car issue)))))
+
+(defun shipit-issues--urls-of-rows (rows)
+  "The web addresses of the issues that ROWS of an issue list name.
+They are in the order of ROWS."
+  (mapcar #'shipit-issues--issue-url (shipit-issues--issues-of-rows rows)))
+
+(defun shipit-issues--copy-lines (lines plural)
+  "Put LINES in the kill ring, one per line, and tell what was copied.
+The message shows the one line, or the number of LINES with PLURAL, the
+word for them, as in \"Copied 3 keys\"."
+  (unless lines
+    (error "Nothing to copy"))
+  (kill-new (string-join lines "\n"))
+  (if (cdr lines)
+      (message "Copied %d %s" (length lines) plural)
+    (message "Copied: %s" (car lines))))
+
+(defun shipit-issues--one-repo (issues)
+  "The one repository of ISSUES, each (NUMBER . REPO).
+Says so when they are of more than one repository."
+  (let ((repos (delete-dups (mapcar #'cdr issues))))
+    (unless repos
+      (error "No rows of the issue search to act on"))
+    (when (cdr repos)
+      (user-error "The rows are of more than one repository: %s"
+                  (string-join repos ", ")))
+    (car repos)))
+
+(defun shipit-issues--check-states-of (repo)
+  "Say so when the issue tracker of REPO cannot change the state of an issue."
+  (unless (shipit-issue--backend-has-transitions-p
+           (car (shipit-issue--resolve-for-repo repo)))
+    (user-error "The issue tracker of %s cannot change the state of an issue"
+                repo)))
+
+(defun shipit-issues--moves-of-issues (repo numbers)
+  "The moves that each issue of NUMBERS in REPO offers, as (NUMBER . MOVES).
+Emacs waits for each answer of the tracker, so a progress reporter
+shows how far it got."
+  (let ((reporter (make-progress-reporter
+                   (format "Asking which states %s can go to..."
+                           (shipit-issues--count-issues (length numbers)))
+                   0 (length numbers))))
+    (prog1 (seq-map-indexed
+            (lambda (number index)
+              (prog1 (cons number (shipit-issues--get-transitions repo number))
+                (progress-reporter-update reporter (1+ index))))
+            numbers)
+      (progress-reporter-done reporter))))
+
+(defun shipit-issues--move-named (name moves)
+  "The move of MOVES whose name is NAME, or nil."
+  (seq-find (lambda (move) (equal name (alist-get 'name move))) moves))
+
+(defun shipit-issues--offering (name moves-of-issues)
+  "The entries of MOVES-OF-ISSUES whose issue offers the move NAME.
+Each entry is (NUMBER . MOVES)."
+  (seq-filter (lambda (entry) (shipit-issues--move-named name (cdr entry)))
+              moves-of-issues))
+
+(defun shipit-issues--move-names (moves-of-issues)
+  "The names of the moves that MOVES-OF-ISSUES offer, each once.
+They are in the order in which they first come."
+  (delete-dups (mapcan (lambda (entry)
+                         (mapcar (lambda (move) (alist-get 'name move))
+                                 (cdr entry)))
+                       moves-of-issues)))
+
+(defun shipit-issues--move-counts (moves-of-issues)
+  "Each move that MOVES-OF-ISSUES offer, as (NAME . COUNT), most offered first.
+COUNT is the number of issues that offer the move."
+  ;; `sort' is stable, so moves with the same count keep the order in
+  ;; which they first come.
+  (sort (mapcar (lambda (name)
+                  (cons name (length (shipit-issues--offering name moves-of-issues))))
+                (shipit-issues--move-names moves-of-issues))
+        (lambda (a b) (> (cdr a) (cdr b)))))
+
+(defun shipit-issues--move-choices (moves-of-issues)
+  "The choices of a move for the issues of MOVES-OF-ISSUES, as (LABEL . NAME).
+The label tells how many of the issues offer the move."
+  (let ((total (length moves-of-issues)))
+    (mapcar (lambda (count)
+              (cons (format "%s (%d of %d)" (car count) (cdr count) total)
+                    (car count)))
+            (shipit-issues--move-counts moves-of-issues))))
+
+(defun shipit-issues--read-move (moves-of-issues)
+  "Ask once for the move to make on the issues of MOVES-OF-ISSUES.
+Returns the name of the move.  Says so when no issue offers any move."
+  (let ((total (length moves-of-issues))
+        (choices (shipit-issues--move-choices moves-of-issues)))
+    (unless choices
+      (if (= total 1)
+          (user-error "The issue cannot change its state")
+        (user-error "None of the %d issues can change its state" total)))
+    (cdr (assoc (shipit-issues--read-ordered
+                 (format "New state for %s: " (shipit-issues--count-issues total))
+                 (mapcar #'car choices))
+                choices))))
+
+(defun shipit-issues--resolution-lists (name moves-of-issues)
+  "The resolutions that the move NAME takes, one list for each issue.
+Only the issues of MOVES-OF-ISSUES whose move NAME takes a resolution
+give a list, in the order of the issues.  Each entry of MOVES-OF-ISSUES
+is (NUMBER . MOVES)."
+  (delq nil (mapcar (lambda (entry)
+                      (alist-get 'resolutions
+                                 (shipit-issues--move-named name (cdr entry))))
+                    moves-of-issues)))
+
+(defun shipit-issues--resolutions-to-offer (name moves-of-issues)
+  "The resolutions to offer for the move NAME of the issues of MOVES-OF-ISSUES.
+They are those that each move NAME that takes a resolution allows, in
+the order of the first such move.  Nil when no move NAME takes one.
+Says so when those moves allow no resolution in common, so that nothing
+is sent."
+  (when-let* ((lists (shipit-issues--resolution-lists name moves-of-issues)))
+    ;; `seq-intersection' keeps the order of its first argument.
+    (or (seq-reduce #'seq-intersection (cdr lists) (car lists))
+        (user-error "The issues allow no common resolution for %s" name))))
+
+(defun shipit-issues--read-resolution (name moves-of-issues)
+  "Ask for the resolution of the move NAME of the issues of MOVES-OF-ISSUES.
+It is asked for only when there are resolutions to offer, as
+`shipit-issues--resolutions-to-offer' gives them.  Else gives nil."
+  (when-let* ((resolutions (shipit-issues--resolutions-to-offer name moves-of-issues)))
+    (shipit-issues--read-ordered "Resolution: " resolutions)))
+
+(defun shipit-issues--try-move (repo number move resolution)
+  "Make MOVE on the issue NUMBER of REPO, with RESOLUTION if MOVE takes one.
+MOVE takes a resolution when it has `resolutions'; else it goes without
+one, as the tracker refuses a resolution that the move does not take.
+Returns non-nil when the tracker made the move.  When the tracker
+refuses it, says so with the reason and returns nil."
+  (condition-case err
+      (progn
+        (shipit-issues--transition-status
+         repo number (alist-get 'id move)
+         (and (alist-get 'resolutions move) resolution))
+        t)
+    ;; One issue that the tracker refuses must not stop the move of the
+    ;; others, so the refusal is told and the next issue goes on.
+    (error
+     (let ((text (format "%s did not move: %s"
+                         (shipit-issues--issue-label number)
+                         (error-message-string err))))
+       (message "%s" text)
+       (shipit--debug-log "%s" text)
+       nil))))
+
+(defun shipit-issues--move-issues (repo name resolution moves-of-issues)
+  "Make the move NAME on each issue of MOVES-OF-ISSUES that offers it.
+REPO holds the issues, and RESOLUTION, when non-nil, is set with each
+move that takes a resolution.  Each issue moves with its own id for the
+move.  Emacs waits for each answer of the tracker, so a progress
+reporter shows how far it got.  Returns the numbers of the issues as a
+plist: `:moved', `:cannot' for those that do not offer the move, and
+`:failed' for those that the tracker refused."
+  (let ((reporter (make-progress-reporter (format "Moving to %s..." name)
+                                          0 (length moves-of-issues)))
+        (done 0)
+        moved cannot failed)
+    (dolist (entry moves-of-issues)
+      (let ((move (shipit-issues--move-named name (cdr entry))))
+        (cond ((null move) (push (car entry) cannot))
+              ((shipit-issues--try-move repo (car entry) move resolution)
+               (push (car entry) moved))
+              (t (push (car entry) failed))))
+      (progress-reporter-update reporter (cl-incf done)))
+    (progress-reporter-done reporter)
+    (list :moved (nreverse moved) :cannot (nreverse cannot) :failed (nreverse failed))))
+
+(defun shipit-issues--report-part (words numbers)
+  "\", K WORDS: ID, ID\" for the issues NUMBERS, or \"\" when there are none."
+  (if numbers
+      (format ", %d %s: %s" (length numbers) words
+              (mapconcat #'shipit-issues--issue-label numbers ", "))
+    ""))
+
+(defun shipit-issues--move-report (name outcome)
+  "The message that tells the OUTCOME of the move NAME.
+OUTCOME is the plist that `shipit-issues--move-issues' gives."
+  (concat (format "Moved %s to %s"
+                  (shipit-issues--count-issues (length (plist-get outcome :moved)))
+                  name)
+          (shipit-issues--report-part "cannot go there" (plist-get outcome :cannot))
+          (shipit-issues--report-part "failed" (plist-get outcome :failed))))
+
+(defun shipit-issues-embark-change-status (rows)
+  "Change the state of the issues on ROWS of the issue search.
+Embark calls this once with all the rows that it acts on.  The tracker
+is asked which moves each issue offers, and the user picks one move for
+all of them.  When the move of some issue takes a resolution, the user
+picks one too, from those that all such moves allow, and only those
+issues send it.  Each issue that offers the move makes it, and the last
+message tells how many moved and which issues did not."
+  (let* ((issues (shipit-issues--issues-of-rows rows))
+         (repo (shipit-issues--one-repo issues)))
+    (shipit-issues--check-states-of repo)
+    (let* ((moves-of-issues (shipit-issues--moves-of-issues repo (mapcar #'car issues)))
+           (name (shipit-issues--read-move moves-of-issues))
+           (resolution (shipit-issues--read-resolution name moves-of-issues)))
+      (message "%s" (shipit-issues--move-report
+                     name (shipit-issues--move-issues
+                           repo name resolution moves-of-issues))))))
+
+(defvar shipit-issues-embark-map (make-sparse-keymap)
+  "Embark keymap for a row of an issue list, of category `shipit-issue'.
+The letters are those of the actions on an issue key in code, in
+`shipit-code-refs-embark-keymap'.")
+
+(defun shipit-issues-embark-open (rows)
+  "Open the issue of each of ROWS of an issue list in a buffer of its own.
+Embark calls this with all the rows that it acts on, or with the one
+row at point.  Each issue opens in the repository that its row names."
+  (dolist (issue (shipit-issues--issues-of-rows rows))
+    (shipit-issues-open-buffer (car issue) (cdr issue))))
+
+(defun shipit-issues-embark-browse (rows)
+  "Show the web page of the issue of each of ROWS of an issue list.
+Embark calls this with all the rows that it acts on, or with the one
+row at point.  Each page is that of the repository that its row names,
+and the pages open in the order of ROWS."
+  (mapc #'browse-url (shipit-issues--urls-of-rows rows)))
+
+(defun shipit-issues-embark-copy-url (rows)
+  "Copy the web address of the issue of each of ROWS of an issue list.
+Embark calls this with all the rows that it acts on, or with the one
+row at point.  Each address is that of the repository that its row
+names.  The addresses go to the kill ring, one per line, in the order
+of ROWS."
+  (shipit-issues--copy-lines (shipit-issues--urls-of-rows rows) "addresses"))
+
+(defun shipit-issues-embark-copy-key (rows)
+  "Copy the key of the issue of each of ROWS of an issue list.
+Embark calls this with all the rows that it acts on, or with the one
+row at point.  A key is as its tracker names the issue, such as PRJ-1
+or #12.  The keys go to the kill ring, one per line, in the order of
+ROWS."
+  (shipit-issues--copy-lines
+   (mapcar (lambda (issue) (shipit-issues--issue-label (car issue)))
+           (shipit-issues--issues-of-rows rows))
+   "keys"))
+
+;; A reload of this file keeps the value of the `defvar'.  The keys are
+;; set here, so that a reload sets them again.
+(define-key shipit-issues-embark-map (kbd "s") #'shipit-issues-embark-change-status)
+(define-key shipit-issues-embark-map (kbd "o") #'shipit-issues-embark-open)
+(define-key shipit-issues-embark-map (kbd "b") #'shipit-issues-embark-browse)
+(define-key shipit-issues-embark-map (kbd "u") #'shipit-issues-embark-copy-url)
+(define-key shipit-issues-embark-map (kbd "w") #'shipit-issues-embark-copy-key)
+
+(defun shipit-issues--embark-register ()
+  "Make embark offer `shipit-issues-embark-map' on a row of the issue search.
+The action that changes the state gets all the rows that embark acts on
+in one call."
+  (add-to-list 'embark-keymap-alist '(shipit-issue . shipit-issues-embark-map))
+  (add-to-list 'embark-multitarget-actions #'shipit-issues-embark-change-status))
+
+(defvar embark-default-action-overrides)
+
+(defun shipit-issues--embark-register-open ()
+  "Make the default action of embark on a row of the issue search open its issue.
+Without this the default action runs the command that made the list
+again, and answers its pick with the row.  A search asks the tracker
+again first, so its pick often does not hold that row."
+  (add-to-list 'embark-multitarget-actions #'shipit-issues-embark-open)
+  (add-to-list 'embark-default-action-overrides
+               '(shipit-issue . shipit-issues-embark-open)))
+
+(defun shipit-issues--row-bounds ()
+  "The start and the end of the row of an issue list at point, as (START . END).
+The row is the text around point that names the same issue in its text
+property `shipit-issue-number'."
+  (cons (or (previous-single-property-change (1+ (point)) 'shipit-issue-number)
+            (point-min))
+        (or (next-single-property-change (point) 'shipit-issue-number)
+            (point-max))))
+
+(defun shipit-issues--row-around (position)
+  "The row of an issue list at POSITION, as (ROW START . END).
+ROW is the whole text of the row, with its text properties."
+  (pcase-let ((`(,start . ,end) (save-excursion
+                                   (goto-char position)
+                                   (shipit-issues--row-bounds))))
+    (cons (buffer-substring start end) (cons start end))))
+
+(defun shipit-issues--next-row-in (from end)
+  "The first position from FROM up to END that is in a row, or nil.
+Text with the property `shipit-issue-row' is a row."
+  ;; `text-property-not-all' swaps FROM and END when FROM is the larger,
+  ;; and would then find the row that was just taken again.
+  (and (< from end)
+       (text-property-not-all from end 'shipit-issue-row nil)))
+
+(defun shipit-issues--rows-in (start end)
+  "The rows of an issue list that the text from START to END touches.
+Each is (ROW ROW-START . ROW-END), in the order of the buffer, and ROW
+is the whole text of the row with its text properties.  END itself is
+not part of the span.  A row counts when one of its characters is in
+the span, so a row that the span cuts counts whole, and a row that
+starts at END does not count."
+  (let ((found (shipit-issues--next-row-in start end))
+        rows)
+    (while found
+      (let ((row (shipit-issues--row-around found)))
+        (push row rows)
+        (setq found (shipit-issues--next-row-in (cddr row) end))))
+    (nreverse rows)))
+
+(defun shipit-issues--rows-of-text (text)
+  "The rows of an issue list in TEXT, each as (ROW START . END), in order.
+START and END are positions in a buffer that holds only TEXT."
+  (with-temp-buffer
+    (insert text)
+    (shipit-issues--rows-in (point-min) (point-max))))
+
+(defun shipit-issues--rows-at-point ()
+  "The row of an issue list at point, as a list of one (ROW START . END).
+Nil when point is on no row."
+  (shipit-issues--rows-in (point) (min (1+ (point)) (point-max))))
+
+(defun shipit-issues--rows-in-region ()
+  "The rows of an issue list that the region touches, each as (ROW START . END).
+They are in the order of the buffer."
+  (shipit-issues--rows-in (region-beginning) (region-end)))
+
+(defun shipit-issues--label-of-row (row)
+  "The key or the number of the issue of ROW, an entry (ROW START . END)."
+  (shipit-issues--issue-label (car (shipit-issues--row-issue (car row)))))
+
+(defun shipit-issues--count-line (rows)
+  "A first line for a target over ROWS that tells how many issues it holds.
+It reads like \"3 issues: PRJ-9 to PRJ-7\", with the first and the last
+row, and ends with a newline.  It is empty for one row.  Embark shows
+only the first line of a target, so without this line a target over
+several rows reads like its first row alone."
+  (if (cdr rows)
+      (format "%d issues: %s to %s\n" (length rows)
+              (shipit-issues--label-of-row (car rows))
+              (shipit-issues--label-of-row (car (last rows))))
+    ""))
+
+(defun shipit-issues--target-of (rows)
+  "One target of the kind `shipit-issue' that covers ROWS, or nil without ROWS.
+ROWS are (ROW START . END), in the order of the buffer.  The target
+runs from the start of the first row to the end of the last.  Its
+value is that text, with the notes between the rows, after the line of
+`shipit-issues--count-line' when there is more than one row.  That
+line is no row, so an action passes over it."
+  (when rows
+    (let ((start (cadr (car rows)))
+          (end (cddr (car (last rows)))))
+      `(shipit-issue ,(concat (shipit-issues--count-line rows)
+                              (buffer-substring start end))
+                     ,start . ,end))))
+
+(defun shipit-issues-embark-target ()
+  "Embark target finder: the rows of an issue list in the region, or at point.
+With an active region the target covers each row that the region
+touches, whole, from the start of the first to the end of the last,
+and it is nil when the region touches no row.  Without an active
+region it is the row at point, or nil.  The kind of the target is
+`shipit-issue' and its value is its text, from which each action reads
+the issue of every row in it.  A row is found also in a buffer that
+embark exported, because embark keeps the text properties of a row
+there.  Only text with the property `shipit-issue-row' is a row: the
+header of an issue buffer names its issue too, and is none."
+  (shipit-issues--target-of (if (use-region-p)
+                                (shipit-issues--rows-in-region)
+                              (shipit-issues--rows-at-point))))
+
+(defun shipit-issues-embark-region-candidates ()
+  "Embark candidate collector: the rows of an issue list in the active region.
+Gives (shipit-issue (ROW START . END)...), one entry for each row that
+the region touches, whole, in the order of the buffer.  Gives nil
+without an active region, or when the region touches no row.  Embark's
+act on all asks this first, so a region over rows means those rows."
+  (when (use-region-p)
+    (when-let* ((rows (shipit-issues--rows-in-region)))
+      (cons 'shipit-issue rows))))
+
+(defun shipit-issues--move-to-front (symbol item)
+  "Put ITEM first in the list that SYMBOL holds, and nowhere else in it."
+  (set symbol (cons item (remq item (symbol-value symbol)))))
+
+(defun shipit-issues--embark-register-row ()
+  "Make embark take the rows of an issue list first, as target and candidates.
+The row finder is the first target finder of embark, and the collector
+of the rows in the region its first candidate collector.  Browse and
+the two copies get all the rows that embark acts on in one call."
+  ;; Other target finders of shipit are added to the front of the list
+  ;; too.  The row must come before them, so it moves to the front also
+  ;; when it is in the list already.
+  (shipit-issues--move-to-front 'embark-target-finders
+                                #'shipit-issues-embark-target)
+  ;; Embark's own collectors, of its marks among them, come after this
+  ;; one, so an active region over rows wins.
+  (shipit-issues--move-to-front 'embark-candidate-collectors
+                                #'shipit-issues-embark-region-candidates)
+  (dolist (action '(shipit-issues-embark-browse
+                    shipit-issues-embark-copy-url
+                    shipit-issues-embark-copy-key))
+    (add-to-list 'embark-multitarget-actions action)))
+
+(defun shipit-issues--embark-setup ()
+  "Make embark offer the actions on a row of an issue list.
+The row at point is the first target, ahead of the issue key at its
+start.  With an active region, the rows that the region touches are
+the target, and they are what embark's act on all takes.  A row keeps
+the general actions of embark, so it can still be exported and
+collected, and embark can still act on all rows."
+  (shipit--embark-keep-general-actions shipit-issues-embark-map)
+  (shipit-issues--embark-register)
+  (shipit-issues--embark-register-open)
+  (shipit-issues--embark-register-row))
+
+(with-eval-after-load 'embark
+  (shipit-issues--embark-setup))
 
 ;;; Search Execution
 

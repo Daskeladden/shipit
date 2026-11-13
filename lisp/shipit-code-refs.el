@@ -892,10 +892,17 @@ content hangs on `syntax-ppss'."
 
 (defun shipit-code-refs-embark-target ()
   "Embark target finder: return the issue-key at point.
-Category is `shipit-issue-ref', value is the bare key string."
-  (when-let* ((key (or (get-text-property (point) 'shipit-issue-ref)
-                       (shipit-code-refs-key-at-point))))
-    `(shipit-issue-ref ,key . ,(bounds-of-thing-at-point 'symbol))))
+Category is `shipit-issue-ref', value is the bare key string.  Gives nil
+on a row of an issue list, which its text property `shipit-issue-row'
+marks."
+  ;; Such a row names its issue itself.  It is a target of its own, with
+  ;; the same letters.  Its actions use the repository of the row.  The
+  ;; key alone would use the repository of the buffer that embark runs
+  ;; the action in.
+  (unless (get-text-property (point) 'shipit-issue-row)
+    (when-let* ((key (or (get-text-property (point) 'shipit-issue-ref)
+                         (shipit-code-refs-key-at-point))))
+      `(shipit-issue-ref ,key . ,(bounds-of-thing-at-point 'symbol)))))
 
 (defun shipit-code-refs--read-key ()
   "Ask for an issue key and return it without surrounding spaces.

@@ -292,5 +292,40 @@ opens the issue, also in a list of candidates."
                       (alist-get 'shipit-issue-ref embark-keymap-alist))))
       (set-keymap-parent shipit-code-refs-embark-keymap nil))))
 
+(ert-deftest test-code-refs-embark-target-leaves-a-row-to-its-own-target ()
+  "The issue key finder gives nothing on a row of an issue list."
+  ;; GIVEN a buffer about acme/door with a line that holds a row of an
+  ;; issue list for PRJ-1, marked as such a row by its text properties,
+  ;; and after the row the plain text "see PRJ-3"
+  (test-code-refs--in-door-buffer
+      (concat (propertize "PRJ-1 Fix the door"
+                          'shipit-issue-row t
+                          'shipit-issue-number "PRJ-1"
+                          'shipit-repo "acme/door")
+              "  see PRJ-3")
+    ;; WHEN embark asks for an issue key on PRJ-1 in the row
+    ;; THEN the issue key finder gives nothing, so the row is the target
+    (should-not (shipit-code-refs-embark-target))
+    ;; WHEN embark asks for an issue key on PRJ-3 after the row
+    ;; THEN the issue key finder gives PRJ-3, as before
+    (search-forward "PRJ-3")
+    (goto-char (match-beginning 0))
+    (should (equal '(shipit-issue-ref "PRJ-3")
+                   (take 2 (shipit-code-refs-embark-target))))))
+
+(ert-deftest test-code-refs-embark-target-stays-on-the-header-of-an-issue ()
+  "The issue key stays a target on text that names an issue but is no row."
+  ;; GIVEN a buffer about acme/door with the header of the issue PRJ-1,
+  ;; which names its issue and its repository in its text properties, as
+  ;; an issue buffer does, but is no row of an issue list
+  ;; WHEN embark asks for an issue key on PRJ-1 in the header
+  ;; THEN the issue key finder gives PRJ-1, as before
+  (test-code-refs--in-door-buffer
+      (propertize "PRJ-1 Fix the door"
+                  'shipit-issue-number "PRJ-1"
+                  'shipit-repo "acme/door")
+    (should (equal '(shipit-issue-ref "PRJ-1")
+                   (take 2 (shipit-code-refs-embark-target))))))
+
 (provide 'test-shipit-code-refs)
 ;;; test-shipit-code-refs.el ends here

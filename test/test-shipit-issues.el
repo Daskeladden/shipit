@@ -6,9 +6,12 @@
 ;;; Code:
 
 (require 'ert)
+(require 'ert-x)
 (require 'shipit)
 (require 'shipit-issue-backends)
 (require 'shipit-issue-github)
+(require 'shipit-issue-gitlab)
+(require 'shipit-issue-jira)
 (require 'shipit-issues)
 (require 'shipit-issues-buffer)
 (require 'shipit-test-http)
@@ -496,6 +499,35 @@ THEN they are ordered by numeric suffix descending."
     (should (string-prefix-p "PROJ-12112" (nth 0 sorted)))
     (should (string-prefix-p "PROJ-8019" (nth 1 sorted)))
     (should (string-prefix-p "PROJ-719" (nth 2 sorted)))))
+
+;;; The issue of a row
+
+(defun test-shipit-issues--search-rows (repo numbers)
+  "The rows that the issue search of REPO shows for the issues NUMBERS."
+  (shipit-issues--build-candidates
+   (mapcar (lambda (number) `((number . ,number) (title . "Fix the door")))
+           numbers)
+   repo (make-hash-table :test 'equal)))
+
+(ert-deftest test-shipit-issues--row-names-its-jira-issue ()
+  "A row of a Jira issue carries its repository and the key of the issue."
+  ;; GIVEN the Jira issue PRJ-7 of acme/door, found by the issue search
+  ;; WHEN the search makes a row of it
+  ;; THEN the row carries the repository and the key of the issue, from
+  ;; its first to its last character
+  (let ((row (car (test-shipit-issues--search-rows "acme/door" '("PRJ-7")))))
+    (dolist (position (list 0 (1- (length row))))
+      (should (equal "acme/door" (get-text-property position 'shipit-repo row)))
+      (should (equal "PRJ-7" (get-text-property position 'shipit-issue-number row))))))
+
+(ert-deftest test-shipit-issues--row-names-its-github-issue ()
+  "A row of a GitHub issue carries its repository and the number of the issue."
+  ;; GIVEN the GitHub issue 12 of acme/door, found by the issue search
+  ;; WHEN the search makes a row of it
+  ;; THEN the row carries the repository and the number of the issue
+  (let ((row (car (test-shipit-issues--search-rows "acme/door" '(12)))))
+    (should (equal "acme/door" (get-text-property 0 'shipit-repo row)))
+    (should (eql 12 (get-text-property 0 'shipit-issue-number row)))))
 
 ;;; Dynamic Fetch Tests
 
@@ -1000,6 +1032,617 @@ THEN cached reactions are returned (not nil)."
       (should result)
       (should (= 1 (length result)))
       (should (equal "+1" (cdr (assq 'content (car result))))))))
+
+;;; Embark: the state of many issues
+
+(defconst test-shipit-issues--jira-site
+  '(("acme/door" :backend jira :base-url "https://acme.atlassian.net"
+     :project-keys ("PRJ")))
+  "An entry that keeps the issues of acme/door on a Jira site.")
+
+(defun test-shipit-issues--jira-moves-to-done (resolutions)
+  "Jira's list of the moves of an issue whose one move goes to Done.
+The move takes a resolution and allows RESOLUTIONS, in this order."
+  `((transitions
+     . [((id . "31") (name . "Done")
+         (to . ((name . "Done") (id . "3")
+                (statusCategory . ((key . "done")))))
+         (hasScreen . t)
+         (fields
+          . ((resolution
+              . ((required . t)
+                 (key . "resolution")
+                 (allowedValues
+                  . ,(vconcat (mapcar (lambda (name) `((name . ,name)))
+                                      resolutions))))))))])))
+
+(defun test-shipit-issues--jira-moves-address (key)
+  "The pattern of the address at which Jira lists the moves of KEY with their fields.
+KEY can be a regexp that matches several keys."
+  (format "/rest/api/2/issue/%s/transitions\\?expand=transitions\\.fields\\'" key))
+
+(defun test-shipit-issues--jira-answers (moves-of-keys)
+  "Jira's answers for the issues of MOVES-OF-KEYS, each (KEY . MOVES).
+MOVES are the moves of the issue KEY, as Jira lists them.  A move is
+answered with no content."
+  (append (mapcar (lambda (entry)
+                    (list (test-shipit-issues--jira-moves-address (car entry))
+                          200 (cdr entry)))
+                  moves-of-keys)
+          '(("/rest/api/2/issue/[^/]+/transitions\\'" 200 ""))))
+
+(defvar test-shipit-issues--prompts nil
+  "The prompts that the user saw, oldest first.")
+
+(defun test-shipit-issues--user-says-nothing (prompt &rest _)
+  "Record PROMPT, which the user was not to see, and give no answer."
+  (setq test-shipit-issues--prompts
+        (append test-shipit-issues--prompts (list prompt)))
+  (error "The user has no answer for %S" prompt))
+
+(defmacro test-shipit-issues--with-no-user (&rest body)
+  "Run BODY with a user who answers no prompt, and the prompts recorded."
+  `(let ((test-shipit-issues--prompts nil)
+         (completing-read-function #'test-shipit-issues--user-says-nothing))
+     ,@body))
+
+(defmacro test-shipit-issues--with-jira (answers &rest body)
+  "Run BODY with the issues of acme/door on a Jira site that answers ANSWERS.
+Auth-source has a login for the site."
+  (declare (indent 1))
+  `(let ((shipit-issue-repo-backends test-shipit-issues--jira-site))
+     (cl-letf (((symbol-function 'auth-source-search)
+                (lambda (&rest _)
+                  (list (list :user "someone@example.com" :secret "secret")))))
+       (shipit-test-http-answering ,answers
+         ,@body))))
+
+(ert-deftest test-shipit-issues-embark-change-status-refuses-a-row-without-its-issue ()
+  "A row that does not name its issue is refused with a message that names the row."
+  ;; GIVEN a row of text that does not say which issue it is, as another
+  ;; list of issues can have
+  ;; WHEN the state action runs on it
+  ;; THEN the user is told that the row does not name its issue
+  ;; AND the user sees no prompt and no tracker gets a request
+  (shipit-test-http-answering nil
+    (test-shipit-issues--with-no-user
+     (let ((err (should-error (shipit-issues-embark-change-status
+                               '("PRJ-1 Fix the door")))))
+       (should (eq 'user-error (car err)))
+       (should (string-search "PRJ-1 Fix the door" (error-message-string err)))
+       (should-not test-shipit-issues--prompts)
+       (should-not shipit-test-http-requests)))))
+
+(ert-deftest test-shipit-issues-embark-change-status-refuses-rows-of-two-repositories ()
+  "Rows of two repositories are refused before anything is asked or sent."
+  ;; GIVEN a row of an issue of acme/door and a row of one of acme/window
+  ;; WHEN the state action runs on both rows
+  ;; THEN the user is told that the rows are of more than one repository
+  ;; AND the user sees no prompt and no tracker gets a request
+  (shipit-test-http-answering nil
+    (test-shipit-issues--with-no-user
+     (let ((err (should-error
+                 (shipit-issues-embark-change-status
+                  (append (test-shipit-issues--search-rows "acme/door" '(12))
+                          (test-shipit-issues--search-rows "acme/window" '(13))))
+                 :type 'user-error)))
+       (should (string-search "more than one repository" (error-message-string err)))
+       (should-not test-shipit-issues--prompts)
+       (should-not shipit-test-http-requests)))))
+
+(ert-deftest test-shipit-issues-embark-change-status-refuses-a-tracker-without-states ()
+  "A tracker that cannot change the state of an issue is refused at once."
+  ;; GIVEN two issues of acme/door, whose issues are on GitLab, where
+  ;; shipit cannot change the state of an issue
+  ;; WHEN the state action runs on their rows
+  ;; THEN the user is told that the tracker of acme/door cannot change
+  ;; the state of an issue
+  ;; AND the user sees no prompt and no tracker gets a request
+  (let ((shipit-issue-repo-backends '(("acme/door" :backend gitlab))))
+    (shipit-test-http-answering nil
+      (test-shipit-issues--with-no-user
+       (let ((err (should-error
+                   (shipit-issues-embark-change-status
+                    (test-shipit-issues--search-rows "acme/door" '(12 13)))
+                   :type 'user-error)))
+         (should (equal "The issue tracker of acme/door cannot change the state of an issue"
+                        (error-message-string err)))
+         (should-not test-shipit-issues--prompts)
+         (should-not shipit-test-http-requests))))))
+
+(ert-deftest test-shipit-issues-embark-change-status-says-when-no-issue-can-move ()
+  "When no issue offers a move, the user is told so and is asked nothing."
+  ;; GIVEN two Jira issues of acme/door that offer no move at all
+  ;; WHEN the state action runs on their rows
+  ;; THEN the user is told that none of the 2 issues can change its state
+  ;; AND the user sees no prompt
+  ;; AND Jira was only asked for the moves of the two issues
+  (test-shipit-issues--with-jira
+      (list (list (test-shipit-issues--jira-moves-address "PRJ-[12]")
+                  200 '((transitions . []))))
+    (test-shipit-issues--with-no-user
+     (let ((err (should-error
+                 (shipit-issues-embark-change-status
+                  (test-shipit-issues--search-rows "acme/door" '("PRJ-1" "PRJ-2")))
+                 :type 'user-error)))
+       (should (equal "None of the 2 issues can change its state"
+                      (error-message-string err)))
+       (should-not test-shipit-issues--prompts)
+       (should (equal '("GET" "GET") (mapcar #'car shipit-test-http-requests)))))))
+
+(defvar test-shipit-issues--sorting nil
+  "How each prompt that the user saw sorts its candidates, oldest first.
+Each is the display sort function and the cycle sort function of the
+prompt.")
+
+(defun test-shipit-issues--user-notes-the-sorting (_prompt collection &optional predicate &rest _)
+  "Note how COLLECTION sorts its candidates, and pick the first that PREDICATE keeps."
+  (let ((metadata (completion-metadata "" collection predicate)))
+    (setq test-shipit-issues--sorting
+          (append test-shipit-issues--sorting
+                  (list (list (completion-metadata-get metadata 'display-sort-function)
+                              (completion-metadata-get metadata 'cycle-sort-function)))))
+    (car (all-completions "" collection predicate))))
+
+(ert-deftest test-shipit-issues-embark-change-status-keeps-the-order-of-its-prompts ()
+  "Both prompts of the state action tell the completion UI to keep their order."
+  ;; GIVEN the Jira issue PRJ-1 of acme/door, whose move to Done takes a
+  ;; resolution and allows Done and Won't Do
+  ;; WHEN the state action runs on its row, and the user picks the
+  ;; first move offered, Done, and then the first resolution
+  ;; THEN the user saw two prompts
+  ;; AND neither prompt lets the completion UI sort its candidates
+  (let ((test-shipit-issues--sorting nil)
+        (completing-read-function #'test-shipit-issues--user-notes-the-sorting))
+    (test-shipit-issues--with-jira
+        (test-shipit-issues--jira-answers
+         `(("PRJ-1" . ,(test-shipit-issues--jira-moves-to-done '("Done" "Won't Do")))))
+      (shipit-issues-embark-change-status
+       (test-shipit-issues--search-rows "acme/door" '("PRJ-1")))
+      (should (equal test-shipit-issues--sorting
+                     '((identity identity) (identity identity)))))))
+
+(defvar test-shipit-issues--offered nil
+  "The prompts that the user saw, oldest first, each as (PROMPT CANDIDATES).")
+
+(defun test-shipit-issues--user-picks-the-first (prompt collection &optional predicate &rest _)
+  "Note PROMPT and the candidates of COLLECTION that PREDICATE keeps.
+Picks the first of them."
+  (let ((candidates (all-completions "" collection predicate)))
+    (setq test-shipit-issues--offered
+          (append test-shipit-issues--offered (list (list prompt candidates))))
+    (car candidates)))
+
+(ert-deftest test-shipit-issues-embark-change-status-offers-only-the-common-resolutions ()
+  "The resolution prompt offers only the resolutions that every move allows."
+  ;; GIVEN PRJ-2, whose move to Done allows Won't Do, Duplicate and
+  ;; Cannot Reproduce, in this order
+  ;; AND PRJ-1, whose move to Done allows Cannot Reproduce, Done and
+  ;; Duplicate, in this order
+  ;; AND the default resolution Done
+  ;; AND the issue search shows PRJ-2 in the first row
+  ;; WHEN the state action runs on both rows, and the user picks
+  ;; `Done (2 of 2)'
+  ;; THEN the resolution prompt offers Duplicate and Cannot Reproduce,
+  ;; in the order of PRJ-2
+  (let ((test-shipit-issues--offered nil)
+        (completing-read-function #'test-shipit-issues--user-picks-the-first)
+        (shipit-issue-jira-default-resolution "Done"))
+    (test-shipit-issues--with-jira
+        (test-shipit-issues--jira-answers
+         `(("PRJ-2" . ,(test-shipit-issues--jira-moves-to-done
+                        '("Won't Do" "Duplicate" "Cannot Reproduce")))
+           ("PRJ-1" . ,(test-shipit-issues--jira-moves-to-done
+                        '("Cannot Reproduce" "Done" "Duplicate")))))
+      (let ((rows (test-shipit-issues--search-rows "acme/door" '("PRJ-1" "PRJ-2"))))
+        (should (equal "PRJ-2" (get-text-property 0 'shipit-issue-number (car rows))))
+        (shipit-issues-embark-change-status rows))
+      (should (equal (nth 1 test-shipit-issues--offered)
+                     '("Resolution: " ("Duplicate" "Cannot Reproduce")))))))
+
+(ert-deftest test-shipit-issues-embark-change-status-refuses-when-no-resolution-is-common ()
+  "Moves that allow no common resolution are refused before anything is sent."
+  ;; GIVEN PRJ-1, whose move to Done allows only Won't Do
+  ;; AND PRJ-2, whose move to Done allows only Duplicate
+  ;; WHEN the state action runs on both rows, and the user picks
+  ;; `Done (2 of 2)'
+  ;; THEN the user is told that the issues allow no common resolution
+  ;; for Done
+  ;; AND the user saw no resolution prompt
+  ;; AND Jira was only asked for the moves of the two issues
+  (let ((test-shipit-issues--offered nil)
+        (completing-read-function #'test-shipit-issues--user-picks-the-first))
+    (test-shipit-issues--with-jira
+        (test-shipit-issues--jira-answers
+         `(("PRJ-1" . ,(test-shipit-issues--jira-moves-to-done '("Won't Do")))
+           ("PRJ-2" . ,(test-shipit-issues--jira-moves-to-done '("Duplicate")))))
+      (let ((err (should-error
+                  (shipit-issues-embark-change-status
+                   (test-shipit-issues--search-rows "acme/door" '("PRJ-1" "PRJ-2")))
+                  :type 'user-error)))
+        (should (equal "The issues allow no common resolution for Done"
+                       (error-message-string err)))
+        (should (equal (mapcar #'car test-shipit-issues--offered)
+                       '("New state for 2 issues: ")))
+        (should (equal '("GET" "GET") (mapcar #'car shipit-test-http-requests)))))))
+
+(defvar embark-general-map)
+(defvar embark-target-finders)
+(defvar embark-keymap-alist)
+(defvar embark-multitarget-actions)
+(defvar embark-candidate-collectors)
+
+(defvar embark-default-action-overrides)
+
+(ert-deftest test-shipit-issues-embark-rows-keep-the-general-actions ()
+  "A row of the issue search offers the general actions of embark too."
+  ;; GIVEN embark with its general actions, of which E exports the rows
+  ;; WHEN the issue search sets itself up for embark
+  ;; THEN a row offers the export of embark
+  ;; AND a row still offers s, the change of state
+  (let ((embark-general-map (make-sparse-keymap))
+        (embark-target-finders nil)
+        (embark-keymap-alist nil)
+        (embark-multitarget-actions nil)
+        (embark-default-action-overrides nil)
+        (embark-candidate-collectors nil))
+    (define-key embark-general-map (kbd "E") 'embark-export)
+    (unwind-protect
+        (progn
+          (shipit-issues--embark-setup)
+          (should (eq 'embark-export
+                      (lookup-key shipit-issues-embark-map (kbd "E"))))
+          (should (eq 'shipit-issues-embark-change-status
+                      (lookup-key shipit-issues-embark-map (kbd "s"))))
+          (should (eq 'shipit-issues-embark-map
+                      (cdr (assq 'shipit-issue embark-keymap-alist)))))
+      (set-keymap-parent shipit-issues-embark-map nil))))
+
+(defun test-shipit-issues--rows (repo numbers)
+  "The rows that the issue search of REPO shows for the issues NUMBERS."
+  (all-completions "" (shipit-issues--make-completion-table
+                       (mapcar (lambda (number)
+                                 `((number . ,number) (title . "Fix the door")))
+                               numbers)
+                       repo (make-hash-table :test 'equal) nil)))
+
+(ert-deftest test-shipit-issues-embark-open-shows-the-issue-of-the-row ()
+  "The open action shows the issue that the row names, of the row's repository."
+  ;; GIVEN the issue PRJ-95 of acme/door, already open in a buffer of its own
+  ;; AND a row of the issue search for it
+  ;; AND a current buffer that is about another repository
+  ;; WHEN the open action runs on the row
+  ;; THEN the window shows the buffer of PRJ-95 of acme/door
+  ;; AND the tracker gets no request, because the buffer was open already
+  (test-shipit-issues--with-jira nil
+    (let ((issue (get-buffer-create
+                  (shipit-issue-buffer-name "acme/door" "PRJ-95"))))
+      (unwind-protect
+          (with-temp-buffer
+            (setq-local shipit-buffer-repo "other/place")
+            (save-window-excursion
+              (shipit-issues-embark-open
+               (test-shipit-issues--rows "acme/door" '("PRJ-95")))
+              (should (eq issue (window-buffer (selected-window))))
+              (should-not shipit-test-http-requests)))
+        (kill-buffer issue)))))
+
+(ert-deftest test-shipit-issues-embark-return-on-a-row-opens-its-issue ()
+  "The default action of embark on a row of the issue search opens its issue."
+  ;; GIVEN embark with its general actions and a default action of its own
+  ;; WHEN the issue search sets itself up for embark
+  ;; THEN the default action on a row opens the issue of the row
+  ;; AND o on a row does the same
+  ;; AND embark gives the rows to that action in one call
+  (let ((embark-general-map (make-sparse-keymap))
+        (embark-target-finders nil)
+        (embark-keymap-alist nil)
+        (embark-multitarget-actions nil)
+        (embark-default-action-overrides (list '(file . find-file)))
+        (embark-candidate-collectors nil))
+    (unwind-protect
+        (progn
+          (shipit-issues--embark-setup)
+          (should (eq 'shipit-issues-embark-open
+                      (alist-get 'shipit-issue embark-default-action-overrides)))
+          (should (eq 'shipit-issues-embark-open
+                      (lookup-key shipit-issues-embark-map (kbd "o"))))
+          (should (memq 'shipit-issues-embark-open embark-multitarget-actions)))
+      (set-keymap-parent shipit-issues-embark-map nil))))
+
+;;; Embark: browse and copy on rows, and the row as a target
+
+(defmacro test-shipit-issues--with-own-kill-ring (&rest body)
+  "Run BODY with an empty kill ring of its own.
+The clipboard of the system is left alone."
+  (declare (indent 0))
+  `(let ((kill-ring nil)
+         (kill-ring-yank-pointer nil)
+         (interprogram-cut-function nil)
+         (interprogram-paste-function nil))
+     ,@body))
+
+(defun test-shipit-issues--row-action (key)
+  "The action that KEY runs on the rows of an issue list."
+  (lookup-key shipit-issues-embark-map (kbd key)))
+
+(defun test-shipit-issues--said-by (key rows)
+  "The last line that the action on KEY says when it runs on ROWS.
+It copies into a kill ring of its own."
+  (test-shipit-issues--with-own-kill-ring
+    (ert-with-message-capture said
+      (funcall (test-shipit-issues--row-action key) rows)
+      (car (last (split-string said "\n" t))))))
+
+(ert-deftest test-shipit-issues-embark-copy-url-tells-what-it-copied ()
+  "Copy URL shows the address of one row, and only the count of several."
+  ;; GIVEN the rows of PRJ-1 and PRJ-2 of acme/door, whose issues are in
+  ;; Jira
+  (test-shipit-issues--with-jira nil
+    ;; WHEN u runs on the row of PRJ-1 alone
+    ;; THEN the message shows the address that was copied
+    (should (equal "Copied: https://acme.atlassian.net/browse/PRJ-1"
+                   (test-shipit-issues--said-by
+                    "u" (test-shipit-issues--rows "acme/door" '("PRJ-1")))))
+    ;; WHEN u runs on both rows
+    ;; THEN the message tells that 2 addresses were copied
+    (should (equal "Copied 2 addresses"
+                   (test-shipit-issues--said-by
+                    "u" (test-shipit-issues--rows "acme/door" '("PRJ-1" "PRJ-2")))))))
+
+(ert-deftest test-shipit-issues-embark-copy-key-tells-what-it-copied ()
+  "Copy key shows the key of one row, and only the count of several."
+  ;; GIVEN the row of the GitHub issue 12 of acme/window
+  ;; WHEN w runs on it
+  ;; THEN the message shows the key that was copied, #12
+  (should (equal "Copied: #12"
+                 (test-shipit-issues--said-by
+                  "w" (test-shipit-issues--rows "acme/window" '(12)))))
+  ;; GIVEN the rows of the GitHub issues 12, 13 and 14 of acme/window
+  ;; WHEN w runs on the three rows
+  ;; THEN the message tells that 3 keys were copied
+  (should (equal "Copied 3 keys"
+                 (test-shipit-issues--said-by
+                  "w" (test-shipit-issues--rows "acme/window" '(12 13 14))))))
+
+(ert-deftest test-shipit-issues-embark-row-actions-stop-at-a-row-without-its-issue ()
+  "Browse and copy stop at a row that does not name its issue, before they act."
+  ;; GIVEN a row of text that does not say which issue it is, as another
+  ;; list of issues can have: alone, and after the row of PRJ-1 of
+  ;; acme/door, whose issues are in Jira
+  ;; WHEN b, u and w each run on those rows
+  ;; THEN each time the user is told that the row does not name its issue
+  ;; AND the browser shows nothing and nothing is copied, not even for
+  ;; PRJ-1
+  (test-shipit-issues--with-jira nil
+    (let* ((bare "PRJ-9 Fix the door")
+           (browsed nil)
+           (browse-url-handlers nil)
+           (browse-url-browser-function (lambda (url &rest _) (push url browsed))))
+      (test-shipit-issues--with-own-kill-ring
+        (dolist (rows (list (list bare)
+                            (append (test-shipit-issues--rows "acme/door" '("PRJ-1"))
+                                    (list bare))))
+          (dolist (key '("b" "u" "w"))
+            (let ((err (should-error (funcall (test-shipit-issues--row-action key) rows)
+                                     :type 'user-error)))
+              (should (string-search bare (error-message-string err))))))
+        (should-not browsed)
+        (should-not kill-ring)))))
+
+(defun test-shipit-issues--target-at (position)
+  "The target that the row finder gives with point at POSITION, or nil."
+  (save-excursion
+    (goto-char position)
+    (shipit-issues-embark-target)))
+
+(ert-deftest test-shipit-issues-embark-target-is-not-the-header-of-an-issue ()
+  "Text that names an issue but is no row of an issue list is no row target."
+  ;; GIVEN a buffer with the header of the issue PRJ-1 of acme/door, which
+  ;; names its issue and its repository in its text properties, as an
+  ;; issue buffer does, but is no row of an issue list
+  ;; WHEN embark asks for the target on the header
+  ;; THEN the row finder gives nothing
+  (with-temp-buffer
+    (insert (propertize "PRJ-1 Fix the door"
+                        'shipit-issue-number "PRJ-1"
+                        'shipit-repo "acme/door"))
+    (should-not (test-shipit-issues--target-at (point-min)))))
+
+(ert-deftest test-shipit-issues-embark-target-covers-the-whole-row ()
+  "The row finder gives the whole row from its first and its last character."
+  ;; GIVEN a buffer with plain text, then the row of PRJ-1 of acme/door,
+  ;; then a note without properties, as an export of embark shows a row
+  (with-temp-buffer
+    (insert "see ")
+    (let ((start (point)))
+      (insert (car (test-shipit-issues--rows "acme/door" '("PRJ-1"))))
+      (let ((end (point)))
+        (insert "  To Do\n")
+        ;; WHEN embark asks for the target at the first and at the last
+        ;; character of the row
+        ;; THEN each time the target is of the kind `shipit-issue' and
+        ;; covers the row and nothing else
+        ;; AND its value is the row, which still names its issue and its
+        ;; repository
+        (dolist (position (list start (1- end)))
+          (pcase-let ((`(,kind ,row ,from . ,to) (test-shipit-issues--target-at position)))
+            (should (eq 'shipit-issue kind))
+            (should (equal (cons start end) (cons from to)))
+            (should (equal "PRJ-1" (get-text-property 0 'shipit-issue-number row)))
+            (should (equal "acme/door" (get-text-property 0 'shipit-repo row)))))
+        ;; WHEN embark asks for the target on the note after the row
+        ;; THEN the row finder gives nothing
+        (should-not (test-shipit-issues--target-at end))))))
+
+(ert-deftest test-shipit-issues-embark-target-finds-a-row-that-fills-the-buffer ()
+  "The row finder gives the whole row when no text comes before or after it."
+  ;; GIVEN a buffer that holds only the row of the GitHub issue 12 of
+  ;; acme/window
+  ;; WHEN embark asks for the target at its first and at its last character
+  ;; THEN each time the target covers the whole buffer
+  (with-temp-buffer
+    (insert (car (test-shipit-issues--rows "acme/window" '(12))))
+    (dolist (position (list (point-min) (1- (point-max))))
+      (let ((target (test-shipit-issues--target-at position)))
+        (should (eq 'shipit-issue (car target)))
+        (should (equal (cons (point-min) (point-max)) (cddr target)))))))
+
+(ert-deftest test-shipit-issues-embark-setup-puts-the-row-finder-first ()
+  "The setup moves the row finder to the front, also when it is in the list."
+  ;; GIVEN embark's target finders with another finder in front of the
+  ;; row finder, as when another part of shipit set itself up later
+  ;; WHEN the issue search sets itself up for embark
+  ;; THEN the row finder is the first of the target finders, and it is
+  ;; in the list once
+  ;; AND the other finders keep their order behind it
+  (let ((embark-general-map (make-sparse-keymap))
+        (embark-target-finders (list 'shipit-code-refs-embark-target
+                                     'shipit-issues-embark-target
+                                     'embark-target-url-at-point))
+        (embark-keymap-alist nil)
+        (embark-multitarget-actions nil)
+        (embark-default-action-overrides nil)
+        (embark-candidate-collectors nil))
+    (unwind-protect
+        (progn
+          (shipit-issues--embark-setup)
+          (should (equal '(shipit-issues-embark-target
+                           shipit-code-refs-embark-target
+                           embark-target-url-at-point)
+                         embark-target-finders)))
+      (set-keymap-parent shipit-issues-embark-map nil))))
+
+;;; Embark: the rows in the region
+
+(defun test-shipit-issues--row (repo number)
+  "The row that the issue search of REPO shows for the issue NUMBER."
+  (car (test-shipit-issues--rows repo (list number))))
+
+(defun test-shipit-issues--insert-rows (rows)
+  "Insert ROWS, each with a note after it, as an export of embark shows them.
+Returns where each row is in the buffer, as (START . END), in the order
+of ROWS."
+  (mapcar (lambda (row)
+            (let ((start (point)))
+              (insert row)
+              (prog1 (cons start (point))
+                (insert "  To Do\n"))))
+          rows))
+
+(defun test-shipit-issues--mark-region (from to)
+  "Make the region active from FROM to TO, with point at TO.
+Fails when Emacs does not take it as an active region."
+  (set-mark from)
+  (goto-char to)
+  (should (use-region-p)))
+
+(ert-deftest test-shipit-issues-embark-copy-key-takes-each-row-inside-a-value ()
+  "A value that holds several rows gives the issue of each to an action, in order."
+  ;; GIVEN one value that holds the row of the GitHub issue 13 of
+  ;; acme/window, a note, and then the row of its issue 12, as the target
+  ;; of a region over the two rows holds them
+  ;; WHEN w runs on that value
+  ;; THEN the kill ring holds #13 and #12, one per line, in the order of
+  ;; the text, and nothing for the note between them
+  (let ((value (concat (test-shipit-issues--row "acme/window" 13)
+                       "  To Do\n"
+                       (test-shipit-issues--row "acme/window" 12))))
+    (test-shipit-issues--with-own-kill-ring
+      (funcall (test-shipit-issues--row-action "w") (list value))
+      (should (equal "#13\n#12" (car kill-ring))))))
+
+(ert-deftest test-shipit-issues-embark-a-marked-row-without-its-issue-is-a-bug ()
+  "A row that has the mark of a row but lacks its number or repository is an error."
+  ;; GIVEN a row that has the mark of a row of an issue list but no issue
+  ;; number, and one that has the mark but no repository, as only a bug
+  ;; in the code that made the row gives
+  ;; WHEN w runs on each of them
+  ;; THEN each time Emacs signals an error, and not a user error
+  ;; AND the error shows the row
+  ;; AND nothing is copied
+  (let ((rows (list (propertize "PRJ-9 Fix the door"
+                                'shipit-issue-row t 'shipit-repo "acme/door")
+                    (propertize "PRJ-9 Fix the door"
+                                'shipit-issue-row t 'shipit-issue-number "PRJ-9"))))
+    (test-shipit-issues--with-own-kill-ring
+      (dolist (row rows)
+        (let ((err (should-error (funcall (test-shipit-issues--row-action "w")
+                                          (list row)))))
+          (should (eq 'error (car err)))
+          (should (string-search "PRJ-9 Fix the door" (error-message-string err)))))
+      (should-not kill-ring))))
+
+(ert-deftest test-shipit-issues-embark-target-of-a-region-covers-its-rows ()
+  "A region over rows is one target from the start of its first row to the end of its last."
+  ;; GIVEN a buffer that shows the rows of the GitHub issues 13 and 12 of
+  ;; acme/window, each with a note after it, as an export of embark does
+  (let ((transient-mark-mode t))
+    (with-temp-buffer
+      (pcase-let ((`(,first ,second)
+                   (test-shipit-issues--insert-rows
+                    (list (test-shipit-issues--row "acme/window" 13)
+                          (test-shipit-issues--row "acme/window" 12)))))
+        ;; WHEN the region covers exactly the row of 13 and embark asks
+        ;; for the target
+        ;; THEN the target is of the kind `shipit-issue' and covers that
+        ;; row and nothing else
+        ;; AND its value is that row, with its text properties
+        (test-shipit-issues--mark-region (car first) (cdr first))
+        (let ((target (shipit-issues-embark-target)))
+          (should (eq 'shipit-issue (car target)))
+          (should (equal first (cddr target)))
+          (should (equal-including-properties
+                   (buffer-substring (car first) (cdr first))
+                   (cadr target))))
+        ;; WHEN the region runs from the start of the row of 13 to the end
+        ;; of the row of 12, with point at its start and the mark at its
+        ;; end
+        ;; THEN the target covers both rows, from the start of the row of
+        ;; 13 to the end of the row of 12
+        (test-shipit-issues--mark-region (cdr second) (car first))
+        (should (equal (cons (car first) (cdr second))
+                       (cddr (shipit-issues-embark-target))))))))
+
+(ert-deftest test-shipit-issues-embark-region-without-rows-has-no-candidates ()
+  "The collector of the region gives nothing when the region touches no row."
+  ;; GIVEN a buffer that shows the row of the GitHub issue 12 of
+  ;; acme/window with a note after it
+  ;; AND an active region over the note alone, which starts where the
+  ;; row ends
+  ;; WHEN embark collects the candidates for "act on all"
+  ;; THEN the collector gives nothing
+  (let ((transient-mark-mode t))
+    (with-temp-buffer
+      (let ((row (car (test-shipit-issues--insert-rows
+                       (list (test-shipit-issues--row "acme/window" 12))))))
+        (test-shipit-issues--mark-region (cdr row) (point-max))
+        (should-not (shipit-issues-embark-region-candidates))))))
+
+(ert-deftest test-shipit-issues-embark-setup-puts-the-region-collector-first ()
+  "The setup moves the collector of the region to the front, also when it is in the list."
+  ;; GIVEN embark's candidate collectors with another collector in front
+  ;; of the collector of the rows in the region
+  ;; WHEN the issue search sets itself up for embark
+  ;; THEN the collector of the region is the first of the candidate
+  ;; collectors, and it is in the list once
+  ;; AND the other collectors keep their order behind it
+  (let ((embark-general-map (make-sparse-keymap))
+        (embark-target-finders nil)
+        (embark-keymap-alist nil)
+        (embark-multitarget-actions nil)
+        (embark-default-action-overrides nil)
+        (embark-candidate-collectors (list 'embark-selected-candidates
+                                           'shipit-issues-embark-region-candidates
+                                           'embark-minibuffer-candidates)))
+    (unwind-protect
+        (progn
+          (shipit-issues--embark-setup)
+          (should (equal '(shipit-issues-embark-region-candidates
+                           embark-selected-candidates
+                           embark-minibuffer-candidates)
+                         embark-candidate-collectors)))
+      (set-keymap-parent shipit-issues-embark-map nil))))
 
 (provide 'test-shipit-issues)
 ;;; test-shipit-issues.el ends here

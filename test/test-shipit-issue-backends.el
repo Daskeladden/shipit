@@ -392,5 +392,34 @@ THEN returns nil."
   (let ((plist (list :name "Test")))
     (should-not (shipit-issue--backend-has-reactions-p plist))))
 
+;;; Status transitions with a resolution
+
+(ert-deftest test-shipit-issue-transition-without-resolution-takes-three-arguments ()
+  "A move with no resolution reaches a backend that takes three arguments."
+  ;; GIVEN a backend whose move takes the config, the issue and the move
+  ;; only
+  ;; WHEN an issue is moved with no resolution
+  ;; THEN the backend makes the move with those three
+  (let* ((made nil)
+         (backend (list :name "Test"
+                        :transition-status
+                        (lambda (config issue-id transition-id)
+                          (push (list config issue-id transition-id) made)))))
+    (shipit-issue--transition-status backend '(:repo "acme/door") "PRJ-1" "31")
+    (should (equal made '(((:repo "acme/door") "PRJ-1" "31"))))))
+
+(ert-deftest test-shipit-issue-transition-passes-the-resolution-on ()
+  "A move with a resolution hands the resolution to the backend."
+  ;; GIVEN a backend whose move can take a resolution
+  ;; WHEN an issue is moved with the resolution Won't Do
+  ;; THEN the backend gets that resolution with the move
+  (let* ((made nil)
+         (backend (list :name "Test"
+                        :transition-status
+                        (lambda (_config issue-id transition-id &optional resolution)
+                          (push (list issue-id transition-id resolution) made)))))
+    (shipit-issue--transition-status backend '(:repo "acme/door") "PRJ-1" "31" "Won't Do")
+    (should (equal made '(("PRJ-1" "31" "Won't Do"))))))
+
 (provide 'test-shipit-issue-backends)
 ;;; test-shipit-issue-backends.el ends here

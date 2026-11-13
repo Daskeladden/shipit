@@ -138,6 +138,9 @@ test-unit: compile
 		-l test/test-shipit-preview-description.el \
 		-l test/test-shipit-pr-mouse-preview.el \
 		-l test/test-shipit-issues.el \
+		-l test/test-shipit-issues-bulk-status.el \
+		-l test/test-shipit-issues-row-actions.el \
+		-l test/test-shipit-issues-region-actions.el \
 		-l test/test-shipit-issue-backends.el \
 		-l test/test-shipit-issue-github.el \
 		-l test/test-shipit-issue-jira.el \

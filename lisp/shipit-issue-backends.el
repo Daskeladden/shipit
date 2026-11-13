@@ -48,6 +48,20 @@
 ;;   :add-reaction      — (config issue-number reaction) → reaction alist
 ;;   :remove-reaction   — (config issue-number reaction-id) → t
 ;;
+;; Optional plist keys (for the state of an issue):
+;;   :get-transitions   — (config issue-id) → list of the moves the issue
+;;                        offers now, each an alist of `id', `name' and
+;;                        `to'.  `to' can hold the `category' of the state
+;;                        that the move leads to, "done" for a closed one.
+;;                        A move can hold `resolutions': the names of the
+;;                        resolutions that the move takes, in the order
+;;                        to offer them.  A move without it takes none.
+;;   :transition-status — (config issue-id transition-id &optional
+;;                        resolution) → makes the move.  RESOLUTION, the
+;;                        name of a resolution, comes only for a move
+;;                        that has `resolutions', so a backend whose
+;;                        moves have none can take three arguments.
+;;
 ;; Optional plist key (for finding a repository that uses the tracker):
 ;;   :detect            — (repo) → config plist, or nil.  Asked when no
 ;;                        entry of `shipit-issue-repo-backends' is for
@@ -289,12 +303,16 @@ CONFIG is passed to the backend's :creation-fields function."
     (when fn
       (funcall fn config issue-id))))
 
-(defun shipit-issue--transition-status (backend-plist config issue-id transition-id)
-  "Transition ISSUE-ID to TRANSITION-ID via BACKEND-PLIST and CONFIG."
+(defun shipit-issue--transition-status (backend-plist config issue-id transition-id
+                                                      &optional resolution)
+  "Transition ISSUE-ID to TRANSITION-ID via BACKEND-PLIST and CONFIG.
+RESOLUTION, when non-nil, is the name of the resolution that the move
+sets.  It is passed on only then, so a backend whose function takes
+three arguments keeps working."
   (let ((fn (plist-get backend-plist :transition-status)))
     (unless fn
       (error "Backend does not support :transition-status"))
-    (funcall fn config issue-id transition-id)))
+    (apply fn config issue-id transition-id (and resolution (list resolution)))))
 
 ;;; Optional notification polling
 

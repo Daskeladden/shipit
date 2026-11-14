@@ -2462,6 +2462,22 @@ and its cache are shared."
   (cdr (assq 'number
              (shipit-get-pr-for-branch branch (plist-get config :repo)))))
 
+(defun shipit-pr-github--fetch-merged-pr-for-branch (config branch)
+  "Return the merged pull request whose head was BRANCH, or nil.
+The answer is an alist of its `number' and the `sha' that BRANCH stood
+on when it merged.  GitHub lists a merged pull request among the closed
+ones, and only `merged_at' tells it from one that was closed without a
+merge."
+  (let* ((repo (plist-get config :repo))
+         (owner (car (split-string repo "/")))
+         (prs (shipit--api-request (format "/repos/%s/pulls" repo)
+                                   `(("state" "closed")
+                                     ("head" ,(format "%s:%s" owner branch)))))
+         (merged (seq-find (lambda (pr) (cdr (assq 'merged_at pr))) prs)))
+    (when merged
+      `((number . ,(cdr (assq 'number merged)))
+        (sha . ,(cdr (assq 'sha (cdr (assq 'head merged)))))))))
+
 (defun shipit-pr-github--stack-statuses-query (owner name numbers)
   "Return the GraphQL query for the statuses of NUMBERS.
 One aliased field per pull request asks for its review decision and
@@ -2561,6 +2577,7 @@ data should pass it: this runs on every render of the section."
        :update-pr #'shipit-pr-github--update-pr
        :set-pr-draft #'shipit-pr-github--set-pr-draft
        :fetch-pr-for-branch #'shipit-pr-github--fetch-pr-for-branch
+       :fetch-merged-pr-for-branch #'shipit-pr-github--fetch-merged-pr-for-branch
        :fetch-stack #'shipit-pr-github--fetch-stack
        :fetch-stack-statuses #'shipit-pr-github--fetch-stack-statuses
        :browse-stack-url #'shipit-pr-github--browse-stack-url

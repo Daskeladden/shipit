@@ -417,7 +417,9 @@ WHEN their status is asked for
 THEN each is written in a face saying how far along it is, so the state
 of the stack can be read off the colours."
   (with-temp-buffer
-    (setq shipit-stacked-preview--repo "owner/repo")
+    (setq shipit-stacked-preview--repo "owner/repo"
+          ;; The forge knows of no merged pull request of the branch.
+          shipit-stacked-preview--merged-prs '(("one")))
     (let ((layer (car (test-stacked--layers "one"))))
       (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) nil)))
         (should (equal 'font-lock-comment-face (test-stacked--status-face layer))))
@@ -1064,7 +1066,9 @@ WHEN its status is drawn with SVG icons off
 THEN the glyphs ride behind the pull request number, so a red or
 waiting layer is seen from the preview without opening it."
   (with-temp-buffer
-    (setq shipit-stacked-preview--repo "owner/repo")
+    (setq shipit-stacked-preview--repo "owner/repo"
+          ;; The forge knows of no merged pull request of the branch.
+          shipit-stacked-preview--merged-prs '(("one")))
     (let ((shipit-use-svglib-icons nil)
           (layer (car (test-stacked--layers "one"))))
       (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
@@ -1182,7 +1186,9 @@ WHEN its state is asked for
 THEN it names the stage as data, which the row and the stack canvas
 both draw from."
   (with-temp-buffer
-    (setq shipit-stacked-preview--repo "owner/repo")
+    (setq shipit-stacked-preview--repo "owner/repo"
+          ;; The forge knows of no merged pull request of the branch.
+          shipit-stacked-preview--merged-prs '(("one")))
     (let ((layer (car (test-stacked--layers "one"))))
       (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) nil)))
         (should (equal '(:state no-branch)
@@ -1214,9 +1220,12 @@ THEN it is sending, whatever the branch was before the push began."
 WHEN its state is asked for
 THEN it is drifted, and says how far the two copies came apart."
   (with-temp-buffer
-    (setq shipit-stacked-preview--repo "owner/repo")
+    (setq shipit-stacked-preview--repo "owner/repo"
+          ;; The forge knows of no merged pull request of the branch.
+          shipit-stacked-preview--merged-prs '(("one")))
     (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
-              ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) '("1 2")))
+              ((symbol-function 'shipit-stack--git-lines)
+               (lambda (&rest args) (when (equal (car args) "rev-list") '("1 2"))))
               ((symbol-function 'shipit-stack-plan--pr-for-branch)
                (lambda (&rest _) nil)))
       (should (equal '(:state drifted :drift "2 ahead, 1 behind" :moved nil)
@@ -1229,7 +1238,9 @@ and an approval
 WHEN its state is asked for with the stack's statuses
 THEN it carries the number, the checks and the review."
   (with-temp-buffer
-    (setq shipit-stacked-preview--repo "owner/repo")
+    (setq shipit-stacked-preview--repo "owner/repo"
+          ;; The forge knows of no merged pull request of the branch.
+          shipit-stacked-preview--merged-prs '(("one")))
     (cl-letf (((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))
               ((symbol-function 'shipit-stack--git-lines) (lambda (&rest _) nil))
               ((symbol-function 'shipit-stack-plan--pr-for-branch)
@@ -1463,6 +1474,23 @@ layer is done rather than waiting to be sent."
         (should (equal "pushed"
                        (shipit-stacked-preview--layer-status
                         (shipit-stacked-preview--layer-named "work"))))))))
+
+(ert-deftest test-shipit-stacked-preview-an-older-merge-of-the-branch-name-is-no-merge ()
+  "A branch name that merged before, below where it stands now, is not merged."
+  ;; GIVEN a pushed stack whose bottom branch name merged before, as
+  ;;   #5, at a commit below where the branch stands now
+  ;; WHEN the preview is refreshed
+  ;; THEN the bottom row does not say merged
+  (shipit-sandbox-with-repo
+    (let ((buffer (test-stacked--open-pushed-stack)))
+      (push `("work-parser" (number . 5)
+              (sha . ,(shipit-sandbox--git "rev-parse" "work-parser~1")))
+            shipit-sandbox-merged)
+      (with-current-buffer buffer
+        (shipit-stacked-preview-refresh)
+        (should-not (string-match-p "merged"
+                                    (shipit-stacked-preview--layer-status
+                                     (shipit-stacked-preview--layer-named "work-parser"))))))))
 
 (ert-deftest test-shipit-stacked-preview-says-when-the-fetch-fails ()
   "GIVEN a remote that cannot be reached

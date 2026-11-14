@@ -44,6 +44,12 @@
 (defvar shipit-sandbox-stack nil
   "The stack the stand-in holds, or nil.")
 
+(defvar shipit-sandbox-merged nil
+  "Branch to its merged pull request, as the stand-in has been told.
+A number says that the pull request of that number merged the branch
+where it stands now.  An alist of `number' and `sha' says where it
+stood when it merged.")
+
 ;;;; Building one
 
 (defun shipit-sandbox--git (&rest args)
@@ -54,9 +60,13 @@
         (error "git %s failed: %s" (string-join args " ") (buffer-string)))
       (string-trim (buffer-string)))))
 
+(defun shipit-sandbox--file-of (message)
+  "Return the name of the file that the commit MESSAGE adds."
+  (format "%s.txt" (replace-regexp-in-string "[^a-z0-9]" "-" message)))
+
 (defun shipit-sandbox--commit (message)
   "Add one file and commit it with MESSAGE."
-  (let ((file (format "%s.txt" (replace-regexp-in-string "[^a-z0-9]" "-" message))))
+  (let ((file (shipit-sandbox--file-of message)))
     (with-temp-file (expand-file-name file default-directory) (insert message))
     (shipit-sandbox--git "add" file)
     (shipit-sandbox--git "commit" "-q" "-m" message)))
@@ -98,7 +108,8 @@ Returns the working directory."
   "Forget every pull request the stand-in has been told about."
   (setq shipit-sandbox-prs nil
         shipit-sandbox-created nil
-        shipit-sandbox-stack nil))
+        shipit-sandbox-stack nil
+        shipit-sandbox-merged nil))
 
 (defun shipit-sandbox--pull-request (number branch)
   "Return a pull request NUMBER for BRANCH, as the stand-in tells it."
@@ -135,6 +146,12 @@ than failing."
   (list
    :fetch-pr-for-branch
    (lambda (_config branch) (cdr (assoc branch shipit-sandbox-prs)))
+   :fetch-merged-pr-for-branch
+   (lambda (_config branch)
+     (let ((merged (cdr (assoc branch shipit-sandbox-merged))))
+       (if (numberp merged)
+           `((number . ,merged) (sha . ,(shipit--branch-rev branch)))
+         merged)))
    :fetch-pr
    (lambda (_config number &rest _)
      (let ((branch (car (rassoc number shipit-sandbox-prs))))
@@ -291,7 +308,8 @@ runs here and what a user does are the same thing."
   `(let* ((root (make-temp-file "shipit-flow-test-" t))
           (shipit-sandbox-prs nil)
           (shipit-sandbox-created nil)
-          (shipit-sandbox-stack nil))
+          (shipit-sandbox-stack nil)
+          (shipit-sandbox-merged nil))
      (unwind-protect
          (let ((default-directory (file-name-as-directory
                                    (shipit-sandbox-build root))))

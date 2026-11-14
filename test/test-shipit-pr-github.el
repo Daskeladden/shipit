@@ -214,5 +214,38 @@ ANSWERS are as `shipit-test-http-answering' takes them."
     (should-not (shipit--fork-of-p "me/r" "pots/r"))
     (should (= 1 (test-github--times-asked-about "me/r")))))
 
+;;; The merged pull request of a branch
+
+(ert-deftest test-github-merged-pr-for-branch-is-the-one-that-merged ()
+  "The merged pull request of a branch is the closed one that GitHub merged."
+  ;; GIVEN GitHub knows two closed pull requests whose head was cups:
+  ;;   #7, closed without a merge, and #9, merged
+  ;; WHEN shipit asks which pull request of cups merged
+  ;; THEN it answers #9, with the commit that cups stood on when it merged
+  ;; AND it asked GitHub for the closed pull requests with cups as head
+  (test-github--answering
+      '(("/repos/kitchen/menu/pulls\\?" 200
+         [((number . 7) (merged_at . nil) (head (ref . "cups") (sha . "c7")))
+          ((number . 9) (merged_at . "2026-11-14T10:00:00Z")
+           (head (ref . "cups") (sha . "c9")))]))
+    (should (equal '((number . 9) (sha . "c9"))
+                   (shipit-pr-github--fetch-merged-pr-for-branch
+                    '(:repo "kitchen/menu") "cups")))
+    (let ((address (cadr (car shipit-test-http-requests))))
+      (should (string-match-p "state=closed" address))
+      (should (string-match-p "head=kitchen\\(:\\|%3[Aa]\\)cups" address)))))
+
+(ert-deftest test-github-merged-pr-for-branch-is-nil-without-a-merge ()
+  "A branch whose pull requests closed without a merge has no merged pull request."
+  ;; GIVEN GitHub knows one closed pull request whose head was cups, #7,
+  ;;   closed without a merge
+  ;; WHEN shipit asks which pull request of cups merged
+  ;; THEN it answers none
+  (test-github--answering
+      '(("/repos/kitchen/menu/pulls\\?" 200
+         [((number . 7) (merged_at . nil) (head (ref . "cups")))]))
+    (should-not (shipit-pr-github--fetch-merged-pr-for-branch
+                 '(:repo "kitchen/menu") "cups"))))
+
 (provide 'test-shipit-pr-github)
 ;;; test-shipit-pr-github.el ends here

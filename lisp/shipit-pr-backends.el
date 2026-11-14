@@ -160,6 +160,12 @@
 ;;                              (number . statuses), statuses an alist
 ;;                              with `checks' and `review' keys
 ;;   :browse-stack-url        — (config number) → the stack's web URL
+;;   :fetch-pr-for-branch     — (config branch) → the number of the open
+;;                              pull request whose head is BRANCH, or nil
+;;   :fetch-merged-pr-for-branch — (config branch) → alist of `number'
+;;                              and `sha' of the merged pull request whose
+;;                              head was BRANCH, `sha' being where BRANCH
+;;                              stood when it merged; nil when none merged
 
 ;;; Code:
 
@@ -466,6 +472,16 @@ nil when the backend has no such operation."
     (when fn
       (funcall fn (cdr resolved) number callback)
       t)))
+
+(defun shipit-pr--fetch-merged-pr-for-branch (repo branch)
+  "Return the merged pull request whose head was BRANCH in REPO, or nil.
+The answer is an alist of its `number' and the `sha' that BRANCH stood
+on when it merged.  Resolved through the active backend\='s optional
+:fetch-merged-pr-for-branch operation.  Answers nil when the backend
+has none, and when no pull request of BRANCH merged."
+  (let* ((resolved (shipit-pr--resolve-for-repo repo))
+         (fn (plist-get (car resolved) :fetch-merged-pr-for-branch)))
+    (when fn (funcall fn (cdr resolved) branch))))
 
 (defun shipit-pr--fetch-stack-statuses (repo numbers)
   "Return (NUMBER . STATUSES) for each pull request of NUMBERS.

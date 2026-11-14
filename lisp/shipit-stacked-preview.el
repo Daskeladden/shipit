@@ -85,6 +85,10 @@ entry; a boundary is a division, and the top of the pile is not one.")
   "Commit SHA to the branch already marking that layer.
 A stack divided before keeps the names it was given.")
 
+(defvar-local shipit-stacked-preview--merged-prs nil
+  "Branch to its merged pull request as the forge answered, or to nil.
+Kept until the next refresh.")
+
 (defvar-local shipit-stacked-preview--fetch-problem nil
   "Why the last fetch from the remote failed, or nil when it did not.")
 
@@ -216,15 +220,63 @@ rewrote what."
            (and behind (> behind 0) (zerop ahead)))
          'new-commits)))
 
-(defun shipit-stacked-preview--merged-p (tip)
-  "Return non-nil when every commit up to TIP is on the stack\='s base.
-By patch rather than by id: a rebase merge puts the commits on the base
-under new ids, and a layer merged that way is still listed over the
-base with its branch gone from the remote, looking like one never sent."
+(defun shipit-stacked-preview--merged-by-git-p (tip)
+  "Return non-nil when a merge of TIP into the stack\='s base changes nothing.
+Then the base holds everything up to TIP, whichever way it got there:
+a squash merge or a rebase merge puts the commits on the base under new
+ids, and a layer merged that way is still listed over the base with its
+branch gone from the remote, looking like one never sent.  It misses a
+layer whose lines the base changed again after the merge, which is why
+the forge is asked first."
   (and shipit-stacked-preview--base
-       (let ((lines (shipit-stack--git-lines
-                     "cherry" shipit-stacked-preview--base tip)))
-         (and lines (seq-every-p (lambda (line) (string-prefix-p "-" line)) lines)))))
+       (let ((merged (car (shipit-stack--git-lines
+                           "merge-tree" "--write-tree"
+                           shipit-stacked-preview--base tip)))
+             (base (car (shipit-stack--git-lines
+                         "rev-parse" (concat shipit-stacked-preview--base "^{tree}")))))
+         (and merged (equal merged base)))))
+
+(defun shipit-stacked-preview--ask-forge-merged (branch)
+  "Return the merged pull request of BRANCH as the forge tells it, or nil.
+A forge that cannot answer counts as no answer, and git decides."
+  (and shipit-stacked-preview--repo
+       (condition-case err
+           (shipit-pr--fetch-merged-pr-for-branch shipit-stacked-preview--repo branch)
+         (error
+          (shipit--debug-log "stacked preview: merged pull request of %s not known: %s"
+                             branch (error-message-string err))
+          nil))))
+
+(defun shipit-stacked-preview--merged-pr (branch)
+  "Return the merged pull request of BRANCH, or nil, asking the forge once.
+The answer is kept until the next refresh, since every redraw asks for
+the state of every layer."
+  (let ((known (assoc branch shipit-stacked-preview--merged-prs)))
+    (if known
+        (cdr known)
+      (let ((merged (shipit-stacked-preview--ask-forge-merged branch)))
+        (push (cons branch merged) shipit-stacked-preview--merged-prs)
+        merged))))
+
+(defun shipit-stacked-preview--merged-pr-of (layer)
+  "Return the merged pull request that holds every commit of LAYER, or nil.
+A branch name can be used again after its pull request merged, so a
+merged pull request counts only when the layer ends at or below the
+commit that it merged."
+  (let ((merged (shipit-stacked-preview--merged-pr (cdr (assq 'branch layer))))
+        (tip (cdr (assq 'tip layer))))
+    (and merged
+         (cdr (assq 'sha merged))
+         (shipit-stack--ancestor-p tip (cdr (assq 'sha merged)))
+         merged)))
+
+(defun shipit-stacked-preview--merged-state (layer)
+  "Return the state of LAYER when it merged into the stack\='s base, or nil.
+A pull request that the forge says merged the layer gives its number."
+  (let ((merged (shipit-stacked-preview--merged-pr-of layer)))
+    (cond (merged (list :state 'merged :number (cdr (assq 'number merged))))
+          ((shipit-stacked-preview--merged-by-git-p (cdr (assq 'tip layer)))
+           (list :state 'merged)))))
 
 (defun shipit-stacked-preview--movement-words (moved)
   "Return the words for MOVED, what the copy on the remote did, or nil."
@@ -274,8 +326,7 @@ two cannot disagree about a layer."
   (let ((branch (cdr (assq 'branch layer))))
     (cond
      ((shipit-stacked-preview--sending-p branch) (list :state 'sending))
-     ((shipit-stacked-preview--merged-p (cdr (assq 'tip layer)))
-      (list :state 'merged))
+     ((shipit-stacked-preview--merged-state layer))
      ((not (or (cdr (assq 'existing layer)) (shipit-stack--rev branch)))
       (list :state 'no-branch))
      ((not (shipit-stack--rev (concat "origin/" branch)))
@@ -292,6 +343,14 @@ two cannot disagree about a layer."
                      (cons 'review (plist-get state :review)))))
     (propertize "pushed" 'font-lock-face 'success)))
 
+(defun shipit-stacked-preview--merged-text (state)
+  "Return the words for a layer in the merged STATE."
+  (let ((into (format "merged into %s" (shipit-stacked-preview--base-name
+                                        shipit-stacked-preview--base))))
+    (if-let* ((number (plist-get state :number)))
+        (format "#%s %s" number into)
+      into)))
+
 (defun shipit-stacked-preview--state-text (state)
   "Return the status text of a layer in STATE, coloured by how far it got.
 Dim while the layer is still only local, orange while it is on its way,
@@ -302,9 +361,7 @@ came apart from this one and what that copy did, and a layer with a
 pull request wears its glyphs behind the number."
   (pcase (plist-get state :state)
     ('sending (propertize "sending…" 'font-lock-face 'warning))
-    ('merged (propertize (format "merged into %s"
-                                 (shipit-stacked-preview--base-name
-                                  shipit-stacked-preview--base))
+    ('merged (propertize (shipit-stacked-preview--merged-text state)
                          'font-lock-face 'success))
     ('no-branch (propertize "no branch yet" 'font-lock-face 'font-lock-comment-face))
     ('not-pushed (propertize "not pushed" 'font-lock-face 'font-lock-comment-face))
@@ -434,7 +491,7 @@ works one out itself."
   "Return LAYER's branch name, or signal when it does not exist yet."
   (let ((branch (cdr (assq 'branch layer))))
     (unless (shipit-stack--rev branch)
-      (user-error "Branch %s does not exist yet -- press c to create it" branch))
+      (user-error "Branch %s does not exist yet -- press b c to create it" branch))
     branch))
 
 (defconst shipit-stacked-preview--commit-indent 9
@@ -514,9 +571,8 @@ within a layer history grows upward too."
 
 (defconst shipit-stacked-preview--key-columns
   '((("RET" . "open layer") ("s" . "divide here") ("u" . "undo"))
-    (("c" . "create branches") ("P" . "push") ("R" . "register stack")
-     ("b" . "rebase onto remote base"))
-    (("r" . "rename layer") ("a" . "suggest name") ("v" . "draw on canvas"))
+    (("b" . "branch") ("r" . "rebase") ("P" . "push"))
+    (("R" . "register stack") ("v" . "draw on canvas"))
     (("g" . "refresh") ("q" . "quit") ("$" . "process log")))
   "The keys this buffer offers, a list per column.
 Down each column rather than across: dividing the stack, making it
@@ -815,7 +871,8 @@ the remembered answer that the branch had no pull request."
   "Drop what is remembered about which pull request each layer has.
 A pull request made outside this buffer, on the web page or from
 another preview, is otherwise hidden behind a miss remembered from
-before it existed."
+before it existed.  A merge on the forge is asked again too."
+  (setq shipit-stacked-preview--merged-prs nil)
   (dolist (branch (cons (shipit-stacked-preview--base-branch)
                         (shipit-stacked-preview--branch-names
                          (shipit-stacked-preview--current-layers))))
@@ -915,6 +972,16 @@ BRANCH is the layer the menu opened on, or nil away from every layer."
   (interactive (list (current-buffer) (shipit-stacked-preview--branch-at-point)))
   (transient-setup 'shipit-stacked-preview-push nil nil
                    :scope (cons buffer branch)))
+
+;;;; The branch menu
+
+(transient-define-prefix shipit-stacked-preview-branch ()
+  "Make and name the branches of the layers.
+The keys follow magit\='s branch menu where it has the same action."
+  ["Branch"
+   ("c" "create the layer branches" shipit-stacked-preview-create-branches)
+   ("m" "rename layer" shipit-stacked-preview-rename-layer)
+   ("a" "suggest a name" shipit-stacked-preview-suggest-name)])
 
 (defun shipit-stacked-preview--backend-call (operation &rest args)
   "Call OPERATION on this repository\='s backend with ARGS.
@@ -1067,28 +1134,224 @@ conflict, and either is worth seeing here."
                          (shipit-stacked-preview-refresh))))))
     (add-hook 'magit-post-refresh-hook redraw)))
 
-(defun shipit-stacked-preview-rebase-onto-remote-base ()
+(defun shipit-stacked-preview--rebase-arguments ()
+  "Return the arguments of the rebase menu, with `--update-refs\=' first.
+Without it the branches of the layers above stay on the old commits
+and the stack splits in two, so it is no choice of the menu."
+  (cons "--update-refs" (transient-args 'shipit-stacked-preview-rebase)))
+
+(defun shipit-stacked-preview--refuse-unless-checked-out ()
+  "Signal unless the top layer of the stack is checked out."
+  (unless (equal (shipit-stack--current-branch) shipit-stacked-preview--branch)
+    (user-error "Check out %s first; the rebase moves the checked-out branch"
+                shipit-stacked-preview--branch)))
+
+(defun shipit-stacked-preview--rebase-subset (newbase start args)
+  "Have magit rebase the commits from START to HEAD onto NEWBASE with ARGS.
+Magit runs the rebase, so a conflict lands in its usual flow, and this
+buffer redraws once magit has."
+  (shipit-stacked-preview--refuse-unless-checked-out)
+  (require 'magit-sequence)
+  (shipit-stacked-preview--redraw-after-magit (current-buffer))
+  (magit-rebase-subset newbase start args))
+
+(defun shipit-stacked-preview-rebase-onto-remote-base (&optional args)
   "Move the stack onto the base its copies on the remote stand on.
 After the pull request under a stack merges, a bot rebases the copies
 on the remote onto the base that now holds it, and a stack rewritten
 here in the meantime has to go the same way before it can be pushed.
 The commits over the stack\='s base are rebased onto the commit the
-lowest rebased copy stands on, with every layer\='s branch following
-and uncommitted work stashed around it.  Commits the base already
-holds, as a merged layer\='s do, are dropped by git as it goes.  Magit
-runs the rebase, so a conflict lands in its usual flow, and this buffer
-redraws once magit has."
-  (interactive)
+lowest rebased copy stands on, with every layer\='s branch following.
+Commits the base already holds, as a merged layer\='s do, are dropped
+by git as it goes.  ARGS are those of the rebase menu."
+  (interactive (list (shipit-stacked-preview--rebase-arguments)))
   (let ((newbase (shipit-stacked-preview--new-base)))
     (unless newbase
       (user-error "No layer's copy on the remote stands on a newer base -- nothing to rebase onto"))
-    (unless (equal (shipit-stack--current-branch) shipit-stacked-preview--branch)
-      (user-error "Check out %s first; the rebase moves the checked-out branch"
-                  shipit-stacked-preview--branch))
-    (require 'magit-sequence)
-    (shipit-stacked-preview--redraw-after-magit (current-buffer))
-    (magit-rebase-subset newbase shipit-stacked-preview--base
-                         (list "--update-refs" "--autostash"))))
+    (shipit-stacked-preview--rebase-subset
+     newbase shipit-stacked-preview--base
+     (or args (shipit-stacked-preview--rebase-arguments)))))
+
+(defun shipit-stacked-preview--merged-at-bottom ()
+  "Return the merged layers at the bottom of the stack, bottom first.
+Only those: a layer can merge only after the layers below it did."
+  (seq-take-while #'shipit-stacked-preview--merged-state
+                  (shipit-stacked-preview--current-layers)))
+
+(defun shipit-stacked-preview--rebase-start ()
+  "Return the commit after which the rebase onto the base takes commits.
+The tip of the highest merged layer at the bottom, so its commits are
+left out, or the base when none merged."
+  (if-let* ((merged (car (last (shipit-stacked-preview--merged-at-bottom)))))
+      (cdr (assq 'tip merged))
+    shipit-stacked-preview--base))
+
+(defun shipit-stacked-preview--onto-base-p ()
+  "Return non-nil when a rebase onto the base would move the stack.
+That is when a layer at the bottom merged, or when the base moved past
+where the stack stands.  Not when every layer merged: then nothing is
+left to move."
+  (let ((merged (length (shipit-stacked-preview--merged-at-bottom))))
+    (and (< merged (length (shipit-stacked-preview--current-layers)))
+         (or (> merged 0)
+             (not (shipit-stack--ancestor-p shipit-stacked-preview--base "HEAD"))))))
+
+(defun shipit-stacked-preview-rebase-onto-base (args)
+  "Rebase the stack onto the newest base, and leave the merged layers out.
+ARGS are those of the rebase menu."
+  (interactive (list (shipit-stacked-preview--rebase-arguments)))
+  (shipit-stacked-preview--rebase-subset
+   shipit-stacked-preview--base (shipit-stacked-preview--rebase-start) args))
+
+(defun shipit-stacked-preview--fixup-p (commit)
+  "Return non-nil when COMMIT is a fixup, a squash or an amend of another."
+  (string-match-p "\\`\\(fixup\\|squash\\|amend\\)! "
+                  (or (plist-get commit :first-line) "")))
+
+(defun shipit-stacked-preview--fixups-p ()
+  "Return non-nil when the stack holds a commit to fold into another."
+  (seq-some #'shipit-stacked-preview--fixup-p shipit-stacked-preview--commits))
+
+(defun shipit-stacked-preview-rebase-fixups (args)
+  "Fold each fixup commit of the stack into the commit it fixes.
+The stack stays on the commit of the base it stands on, and every
+layer\='s branch follows its commits.  Git needs an interactive rebase
+for this; the list of commits opens only with `--interactive\=' among
+ARGS, the arguments of the rebase menu."
+  (interactive (list (shipit-stacked-preview--rebase-arguments)))
+  (shipit-stacked-preview--refuse-unless-checked-out)
+  (require 'magit-sequence)
+  (shipit-stacked-preview--redraw-after-magit (current-buffer))
+  (let ((process-environment process-environment))
+    (unless (member "--interactive" args)
+      (push "GIT_SEQUENCE_EDITOR=true" process-environment))
+    (magit-run-git-sequencer "rebase" "-i" "--autosquash" "--keep-base"
+                             (remove "--interactive" args)
+                             shipit-stacked-preview--base)))
+
+(defun shipit-stacked-preview--continue-with-magit (command)
+  "Run the magit COMMAND that goes on with a stopped rebase, and redraw after."
+  (require 'magit-sequence)
+  (shipit-stacked-preview--redraw-after-magit (current-buffer))
+  (call-interactively command))
+
+(defun shipit-stacked-preview-rebase-continue ()
+  "Continue the stopped rebase, as magit does."
+  (interactive)
+  (shipit-stacked-preview--continue-with-magit #'magit-rebase-continue))
+
+(defun shipit-stacked-preview-rebase-skip ()
+  "Skip the commit the rebase stopped at, as magit does."
+  (interactive)
+  (shipit-stacked-preview--continue-with-magit #'magit-rebase-skip))
+
+(defun shipit-stacked-preview-rebase-abort ()
+  "Abort the stopped rebase, as magit does."
+  (interactive)
+  (shipit-stacked-preview--continue-with-magit #'magit-rebase-abort))
+
+(defun shipit-stacked-preview--rebase-in-progress-p ()
+  "Return non-nil when a rebase is stopped in this repository."
+  (require 'magit-sequence)
+  (magit-rebase-in-progress-p))
+
+(defun shipit-stacked-preview--plan-words (merged moves)
+  "Return what a rebase onto the base does to a layer.
+MERGED is the merged state of the layer, or nil.  MOVES is non-nil
+when the rebase moves the stack at all."
+  (let ((base (shipit-stacked-preview--base-name shipit-stacked-preview--base)))
+    (cond ((plist-get merged :number)
+           (format "merged in #%s, left out" (plist-get merged :number)))
+          (merged "merged, left out")
+          (moves (format "moves onto %s" base))
+          (t (format "already on %s" base)))))
+
+(defun shipit-stacked-preview--plan-text ()
+  "Return the plan of a rebase onto the base, a line for each layer, top first.
+Transient puts one space before the text, so each further line starts
+with one too."
+  (let* ((layers (shipit-stacked-preview--current-layers))
+         (merged (shipit-stacked-preview--merged-at-bottom))
+         (moves (shipit-stacked-preview--onto-base-p))
+         (width (shipit-stacked-preview--name-width layers)))
+    (mapconcat
+     (lambda (layer)
+       (format "%s  %s"
+                (shipit-sections--pad
+                 (propertize (cdr (assq 'branch layer))
+                             'face 'magit-branch-local)
+                 width)
+                (shipit-stacked-preview--plan-words
+                 (and (member layer merged)
+                      (shipit-stacked-preview--merged-state layer))
+                 moves)))
+     (reverse layers) "\n ")))
+
+(defun shipit-stacked-preview--onto-base-label ()
+  "Return the label of the rebase onto the base."
+  (format "onto %s, leaving the merged layers out"
+          (shipit-stacked-preview--base-name shipit-stacked-preview--base)))
+
+(defun shipit-stacked-preview--in-menu (fn)
+  "Call FN in the preview that the open menu belongs to, and return its value.
+Transient draws a menu again after each option, in a buffer of its own
+where the stack of the preview is not known."
+  (with-current-buffer (or (transient-scope) (current-buffer))
+    (funcall fn)))
+
+(defun shipit-stacked-preview--menu-stopped-p ()
+  "Return non-nil when a rebase is stopped, for the rebase menu."
+  (shipit-stacked-preview--in-menu #'shipit-stacked-preview--rebase-in-progress-p))
+
+(defun shipit-stacked-preview--menu-plan ()
+  "Return the plan of a rebase onto the base, for the rebase menu."
+  (shipit-stacked-preview--in-menu #'shipit-stacked-preview--plan-text))
+
+(defun shipit-stacked-preview--menu-onto-base-p ()
+  "Return non-nil when the rebase menu offers the rebase onto the base."
+  (shipit-stacked-preview--in-menu #'shipit-stacked-preview--onto-base-p))
+
+(defun shipit-stacked-preview--menu-onto-base-label ()
+  "Return the label of the rebase onto the base, for the rebase menu."
+  (shipit-stacked-preview--in-menu #'shipit-stacked-preview--onto-base-label))
+
+(defun shipit-stacked-preview--menu-remote-moved-p ()
+  "Return non-nil when the rebase menu offers to follow the remote copies."
+  (shipit-stacked-preview--in-menu #'shipit-stacked-preview--new-base))
+
+(defun shipit-stacked-preview--menu-fixups-p ()
+  "Return non-nil when the rebase menu offers to apply the fixups."
+  (shipit-stacked-preview--in-menu #'shipit-stacked-preview--fixups-p))
+
+(transient-define-prefix shipit-stacked-preview-rebase ()
+  "Rebase the stack: shipit works out each rebase, and magit runs it.
+The keys follow magit\='s rebase menu where it has the same action."
+  :value '("--autostash")
+  ["Plan"
+   :if-not shipit-stacked-preview--menu-stopped-p
+   (:info* #'shipit-stacked-preview--menu-plan)]
+  ["Arguments"
+   :if-not shipit-stacked-preview--menu-stopped-p
+   ("-A" "Autostash" "--autostash")
+   ("-i" "Interactive" "--interactive")]
+  ["Rebase"
+   :if-not shipit-stacked-preview--menu-stopped-p
+   ("b" shipit-stacked-preview-rebase-onto-base
+    :description shipit-stacked-preview--menu-onto-base-label
+    :if shipit-stacked-preview--menu-onto-base-p)
+   ("o" "onto the remote copies, which a bot rebased"
+    shipit-stacked-preview-rebase-onto-remote-base
+    :if shipit-stacked-preview--menu-remote-moved-p)
+   ("f" "apply the fixups to their layers" shipit-stacked-preview-rebase-fixups
+    :if shipit-stacked-preview--menu-fixups-p)]
+  ["Rebase in progress"
+   :if shipit-stacked-preview--menu-stopped-p
+   ("r" "Continue" shipit-stacked-preview-rebase-continue)
+   ("s" "Skip" shipit-stacked-preview-rebase-skip)
+   ("a" "Abort" shipit-stacked-preview-rebase-abort)]
+  (interactive)
+  (transient-setup 'shipit-stacked-preview-rebase nil nil
+                   :scope (current-buffer)))
 
 (defun shipit-stacked-preview--divisions-stale-p ()
   "Return non-nil when a division no longer names one of the commits.
@@ -1132,24 +1395,23 @@ leaves the buffer as it is; the canvas file is not loaded until then."
         (shipit-stack-canvas-show (current-buffer)))
     (message "The stack canvas needs Emacs 32 with canvas-diagram and canvas-graph")))
 
-(defvar shipit-stacked-preview-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map magit-section-mode-map)
-    (define-key map (kbd "s") #'shipit-stacked-preview-divide)
-    (define-key map (kbd "u") #'shipit-stacked-preview-undivide)
-    (define-key map (kbd "c") #'shipit-stacked-preview-create-branches)
-    (define-key map (kbd "RET") #'shipit-stacked-preview-visit-layer)
-    (define-key map (kbd "P") #'shipit-stacked-preview-push)
-    (define-key map (kbd "R") #'shipit-stacked-preview-register)
-    (define-key map (kbd "b") #'shipit-stacked-preview-rebase-onto-remote-base)
-    (define-key map (kbd "r") #'shipit-stacked-preview-rename-layer)
-    (define-key map (kbd "a") #'shipit-stacked-preview-suggest-name)
-    (define-key map (kbd "v") #'shipit-stacked-preview-canvas)
-    (define-key map (kbd "g") #'shipit-stacked-preview-refresh)
-    (define-key map (kbd "$") #'shipit-process-buffer)
-    (define-key map (kbd "q") #'quit-window)
-    map)
+(defvar shipit-stacked-preview-mode-map (make-sparse-keymap)
   "Keymap for `shipit-stacked-preview-mode'.")
+
+;; The keys are set at top level, not inside the `defvar': a reload of
+;; this file keeps a keymap that already exists, but runs these again.
+(set-keymap-parent shipit-stacked-preview-mode-map magit-section-mode-map)
+(define-key shipit-stacked-preview-mode-map (kbd "s") #'shipit-stacked-preview-divide)
+(define-key shipit-stacked-preview-mode-map (kbd "u") #'shipit-stacked-preview-undivide)
+(define-key shipit-stacked-preview-mode-map (kbd "RET") #'shipit-stacked-preview-visit-layer)
+(define-key shipit-stacked-preview-mode-map (kbd "P") #'shipit-stacked-preview-push)
+(define-key shipit-stacked-preview-mode-map (kbd "R") #'shipit-stacked-preview-register)
+(define-key shipit-stacked-preview-mode-map (kbd "b") #'shipit-stacked-preview-branch)
+(define-key shipit-stacked-preview-mode-map (kbd "r") #'shipit-stacked-preview-rebase)
+(define-key shipit-stacked-preview-mode-map (kbd "v") #'shipit-stacked-preview-canvas)
+(define-key shipit-stacked-preview-mode-map (kbd "g") #'shipit-stacked-preview-refresh)
+(define-key shipit-stacked-preview-mode-map (kbd "$") #'shipit-process-buffer)
+(define-key shipit-stacked-preview-mode-map (kbd "q") #'quit-window)
 
 (define-derived-mode shipit-stacked-preview-mode magit-section-mode "Shipit Stack"
   "Divide a line of commits into stacked pull requests."

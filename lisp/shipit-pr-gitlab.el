@@ -250,6 +250,19 @@ Maps stage to `workflow-name' for hierarchical grouping in the UI."
     (when data
       (shipit-pr-gitlab--normalize-mr data))))
 
+(defun shipit-pr-gitlab--fetch-merged-pr-for-branch (config branch)
+  "Return the merged merge request from BRANCH, or nil.
+The answer is an alist of its `number' and the `sha' that BRANCH stood
+on when it merged."
+  (let* ((project (shipit-gitlab--project-path config))
+         (path (format "/projects/%s/merge_requests?source_branch=%s&state=merged"
+                       project (url-hexify-string branch)))
+         (mrs (shipit-gitlab--api-request config path))
+         (merged (and (> (length mrs) 0) (elt mrs 0))))
+    (when merged
+      `((number . ,(cdr (assq 'iid merged)))
+        (sha . ,(cdr (assq 'sha merged)))))))
+
 (defun shipit-pr-gitlab--search (config args)
   "Search MRs using CONFIG with transient ARGS.
 ARGS may be raw transient args (list of strings like \"--state=open\")
@@ -1910,6 +1923,7 @@ deduplicating by path. Returns normalized repo alists."
        :editor-extra-keys '(("!" . shipit-editor--trigger-mr-reference))
        :editor-reference-hints "#: Issue, !: MR"
        :fetch-pr #'shipit-pr-gitlab--fetch-pr
+       :fetch-merged-pr-for-branch #'shipit-pr-gitlab--fetch-merged-pr-for-branch
        :search #'shipit-pr-gitlab--search
        :search-raw #'shipit-pr-gitlab--search-raw
        :create-pr #'shipit-pr-gitlab--create-pr

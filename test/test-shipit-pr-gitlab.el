@@ -2776,5 +2776,43 @@ ANSWERS are as `shipit-test-http-answering' takes them."
                    (funcall address-of '(:api-url "https://gitlab.example.com/"
                                          :repo "kitchen/menu/cups"))))))
 
+;;; The merged merge request of a branch
+
+(defconst test-gitlab--cups-settings
+  '(:api-url "https://gitlab.example.com" :token "not-a-token"
+    :project-path "kitchen/cups")
+  "The settings of the GitLab project kitchen/cups.")
+
+(ert-deftest test-shipit-pr-gitlab-merged-pr-for-branch-is-the-merged-one ()
+  "The merged merge request of a branch is the one that GitLab merged."
+  ;; GIVEN GitLab knows merge request !12 of kitchen/cups, merged from
+  ;;   the branch saucer
+  ;; WHEN shipit asks which merge request of saucer merged
+  ;; THEN it answers !12, with the commit that saucer stood on when it
+  ;;   merged
+  ;; AND it asked GitLab for the merged merge requests with saucer as
+  ;;   source branch
+  (require 'shipit-pr-gitlab)
+  (test-gitlab--answering-at-curl
+      '(("/merge_requests\\?" 200
+         [((iid . 12) (state . "merged") (source_branch . "saucer") (sha . "s12"))]))
+    (should (equal '((number . 12) (sha . "s12"))
+                   (shipit-pr-gitlab--fetch-merged-pr-for-branch
+                    test-gitlab--cups-settings "saucer")))
+    (let ((address (cadr (car shipit-test-http-requests))))
+      (should (string-match-p "source_branch=saucer" address))
+      (should (string-match-p "state=merged" address)))))
+
+(ert-deftest test-shipit-pr-gitlab-merged-pr-for-branch-is-nil-without-a-merge ()
+  "A branch that GitLab merged no merge request from has no merged one."
+  ;; GIVEN GitLab knows no merged merge request from the branch saucer
+  ;; WHEN shipit asks which merge request of saucer merged
+  ;; THEN it answers none
+  (require 'shipit-pr-gitlab)
+  (test-gitlab--answering-at-curl
+      '(("/merge_requests\\?" 200 []))
+    (should-not (shipit-pr-gitlab--fetch-merged-pr-for-branch
+                 test-gitlab--cups-settings "saucer"))))
+
 (provide 'test-shipit-pr-gitlab)
 ;;; test-shipit-pr-gitlab.el ends here

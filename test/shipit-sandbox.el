@@ -50,6 +50,12 @@ A number says that the pull request of that number merged the branch
 where it stands now.  An alist of `number' and `sha' says where it
 stood when it merged.")
 
+(defvar shipit-sandbox-bases nil
+  "Pull request number to its base branch, as the stand-in has been told.")
+
+(defvar shipit-sandbox-refuse-base-change nil
+  "Non-nil when the stand-in refuses every change of a base.")
+
 ;;;; Building one
 
 (defun shipit-sandbox--git (&rest args)
@@ -109,28 +115,32 @@ Returns the working directory."
   (setq shipit-sandbox-prs nil
         shipit-sandbox-created nil
         shipit-sandbox-stack nil
-        shipit-sandbox-merged nil))
+        shipit-sandbox-merged nil
+        shipit-sandbox-bases nil
+        shipit-sandbox-refuse-base-change nil))
 
 (defun shipit-sandbox--pull-request (number branch)
-  "Return a pull request NUMBER for BRANCH, as the stand-in tells it."
-  (list (cons 'number number)
-        (cons 'title (format "%s title" branch))
-        (cons 'body "why this layer exists")
-        (cons 'state "open")
-        (cons 'draft t)
-        (cons 'html_url (format "https://example.invalid/pull/%d" number))
-        (cons 'user (list (cons 'login "sandbox")))
-        ;; real commits, so anything that reads the diff of this pull
-        ;; request reads the diff that is actually there
-        (cons 'head (list (cons 'ref branch)
-                          (cons 'sha (or (shipit--branch-rev branch)
-                                         (shipit--branch-rev "HEAD")))
-                          (cons 'repo (list (cons 'full_name shipit-sandbox-repo)))))
-        (cons 'base (list (cons 'ref "main")
-                          (cons 'sha (shipit--branch-rev "main"))
-                          (cons 'repo (list (cons 'full_name shipit-sandbox-repo)))))
-        (cons 'created_at "2026-08-29T20:00:00Z")
-        (cons 'updated_at "2026-08-29T20:00:00Z")))
+  "Return a pull request NUMBER for BRANCH, as the stand-in tells it.
+Its base is the one the stand-in was told, or main."
+  (let ((base (or (cdr (assq number shipit-sandbox-bases)) "main")))
+    (list (cons 'number number)
+          (cons 'title (format "%s title" branch))
+          (cons 'body "why this layer exists")
+          (cons 'state "open")
+          (cons 'draft t)
+          (cons 'html_url (format "https://example.invalid/pull/%d" number))
+          (cons 'user (list (cons 'login "sandbox")))
+          ;; real commits, so anything that reads the diff of this pull
+          ;; request reads the diff that is actually there
+          (cons 'head (list (cons 'ref branch)
+                            (cons 'sha (or (shipit--branch-rev branch)
+                                           (shipit--branch-rev "HEAD")))
+                            (cons 'repo (list (cons 'full_name shipit-sandbox-repo)))))
+          (cons 'base (list (cons 'ref base)
+                            (cons 'sha (shipit--branch-rev base))
+                            (cons 'repo (list (cons 'full_name shipit-sandbox-repo)))))
+          (cons 'created_at "2026-08-29T20:00:00Z")
+          (cons 'updated_at "2026-08-29T20:00:00Z"))))
 
 (defun shipit-sandbox-backend ()
   "Return a stand-in for the remote, recording what it is asked to do.
@@ -140,6 +150,23 @@ than failing."
   (append
    (shipit-sandbox--operations)
    (shipit-quiet-backend)))
+
+(defun shipit-sandbox--stacked-p (number)
+  "Return non-nil when the stack the stand-in holds has NUMBER."
+  (member number (mapcar (lambda (entry) (cdr (assq 'number entry)))
+                         (cdr (assq 'entries shipit-sandbox-stack)))))
+
+(defun shipit-sandbox--update-pr (_config number data)
+  "Change pull request NUMBER as DATA says, the way GitHub does.
+GitHub refuses to change the base of a pull request in a stack, with
+\"Cannot change the base branch because the pull request is part of a
+stack.\"  A refusal answers nil, as the backends do."
+  (let ((base (cdr (assq 'base data))))
+    (unless (and base (or shipit-sandbox-refuse-base-change
+                          (shipit-sandbox--stacked-p number)))
+      (when base
+        (setf (alist-get number shipit-sandbox-bases) base))
+      (list (cons 'number number)))))
 
 (defun shipit-sandbox--operations ()
   "Return the operations the stand-in answers for itself."
@@ -161,25 +188,31 @@ than failing."
      (let ((number (+ 100 (length shipit-sandbox-created))))
        (push (list head base title) shipit-sandbox-created)
        (push (cons head number) shipit-sandbox-prs)
+       (push (cons number base) shipit-sandbox-bases)
        (list (cons 'number number)
              (cons 'html_url (format "https://example.invalid/pull/%d" number)))))
+   :update-pr #'shipit-sandbox--update-pr
    :fetch-stack
    (lambda (_config number &optional _pr-data)
-     (when (and shipit-sandbox-stack
-                (member number (mapcar (lambda (entry) (cdr (assq 'number entry)))
-                                       (cdr (assq 'entries shipit-sandbox-stack)))))
+     (when (shipit-sandbox--stacked-p number)
        shipit-sandbox-stack))
    :create-stack
    (lambda (_config numbers)
-     (setq shipit-sandbox-stack
-           (list (cons 'number 7)
-                 (cons 'entries (shipit-sandbox--entries numbers)))))
+     ;; A pull request is in one stack at most.
+     (unless (seq-some #'shipit-sandbox--stacked-p numbers)
+       (setq shipit-sandbox-stack
+             (list (cons 'number 7)
+                   (cons 'entries (shipit-sandbox--entries numbers))))))
    :add-to-stack
    (lambda (_config _stack number)
      (setq shipit-sandbox-stack
            (list (cons 'number 7)
                  (cons 'entries (append (cdr (assq 'entries shipit-sandbox-stack))
-                                        (shipit-sandbox--entries (list number)))))))))
+                                        (shipit-sandbox--entries (list number)))))))
+   :dissolve-stack
+   (lambda (_config _stack)
+     (setq shipit-sandbox-stack nil)
+     t)))
 
 ;;;; Answering for the sandbox only
 
@@ -309,7 +342,9 @@ runs here and what a user does are the same thing."
           (shipit-sandbox-prs nil)
           (shipit-sandbox-created nil)
           (shipit-sandbox-stack nil)
-          (shipit-sandbox-merged nil))
+          (shipit-sandbox-merged nil)
+          (shipit-sandbox-bases nil)
+          (shipit-sandbox-refuse-base-change nil))
      (unwind-protect
          (let ((default-directory (file-name-as-directory
                                    (shipit-sandbox-build root))))

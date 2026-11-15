@@ -326,6 +326,16 @@ THEN state_event=close is produced."
   (should (equal '((state_event . "close"))
                  (shipit-pr-gitlab--translate-update-data '((state . "closed"))))))
 
+(ert-deftest test-shipit-pr-gitlab-translate-update-base-sends-target-branch ()
+  ;; GIVEN update data with a new base, as after a split of a stack layer
+  ;; WHEN translating update data to GitLab field names
+  ;; THEN target_branch is produced, the field GitLab reads; it ignores
+  ;;   a field named base
+  (require 'shipit-pr-gitlab)
+  (should (equal '((target_branch . "work-parser-2"))
+                 (shipit-pr-gitlab--translate-update-data
+                  '((base . "work-parser-2"))))))
+
 ;;; Create MR draft tests
 
 (defun test-gitlab--create-pr-payload (draft)

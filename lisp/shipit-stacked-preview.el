@@ -98,6 +98,12 @@ Working out a state asks git and the forge.  The stack canvas reads
 this buffer again after every redraw, so it reads these instead of
 asking again.")
 
+(defvar-local shipit-stacked-preview--stack-to-rebuild nil
+  "Non-nil when shipit could not build the stack in the order of the layers.
+Set when a step of the rebuild after a split failed, and cleared when
+the stack is built.  Kept in the buffer, so a preview opened again
+does not know it.")
+
 ;;;; Working out the layers
 
 (defun shipit-stacked-preview--layer-name (branch commits)
@@ -111,6 +117,45 @@ Named after what its commits have in common, when they say."
               (shipit-stack--slug
                (or (plist-get (car (last commits)) :first-line) "layer"))))))
 
+(defun shipit-stacked-preview--commit-groups (commits boundaries)
+  "Divide COMMITS, oldest first, into lists that end at BOUNDARIES."
+  (let (groups current)
+    (dolist (commit commits)
+      (push commit current)
+      (when (member (plist-get commit :sha) boundaries)
+        (push (nreverse current) groups)
+        (setq current nil)))
+    (when current (push (nreverse current) groups))
+    (nreverse groups)))
+
+(defun shipit-stacked-preview--name-taken-p (name tip taken)
+  "Return non-nil when NAME cannot be the branch of the layer that ends at TIP.
+TAKEN are the names of the other layers.  A branch of that name at
+another commit is taken too: a layer split off below a layer with a
+branch would otherwise get the name of that branch.  A branch at TIP
+is the layer\='s own, made by `b c\='."
+  (or (member name taken)
+      (let ((rev (shipit-stack--rev (concat "refs/heads/" name))))
+        (and rev (not (equal rev tip))))))
+
+(defun shipit-stacked-preview--free-name (name tip taken)
+  "Return NAME, or NAME with -2, -3 and on, whichever is free first.
+TIP and TAKEN are as for `shipit-stacked-preview--name-taken-p'."
+  (let ((candidate name)
+        (count 1))
+    (while (shipit-stacked-preview--name-taken-p candidate tip taken)
+      (setq count (1+ count)
+            candidate (format "%s-%d" name count)))
+    candidate))
+
+(defun shipit-stacked-preview--group-branch (group tip branch names taken)
+  "Return the branch of the layer of GROUP, which ends at TIP.
+BRANCH is the branch of the stack, NAMES maps a tip to the branch
+already marking it, and TAKEN are the names of the other layers."
+  (or (cdr (assoc tip names))
+      (shipit-stacked-preview--free-name
+       (shipit-stacked-preview--layer-name branch group) tip taken)))
+
 (defun shipit-stacked-preview--layers (commits boundaries branch &optional names)
   "Divide COMMITS into layers ending at BOUNDARIES.
 COMMITS are oldest first.  The last layer keeps BRANCH, since the work
@@ -118,25 +163,21 @@ is already on it and it needs no new pointer.  NAMES maps a layer\='s
 last commit to the branch already marking it, so a stack that has been
 divided before keeps the names it was given rather than being renamed
 from its commit subjects."
-  (let (layers current)
-    (dolist (commit commits)
-      (push commit current)
-      (when (member (plist-get commit :sha) boundaries)
-        (push (nreverse current) layers)
-        (setq current nil)))
-    (when current (push (nreverse current) layers))
-    (setq layers (nreverse layers))
-    (let ((last (car (last layers))))
-      (mapcar (lambda (group)
-                (let ((top (eq group last)))
-                  `((commits . ,group)
-                    (tip . ,(plist-get (car (last group)) :sha))
-                    (existing . ,top)
-                    (branch . ,(cond
-                                (top branch)
-                                ((cdr (assoc (plist-get (car (last group)) :sha) names)))
-                                (t (shipit-stacked-preview--layer-name branch group)))))))
-              layers))))
+  (let* ((groups (shipit-stacked-preview--commit-groups commits boundaries))
+         (last (car (last groups)))
+         (taken (cons branch (mapcar #'cdr names)))
+         (layers nil))
+    (dolist (group groups (nreverse layers))
+      (let* ((top (eq group last))
+             (tip (plist-get (car (last group)) :sha))
+             (name (if top
+                       branch
+                     (shipit-stacked-preview--group-branch
+                      group tip branch names taken))))
+        (push name taken)
+        (push `((commits . ,group) (tip . ,tip) (existing . ,top)
+                (branch . ,name))
+              layers)))))
 
 (defun shipit-stacked-preview--current-layers ()
   "Return the layers this buffer currently describes."
@@ -724,25 +765,70 @@ one branch while standing on another."
                       shipit-stacked-preview--done-states))
               states))
 
+(defun shipit-stacked-preview--branch-words (branch)
+  "Return BRANCH in the face of a local branch."
+  (propertize branch 'font-lock-face 'magit-branch-local))
+
+(defun shipit-stacked-preview--number-above (states entry)
+  "Return the pull request of the layer right above ENTRY in STATES, or nil.
+A layer without a pull request under one that has it was split off
+from that one."
+  (let ((above (cadr (member entry states))))
+    (and above
+         (eq (plist-get (cdr above) :state) 'pull-request)
+         (plist-get (cdr above) :number))))
+
+(defun shipit-stacked-preview--split-off-layer (states)
+  "Return the entry of STATES of a layer split off below a pull request, or nil."
+  (seq-find (lambda (entry)
+              (and (eq (plist-get (cdr entry) :state) 'no-branch)
+                   (shipit-stacked-preview--number-above states entry)))
+            states))
+
+(defun shipit-stacked-preview--branch-step (states)
+  "Return the words for giving the layers in STATES their branches."
+  (if-let* ((split (shipit-stacked-preview--split-off-layer states)))
+      (format "press %s to give the new layer %s a branch"
+              (shipit-stacked-preview--key "b c")
+              (shipit-stacked-preview--branch-words (car split)))
+    (format "check the base and the divisions, then press %s to give each layer a branch"
+            (shipit-stacked-preview--key "b c"))))
+
+(defun shipit-stacked-preview--describe-step (states entry)
+  "Return the words for opening the pull request of the layer of ENTRY.
+STATES are the states of all layers.  For a layer split off below a
+pull request, the words also say what shipit does after the submit."
+  (let ((number (shipit-stacked-preview--number-above states entry)))
+    (concat
+     (format "press %s on %s to describe it and open its pull request"
+             (shipit-stacked-preview--key "RET")
+             (shipit-stacked-preview--branch-words (car entry)))
+     (when number
+       (format "; shipit then makes it the base of #%s%s" number
+               (if (shipit-pr--stack-supported-p shipit-stacked-preview--repo)
+                   " and builds the stack again"
+                 ""))))))
+
 (defun shipit-stacked-preview--next-step (states)
   "Return the words for the next step to make the stack, or nil if none.
 STATES maps the branch of each layer to its state, bottom first.  The
 steps go in the order a stack is made: the branches, the push, then a
 pull request for each layer from the bottom up.  A layer whose copy on
 the remote differs from this one needs the push too, or its pull
-request would show the commits of the old copy."
+request would show the commits of the old copy.  When every layer has
+its pull request, a stack that shipit could not build in the order of
+the layers is the last step."
   (let ((open (shipit-stacked-preview--open-layers states)))
     (cond
-     ((null open) nil)
+     ((null open)
+      (when shipit-stacked-preview--stack-to-rebuild
+        (format "press %s to build the stack again in the order of the layers"
+                (shipit-stacked-preview--key "R"))))
      ((shipit-stacked-preview--some-state-p states '(no-branch))
-      (format "check the base and the divisions, then press %s to give each layer a branch"
-              (shipit-stacked-preview--key "b c")))
+      (shipit-stacked-preview--branch-step states))
      ((shipit-stacked-preview--some-state-p states '(not-pushed drifted))
       (format "press %s to push the layers" (shipit-stacked-preview--key "P")))
-     (t
-      (format "press %s on %s to describe it and open its pull request"
-              (shipit-stacked-preview--key "RET")
-              (propertize (car (car open)) 'font-lock-face 'magit-branch-local))))))
+     (t (shipit-stacked-preview--describe-step states (car open))))))
 
 (defun shipit-stacked-preview--insert-next-step (states)
   "Insert the line that names the next step to make the stack, if one is left.
@@ -1130,7 +1216,7 @@ a gap are not part of it yet."
   "Add each of NUMBERS that EXISTING does not already hold, bottom first.
 Counts what the remote accepted, not what was attempted: a refused
 add reported as added hid a wrong payload for as long as this
-existed."
+existed.  Return non-nil when the remote accepted each."
   (let ((stack (car existing))
         (added 0)
         (failed nil))
@@ -1144,18 +1230,130 @@ existed."
                  stack added
                  (mapconcat #'number-to-string (nreverse failed) ", "))
       (message "Added %d pull request%s to stack %s"
-               added (if (= added 1) "" "s") stack))))
+               added (if (= added 1) "" "s") stack))
+    (null failed)))
 
-(defun shipit-stacked-preview--group (numbers)
+(defun shipit-stacked-preview--create-stack (numbers)
+  "Make NUMBERS, bottom first, a stack on the remote; non-nil when it took."
+  (when (shipit-stacked-preview--backend-call :create-stack numbers)
+    (message "Grouped %d pull requests into a stack" (length numbers))
+    t))
+
+(defun shipit-stacked-preview--group (numbers existing)
   "Put NUMBERS, bottom first, into one stack on the remote.
-When the bottom pull request is in a stack already the ones it does not
-hold are added to it, so submitting a further layer extends that stack
-rather than making a second one beside it."
-  (let ((existing (shipit-stacked-preview--stack-of (car numbers))))
-    (if existing
-        (shipit-stacked-preview--add-missing existing numbers)
-      (shipit-stacked-preview--backend-call :create-stack numbers)
-      (message "Grouped %d pull requests into a stack" (length numbers)))))
+EXISTING is the stack that holds the lower of them already, as (STACK
+. MEMBERS), or nil.  The ones it does not hold are added to it, so
+submitting a further layer extends that stack rather than making a
+second one beside it.  Return non-nil when the remote took all."
+  (if existing
+      (shipit-stacked-preview--add-missing existing numbers)
+    (shipit-stacked-preview--create-stack numbers)))
+
+(defun shipit-stacked-preview--wanted-bases ()
+  "Return (NUMBER . BASE) for each layer with a pull request, bottom first.
+BASE is the branch the pull request must be raised against: the branch
+of the layer below, or the branch the stack sits on.  Stops at the
+first layer without a pull request, as the stack does."
+  (let ((below (shipit-stacked-preview--base-name shipit-stacked-preview--base))
+        (pairs nil))
+    (catch 'gap
+      (dolist (branch (shipit-stacked-preview--branch-names
+                       (shipit-stacked-preview--current-layers)))
+        (let ((number (shipit-stacked-preview--pr-number branch)))
+          (unless number (throw 'gap nil))
+          (push (cons number below) pairs)
+          (setq below branch))))
+    (nreverse pairs)))
+
+(defun shipit-stacked-preview--pr-base (number)
+  "Return the branch that pull request NUMBER is raised against on the remote."
+  (let ((pr (shipit-stacked-preview--backend-call :fetch-pr number)))
+    (cdr (assq 'ref (cdr (assq 'base pr))))))
+
+(defun shipit-stacked-preview--wrong-bases ()
+  "Return the (NUMBER . BASE) pairs whose pull request has another base.
+After a split, the pull request above the new layer is still raised
+against the layer that was below it."
+  (seq-remove (lambda (pair)
+                (equal (cdr pair) (shipit-stacked-preview--pr-base (car pair))))
+              (shipit-stacked-preview--wanted-bases)))
+
+(defun shipit-stacked-preview--set-base (pair)
+  "Make the cdr of PAIR the base of pull request (car PAIR).
+Return non-nil when the remote took it, and say so when it did not."
+  (or (shipit-stacked-preview--backend-call
+       :update-pr (car pair) `((base . ,(cdr pair))))
+      (progn (message "shipit: could not make %s the base of #%s"
+                      (cdr pair) (car pair))
+             nil)))
+
+(defun shipit-stacked-preview--set-bases (pairs)
+  "Give each pull request in PAIRS its base, and stop at the first refusal.
+Return non-nil when the remote took all."
+  (seq-every-p #'shipit-stacked-preview--set-base pairs))
+
+(defun shipit-stacked-preview--stack-holding (numbers)
+  "Return the stack on the remote that holds one of NUMBERS, or nil.
+The answer is (STACK . MEMBERS)."
+  (seq-some #'shipit-stacked-preview--stack-of numbers))
+
+(defun shipit-stacked-preview--extends-p (members numbers)
+  "Return non-nil when NUMBERS are MEMBERS with more pull requests on top."
+  (equal members (seq-take numbers (length members))))
+
+(defun shipit-stacked-preview--members-above (members numbers)
+  "Return the MEMBERS of a stack above the highest of NUMBERS in it.
+They are the pull requests of layers that this buffer does not show,
+as when it was opened on a branch lower down the stack."
+  (let ((top (seq-find (lambda (member) (memq member numbers))
+                       (reverse members))))
+    (and top (cdr (memq top members)))))
+
+(defun shipit-stacked-preview--rebuild (existing numbers wrong)
+  "Dissolve the stack EXISTING, set the bases in WRONG, and stack NUMBERS.
+GitHub refuses to change the base of a pull request in a stack, and it
+adds pull requests only on top, so a stack that must change in the
+middle goes first.  When a base is refused, the old stack is made
+again, since its bases still form a chain.  Return non-nil when
+NUMBERS are a stack in the end."
+  (cond
+   ((not (shipit-stacked-preview--backend-call :dissolve-stack (car existing)))
+    (message "shipit: could not dissolve stack %s -- press R to try again"
+             (car existing))
+    nil)
+   ((not (shipit-stacked-preview--set-bases wrong))
+    (if (shipit-stacked-preview--create-stack (cdr existing))
+        (message "shipit: the stack is as it was -- press R to try again")
+      (message "shipit: the pull requests have no stack now -- press R to try again"))
+    nil)
+   ((shipit-stacked-preview--create-stack numbers) t)
+   (t (message "shipit: could not build the stack again -- press R to try again")
+      nil)))
+
+(defun shipit-stacked-preview--restack-on-remote (numbers wrong)
+  "Make NUMBERS one stack on the remote, after setting the bases in WRONG.
+The pull requests of the stack there that sit above NUMBERS stay on
+top of them.  Return non-nil when that worked."
+  (let* ((existing (shipit-stacked-preview--stack-holding numbers))
+         (numbers (append numbers (shipit-stacked-preview--members-above
+                                   (cdr existing) numbers))))
+    (if (and existing
+             (or wrong (not (shipit-stacked-preview--extends-p
+                             (cdr existing) numbers))))
+        (shipit-stacked-preview--rebuild existing numbers wrong)
+      (and (shipit-stacked-preview--set-bases wrong)
+           (shipit-stacked-preview--group numbers existing)))))
+
+(defun shipit-stacked-preview--restack (numbers)
+  "Make the pull requests NUMBERS, bottom first, follow the layers.
+Each pull request gets the branch of the layer below as its base, and
+on a forge with stacks NUMBERS become one stack in this order.  When a
+step fails, the next step of the preview says to press R."
+  (let ((wrong (shipit-stacked-preview--wrong-bases)))
+    (setq shipit-stacked-preview--stack-to-rebuild
+          (not (if (shipit-pr--stack-supported-p shipit-stacked-preview--repo)
+                   (shipit-stacked-preview--restack-on-remote numbers wrong)
+                 (shipit-stacked-preview--set-bases wrong))))))
 
 (defun shipit-stacked-preview--group-submitted ()
   "Group the pull requests submitted so far, once there are two.
@@ -1164,20 +1362,21 @@ the chain but will not group them, so without this they stay unrelated
 to anyone reading them."
   (let ((numbers (shipit-stacked-preview--submitted-numbers)))
     (when (cdr numbers)
-      (shipit-stacked-preview--group numbers))))
+      (shipit-stacked-preview--restack numbers))))
 
 (defun shipit-stacked-preview-register ()
   "Group the pull requests made from this stack into a stack on the remote.
 This happens as each layer is submitted; the key is for saying it again
 after a failure, or for a stack whose pull requests were made
-elsewhere."
+elsewhere.  A stack in another order, as after a split, is built again
+in the order of the layers."
   (interactive)
   (shipit-stacked-preview--forget-layer-prs)
   (let ((numbers (shipit-stacked-preview--submitted-numbers)))
     (unless (cdr numbers)
       (user-error "A stack needs two pull requests, and %d %s been made"
                   (length numbers) (if (= (length numbers) 1) "has" "have")))
-    (shipit-stacked-preview--group numbers)
+    (shipit-stacked-preview--restack numbers)
     (shipit-stacked-preview--render)))
 
 (defun shipit-stacked-preview--fetch ()

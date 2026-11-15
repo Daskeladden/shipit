@@ -595,5 +595,271 @@ the words of the refusal, or nil when there was none."
                               (or (cdr answer) "")))
       (should-not (test-stack-menus--draft-buffer "work-parser")))))
 
+;;;; Splitting a layer that has a pull request
+
+(defun test-stack-menus--open-submitted-stack ()
+  "Open the pushed sandbox stack whose layers have pull requests in a stack.
+work-parser has #101 on main, work has #102 on work-parser, and the
+remote holds the two as one stack.  Returns the preview."
+  (let ((preview (test-stacked--open-pushed-stack)))
+    (test-stack-menus--give-pull-requests "work-parser" 101 "work" 102)
+    (setq shipit-sandbox-bases (list (cons 101 "main") (cons 102 "work-parser"))
+          shipit-sandbox-stack (list (cons 'number 7)
+                                     (cons 'entries (shipit-sandbox--entries '(101 102)))))
+    (test-stack-menus--press preview "g")
+    preview))
+
+(defun test-stack-menus--split-the-bottom-layer (preview)
+  "Press s on the first commit of work-parser in PREVIEW."
+  (test-stack-menus--press-on-line preview "parser: read the header" "s"))
+
+(defun test-stack-menus--press-on-layer (preview branch keys)
+  "Put point on the row of the layer BRANCH in PREVIEW, then press KEYS."
+  (set-window-buffer (selected-window) preview)
+  (with-current-buffer preview
+    (goto-char (or (shipit-stacked-preview--layer-position branch)
+                   (error "No row for %s" branch)))
+    (execute-kbd-macro (kbd keys))))
+
+(defun test-stack-menus--push-the-layers (preview)
+  "Push every layer of PREVIEW, as P does."
+  (with-current-buffer preview
+    (shipit-stacked-preview--push-through
+     (car (last (shipit-stacked-preview--current-layers))) nil)
+    (shipit-stacked-preview-refresh)))
+
+(defun test-stack-menus--submit-layer (preview branch)
+  "Press RET on the layer BRANCH of PREVIEW, then C-c C-c in its description."
+  (test-stack-menus--press-on-layer preview branch "RET")
+  (let ((draft (or (test-stack-menus--draft-buffer branch)
+                   (error "No description opened for %s" branch))))
+    (set-window-buffer (selected-window) draft)
+    (with-current-buffer draft
+      (execute-kbd-macro (kbd "C-c C-c")))))
+
+(defun test-stack-menus--has-row-p (preview branch)
+  "Return non-nil when PREVIEW draws a row for the layer BRANCH."
+  (with-current-buffer preview
+    (shipit-stacked-preview--layer-position branch)))
+
+(defun test-stack-menus--remote-stack ()
+  "Return the pull requests of the stack on the remote, bottom first."
+  (mapcar (lambda (entry) (cdr (assq 'number entry)))
+          (cdr (assq 'entries shipit-sandbox-stack))))
+
+(defun test-stack-menus--remote-base (number)
+  "Return the base of pull request NUMBER on the remote."
+  (cdr (assq number shipit-sandbox-bases)))
+
+(defun test-stack-menus--messages-during (fn)
+  "Call FN and return what it wrote to the *Messages* buffer."
+  (let ((start (with-current-buffer (messages-buffer) (point-max))))
+    (funcall fn)
+    (with-current-buffer (messages-buffer)
+      (buffer-substring-no-properties start (point-max)))))
+
+(defun test-stack-menus--split-and-push (preview)
+  "Split work-parser in PREVIEW, give the new layer its branch and push it."
+  (test-stack-menus--split-the-bottom-layer preview)
+  (test-stack-menus--press preview "b c")
+  (test-stack-menus--push-the-layers preview))
+
+(defun test-stack-menus--backend-without-stacks (original)
+  "Return the backend that ORIGINAL makes, without any stack operation."
+  (let ((backend (copy-sequence (funcall original))))
+    (dolist (key '(:fetch-stack :fetch-stack-statuses :create-stack
+                                :add-to-stack :dissolve-stack))
+      (while (plist-member backend key)
+        (cl-remf backend key)))
+    backend))
+
+(ert-deftest test-shipit-stack-menus-split-names-the-new-layer-apart ()
+  ;; GIVEN a stack whose layers have pull requests: work-parser #101
+  ;;   and work #102
+  ;; WHEN s is pressed on "parser: read the header", the first commit of
+  ;;   work-parser
+  ;; THEN the new lower layer is named work-parser-2 and holds 1 commit
+  ;; AND work-parser holds 1 commit and still shows #101
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-submitted-stack)))
+      (test-stack-menus--split-the-bottom-layer preview)
+      (should (test-stack-menus--has-row-p preview "work-parser-2"))
+      (should (string-match-p "work-parser-2 +1 commit\\b"
+                              (test-stack-menus--row preview "work-parser-2")))
+      (let ((row (test-stack-menus--row preview "work-parser")))
+        (should (string-match-p "work-parser +1 commit\\b" row))
+        (should (string-match-p "#101" row))))))
+
+(ert-deftest test-shipit-stack-menus-split-guide-asks-for-the-branch ()
+  ;; GIVEN a stack whose layers have pull requests #101 and #102
+  ;; WHEN s is pressed on the first commit of work-parser
+  ;; THEN the line under Base: says to press b c to give the new layer
+  ;;   work-parser-2 a branch
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-submitted-stack)))
+      (test-stack-menus--split-the-bottom-layer preview)
+      (should (string-match-p
+               "^  Next: +press b c to give the new layer work-parser-2 a branch"
+               (test-stack-menus--line-under-base preview))))))
+
+(ert-deftest test-shipit-stack-menus-split-changes-nothing-before-the-submit ()
+  ;; GIVEN a stack whose layers have pull requests #101 and #102, in one
+  ;;   stack on the remote
+  ;; AND work-parser split after its first commit, with the new layer's
+  ;;   branch made and pushed
+  ;; THEN the line under Base: says to press RET on work-parser-2 to
+  ;;   describe it and open its pull request, and that shipit then makes
+  ;;   it the base of #101 and builds the stack again
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-submitted-stack)))
+      (test-stack-menus--split-and-push preview)
+      (should (string-match-p
+               (concat "^  Next: +press RET on work-parser-2 to describe it and open"
+                       " its pull request; shipit then makes it the base of #101"
+                       " and builds the stack again")
+               (test-stack-menus--line-under-base preview)))
+      ;; WHEN RET is pressed on work-parser-2 and its description opens
+      (test-stack-menus--press-on-layer preview "work-parser-2" "RET")
+      ;; THEN the stack on the remote still holds #101 and #102
+      ;; AND #101 still has main as its base
+      (unwind-protect
+          (progn
+            (should (test-stack-menus--draft-buffer "work-parser-2"))
+            (should (equal '(101 102) (test-stack-menus--remote-stack)))
+            (should (equal "main" (test-stack-menus--remote-base 101))))
+        (when-let* ((draft (test-stack-menus--draft-buffer "work-parser-2")))
+          (kill-buffer draft))))))
+
+(ert-deftest test-shipit-stack-menus-split-submit-builds-the-stack-again ()
+  ;; GIVEN a stack whose layers have pull requests #101 and #102, in one
+  ;;   stack on the remote
+  ;; AND work-parser split after its first commit, with the new layer's
+  ;;   branch made and pushed
+  ;; WHEN the new layer is submitted with RET and C-c C-c
+  ;; THEN its pull request #100 has main as its base
+  ;; AND #101 has work-parser-2 as its base
+  ;; AND the stack on the remote holds #100, #101 and #102, bottom first
+  ;; AND the preview shows no line that names a next step
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-submitted-stack)))
+      (test-stack-menus--split-and-push preview)
+      (test-stack-menus--submit-layer preview "work-parser-2")
+      (test-stack-menus--press preview "g")
+      (should (equal "main" (test-stack-menus--remote-base 100)))
+      (should (equal "work-parser-2" (test-stack-menus--remote-base 101)))
+      (should (equal '(100 101 102) (test-stack-menus--remote-stack)))
+      (should-not (test-stack-menus--next-step-shown-p preview)))))
+
+(ert-deftest test-shipit-stack-menus-split-failed-base-change-keeps-the-old-stack ()
+  ;; GIVEN a stack whose layers have pull requests #101 and #102, in one
+  ;;   stack on the remote
+  ;; AND work-parser split after its first commit, with the new layer's
+  ;;   branch made and pushed
+  ;; AND a remote that refuses every change of a base
+  ;; WHEN the new layer is submitted with RET and C-c C-c
+  ;; THEN shipit says that it could not make work-parser-2 the base of #101
+  ;; AND the stack on the remote holds #101 and #102 again
+  ;; AND #101 still has main as its base
+  ;; AND the line under Base: says to press R to build the stack again
+  ;;   in the order of the layers
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-submitted-stack)))
+      (test-stack-menus--split-and-push preview)
+      (setq shipit-sandbox-refuse-base-change t)
+      (let ((said (test-stack-menus--messages-during
+                   (lambda () (test-stack-menus--submit-layer preview "work-parser-2")))))
+        (should (string-match-p "could not make work-parser-2 the base of #101" said)))
+      (test-stack-menus--press preview "g")
+      (should (equal '(101 102) (test-stack-menus--remote-stack)))
+      (should (equal "main" (test-stack-menus--remote-base 101)))
+      (should (string-match-p
+               "^  Next: +press R to build the stack again in the order of the layers"
+               (test-stack-menus--line-under-base preview))))))
+
+(ert-deftest test-shipit-stack-menus-split-r-builds-the-stack-again ()
+  ;; GIVEN a split whose new layer has pull request #100, while the stack
+  ;;   on the remote still holds only #101 and #102, as after a refused
+  ;;   change of a base
+  ;; WHEN the remote accepts again and R is pressed
+  ;; THEN #101 has work-parser-2 as its base
+  ;; AND the stack on the remote holds #100, #101 and #102, bottom first
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-submitted-stack)))
+      (test-stack-menus--split-and-push preview)
+      (setq shipit-sandbox-refuse-base-change t)
+      (test-stack-menus--submit-layer preview "work-parser-2")
+      (setq shipit-sandbox-refuse-base-change nil)
+      (test-stack-menus--press preview "g")
+      (test-stack-menus--press preview "R")
+      (should (equal "work-parser-2" (test-stack-menus--remote-base 101)))
+      (should (equal '(100 101 102) (test-stack-menus--remote-stack))))))
+
+(ert-deftest test-shipit-stack-menus-split-on-a-forge-without-stacks ()
+  ;; GIVEN a forge that has no stacks, and layers with pull requests
+  ;;   #101 and #102
+  ;; AND work-parser split after its first commit, with the new layer's
+  ;;   branch made and pushed
+  ;; WHEN the new layer is submitted with RET and C-c C-c
+  ;; THEN #101 has work-parser-2 as its base
+  ;; AND the preview shows no line that names a next step
+  (shipit-sandbox-with-repo
+    (let ((original (symbol-function 'shipit-sandbox-backend)))
+      (cl-letf (((symbol-function 'shipit-sandbox-backend)
+                 (lambda () (test-stack-menus--backend-without-stacks original))))
+        (let ((preview (test-stack-menus--open-submitted-stack)))
+          (setq shipit-sandbox-stack nil)
+          (test-stack-menus--split-and-push preview)
+          (test-stack-menus--submit-layer preview "work-parser-2")
+          (test-stack-menus--press preview "g")
+          (should (equal "work-parser-2" (test-stack-menus--remote-base 101)))
+          (should-not (test-stack-menus--next-step-shown-p preview)))))))
+
+(defun test-stack-menus--open-stack-under-another-layer ()
+  "Open the preview of work, in a stack on the remote that goes on above it.
+The branch work-more, one commit over work, has #103 on work, and the
+remote holds #101, #102 and #103 as one stack.  The preview shows only
+work-parser and work.  Returns the preview."
+  (shipit-sandbox--git "checkout" "-q" "-b" "work-more")
+  (shipit-sandbox--commit "receipt: print the total")
+  (shipit-sandbox--git "push" "-q" "origin" "work-more")
+  (shipit-sandbox--git "checkout" "-q" "work")
+  (let ((preview (test-stacked--open-pushed-stack)))
+    (test-stack-menus--give-pull-requests
+     "work-parser" 101 "work" 102 "work-more" 103)
+    (setq shipit-sandbox-bases (list (cons 101 "main") (cons 102 "work-parser")
+                                     (cons 103 "work"))
+          shipit-sandbox-stack (list (cons 'number 7)
+                                     (cons 'entries
+                                           (shipit-sandbox--entries '(101 102 103)))))
+    (test-stack-menus--press preview "g")
+    preview))
+
+(ert-deftest test-shipit-stack-menus-split-keeps-the-pull-requests-above ()
+  ;; GIVEN a stack on the remote of #101 work-parser, #102 work and #103
+  ;;   work-more, a branch on top of work
+  ;; AND the preview of work, which shows work-parser and work only
+  ;; AND work-parser split after its first commit, with the new layer's
+  ;;   branch made and pushed
+  ;; WHEN the new layer is submitted with RET and C-c C-c
+  ;; THEN the stack on the remote holds #100, #101, #102 and #103, bottom
+  ;;   first
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-stack-under-another-layer)))
+      (should-not (test-stack-menus--has-row-p preview "work-more"))
+      (test-stack-menus--split-and-push preview)
+      (test-stack-menus--submit-layer preview "work-parser-2")
+      (should (equal '(100 101 102 103) (test-stack-menus--remote-stack))))))
+
+(ert-deftest test-shipit-stack-menus-register-keeps-the-pull-requests-above ()
+  ;; GIVEN a stack on the remote of #101 work-parser, #102 work and #103
+  ;;   work-more, a branch on top of work
+  ;; AND the preview of work, which shows work-parser and work only
+  ;; WHEN R is pressed
+  ;; THEN the stack on the remote still holds #101, #102 and #103
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-stack-under-another-layer)))
+      (test-stack-menus--press preview "R")
+      (should (equal '(101 102 103) (test-stack-menus--remote-stack))))))
+
 (provide 'test-shipit-stack-menus)
 ;;; test-shipit-stack-menus.el ends here

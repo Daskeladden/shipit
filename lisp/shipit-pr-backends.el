@@ -160,6 +160,8 @@
 ;;                              (number . statuses), statuses an alist
 ;;                              with `checks' and `review' keys
 ;;   :browse-stack-url        — (config number) → the stack's web URL
+;;   :dissolve-stack          — (config stack) → non-nil when the remote
+;;                              took the pull requests out of STACK
 ;;   :fetch-pr-for-branch     — (config branch) → the number of the open
 ;;                              pull request whose head is BRANCH, or nil
 ;;   :fetch-merged-pr-for-branch — (config branch) → alist of `number'

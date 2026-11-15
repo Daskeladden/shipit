@@ -834,9 +834,12 @@ METHOD defaults to POST but can be PATCH, PUT, etc."
        (shipit--debug-log "API ERROR: %s" error-msg)
        (funcall callback nil)))))
 
-(defun shipit--api-request-post (endpoint data &optional method)
-  "Make a GitHub API POST request to ENDPOINT with DATA payload.
-METHOD defaults to POST but can be PATCH, PUT, etc."
+(defun shipit--api-request-post-response (endpoint data &optional method)
+  "Send DATA to the GitHub API at ENDPOINT, and return (DATA . STATUS).
+METHOD defaults to POST but can be PATCH, PUT, etc.  Return nil when
+GitHub refuses or cannot be reached, and say why in a message.  An
+answer without a body, as 204 No Content is, has nil as DATA, so only
+STATUS tells that it succeeded."
   (unless (shipit--github-token)
     (error "GitHub token not found.  Set `shipit-github-token' or add github.com to auth-source"))
   (let* ((url (concat shipit-api-url endpoint))
@@ -852,7 +855,7 @@ METHOD defaults to POST but can be PATCH, PUT, etc."
                (response-data (car result))
                (status-code (cdr result)))
           (if (and status-code (>= status-code 200) (< status-code 300))
-              response-data
+              result
             (progn
               (message "API error: %s"
                        (shipit--format-api-error status-code response-data))
@@ -863,6 +866,12 @@ METHOD defaults to POST but can be PATCH, PUT, etc."
        (message "API error: %s" (error-message-string err))
        (shipit--debug-log "API ERROR: %s - %s" url (error-message-string err))
        nil))))
+
+(defun shipit--api-request-post (endpoint data &optional method)
+  "Make a GitHub API POST request to ENDPOINT with DATA payload.
+METHOD defaults to POST but can be PATCH, PUT, etc.  Return the data of
+the answer, or nil when GitHub refused."
+  (car (shipit--api-request-post-response endpoint data method)))
 
 ;; GraphQL API functions
 (defun shipit--graphql-request (query &optional variables callback)

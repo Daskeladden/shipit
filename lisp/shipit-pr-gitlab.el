@@ -495,6 +495,7 @@ Translates common shipit field names to GitLab equivalents."
           ('state (push `(state_event . ,(if (string= val "closed") "close" "reopen"))
                         result))
           ('title (push `(title . ,val) result))
+          ('base (push `(target_branch . ,val) result))
           (_ (push pair result)))))
     (nreverse result)))
 

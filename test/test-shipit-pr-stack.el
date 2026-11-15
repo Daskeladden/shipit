@@ -618,5 +618,35 @@ text there read as not working."
        (shipit-buffer-copy-dwim)
        (should (equal "https://forge.example/pull/101" (current-kill 0)))))))
 
+(ert-deftest test-shipit-stack-github-dissolves-a-stack ()
+  ;; GIVEN the github backend, and GitHub answering 204 No Content, as
+  ;;   it does when the last pull request leaves a stack
+  ;; WHEN stack 21 is dissolved
+  ;; THEN the request goes to the unstack address of that stack
+  ;; AND the answer is non-nil, although the response has no body
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'shipit--github-token) (lambda () "token"))
+              ((symbol-function 'shipit--url-retrieve-sync)
+               (lambda (url method &rest _)
+                 (setq sent (cons method url))
+                 (cons nil 204))))
+      (should (funcall (plist-get (cdr (assq 'github shipit-pr-backends))
+                                  :dissolve-stack)
+                       '(:repo "o/r") 21))
+      (should (equal "POST" (car sent)))
+      (should (string-suffix-p "/repos/o/r/stacks/21/unstack" (cdr sent))))))
+
+(ert-deftest test-shipit-stack-github-dissolve-refused-answers-nil ()
+  ;; GIVEN the github backend, and GitHub refusing with 409, as when
+  ;;   another request changes the stack at the same time
+  ;; WHEN stack 21 is dissolved
+  ;; THEN the answer is nil
+  (cl-letf (((symbol-function 'shipit--github-token) (lambda () "token"))
+            ((symbol-function 'shipit--url-retrieve-sync)
+             (lambda (&rest _) (cons '((message . "Conflict")) 409))))
+    (should-not (funcall (plist-get (cdr (assq 'github shipit-pr-backends))
+                                    :dissolve-stack)
+                         '(:repo "o/r") 21))))
+
 (provide 'test-shipit-pr-stack)
 ;;; test-shipit-pr-stack.el ends here

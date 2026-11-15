@@ -2452,6 +2452,17 @@ part of one."
                        number stack repo)
     (shipit--api-request-post endpoint data)))
 
+(defun shipit-pr-github--dissolve-stack (config stack)
+  "Take the pull requests out of STACK in CONFIG\='s repository.
+GitHub then dissolves the stack.  It refuses to change the base of a
+pull request in a stack, and it adds pull requests only on top, so a
+stack that must change in the middle goes first.  Return non-nil when
+GitHub took it; its answer then has no body."
+  (let ((endpoint (format "/repos/%s/stacks/%s/unstack"
+                          (plist-get config :repo) stack)))
+    (shipit--debug-log "GitHub PR backend: dissolving stack %s" stack)
+    (and (shipit--api-request-post-response endpoint (make-hash-table)) t)))
+
 (declare-function shipit-get-pr-for-branch "shipit-http" (branch &optional repo))
 (declare-function shipit--graphql-query "shipit-http" (query variables))
 
@@ -2583,6 +2594,7 @@ data should pass it: this runs on every render of the section."
        :browse-stack-url #'shipit-pr-github--browse-stack-url
        :create-stack #'shipit-pr-github--create-stack
        :add-to-stack #'shipit-pr-github--add-to-stack
+       :dissolve-stack #'shipit-pr-github--dissolve-stack
        :fetch-reviews #'shipit-pr-github--fetch-reviews
        :submit-review #'shipit-pr-github--submit-review
        :fetch-review-decision #'shipit-pr-github--fetch-review-decision

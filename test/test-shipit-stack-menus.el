@@ -206,6 +206,41 @@ can no longer tell that the layer merged."
         (should (string-match-p "[Aa]bort" menu))
         (should-not (string-match-p "onto main" menu))))))
 
+(defun test-stack-menus--branch-that-clashes-with (name subject)
+  "Make the branch NAME over main, which adds the file of SUBJECT itself.
+A rebase onto it stops on that file at the commit of SUBJECT."
+  (shipit-sandbox--git "checkout" "-q" "-b" name "main")
+  (with-temp-file (shipit-sandbox--file-of subject) (insert "the base's own version"))
+  (shipit-sandbox--git "add" (shipit-sandbox--file-of subject))
+  (shipit-sandbox--git "commit" "-q" "-m" "base: add a file of its own")
+  (shipit-sandbox--git "checkout" "-q" "work"))
+
+(ert-deftest test-shipit-stack-menus-aborted-rebase-keeps-the-layers ()
+  ;; GIVEN the preview of a stack of work-parser and work, 2 commits
+  ;;   each, every layer with its branch
+  ;; AND the base set to release, which adds its own copy of the file of
+  ;;   "writer: emit the header"
+  ;; WHEN r b is pressed, the rebase stops on that file after the two
+  ;;   parser commits, and r a aborts it
+  ;; THEN the preview shows work-parser and work again, 2 commits each
+  (shipit-sandbox-with-repo
+    (let ((preview (get-buffer (progn (shipit-stacked-preview)
+                                      "*shipit-stacked-preview: work*"))))
+      (test-stack-menus--press preview "b c")
+      (test-stack-menus--branch-that-clashes-with "release" "writer: emit the header")
+      (test-stack-menus--press-on-line preview test-stack-menus--base-line
+                                       "RET release RET")
+      (should (= 2 (test-stack-menus--commits-in preview "work-parser")))
+      (test-stack-menus--press preview "r b")
+      (test-stack-menus--wait-for-git)
+      (should (test-stack-menus--rebase-stopped-p))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+        (test-stack-menus--press preview "r a"))
+      (test-stack-menus--wait-for-git)
+      (should-not (test-stack-menus--rebase-stopped-p))
+      (should (= 2 (test-stack-menus--commits-in preview "work-parser")))
+      (should (= 2 (test-stack-menus--commits-in preview "work"))))))
+
 ;;;; The branch menu
 
 (ert-deftest test-shipit-stack-menus-branch-menu-creates-the-layer-branches ()

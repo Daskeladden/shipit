@@ -1862,8 +1862,12 @@ A rebase gives every commit a new id, and the divisions are ids."
 (defun shipit-stacked-preview--follow-the-rebase ()
   "Divide the commits again when a rebase gave them new ids.
 The layer branches moved with the rebase, so they say where the
-divisions are; without branches the subjects propose them again."
-  (when (shipit-stacked-preview--divisions-stale-p)
+divisions are; without branches the subjects propose them again.
+Not while a rebase is stopped: HEAD then holds only the commits done
+so far, under new ids, and an abort brings back the commits that the
+divisions name."
+  (when (and (not (shipit-stacked-preview--rebase-in-progress-p))
+             (shipit-stacked-preview--divisions-stale-p))
     (let ((existing (shipit-stacked-preview--from-existing-stack)))
       (setq shipit-stacked-preview--boundaries
             (or (car existing)

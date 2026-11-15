@@ -2578,8 +2578,22 @@ Checks reviews, status checks, and mergeable state from PR-DATA."
       (push "Branch is behind base — update required" reasons))
     (or (nreverse reasons) (list "Merge is blocked"))))
 
+(defun shipit--merge-out-of-draft ()
+  "Offer to mark the draft of this buffer ready for review, so it can merge.
+The forge refuses to merge a draft.  Return non-nil when the pull
+request is ready for review now; the buffer then shows it so."
+  (let ((number (bound-and-true-p shipit-buffer-pr-number)))
+    (if (yes-or-no-p (format "PR #%d is a draft.  Mark it ready for review and merge it? "
+                             number))
+        (progn
+          (shipit--set-pr-draft number (bound-and-true-p shipit-buffer-repo) nil)
+          t)
+      (message "PR #%d stays a draft" number)
+      nil)))
+
 (transient-define-prefix shipit-merge ()
-  "Merge the current pull request."
+  "Merge the current pull request.
+A draft is marked ready for review first, when the user says so."
   [:class transient-column
    :description
    (lambda ()
@@ -2631,8 +2645,10 @@ Checks reviews, status checks, and mergeable state from PR-DATA."
   (interactive)
   (unless (derived-mode-p 'shipit-mode)
     (user-error "Not in a shipit buffer"))
-  (shipit--merge-guard (bound-and-true-p shipit-buffer-pr-data))
-  (transient-setup 'shipit-merge))
+  (when (or (not (shipit--pr-draft-p (bound-and-true-p shipit-buffer-pr-data)))
+            (shipit--merge-out-of-draft))
+    (shipit--merge-guard (bound-and-true-p shipit-buffer-pr-data))
+    (transient-setup 'shipit-merge)))
 
 (provide 'shipit-pr-actions)
 ;;; shipit-pr-actions.el ends here

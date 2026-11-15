@@ -507,5 +507,81 @@ Then wait until shipit says how the merge ended, five seconds at most."
       (should (equal "squash" (cdr (assq 'merge_method
                                          (test-merge-async--merge-request))))))))
 
+;;; Merging a draft
+
+(defvar test-merge-draft--ready nil
+  "Non-nil once GitHub marked the draft of a scenario ready for review.")
+
+(defun test-merge-draft--pull-request ()
+  "The pull request 12 of o/r, a draft until `test-merge-draft--ready'."
+  (let ((ready (test-merge-async--pull-request)))
+    (lambda (sent)
+      (append (unless test-merge-draft--ready
+                '((draft . t) (mergeable_state . "draft")))
+              (funcall ready sent)))))
+
+(defun test-merge-draft--graphql (sent)
+  "GitHub's answer to the GraphQL request SENT, which can mark #12 ready."
+  (cond ((string-match-p "markPullRequestReadyForReview" sent)
+         (setq test-merge-draft--ready t)
+         '((data (markPullRequestReadyForReview (pullRequest (isDraft . :json-false))))))
+        ((string-match-p "GetPullRequestId" sent)
+         '((data (repository (pullRequest (id . "PR_12"))))))
+        (t (funcall (test-page-views--graphql '((12 :title "Brew the coffee"))) sent))))
+
+(defun test-merge-draft--answers ()
+  "GitHub's answers about the draft #12, which it merges once asked."
+  (append (test-merge-async--merge-answers "merged" "Pull request was merged.")
+          (list (list "/repos/o/r/pulls/12\\'" 200 (test-merge-draft--pull-request))
+                (list "/graphql\\'" 200 #'test-merge-draft--graphql))))
+
+(defun test-merge-draft--press (page keys answer)
+  "Press KEYS on PAGE, give ANSWER to each question, and return the questions.
+The questions come oldest first.  Then wait until shipit says how a
+merge ended, five seconds at most."
+  (let ((questions nil)
+        (start (with-current-buffer (messages-buffer) (point-max))))
+    (with-current-buffer page
+      (set-window-buffer (selected-window) page)
+      (cl-letf (((symbol-function 'yes-or-no-p)
+                 (lambda (question) (push question questions) answer)))
+        (execute-kbd-macro (kbd keys))))
+    (let ((deadline (+ (float-time) 5)))
+      (while (and answer
+                  (not (test-merge-async--said-since start "#12 \\(merged\\|was added\\|failed\\)"))
+                  (< (float-time) deadline))
+        (accept-process-output nil 0.05)))
+    (nreverse questions)))
+
+(ert-deftest test-merge-draft-marks-ready-then-merges ()
+  ;; GIVEN the page of pull request #12, a draft
+  ;; WHEN M-m is pressed
+  ;; THEN shipit asks whether to mark #12 ready for review and merge it
+  ;; WHEN that is answered with yes, s is pressed, the merge question is
+  ;;   answered with yes, and GitHub merges
+  ;; THEN #12 was marked ready for review on GitHub
+  ;; AND shipit says "PR #12 merged via squash"
+  (let ((test-merge-draft--ready nil))
+    (test-merge-async--on-github (test-merge-draft--answers)
+      (let* ((page (test-page-views--open-pr 12))
+             (questions (test-merge-draft--press page "M-m s" t)))
+        (should (string-match-p "PR #12 is a draft\\..*ready for review.*merge"
+                                (car questions)))
+        (should test-merge-draft--ready)
+        (should (test-merge-async--last-said "PR #12 merged via squash"))))))
+
+(ert-deftest test-merge-draft-stays-a-draft-on-no ()
+  ;; GIVEN the page of pull request #12, a draft
+  ;; WHEN M-m is pressed and the question is answered with no
+  ;; THEN #12 stays a draft on GitHub, and GitHub is not asked to merge it
+  ;; AND shipit says "PR #12 stays a draft"
+  (let ((test-merge-draft--ready nil))
+    (test-merge-async--on-github (test-merge-draft--answers)
+      (let ((page (test-page-views--open-pr 12)))
+        (test-merge-draft--press page "M-m" nil)
+        (should-not test-merge-draft--ready)
+        (should-not (test-merge-async--merge-request))
+        (should (test-merge-async--last-said "PR #12 stays a draft"))))))
+
 (provide 'test-shipit-merge)
 ;;; test-shipit-merge.el ends here

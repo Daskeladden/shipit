@@ -24,7 +24,10 @@
 ;;   :fetch-pr             — (config number) → PR alist
 ;;   :search               — (config args) → list of PR alists
 ;;   :create-pr            — (config title body base head draft) → PR alist
-;;   :merge-pr             — (config number method) → result
+;;   :merge-pr             — (config number method &optional sha) → merge
+;;                           result: alist of `status' ("merged",
+;;                           "enqueued", "pending" or "failed"),
+;;                           `message' and `id'; nil when refused
 ;;   :update-pr            — (config number data) → PR alist
 ;;   :fetch-reviews        — (config number) → list of review alists
 ;;   :submit-review        — (config number event body comments) → review alist
@@ -168,6 +171,8 @@
 ;;                              and `sha' of the merged pull request whose
 ;;                              head was BRANCH, `sha' being where BRANCH
 ;;                              stood when it merged; nil when none merged
+;;   :fetch-merge-result      — (config number id) → the merge result of
+;;                              the pending merge ID, as :merge-pr gives it
 
 ;;; Code:
 

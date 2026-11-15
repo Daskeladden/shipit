@@ -89,13 +89,33 @@ is created as a draft rather than ready for review."
                        repo (and draft t))
     (shipit--api-request-post endpoint data)))
 
-(defun shipit-pr-github--merge-pr (config number method)
-  "Merge PR NUMBER using CONFIG with merge METHOD."
+(defun shipit-pr-github--merge-result (answer)
+  "Return ANSWER of GitHub's asynchronous merge API as a merge result, or nil."
+  (when answer
+    (let ((details (cdr (assq 'details answer))))
+      `((status . ,(cdr (assq 'status answer)))
+        (message . ,(cdr (assq 'message details)))
+        (id . ,(cdr (assq 'uuid details)))))))
+
+(defun shipit-pr-github--merge-pr (config number method &optional sha)
+  "Ask GitHub to merge PR NUMBER of CONFIG with merge METHOD.
+SHA is the head commit the merge is for; GitHub cancels the merge when
+the branch moved on.  The asynchronous merge API is the one GitHub
+takes for a pull request in a stack, and it merges the open pull
+requests below it too.  A base branch with a merge queue gets the pull
+request queued.  Return the merge result, which is most often pending."
   (let* ((repo (plist-get config :repo))
-         (endpoint (format "/repos/%s/pulls/%s/merge" repo number))
-         (data `((merge_method . ,method))))
+         (endpoint (format "/repos/%s/pulls/%s/merge-async" repo number))
+         (data `((merge_method . ,method) ,@(when sha `((sha . ,sha))))))
     (shipit--debug-log "GitHub PR backend: merging PR #%s in %s via %s" number repo method)
-    (shipit--api-request-post endpoint data "PUT")))
+    (shipit-pr-github--merge-result
+     (car (shipit--api-request-post-response endpoint data "PUT")))))
+
+(defun shipit-pr-github--fetch-merge-result (config number id)
+  "Return how the merge ID of PR NUMBER of CONFIG stands, as a merge result."
+  (shipit-pr-github--merge-result
+   (shipit--api-request (format "/repos/%s/pulls/%s/merge-async/%s"
+                                (plist-get config :repo) number id))))
 
 (defvar shipit--merge-methods-cache (make-hash-table :test 'equal)
   "Session cache of allowed merge methods per repo.")
@@ -2585,6 +2605,7 @@ data should pass it: this runs on every render of the section."
        :search #'shipit-pr-github--search
        :create-pr #'shipit-pr-github--create-pr
        :merge-pr #'shipit-pr-github--merge-pr
+       :fetch-merge-result #'shipit-pr-github--fetch-merge-result
        :update-pr #'shipit-pr-github--update-pr
        :set-pr-draft #'shipit-pr-github--set-pr-draft
        :fetch-pr-for-branch #'shipit-pr-github--fetch-pr-for-branch

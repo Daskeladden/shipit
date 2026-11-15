@@ -2379,16 +2379,70 @@ Checks mergeable_state (normalized across backends at fetch time)."
     (or (and (stringp mergeable-state) (string= mergeable-state "clean"))
         (and (null mergeable-state) (eq mergeable t)))))
 
+(defconst shipit--merge-result-interval 1
+  "Seconds between two questions to the forge about a merge still pending.")
+
+(defconst shipit--merge-result-patience 60
+  "Seconds of asking the forge about a pending merge before shipit stops.")
+
 (defun shipit--merge-pr-execute (repo number method)
   "Merge PR NUMBER in REPO using METHOD.
-Dispatches to the backend :merge-pr operation and refreshes the buffer."
+Dispatches to the backend :merge-pr operation with the head commit the
+buffer shows, so that new commits in between stop the merge.  A merge
+that the forge runs in the background is followed until it ends.  The
+end is said, and the buffer is drawn again.  A refused merge leaves the
+forge's reason in the echo area."
   (let* ((resolved (shipit-pr--resolve-for-repo repo))
          (backend (car resolved))
          (config (cdr resolved))
-         (fn (plist-get backend :merge-pr)))
-    (funcall fn config number method)
-    (message "PR #%d merged via %s" number method)
-    (shipit-buffer-refresh)))
+         (sha (cdr (assq 'sha (cdr (assq 'head (bound-and-true-p shipit-buffer-pr-data))))))
+         (result (apply (plist-get backend :merge-pr) config number method
+                        (when sha (list sha)))))
+    (when result
+      (shipit--merge-follow (list :page (current-buffer) :backend backend
+                                  :config config :number number :method method)
+                            result 0))))
+
+(defun shipit--merge-follow (merge result waited)
+  "Say how MERGE ended, as RESULT gives it, or ask the forge again later.
+MERGE is a plist of the `:page' it was started from, the `:backend' and
+its `:config', and the `:number' and `:method' of the merge.  WAITED is
+the seconds spent on asking so far."
+  (if (equal (cdr (assq 'status result)) "pending")
+      (shipit--merge-ask-later merge (cdr (assq 'id result)) waited)
+    (shipit--merge-say-end merge result)
+    (shipit--merge-redraw (plist-get merge :page))))
+
+(defun shipit--merge-ask-later (merge id waited)
+  "Ask the forge again about the pending MERGE of ID, after WAITED seconds.
+MERGE is as `shipit--merge-follow' takes it."
+  (let ((fetch (or (plist-get (plist-get merge :backend) :fetch-merge-result)
+                   (error "The backend says the merge is pending, but has no :fetch-merge-result"))))
+    (if (>= waited shipit--merge-result-patience)
+        (message "Merge of PR #%d still pending after %d seconds; press g to see how it went"
+                 (plist-get merge :number) waited)
+      (run-at-time shipit--merge-result-interval nil
+                   (lambda ()
+                     (shipit--merge-follow
+                      merge
+                      (funcall fetch (plist-get merge :config) (plist-get merge :number) id)
+                      (+ waited shipit--merge-result-interval)))))))
+
+(defun shipit--merge-say-end (merge result)
+  "Say how MERGE ended, as RESULT gives it."
+  (let ((number (plist-get merge :number)))
+    (pcase (cdr (assq 'status result))
+      ("merged" (message "PR #%d merged via %s" number (plist-get merge :method)))
+      ("enqueued" (message "PR #%d was added to the merge queue" number))
+      ("failed" (message "Merge of PR #%d failed: %s" number (cdr (assq 'message result))))
+      (_ (message "Merge of PR #%d: the forge did not say how it went; press g to see"
+                  number)))))
+
+(defun shipit--merge-redraw (page)
+  "Draw PAGE again, when it is still there."
+  (when (buffer-live-p page)
+    (with-current-buffer page
+      (shipit-buffer-refresh))))
 
 (defun shipit--merge-method-label (method)
   "Return display label for merge METHOD string."
@@ -2404,11 +2458,39 @@ Dispatches to the backend :merge-pr operation and refreshes the buffer."
    ((string= method "squash") "s")
    ((string= method "rebase") "r")))
 
+(defun shipit--merge-open-below (repo number)
+  "Return the open pull requests below PR NUMBER of REPO in its stack.
+The forge merges them together with NUMBER."
+  (let ((entries (cdr (assq 'entries (shipit-pr--fetch-stack
+                                     repo number
+                                     (bound-and-true-p shipit-buffer-pr-data))))))
+    (mapcar (lambda (entry) (cdr (assq 'number entry)))
+            (seq-filter (lambda (entry) (equal (cdr (assq 'state entry)) "open"))
+                        (seq-take-while (lambda (entry) (not (cdr (assq 'current entry))))
+                                        entries)))))
+
+(defun shipit--merge-numbers-words (numbers)
+  "Return NUMBERS as words, such as \"#10 and #11\"."
+  (let ((words (mapcar (lambda (number) (format "#%s" number)) numbers)))
+    (if (cdr words)
+        (concat (string-join (butlast words) ", ") " and " (car (last words)))
+      (car words))))
+
+(defun shipit--merge-question (repo number method)
+  "Return the question to ask before PR NUMBER of REPO merges via METHOD.
+It names the open pull requests below NUMBER in a stack, since they
+merge too."
+  (let ((below (shipit--merge-open-below repo number)))
+    (if below
+        (format "Merge PR #%d via %s, together with %s below it? "
+                number method (shipit--merge-numbers-words below))
+      (format "Merge PR #%d via %s? " number method))))
+
 (defun shipit--merge-confirm-and-execute (method)
   "Confirm and execute merge via METHOD using buffer-local PR context."
   (let ((repo (bound-and-true-p shipit-buffer-repo))
         (number (bound-and-true-p shipit-buffer-pr-number)))
-    (when (yes-or-no-p (format "Merge PR #%d via %s? " number method))
+    (when (yes-or-no-p (shipit--merge-question repo number method))
       (shipit--merge-pr-execute repo number method))))
 
 (defun shipit-merge--do-merge ()

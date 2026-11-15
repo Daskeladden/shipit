@@ -318,5 +318,194 @@ THEN the cache entry for the buffer's repo is removed."
       (shipit-buffer-refresh-hard))
     (should-not (gethash "owner/repo" shipit--merge-methods-cache))))
 
+;;; Merging through GitHub's asynchronous merge API
+;;
+;; M-m on the page of a pull request, as a user does it, against
+;; GitHub answers that stand in at the level of url.el.  The page is
+;; the one of test-shipit-page-views.
+
+(require 'shipit-test-http)
+(require 'test-shipit-page-views)
+
+(defvar test-merge-async--merged nil
+  "Non-nil once GitHub merged the pull request of a scenario.")
+
+(defconst test-merge-async--repository
+  '((allow_merge_commit . t) (allow_squash_merge . t) (allow_rebase_merge . t))
+  "The repository o/r, which allows each merge method.")
+
+(defun test-merge-async--pull-request (&optional stack)
+  "The pull request 12 of o/r, ready to merge, as GitHub gives it now.
+It reads as merged once `test-merge-async--merged' is set.  STACK is
+the stack object it carries, or nil."
+  (lambda (_sent)
+    (append (when test-merge-async--merged
+              '((state . "closed") (merged . t) (merged_at . "2026-01-02T10:00:00Z")))
+            '((mergeable_state . "clean") (mergeable . t) (draft . :json-false))
+            (when stack `((stack . ,stack)))
+            (test-page-views--pull-request 12 '(:title "Brew the coffee")))))
+
+(defun test-merge-async--merge-answers (status message)
+  "GitHub's answers to a merge of pull request 12 that ends in STATUS.
+GitHub takes the request and says it is pending; asked again, it gives
+STATUS, such as merged, enqueued or failed, with MESSAGE."
+  `(("/pulls/12/merge-async\\'" 202
+     ((status . "pending")
+      (details (message . "Merge request enqueued.") (uuid . "u-1")
+               (merge_method . "squash") (merge_action . "default")
+               (expected_head_sha . "abc"))))
+    ("/pulls/12/merge-async/u-1\\'" 200
+     ,(lambda (_sent)
+        (when (equal status "merged") (setq test-merge-async--merged t))
+        `((status . ,status) (details (message . ,message)))))))
+
+(defconst test-merge-async--stack
+  '((id . 900) (number . 7) (size . 2) (position . 2)
+    (base . ((ref . "main") (sha . "aaa"))))
+  "The stack object of pull request 12, the upper of two.")
+
+(defconst test-merge-async--stack-resource
+  '((id . 900) (number . 7) (open . t) (base . ((ref . "main")))
+    (pull_requests . [((number . 11) (state . "open") (draft . :json-false)
+                       (merged_at . nil) (head . ((ref . "grind") (sha . "a1")))
+                       (title . "Grind the beans") (user . ((login . "me"))))
+                      ((number . 12) (state . "open") (draft . :json-false)
+                       (merged_at . nil) (head . ((ref . "coffee") (sha . "abc")))
+                       (title . "Brew the coffee") (user . ((login . "me"))))]))
+  "The stack 7 of o/r: #11 at the bottom, #12 on top of it.")
+
+(defmacro test-merge-async--on-github (answers &rest body)
+  "Run BODY as me, with GitHub answering ANSWERS first, then about #12 of o/r.
+Each page opened in BODY is killed at its end."
+  (declare (indent 1))
+  `(test-page-views--as-me
+     (let ((test-merge-async--merged nil)
+           (shipit--merge-methods-cache (make-hash-table :test 'equal))
+           (pages-before (buffer-list)))
+       (unwind-protect
+           (shipit-test-http-answering
+               (append ,answers
+                       (list (list "/repos/o/r\\'" 200 test-merge-async--repository))
+                       (test-page-views--github '((12 :title "Brew the coffee"))))
+             ,@body)
+         (dolist (buffer (buffer-list))
+           (unless (memq buffer pages-before)
+             (when (with-current-buffer buffer (derived-mode-p 'shipit-mode))
+               (kill-buffer buffer))))))))
+
+(defun test-merge-async--squash-merge (page)
+  "Press M-m and s on PAGE, answer yes, and return the question asked.
+Then wait until shipit says how the merge ended, five seconds at most."
+  (let ((questions nil)
+        (start (with-current-buffer (messages-buffer) (point-max))))
+    (with-current-buffer page
+      (set-window-buffer (selected-window) page)
+      (cl-letf (((symbol-function 'yes-or-no-p)
+                 (lambda (question) (push question questions) t)))
+        (execute-kbd-macro (kbd "M-m s"))))
+    (let ((deadline (+ (float-time) 5)))
+      (while (and (not (test-merge-async--said-since start "#12 \\(merged\\|was added\\|failed\\)"))
+                  (< (float-time) deadline))
+        (accept-process-output nil 0.05)))
+    (car questions)))
+
+(defun test-merge-async--said-since (start regexp)
+  "Return the first line of *Messages* after START that matches REGEXP."
+  (with-current-buffer (messages-buffer)
+    (save-excursion
+      (goto-char start)
+      (and (re-search-forward regexp nil t)
+           (buffer-substring-no-properties (line-beginning-position) (line-end-position))))))
+
+(defun test-merge-async--last-said (regexp)
+  "Return the last line of *Messages* that matches REGEXP."
+  (with-current-buffer (messages-buffer)
+    (save-excursion
+      (goto-char (point-max))
+      (and (re-search-backward regexp nil t)
+           (buffer-substring-no-properties (line-beginning-position) (line-end-position))))))
+
+(defun test-merge-async--state-shown (page)
+  "Return the state that PAGE shows for its pull request."
+  (with-current-buffer page
+    (save-excursion
+      (goto-char (point-min))
+      (and (re-search-forward "State: +\\([a-z]+\\)" nil t)
+           (match-string-no-properties 1)))))
+
+(defun test-merge-async--merge-request ()
+  "Return the body of the merge request sent to GitHub, as an alist, or nil."
+  (cl-loop for (method address) in shipit-test-http-requests
+           for body in shipit-test-http-bodies
+           when (and (equal method "PUT") (string-suffix-p "/merge-async" address))
+           return (json-read-from-string body)))
+
+(ert-deftest test-merge-async-squash-merges-the-pull-request ()
+  ;; GIVEN the page of pull request #12 of o/r, open and ready to merge,
+  ;;   whose head is the commit abc
+  ;; WHEN M-m and s are pressed and the question is answered with yes,
+  ;;   and GitHub takes the merge and soon says it merged
+  ;; THEN shipit asked GitHub's asynchronous merge API to squash #12,
+  ;;   at the commit abc
+  ;; AND shipit says "PR #12 merged via squash"
+  ;; AND the page shows #12 as merged
+  (test-merge-async--on-github
+      (append (test-merge-async--merge-answers "merged" "Pull request was merged.")
+              (list (list "/repos/o/r/pulls/12\\'" 200 (test-merge-async--pull-request))))
+    (let ((page (test-page-views--open-pr 12)))
+      (test-merge-async--squash-merge page)
+      (let ((request (test-merge-async--merge-request)))
+        (should (equal "squash" (cdr (assq 'merge_method request))))
+        (should (equal "abc" (cdr (assq 'sha request)))))
+      (should (test-merge-async--last-said "PR #12 merged via squash"))
+      (should (equal "merged" (test-merge-async--state-shown page))))))
+
+(ert-deftest test-merge-async-says-when-queued ()
+  ;; GIVEN the page of pull request #12, and a base branch with a merge
+  ;;   queue, so GitHub puts #12 into the queue
+  ;; WHEN M-m and s are pressed and the question is answered with yes
+  ;; THEN shipit says "PR #12 was added to the merge queue"
+  ;; AND the page still shows #12 as open
+  (test-merge-async--on-github
+      (append (test-merge-async--merge-answers "enqueued" "Pull request was added to the merge queue.")
+              (list (list "/repos/o/r/pulls/12\\'" 200 (test-merge-async--pull-request))))
+    (let ((page (test-page-views--open-pr 12)))
+      (test-merge-async--squash-merge page)
+      (should (test-merge-async--last-said "PR #12 was added to the merge queue"))
+      (should (equal "open" (test-merge-async--state-shown page))))))
+
+(ert-deftest test-merge-async-says-why-it-failed ()
+  ;; GIVEN the page of pull request #12, whose branch gets a new commit
+  ;;   before GitHub merges it, so GitHub gives up
+  ;; WHEN M-m and s are pressed and the question is answered with yes
+  ;; THEN shipit says "Merge of PR #12 failed: Head branch was modified."
+  ;; AND the page still shows #12 as open
+  (test-merge-async--on-github
+      (append (test-merge-async--merge-answers "failed" "Head branch was modified.")
+              (list (list "/repos/o/r/pulls/12\\'" 200 (test-merge-async--pull-request))))
+    (let ((page (test-page-views--open-pr 12)))
+      (test-merge-async--squash-merge page)
+      (should (test-merge-async--last-said
+               "Merge of PR #12 failed: Head branch was modified\\."))
+      (should (equal "open" (test-merge-async--state-shown page))))))
+
+(ert-deftest test-merge-async-names-the-pull-requests-below ()
+  ;; GIVEN the page of pull request #12, the upper of a stack of two, on
+  ;;   top of the open pull request #11
+  ;; WHEN M-m and s are pressed
+  ;; THEN the question says that the merge takes #11 below it too
+  ;; WHEN it is answered with yes, and GitHub merges
+  ;; THEN shipit asked GitHub's asynchronous merge API to squash #12
+  (test-merge-async--on-github
+      (append (test-merge-async--merge-answers "merged" "Pull request was merged.")
+              (list (list "/repos/o/r/pulls/12\\'" 200
+                          (test-merge-async--pull-request test-merge-async--stack))
+                    (list "/repos/o/r/stacks/7\\'" 200 test-merge-async--stack-resource)))
+    (let* ((page (test-page-views--open-pr 12))
+           (question (test-merge-async--squash-merge page)))
+      (should (string-match-p "#11" question))
+      (should (equal "squash" (cdr (assq 'merge_method
+                                         (test-merge-async--merge-request))))))))
+
 (provide 'test-shipit-merge)
 ;;; test-shipit-merge.el ends here

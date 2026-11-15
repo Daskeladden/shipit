@@ -463,15 +463,18 @@ how GitLab marks a merge request as a draft."
     (when result
       (shipit-pr-gitlab--normalize-mr result))))
 
-(defun shipit-pr-gitlab--merge-pr (config number method)
+(defun shipit-pr-gitlab--merge-pr (config number method &optional _sha)
   "Merge MR NUMBER using CONFIG with merge METHOD.
-METHOD maps: \"squash\" sets squash=true, others use default merge."
+METHOD maps: \"squash\" sets squash=true, others use default merge.
+GitLab merges while it answers, so the merge result says merged, or is
+nil when GitLab refused."
   (let* ((project (shipit-gitlab--project-path config))
          (path (format "/projects/%s/merge_requests/%s/merge" project number))
          (data (when (string= method "squash")
                  '((squash . t)))))
     (shipit--debug-log "GitLab PR backend: merging MR !%s via %s" number method)
-    (shipit-gitlab--api-request-method config path data "PUT")))
+    (when (shipit-gitlab--api-request-method config path data "PUT")
+      '((status . "merged")))))
 
 (defun shipit-pr-gitlab--update-pr (config number data)
   "Update MR NUMBER using CONFIG with DATA alist.

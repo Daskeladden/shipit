@@ -213,7 +213,6 @@ test-unit: compile test-packages
 		-l test/test-shipit-font-lock.el \
 		-l test/test-shipit-actions-timestamps.el \
 		-l test/test-shipit-run-steps.el \
-		-l test/test-shipit-merge.el \
 		-l test/test-shipit-repo-subscription.el \
 		-l test/test-shipit-subscriptions.el \
 		-l test/test-thread-subscription.el \
@@ -233,6 +232,7 @@ test-unit: compile test-packages
 		-l test/test-shipit-code-block-copy.el \
 		-l test/test-shipit-page-views.el \
 		-l test/test-shipit-page-views-cases.el \
+		-l test/test-shipit-merge.el \
 		-l test/test-shipit-pr-overview.el \
 		-l test/test-shipit-worktree-offer.el \
 		-l test/test-shipit-worktree-offer-cases.el \

@@ -701,7 +701,13 @@ queries 1000 times on a big inbox."
          (seq-filter #'shipit-notifications-buffer--passes-all-filters-p
                      (shipit-notifications-buffer--all-activities)))
         (shipit-notifications-buffer--render-cache
-         (shipit-notifications-buffer--build-render-cache)))
+         (shipit-notifications-buffer--build-render-cache))
+        ;; A timer can draw this buffer while another buffer is in the
+        ;; middle of a section, such as a pull request page that waits
+        ;; for the forge.  magit-section would then make the root here
+        ;; a child of that section, in the other buffer.
+        (magit-insert-section--parent nil)
+        (magit-insert-section--current nil))
     (magit-insert-section (notifications-root)
       (shipit-notifications-buffer--insert-header)
       (shipit-notifications-buffer--insert-notifications))))

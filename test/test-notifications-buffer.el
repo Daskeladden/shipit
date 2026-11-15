@@ -2553,4 +2553,36 @@ notification back."
           (cancel-timer (nth 1 batch))))
       (kill-buffer buf))))
 
+(ert-deftest test-shipit-notifications-buffer-redraw-inside-another-drawing ()
+  ;; GIVEN a notification for pull request #123
+  ;; AND a page in another buffer in the middle of drawing a section, as
+  ;;   a pull request page is when it waits for the forge and a timer runs
+  ;; WHEN the notifications buffer is drawn again then
+  ;; THEN its sections belong to the notifications buffer and show #123
+  ;; AND the section of the other page gets no child from it
+  (let ((shipit--notification-pr-activities (make-hash-table :test 'equal)))
+    (puthash "owner/repo:pr:123"
+             '((repo . "owner/repo")
+               (number . 123)
+               (type . "pr")
+               (subject . "Fix the bug")
+               (reason . "review_requested")
+               (updated-at . "2025-01-29T10:00:00Z"))
+             shipit--notification-pr-activities)
+    (let ((buf (shipit-notifications-buffer-create)))
+      (unwind-protect
+          (progn
+            (with-temp-buffer
+              (magit-section-mode)
+              (let ((inhibit-read-only t))
+                (magit-insert-section (page-root)
+                  (insert "page\n")
+                  (shipit-notifications-buffer--rerender)
+                  (should-not (oref magit-insert-section--current children)))))
+            (with-current-buffer buf
+              (should (eq buf (marker-buffer (oref magit-root-section start))))
+              (should (oref magit-root-section children))
+              (should (string-match-p "#123" (buffer-string)))))
+        (kill-buffer buf)))))
+
 (provide 'test-notifications-buffer)

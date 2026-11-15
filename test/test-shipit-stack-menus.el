@@ -5,9 +5,9 @@
 ;;; Commentary:
 
 ;; The branch menu on `b' and the rebase menu on `r' of the stacked
-;; preview, as a user meets them: keys pressed in the preview of a real
-;; repository, whose remote is a bare repository beside it.  Only the
-;; forge stands in.  The design is in
+;; preview, and RET on its base, as a user meets them: keys pressed in
+;; the preview of a real repository, whose remote is a bare repository
+;; beside it.  Only the forge stands in.  The design of the menus is in
 ;; docs/superpowers/specs/2026-11-14-stack-rebase-menu-design.md.
 
 ;;; Code:
@@ -267,6 +267,149 @@ more.  The menu is closed again afterwards."
       (should (string-match-p "work +already on main" menu))
       (should (string-match-p "work-parser +already on main" menu))
       (should-not (string-match-p "onto main" menu)))))
+
+;;;; Changing the base
+
+(defun test-stack-menus--open-with-a-release-branch ()
+  "Open the preview of the sandbox stack, with a branch release on the remote.
+The release branch already holds the first commit of the stack, so a
+stack raised against it is one commit shorter than one raised against
+main.  Returns the preview buffer."
+  (shipit-sandbox--git "push" "-q" "origin" "work~3:refs/heads/release")
+  (shipit-stacked-preview)
+  (get-buffer "*shipit-stacked-preview: work*"))
+
+(defun test-stack-menus--press-on-line (buffer line keys)
+  "Put point on the line of BUFFER that matches LINE, then press KEYS.
+LINE is a regexp for the start of the line.  KEYS can answer a prompt,
+the way a user types the answer."
+  (set-window-buffer (selected-window) buffer)
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (let ((case-fold-search nil))
+      (re-search-forward line))
+    (goto-char (match-beginning 0))
+    (execute-kbd-macro (kbd keys))))
+
+(defun test-stack-menus--header (buffer)
+  "Return the first line of BUFFER, the one that names the base."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (buffer-substring-no-properties (point) (line-end-position)))))
+
+(defun test-stack-menus--base-row (buffer)
+  "Return the row at the bottom of BUFFER that names the base."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (let ((case-fold-search nil))
+        (re-search-forward "^  base .*$"))
+      (substring-no-properties (match-string 0)))))
+
+(defconst test-stack-menus--base-line "^  Base:"
+  "The line in the header of the preview that names the base.")
+
+(defconst test-stack-menus--base-row-line "^  base "
+  "The row at the bottom of the preview that names the base.")
+
+(ert-deftest test-shipit-stack-menus-ret-on-the-base-line-changes-the-base ()
+  ;; GIVEN the preview of a stack of four commits over main
+  ;; AND a branch release on the remote that already holds the first
+  ;;   commit of the stack
+  ;; WHEN RET is pressed on the Base: line and origin/release is picked
+  ;; THEN the header says 3 commits over release
+  ;; AND the bottom layer work-parser holds 1 commit and work 2
+  ;; AND the base row at the bottom says release
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-with-a-release-branch)))
+      (should (string-match-p "4 commits over main"
+                              (test-stack-menus--header preview)))
+      (test-stack-menus--press-on-line preview test-stack-menus--base-line
+                                       "RET origin/release RET")
+      (should (string-match-p "3 commits over release"
+                              (test-stack-menus--header preview)))
+      (should (string-match-p "work-parser +1 commit\\b"
+                              (test-stack-menus--row preview "work-parser")))
+      (should (string-match-p "work +2 commits"
+                              (test-stack-menus--row preview "work")))
+      (should (string-match-p "base +release"
+                              (test-stack-menus--base-row preview))))))
+
+(ert-deftest test-shipit-stack-menus-ret-on-the-base-row-changes-the-base ()
+  ;; GIVEN the preview of a stack of four commits over main
+  ;; AND a branch release on the remote that already holds the first
+  ;;   commit of the stack
+  ;; WHEN RET is pressed on the base row at the bottom and
+  ;;   origin/release is picked
+  ;; THEN the header says 3 commits over release
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-with-a-release-branch)))
+      (test-stack-menus--press-on-line preview test-stack-menus--base-row-line
+                                       "RET origin/release RET")
+      (should (string-match-p "3 commits over release"
+                              (test-stack-menus--header preview))))))
+
+(ert-deftest test-shipit-stack-menus-new-base-proposes-the-divisions-again ()
+  ;; GIVEN the preview of a stack of two layers over main, parser and
+  ;;   writer, as the subjects propose
+  ;; AND a division made by hand with s after "writer: emit the header",
+  ;;   so the top layer work holds 1 commit
+  ;; AND a branch release on the remote that holds the first commit
+  ;; WHEN the base is changed to origin/release with RET on the Base: line
+  ;; THEN the divisions are the ones the subjects propose: work-parser
+  ;;   holds 1 commit and work holds 2 again
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-with-a-release-branch)))
+      (test-stack-menus--press-on-line preview "writer: emit the header" "s")
+      (should (string-match-p "work +1 commit\\b"
+                              (test-stack-menus--row preview "work")))
+      (test-stack-menus--press-on-line preview test-stack-menus--base-line
+                                       "RET origin/release RET")
+      (should (string-match-p "work-parser +1 commit\\b"
+                              (test-stack-menus--row preview "work-parser")))
+      (should (string-match-p "work +2 commits"
+                              (test-stack-menus--row preview "work"))))))
+
+(ert-deftest test-shipit-stack-menus-base-with-no-commits-keeps-the-old-base ()
+  ;; GIVEN the preview of a stack of four commits over main
+  ;; WHEN RET is pressed on the Base: line and work, the branch itself,
+  ;;   is picked
+  ;; THEN the preview says that there are no commits between work and HEAD
+  ;; AND the header still says 4 commits over main
+  (shipit-sandbox-with-repo
+    (let* ((preview (test-stack-menus--open-with-a-release-branch))
+           (refusal (should-error
+                     (test-stack-menus--press-on-line
+                      preview test-stack-menus--base-line "RET work RET")
+                     :type 'user-error)))
+      (should (string-match-p "No commits between work and HEAD"
+                              (cadr refusal)))
+      (should (string-match-p "4 commits over main"
+                              (test-stack-menus--header preview))))))
+
+(ert-deftest test-shipit-stack-menus-refresh-keeps-the-new-base ()
+  ;; GIVEN the preview of a stack whose base was changed from main to
+  ;;   origin/release with RET on the Base: line
+  ;; WHEN g is pressed
+  ;; THEN the header still says 3 commits over release
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-with-a-release-branch)))
+      (test-stack-menus--press-on-line preview test-stack-menus--base-line
+                                       "RET origin/release RET")
+      (test-stack-menus--press preview "g")
+      (should (string-match-p "3 commits over release"
+                              (test-stack-menus--header preview))))))
+
+(ert-deftest test-shipit-stack-menus-key-hints-name-the-base ()
+  ;; GIVEN the preview of a stack
+  ;; THEN the key hints say that RET opens a layer or sets the base
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-with-a-release-branch)))
+      (with-current-buffer preview
+        (should (string-match-p "RET +open layer, set base"
+                                (buffer-substring-no-properties
+                                 (point-min) (point-max))))))))
 
 (provide 'test-shipit-stack-menus)
 ;;; test-shipit-stack-menus.el ends here

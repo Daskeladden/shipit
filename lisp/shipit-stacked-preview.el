@@ -396,10 +396,39 @@ misses included, so redrawing the list does not ask again."
   (and shipit-stacked-preview--repo
        (shipit-stack-plan--pr-for-branch shipit-stacked-preview--repo branch)))
 
-(defun shipit-stacked-preview--read-base ()
-  "Ask which ref the stack sits on."
+(defun shipit-stacked-preview--read-base (&optional default)
+  "Ask which ref the stack sits on, offering DEFAULT or the default branch."
   (completing-read "Stack sits on: " (magit-list-refnames) nil t nil nil
-                   (shipit-stack--base-ref)))
+                   (or default (shipit-stack--base-ref))))
+
+(defun shipit-stacked-preview--commits-over (base)
+  "Return the commits from BASE to HEAD, oldest first.
+Signal when there are none, since a stack of nothing has no layers."
+  (or (shipit--commits-in-range (format "%s..HEAD" base))
+      (user-error "No commits between %s and HEAD" base)))
+
+(defun shipit-stacked-preview--set-stack (base commits existing)
+  "Make this buffer describe COMMITS over BASE.
+EXISTING is what `shipit-stacked-preview--from-existing-stack' found.
+Its branches divide the commits, and without them the subjects do."
+  (setq shipit-stacked-preview--base base
+        shipit-stacked-preview--commits commits
+        shipit-stacked-preview--boundaries
+        (or (car existing)
+            (shipit-stacked-preview--proposed-boundaries commits))
+        shipit-stacked-preview--names (cdr existing)))
+
+(defun shipit-stacked-preview-set-base (base)
+  "Measure the stack from BASE, and divide its commits again.
+The commits are divided as when the preview opens, so a division made
+by hand is proposed again.  When BASE leaves no commits, the stack
+stays as it was."
+  (interactive (list (shipit-stacked-preview--read-base
+                      shipit-stacked-preview--base)))
+  (shipit-stacked-preview--set-stack
+   base (shipit-stacked-preview--commits-over base)
+   (shipit-stacked-preview--from-existing-stack))
+  (shipit-stacked-preview--render))
 
 (defun shipit-stacked-preview--remote-tips ()
   "Alist of commit sha to the remote branch names standing there."
@@ -558,19 +587,24 @@ buffer draws the stack top first with the base at the bottom, so
 within a layer history grows upward too."
   (reverse commits))
 
+(defun shipit-stacked-preview--insert-base-line (text)
+  "Insert TEXT, a line that names the base, so that RET on it sets the base."
+  (insert (propertize text 'shipit-stack-base t)))
+
 (defun shipit-stacked-preview--insert-base (width)
   "Insert the line naming what the lowest layer sits on, padded to WIDTH."
-  (insert (format "  %-5s %2s  %s\n"
-                  (propertize "base" 'font-lock-face 'font-lock-comment-face)
-                  ""
-                  (shipit-sections--pad
-                   (propertize (shipit-stacked-preview--base-name
-                                shipit-stacked-preview--base)
-                               'font-lock-face 'magit-branch-remote)
-                   width))))
+  (shipit-stacked-preview--insert-base-line
+   (format "  %-5s %2s  %s\n"
+           (propertize "base" 'font-lock-face 'font-lock-comment-face)
+           ""
+           (shipit-sections--pad
+            (propertize (shipit-stacked-preview--base-name
+                         shipit-stacked-preview--base)
+                        'font-lock-face 'magit-branch-remote)
+            width))))
 
 (defconst shipit-stacked-preview--key-columns
-  '((("RET" . "open layer") ("s" . "divide here") ("u" . "undo"))
+  '((("RET" . "open layer, set base") ("s" . "divide here") ("u" . "undo"))
     (("b" . "branch") ("r" . "rebase") ("P" . "push"))
     (("R" . "register stack") ("v" . "draw on canvas"))
     (("g" . "refresh") ("q" . "quit") ("$" . "process log")))
@@ -662,13 +696,14 @@ one branch while standing on another."
                           (propertize (concat "  " counts) 'font-lock-face
                                       'font-lock-comment-face)
                         ""))))
-    (insert (format "  %-9s %s%s\n" "Base:"
-                    (propertize (or shipit-stacked-preview--base "")
-                                'font-lock-face 'magit-branch-remote)
-                    (if-let* ((pr (shipit-stacked-preview--base-pr-number)))
-                        (propertize (format "  PR #%s" pr)
-                                    'font-lock-face 'font-lock-comment-face)
-                      "")))))
+    (shipit-stacked-preview--insert-base-line
+     (format "  %-9s %s%s\n" "Base:"
+             (propertize (or shipit-stacked-preview--base "")
+                         'font-lock-face 'magit-branch-remote)
+             (if-let* ((pr (shipit-stacked-preview--base-pr-number)))
+                 (propertize (format "  PR #%s" pr)
+                             'font-lock-face 'font-lock-comment-face)
+               "")))))
 
 (defun shipit-stacked-preview--insert-header ()
   "Insert the banner saying what this buffer is."
@@ -836,6 +871,13 @@ back here once it has been submitted or abandoned, so the list shows
 what it became.  The layer does not have to be checked out for this."
   (interactive)
   (shipit-stacked-preview--visit (shipit-stacked-preview--layer-at-point)))
+
+(defun shipit-stacked-preview-visit ()
+  "Open the layer at point, or ask for a new base when point is on the base."
+  (interactive)
+  (if (get-text-property (point) 'shipit-stack-base)
+      (call-interactively #'shipit-stacked-preview-set-base)
+    (shipit-stacked-preview-visit-layer)))
 
 (defun shipit-stacked-preview--visit (layer)
   "Open LAYER, as `shipit-stacked-preview-visit-layer' describes.
@@ -1403,7 +1445,7 @@ leaves the buffer as it is; the canvas file is not loaded until then."
 (set-keymap-parent shipit-stacked-preview-mode-map magit-section-mode-map)
 (define-key shipit-stacked-preview-mode-map (kbd "s") #'shipit-stacked-preview-divide)
 (define-key shipit-stacked-preview-mode-map (kbd "u") #'shipit-stacked-preview-undivide)
-(define-key shipit-stacked-preview-mode-map (kbd "RET") #'shipit-stacked-preview-visit-layer)
+(define-key shipit-stacked-preview-mode-map (kbd "RET") #'shipit-stacked-preview-visit)
 (define-key shipit-stacked-preview-mode-map (kbd "P") #'shipit-stacked-preview-push)
 (define-key shipit-stacked-preview-mode-map (kbd "R") #'shipit-stacked-preview-register)
 (define-key shipit-stacked-preview-mode-map (kbd "b") #'shipit-stacked-preview-branch)
@@ -1433,7 +1475,7 @@ each layer to `shipit-preview\=' to describe and submit.
 
 With a prefix argument CHOOSE-BASE, ask which branch the stack sits on
 instead of measuring from the default branch, for a stack raised
-against a release branch."
+against a release branch.  RET on the base in the buffer asks the same."
   (interactive "P")
   (let* ((repo (shipit--get-repo-from-remote))
          ;; The buffer runs git where it was opened.  One opened before
@@ -1450,10 +1492,9 @@ against a release branch."
                  (shipit-stacked-preview--detect-base
                   repo (shipit-stack--base-ref)
                   (mapcar #'cdr (cdr existing)))))
-         (branch (shipit-stack--current-branch))
-         (commits (shipit--commits-in-range (format "%s..HEAD" base))))
-    (unless branch (user-error "Not on a branch"))
-    (unless commits (user-error "No commits between %s and HEAD" base))
+         (branch (or (shipit-stack--current-branch)
+                     (user-error "Not on a branch")))
+         (commits (shipit-stacked-preview--commits-over base)))
     (let ((buffer (get-buffer-create
                    (format "*shipit-stacked-preview: %s*" branch))))
       (with-current-buffer buffer
@@ -1461,13 +1502,8 @@ against a release branch."
         (setq default-directory directory
               shipit-stacked-preview--repo repo
               shipit-stacked-preview--fetch-problem fetch-problem
-              shipit-stacked-preview--base base
-              shipit-stacked-preview--branch branch
-              shipit-stacked-preview--commits commits
-              shipit-stacked-preview--boundaries
-              (or (car existing)
-                  (shipit-stacked-preview--proposed-boundaries commits))
-              shipit-stacked-preview--names (cdr existing))
+              shipit-stacked-preview--branch branch)
+        (shipit-stacked-preview--set-stack base commits existing)
         (shipit-stacked-preview--render))
       (switch-to-buffer buffer))))
 

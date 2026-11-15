@@ -20,7 +20,8 @@ This project was built as a learning exercise in agentic AI-assisted programming
 - **Atlassian dashboard** — dedicated Jira project buffer (`M-x shipit-atlassian-dashboard`) with My Open Issues, Kanban Board, filterable/loadable all-issues section, and a create-issue action
 - **Discussions** — view and participate in GitHub Discussions
 - **Subscriptions** — manage repo-level and per-thread subscriptions via transient menu
-- **Worktrees** — checkout PR branches into isolated worktrees
+- **Worktrees** — checkout PR branches into isolated worktrees, and review a file there in review mode
+- **Stacked pull requests** — divide a branch into layers, one pull request for each layer, and rebase the stack past its merged layers
 
 Supports SVG icons, inline images, avatars, and syntax-highlighted code blocks.
 
@@ -135,6 +136,65 @@ Navigate with `TAB` to expand/collapse, `RET` to open, and `M-;` for context act
 `C-u M-w` on a line of a code block copies the code of the block, in any shipit buffer. The lines of its fences are left out, and the indent that the page gives the block, so the code is as it was written. `M-w` without the prefix copies a region or a line, as it does elsewhere. In a code block, `M-;` offers Copy code block as its first choice. Embark takes the block as its first target, so its `w` copies the code too.
 
 When `C-u M-w` or Copy code block copies the code, the lines of the code flash with the pulse of Emacs. To flash them in another way, put a function of your own in `shipit-code-block-copy-functions`. The function gets the start and the end of the lines of code.
+
+### Page views
+
+A pull request buffer and an issue buffer have views. `v` shows the next view, and `V` asks for a view by its name. Both are also in the `SPC` menu. The normal view shows the whole page.
+
+The overview of a pull request shows its title, its State and Approval lines, a list of what waits for you, and the checks. The list has the reviews that ask for changes and the general comments after your last one. It also has the review threads that are not resolved and whose newest comment is not yours. On a pull request of someone else, only the threads and comments where you wrote count. The overview of an issue shows its title line, its assignees and the pull requests that link to it.
+
+A view holds for each open page and for each page that opens later, until Emacs quits. A switch of the view asks the forge for nothing. `shipit-page-views` names the views and the parts of a page that each view shows. `shipit-page-view` sets the view that a session starts with.
+
+### Review in a worktree
+
+Review mode shows a file of the pull request in its worktree, with a legend of its keys. `n` and `p` go through the hunks, and `M-n` and `M-p` go through the commits that changed the file. `?` shows all keys of review mode.
+
+If the pull request has a worktree at its head, `RET` on a file under Files Changed opens the file in review mode. If the worktree is behind, `RET` asks what to do. Without a worktree, `RET` opens the file at the head of the pull request, read-only.
+
+`C-RET` on a file or on a diff line opens the file in review mode, at the line of the diff. If the pull request has no worktree, `C-RET` asks "No worktree for PR #N. Create one for review mode?". If you say yes, shipit makes the worktree in the background and shows the progress in the Worktree section. Then it opens the file at the line. If you say no, the file of your clone opens, without review mode. If your clone is at the head of the pull request, `C-RET` does not ask.
+
+shipit also uses a worktree that you made yourself. Such a worktree has the head branch of the pull request checked out, or it is at the head commit. If your worktree is not at the head, `C-RET` asks one time for each pull request: open the file from your worktree, or make a review worktree. The Worktree section names the worktree in use and says whether it is yours or made by shipit.
+
+`Z` opens the worktree menu. "Sync worktree" runs `git reset --hard` and "Delete worktree" removes the folder, so both act only on a worktree that shipit made. Your own worktree stays as it is.
+
+The worktree commands also work in a clone of your fork that has no remote for the repository of the pull request. shipit asks the forge which repository the fork came from, and it fetches the pull request from that repository.
+
+### Stacked pull requests
+
+A stack is a row of pull requests in which each one is based on the one below it. The stacked preview turns the commits of a branch into such a stack. Open it with `M-x shipit-stacked-preview`, or with `S` in the preview of a pull request. GitHub groups the pull requests into a stack. On GitLab, the merge requests are based on one another, but GitLab does not group them.
+
+The preview shows the commits over the base, divided into layers. Each layer becomes one pull request. shipit proposes the divisions from the subjects of the commits, or from the layer branches that are already there. Nothing is rebased, so you can divide again at no cost.
+
+The `Next:` line under the base names the next step. In short, a stack is made in this order:
+
+1. Move the divisions with `s`. `s` on a commit divides the layer there. `s` on the last commit of a layer joins it with the layer above.
+2. Press `b c` to put a branch on each layer.
+3. Press `P` to open the push menu, and `P` again to push every layer. The push is atomic, so a refused push leaves the remote as it was. `shipit-push-max-refs` sets how many branches one push updates.
+4. Press `RET` on the lowest layer without a pull request. The preview of that pull request opens, and you write its description and submit it. Then do the same for the next layer.
+
+`C-/` takes back the last `s` or the last change of the base. undo-tree and vundo work in the preview too.
+
+`RET` on the base, on the `Base:` line or on the base row, picks another base. The preview then divides the commits again. If the base is a local branch that the remote does not have, `RET` on a layer offers to push it first. With a prefix argument, `shipit-stacked-preview` asks for the base at the start.
+
+`b` opens the branch menu. `b c` creates the layer branches, and `b m` renames the layer at point. `b a` asks `shipit-branch-name-suggester` for a name (see Extending shipit).
+
+The preview fetches from `origin` each time it opens, and on `g`. Each row shows the state of its layer, its pull request, its checks and its review decision. A row also says "rebased on the remote", "new commits on the remote" or "merged into" its base.
+
+`r` opens the rebase menu. The menu shows its plan first: which layers move onto the base, and which ones it leaves out as merged. `r b` rebases the stack onto the newest base. `r o` follows the copies on the remote after a bot rebased them. `r f` folds fixup commits into their layers. shipit works out each rebase, and magit runs it with `--update-refs`, so the branch of each layer moves too. If the rebase stops on a conflict, solve it as usual in magit, or use `r r` to continue, `r s` to skip and `r a` to abort.
+
+If GitHub or GitLab says that the pull request of a layer merged, the layer counts as merged. Else git decides. To git, a layer is merged when a merge of it into the base changes nothing.
+
+`s` also splits a layer that has a pull request. The new lower layer gets the name from its commit subjects. If a branch elsewhere has that name, shipit adds `-2` to it. When you submit the new layer, or press `R`, shipit takes the pull requests out of the stack on GitHub. Then it makes the new branch the base of the pull request above, and it makes the stack again. The stack then has a new number. If GitHub refuses the new base, shipit makes the old stack again, and the `Next:` line says to press `R`.
+
+`v` draws the stack on a canvas (see Canvas views), and `$` shows the git commands that shipit ran and their output.
+
+A pull request buffer shows the stack that the pull request belongs to. `RET` on a row opens its pull request, and `TAB` shows its branch, its author and its description. `M-w` copies the address of the stack or of the row.
+
+### Merge
+
+`M-m` in a pull request buffer opens the merge menu. On GitHub, shipit sends the merge through the asynchronous merge API, with the head commit that the page shows. Then it asks GitHub every second, for up to 60 seconds, how the merge went. It says whether the pull request merged, went into the merge queue, or failed, with the reason that GitHub gives. If the branch got new commits that the page does not show, GitHub does not merge.
+
+For a pull request in a stack, the question names the open pull requests below it, because GitHub merges them too. If the pull request is a draft, `M-m` asks whether to mark it ready for review and merge it. GitLab merges in one request.
 
 ### Issue buffers
 

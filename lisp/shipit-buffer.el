@@ -63,6 +63,8 @@ when magit sections expand/collapse.")
 (declare-function shipit-toggle-file-viewed "shipit-commands")
 (declare-function shipit-mark-all-files-viewed "shipit-commands")
 (declare-function shipit-actions-copy-url-at-point "shipit-actions")
+(declare-function shipit-review-submit "shipit-review-queue")
+(declare-function shipit-review-queue-discard "shipit-review-queue")
 
 ;; Hook variables for backend-agnostic section operations.
 ;; Each hook is a list of functions called with (section).
@@ -642,6 +644,8 @@ SPC closes the menu again."
     ("a" "Approve / apply suggestion" shipit-suggestion-or-approve)
     ("R" "Request changes" shipit-request-changes)
     ("k" "Delete comment" shipit-delete-comment-at-point)
+    ("S" "Submit review" shipit-review-submit)
+    ("K" "Discard drafts" shipit-review-queue-discard)
     ("M-m" "Merge" shipit-merge)
     ("M-;" "Actions at point" shipit-dwim)]
    ["Files"
@@ -707,6 +711,8 @@ with focused context and optimized performance.
   (define-key shipit-mode-map (kbd "f") #'shipit-files-filter)
   (define-key shipit-mode-map (kbd "+") 'shipit-load-more-files)
   (define-key shipit-mode-map (kbd "k") #'shipit-delete-comment-at-point)
+  (define-key shipit-mode-map (kbd "S") #'shipit-review-submit)
+  (define-key shipit-mode-map (kbd "K") #'shipit-review-queue-discard)
   (define-key shipit-mode-map (kbd "T f") #'shipit-pr-toggle-fontify-hunks)
   (define-key shipit-mode-map (kbd "T r") #'shipit-pr-toggle-refine-hunks)
 

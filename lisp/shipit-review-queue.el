@@ -220,7 +220,7 @@ distinguish \"never owned\" from \"originally nil\".")
 
 (defun shipit-review-queue--refresh-banner ()
   "Sync the PR-buffer header-line to reflect the current queue.
-Shows `N drafts queued — S to submit, D to discard' when the
+Shows `N drafts queued — S to submit, K to discard' when the
 queue has items; restores the pre-banner header-line otherwise.
 Quietly no-ops outside a shipit PR buffer."
   (when (bound-and-true-p shipit-buffer-pr-number)
@@ -239,7 +239,7 @@ Quietly no-ops outside a shipit PR buffer."
                    count (if (= count 1) "" "s"))
            'face 'shipit-review-queue-draft-label-face)
           (propertize
-           " — press `S' to submit, `D' to discard, `c' on a draft to edit "
+           " — press `S' to submit, `K' to discard, `c' on a draft to edit "
            'face 'shipit-review-queue-draft-face))))
        (t
         (unless (eq shipit-review-queue--saved-header-line :unset)
@@ -850,7 +850,7 @@ looks for no posted comment there."
    ["Queue"
     ("S" "Submit review (publish all drafts via API)"
      shipit-review-submit)
-    ("D" "Discard all queued drafts"
+    ("K" "Discard all queued drafts"
      shipit-review-queue-discard)]])
 
 (with-eval-after-load 'shipit-pr-actions
@@ -1178,7 +1178,7 @@ Caller is responsible for `inhibit-read-only', position, and
     (magit-insert-section-body
       (insert "   ")
       (insert (propertize
-               "Press `S' to submit, `D' to discard.  RET on a draft to jump, `c' to edit, `k' to remove.\n\n"
+               "Press `S' to submit, `K' to discard.  RET on a draft to jump, `c' to edit, `k' to remove.\n\n"
                'font-lock-face 'shipit-review-queue-draft-face))
       ;; Walk the queue in insertion order (oldest first).
       (dolist (entry (reverse shipit-review-queue))
@@ -1270,14 +1270,6 @@ and the badges in it.  For `shipit-files-section-refreshed-hook' and
 
 (add-hook 'shipit-files-section-refreshed-hook #'shipit-review-queue--repaint-files)
 (add-hook 'shipit-file-diff-refreshed-hook #'shipit-review-queue--repaint-files)
-
-(with-eval-after-load 'shipit-buffer
-  (when (boundp 'shipit-mode-map)
-    (unless (lookup-key shipit-mode-map (kbd "S"))
-      (define-key shipit-mode-map (kbd "S") #'shipit-review-submit))
-    (unless (lookup-key shipit-mode-map (kbd "D"))
-      (define-key shipit-mode-map (kbd "D")
-                  #'shipit-review-queue-discard))))
 
 (with-eval-after-load 'shipit-review-mode
   ;; Repaint queued drafts whenever review-mode is enabled in a file

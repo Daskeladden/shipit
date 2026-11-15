@@ -253,5 +253,101 @@ THEN it says there is no comment at point, and the draft stays."
                                        :type 'user-error))))
     (should (= 1 (length shipit-review-queue)))))
 
+;;; Discard all drafts with K
+
+(defun test-review-queue--press-K (answer)
+  "Press `K' in this buffer and give ANSWER to the question it asks.
+Return the question, or nil when `K' asked none."
+  (let ((shipit-review-queue-persistence-file nil)
+        (question nil))
+    (cl-letf (((symbol-function 'yes-or-no-p)
+               (lambda (prompt) (setq question prompt) answer)))
+      (call-interactively (key-binding (kbd "K"))))
+    question))
+
+(defun test-review-queue--show-pending-review ()
+  "Draw the Pending Review section at the end of this buffer."
+  (let ((inhibit-read-only t))
+    (goto-char (point-max))
+    (let ((magit-insert-section--parent magit-root-section))
+      (shipit-review-queue--insert-section-at-point))))
+
+(defun test-review-queue--menu-command (menu key)
+  "The command that KEY runs in the transient MENU."
+  (plist-get (cdr (transient-get-suffix menu key)) :command))
+
+(ert-deftest test-review-queue-K-discards-all-drafts ()
+  "GIVEN a pull request buffer with a draft comment, shown under its line
+WHEN `K' is pressed, and the question answered yes
+THEN the queue is empty and the draft leaves the buffer."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (test-review-queue--press-K t)
+    (should-not shipit-review-queue)
+    (should (= 0 (test-review-queue--draft-count)))))
+
+(ert-deftest test-review-queue-K-answered-no-keeps-the-drafts ()
+  "GIVEN a pull request buffer with a draft comment, shown under its line
+WHEN `K' is pressed, and the question answered no
+THEN it asked whether to discard the one draft, and the draft stays in
+the queue and in the buffer."
+  (test-review-queue--in-pr-buffer
+    (let ((inhibit-read-only t))
+      (shipit-review-queue--render))
+    (should (equal "Discard 1 queued review comment? "
+                   (test-review-queue--press-K nil)))
+    (should (= 1 (length shipit-review-queue)))
+    (should (= 1 (test-review-queue--draft-count)))))
+
+(ert-deftest test-review-queue-D-still-shows-the-diff-with-comments ()
+  "GIVEN a pull request buffer with a draft comment, opened after another
+pull request buffer
+WHEN the user looks up what `D' does there
+THEN `D' shows the diff with comments, as before."
+  (with-temp-buffer (shipit-mode))
+  (test-review-queue--in-pr-buffer
+    (should (eq #'shipit--show-diff-with-comments-at-point
+                (key-binding (kbd "D"))))))
+
+(ert-deftest test-review-queue-the-header-line-names-S-and-K ()
+  "GIVEN a pull request buffer with a draft comment
+WHEN the user reads the header line of the buffer
+THEN it says `S' to submit and `K' to discard, and names no `D'."
+  (test-review-queue--in-pr-buffer
+    (shipit-review-queue--refresh-banner)
+    (let ((header (substring-no-properties header-line-format)))
+      (should (string-match-p "`S' to submit, `K' to discard" header))
+      (should-not (string-match-p "`D'" header)))))
+
+(ert-deftest test-review-queue-pending-review-names-S-and-K ()
+  "GIVEN a pull request buffer with a draft comment
+WHEN the user reads the hint at the top of the Pending Review section
+THEN it says `S' to submit and `K' to discard, and names no `D'."
+  (test-review-queue--in-pr-buffer
+    (test-review-queue--show-pending-review)
+    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+      (should (string-match-p "Press `S' to submit, `K' to discard" text))
+      (should-not (string-match-p "`D'" text)))))
+
+(ert-deftest test-review-queue-the-menu-of-the-buffer-has-S-and-K ()
+  "GIVEN the menu of a pull request buffer, which SPC opens
+WHEN the user looks for the review drafts in it
+THEN `S' submits the review and `K' discards the drafts."
+  (should (eq #'shipit-review-submit
+              (test-review-queue--menu-command 'shipit-pr-menu "S")))
+  (should (eq #'shipit-review-queue-discard
+              (test-review-queue--menu-command 'shipit-pr-menu "K"))))
+
+(ert-deftest test-review-queue-the-menu-of-a-draft-discards-with-K ()
+  "GIVEN the menu of a draft, which M-; on the draft opens
+WHEN the user looks for the discard of all drafts in it
+THEN `K' discards all drafts, and `D' is not in the menu."
+  (should (eq #'shipit-review-queue-discard
+              (test-review-queue--menu-command
+               'shipit-review-queue-draft-actions "K")))
+  (should-not (ignore-errors
+                (transient-get-suffix 'shipit-review-queue-draft-actions "D"))))
+
 (provide 'test-shipit-review-queue)
 ;;; test-shipit-review-queue.el ends here

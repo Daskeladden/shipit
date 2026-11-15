@@ -236,10 +236,13 @@ The dashboard requires the current repo to resolve to a Jira backend. Set up the
 When someone else changes a page of Confluence Cloud that mentions you or that you watch, shipit can show it as a notification. Blog posts count as pages here. Each such page is one row in the notifications buffer, under the name of its space. To switch this on, add an entry for the site to `shipit-issue-repo-backends`:
 
 ```elisp
+(setq shipit-issues-enabled t)
 (add-to-list 'shipit-issue-repo-backends
              '("confluence" :backend confluence
                :base-url "https://example.atlassian.net"))
 ```
+
+If `shipit-issues-enabled` is nil, `shipit-init` loads no issue backend, and so no Confluence either. Set both before `shipit-init` runs.
 
 The login is the same auth-source entry as for Jira on that site. The machine is the host of the site, the login is your email, and the password is an API token:
 

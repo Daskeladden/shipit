@@ -263,16 +263,20 @@ Quietly no-ops outside a shipit PR buffer."
   "Return the shipit PR buffer matching REPO + PR-NUMBER, or nil.
 We never want the queue to live on a review-mode worktree-file
 buffer -- the overlays render into the magit tree, which only
-exists in the shipit PR buffer."
+exists in the shipit PR buffer.
+
+REPO is compared without regard to case.  A review buffer takes the
+name that the forge answers, and the PR buffer the name of the git
+remote, and after a rename on GitHub the two can differ in case."
   (cl-loop for buf in (buffer-list)
            when (and (buffer-local-value 'shipit-buffer-pr-number buf)
                      (buffer-local-value 'shipit-buffer-repo buf)
                      (equal (buffer-local-value
                              'shipit-buffer-pr-number buf)
                             pr-number)
-                     (equal (buffer-local-value
-                             'shipit-buffer-repo buf)
-                            repo))
+                     (string-equal-ignore-case
+                      (buffer-local-value 'shipit-buffer-repo buf)
+                      repo))
            return buf))
 
 (defun shipit-review-queue-add (file line side body &optional old-line

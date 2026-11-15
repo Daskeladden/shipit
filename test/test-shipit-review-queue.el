@@ -17,6 +17,9 @@
 (require 'shipit-pr-sections)
 (require 'shipit-buffer)
 (require 'shipit-review-queue)
+(require 'shipit-review-mode)
+(require 'shipit-editor)
+(require 'shipit-pr-github)
 
 (defconst test-review-queue--pr
   `((number . 1) (head (sha . "abc123") (ref . "work")) (base (ref . "main"))
@@ -348,6 +351,95 @@ THEN `K' discards all drafts, and `D' is not in the menu."
                'shipit-review-queue-draft-actions "K")))
   (should-not (ignore-errors
                 (transient-get-suffix 'shipit-review-queue-draft-actions "D"))))
+
+;;; A draft written in review mode
+
+(defun test-review-queue--make-clone ()
+  "Make a git repository that holds `src/parser.el' of the pull request.
+Return its directory."
+  (let ((dir (file-name-as-directory (make-temp-file "shipit-review-clone-" t))))
+    (make-directory (expand-file-name "src" dir))
+    (with-temp-file (expand-file-name "src/parser.el" dir)
+      (insert "(defun parse ()\n  (read-header)\n  (read-body))\n;; end\n"))
+    (let ((default-directory dir))
+      (call-process "git" nil nil nil "init" "-q"))
+    dir))
+
+(defun test-review-queue--open-in-review-mode (clone repo-name)
+  "Open `src/parser.el' of CLONE in review mode, on line 2.
+The pull request data names the repository REPO-NAME, as the forge
+answers it.  Return the buffer of the file."
+  (let ((buffer (find-file-noselect (expand-file-name "src/parser.el" clone))))
+    (with-current-buffer buffer
+      (setq shipit-review--pr-data
+            `((number . 1) (head (sha . "abc123"))
+              (base (ref . "main") (repo (full_name . ,repo-name)))))
+      (shipit-review-mode 1)
+      (goto-char (point-min))
+      (forward-line 1))
+    buffer))
+
+(defun test-review-queue--write-comment-with-c-a (text)
+  "Press `c a' in the legend of review mode, write TEXT, press `C-c C-c'."
+  (let ((shipit-review-queue-persistence-file nil))
+    (with-current-buffer shipit-review--actions-buffer-name
+      (call-interactively (key-binding (kbd "c a"))))
+    (with-current-buffer shipit-editor--buffer-name
+      (insert text)
+      (call-interactively (key-binding (kbd "C-c C-c"))))))
+
+(defun test-review-queue--draft-shown-below-line-p (buffer line text)
+  "Non-nil when BUFFER shows a draft with TEXT at the end of LINE.
+The draft is the text after an empty overlay there, which
+`overlays-at' never returns, so this asks `overlays-in'."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line (1- line))
+      (seq-some (lambda (overlay)
+                  (string-match-p (regexp-quote text)
+                                  (or (overlay-get overlay 'after-string) "")))
+                (overlays-in (line-end-position) (line-end-position))))))
+
+(defun test-review-queue--check-draft-from-review-mode (repo-name)
+  "Write a draft with `c a' in review mode, where the forge names the
+repository REPO-NAME, and check that it shows."
+  (test-review-queue--in-closed-pr-buffer
+    (setq shipit-review-queue nil)
+    (let* ((pr-buffer (current-buffer))
+           (clone (test-review-queue--make-clone))
+           (file-buffer (test-review-queue--open-in-review-mode clone repo-name)))
+      (unwind-protect
+          (progn
+            (test-review-queue--write-comment-with-c-a "Read the header once.")
+            (should (equal '(("src/parser.el" 2))
+                           (mapcar (lambda (entry)
+                                     (list (plist-get entry :file)
+                                           (plist-get entry :line)))
+                                   (buffer-local-value 'shipit-review-queue
+                                                       pr-buffer))))
+            (should (test-review-queue--draft-shown-below-line-p
+                     file-buffer 2 "Read the header once.")))
+        (with-current-buffer file-buffer (shipit-review-mode -1))
+        (kill-buffer file-buffer)
+        (delete-directory clone t)))))
+
+(ert-deftest test-review-queue-c-a-in-review-mode-shows-the-draft ()
+  "GIVEN a pull request buffer of o/r, and a file of the pull request
+open in review mode, on line 2
+WHEN the user presses `c a', writes a comment and presses `C-c C-c'
+THEN the draft is in the queue of the pull request, and it shows below
+line 2 of the file."
+  (test-review-queue--check-draft-from-review-mode "o/r"))
+
+(ert-deftest test-review-queue-c-a-shows-the-draft-when-the-forge-uses-capitals ()
+  "GIVEN a pull request buffer of o/r, made from the remote of the clone,
+and a file of the pull request open in review mode, where the forge
+names the repository O/R, as after a rename on GitHub
+WHEN the user presses `c a', writes a comment and presses `C-c C-c'
+THEN the draft is in the queue of the pull request, and it shows below
+line 2 of the file, because a forge does not tell names apart by case."
+  (test-review-queue--check-draft-from-review-mode "O/R"))
 
 (provide 'test-shipit-review-queue)
 ;;; test-shipit-review-queue.el ends here

@@ -5,9 +5,10 @@
 ;;; Commentary:
 
 ;; The branch menu on `b' and the rebase menu on `r' of the stacked
-;; preview, and RET on its base, as a user meets them: keys pressed in
-;; the preview of a real repository, whose remote is a bare repository
-;; beside it.  Only the forge stands in.  The design of the menus is in
+;; preview, RET on its base, and the line that names the next step, as
+;; a user meets them: keys pressed in the preview of a real repository,
+;; whose remote is a bare repository beside it.  Only the forge stands
+;; in.  The design of the menus is in
 ;; docs/superpowers/specs/2026-11-14-stack-rebase-menu-design.md.
 
 ;;; Code:
@@ -410,6 +411,91 @@ the way a user types the answer."
         (should (string-match-p "RET +open layer, set base"
                                 (buffer-substring-no-properties
                                  (point-min) (point-max))))))))
+
+;;;; The next step
+
+(defun test-stack-menus--line-under-base (buffer)
+  "Return the line of BUFFER right under the Base: line."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (let ((case-fold-search nil))
+        (re-search-forward test-stack-menus--base-line))
+      (forward-line 1)
+      (buffer-substring-no-properties (point) (line-end-position)))))
+
+(defun test-stack-menus--next-step-shown-p (buffer)
+  "Return non-nil when BUFFER has a line that names the next step."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (let ((case-fold-search nil))
+        (re-search-forward "^  Next:" nil t)))))
+
+(defun test-stack-menus--give-pull-requests (&rest pairs)
+  "Tell the forge that each branch in PAIRS has the pull request after it.
+PAIRS alternate a branch name and a number."
+  (while pairs
+    (push (cons (pop pairs) (pop pairs)) shipit-sandbox-prs)))
+
+(ert-deftest test-shipit-stack-menus-next-step-without-branches ()
+  ;; GIVEN the preview of a stack whose lower layer has no branch yet
+  ;; THEN the line under Base: says to check the base and the divisions,
+  ;;   then press b c to give each layer a branch
+  (shipit-sandbox-with-repo
+    (shipit-stacked-preview)
+    (let ((line (test-stack-menus--line-under-base
+                 (get-buffer "*shipit-stacked-preview: work*"))))
+      (should (string-match-p
+               "^  Next: +check the base and the divisions, then press b c to give each layer a branch"
+               line)))))
+
+(ert-deftest test-shipit-stack-menus-next-step-after-the-branches ()
+  ;; GIVEN the preview of a stack whose layers have no branches yet
+  ;; WHEN b and then c are pressed
+  ;; THEN the line under Base: says to press P to push the layers
+  (shipit-sandbox-with-repo
+    (shipit-stacked-preview)
+    (let ((preview (get-buffer "*shipit-stacked-preview: work*")))
+      (test-stack-menus--press preview "b c")
+      (should (string-match-p "^  Next: +press P to push the layers"
+                              (test-stack-menus--line-under-base preview))))))
+
+(ert-deftest test-shipit-stack-menus-next-step-after-the-push ()
+  ;; GIVEN the preview of a stack whose layers have branches and are
+  ;;   pushed, and no layer has a pull request
+  ;; THEN the line under Base: says to press RET on work-parser to
+  ;;   describe it and open its pull request
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stacked--open-pushed-stack)))
+      (should (string-match-p
+               "^  Next: +press RET on work-parser to describe it and open its pull request"
+               (test-stack-menus--line-under-base preview))))))
+
+(ert-deftest test-shipit-stack-menus-next-step-names-the-lowest-layer-left ()
+  ;; GIVEN the preview of a pushed stack whose bottom layer work-parser
+  ;;   has pull request #101 and whose top layer work has none
+  ;; WHEN the preview is refreshed
+  ;; THEN the line under Base: says to press RET on work
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stacked--open-pushed-stack)))
+      (test-stack-menus--give-pull-requests "work-parser" 101)
+      (test-stack-menus--press preview "g")
+      (should (string-match-p "^  Next: +press RET on work to describe it"
+                              (test-stack-menus--line-under-base preview))))))
+
+(ert-deftest test-shipit-stack-menus-no-next-step-when-every-layer-has-a-pr ()
+  ;; GIVEN the preview of a pushed stack with no pull request yet
+  ;; THEN it shows a line that names the next step
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stacked--open-pushed-stack)))
+      (should (test-stack-menus--next-step-shown-p preview))
+      ;; WHEN both layers get a pull request, #101 and #102, and the
+      ;;   preview is refreshed
+      (test-stack-menus--give-pull-requests "work-parser" 101 "work" 102)
+      (test-stack-menus--press preview "g")
+      ;; THEN the preview shows no line that names a next step
+      (should-not (test-stack-menus--next-step-shown-p preview)))))
 
 (provide 'test-shipit-stack-menus)
 ;;; test-shipit-stack-menus.el ends here

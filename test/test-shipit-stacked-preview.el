@@ -1105,7 +1105,7 @@ check, the one still waiting the hourglass."
       (cl-letf (((symbol-function 'shipit-stacked-preview--current-layers)
                  (lambda () layers))
                 ((symbol-function 'shipit-stacked-preview--insert-header)
-                 (lambda () nil))
+                 #'ignore)
                 ((symbol-function 'shipit-stacked-preview--insert-problems)
                  (lambda () nil))
                 ((symbol-function 'shipit-stack--rev) (lambda (_) "abc"))

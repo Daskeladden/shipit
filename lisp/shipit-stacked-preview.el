@@ -705,8 +705,54 @@ one branch while standing on another."
                              'font-lock-face 'font-lock-comment-face)
                "")))))
 
-(defun shipit-stacked-preview--insert-header ()
-  "Insert the banner saying what this buffer is."
+(defconst shipit-stacked-preview--done-states '(pull-request merged)
+  "The states of a layer that needs no further step to become a pull request.")
+
+(defun shipit-stacked-preview--key (key)
+  "Return KEY in the face that the key hints use."
+  (propertize key 'font-lock-face 'transient-key))
+
+(defun shipit-stacked-preview--some-state-p (states wanted)
+  "Return non-nil when a layer in STATES is in one of the states WANTED."
+  (seq-some (lambda (entry) (memq (plist-get (cdr entry) :state) wanted))
+            states))
+
+(defun shipit-stacked-preview--open-layers (states)
+  "Return the entries of STATES whose layer still needs a step, bottom first."
+  (seq-remove (lambda (entry)
+                (memq (plist-get (cdr entry) :state)
+                      shipit-stacked-preview--done-states))
+              states))
+
+(defun shipit-stacked-preview--next-step (states)
+  "Return the words for the next step to make the stack, or nil if none.
+STATES maps the branch of each layer to its state, bottom first.  The
+steps go in the order a stack is made: the branches, the push, then a
+pull request for each layer from the bottom up.  A layer whose copy on
+the remote differs from this one needs the push too, or its pull
+request would show the commits of the old copy."
+  (let ((open (shipit-stacked-preview--open-layers states)))
+    (cond
+     ((null open) nil)
+     ((shipit-stacked-preview--some-state-p states '(no-branch))
+      (format "check the base and the divisions, then press %s to give each layer a branch"
+              (shipit-stacked-preview--key "b c")))
+     ((shipit-stacked-preview--some-state-p states '(not-pushed drifted))
+      (format "press %s to push the layers" (shipit-stacked-preview--key "P")))
+     (t
+      (format "press %s on %s to describe it and open its pull request"
+              (shipit-stacked-preview--key "RET")
+              (propertize (car (car open)) 'font-lock-face 'magit-branch-local))))))
+
+(defun shipit-stacked-preview--insert-next-step (states)
+  "Insert the line that names the next step to make the stack, if one is left.
+STATES maps the branch of each layer to its state, bottom first."
+  (when-let* ((words (shipit-stacked-preview--next-step states)))
+    (insert (format "  %-9s %s\n" "Next:" words))))
+
+(defun shipit-stacked-preview--insert-header (states)
+  "Insert the banner saying what this buffer is.
+STATES maps the branch of each layer to its state, bottom first."
   (insert (propertize
            (format "STACKED PULL REQUESTS — %d commit%s over %s\n"
                    (length shipit-stacked-preview--commits)
@@ -715,6 +761,7 @@ one branch while standing on another."
                     shipit-stacked-preview--base))
            'font-lock-face '(:foreground "orange" :weight bold)))
   (shipit-stacked-preview--insert-refs)
+  (shipit-stacked-preview--insert-next-step states)
   (shipit-stacked-preview--insert-keys))
 
 (defun shipit-stacked-preview--layer-states (layers statuses)
@@ -727,22 +774,22 @@ STATUSES are the pull request statuses of the stack."
 
 (defun shipit-stacked-preview--render ()
   "Draw the buffer from the state it holds."
-  (let ((inhibit-read-only t)
-        (position (point)))
+  (let* ((inhibit-read-only t)
+         (position (point))
+         (layers (shipit-stacked-preview--current-layers))
+         (states (shipit-stacked-preview--layer-states
+                  layers (shipit-stacked-preview--statuses layers))))
+    (setq shipit-stacked-preview--states-shown states)
     (erase-buffer)
     (magit-insert-section (shipit-stack-root)
-      (shipit-stacked-preview--insert-header)
+      (shipit-stacked-preview--insert-header states)
       (shipit-stacked-preview--insert-fetch-problem)
       (shipit-stacked-preview--insert-problems)
       ;; Newest at the top and the base at the bottom, which is the way
       ;; a stack is drawn and the way the commits actually sit.
-      (let* ((layers (shipit-stacked-preview--current-layers))
-             (states (shipit-stacked-preview--layer-states
-                      layers (shipit-stacked-preview--statuses layers)))
-             (width (shipit-stacked-preview--name-width layers))
-             (count-width (shipit-stacked-preview--count-width layers))
-             (index (length layers)))
-        (setq shipit-stacked-preview--states-shown states)
+      (let ((width (shipit-stacked-preview--name-width layers))
+            (count-width (shipit-stacked-preview--count-width layers))
+            (index (length layers)))
         (dolist (layer (reverse layers))
           (shipit-stacked-preview--insert-layer
            layer index width count-width (= index (length layers))

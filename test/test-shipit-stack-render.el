@@ -28,7 +28,7 @@
   (declare (indent 2))
   `(with-temp-buffer
      (magit-section-mode)
-     (setq inhibit-read-only t)
+     (setq-local inhibit-read-only t)
      (magit-insert-section (shipit-pr-buffer)
        (shipit-sections-insert-stack-rows ,rows ,base))
      ,@body))
@@ -103,7 +103,7 @@ for the root section, which cannot be hidden.  A layer's body is a few
 lines of git output, so it is built as the row is drawn."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (magit-insert-section (shipit-pr-buffer)
       (shipit-sections-insert-stack-rows
        test-stack-render--rows "main"
@@ -132,7 +132,7 @@ One layer opened while reading it therefore stayed open for the rest
 of the session, and on a stack of six that is the whole buffer."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (magit-insert-section (shipit-pr-buffer)
       (shipit-sections-insert-stack-rows test-stack-render--rows "main"))
     (let ((layer (car (oref magit-root-section children))))
@@ -152,7 +152,7 @@ without the overlay shows the body anyway and TAB then has to be
 pressed twice."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (magit-insert-section (shipit-pr-buffer)
       (shipit-sections-insert-stack-rows
        test-stack-render--rows "main"
@@ -171,7 +171,7 @@ THEN the washer's content appears, nested under that layer, and
 showing again adds nothing: the forge is asked when the reader asks."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (let ((washes 0))
       (magit-insert-section (shipit-pr-buffer)
         (shipit-sections-insert-stack-rows
@@ -203,7 +203,7 @@ WHEN the mark is an icon, a space carrying a display property
 THEN it survives on the line rather than being trimmed as whitespace."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (magit-insert-section (shipit-pr-buffer)
       (shipit-sections-insert-stack-rows
        '(((label . "#1") (name . "alpha") (extra . "E1"))

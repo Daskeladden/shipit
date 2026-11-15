@@ -186,7 +186,7 @@ THEN the heading states the position, every sibling is listed with its
 title, and the row for this pull request is marked."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (test-stack--with-backend
      (list :name "Stacked" :fetch-stack (lambda (&rest _) test-stack--normalized))
      (lambda ()
@@ -208,7 +208,7 @@ WHEN the stack section is inserted
 THEN nothing is written at all, rather than an empty heading."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (test-stack--with-backend
      '(:name "Stackless")
      (lambda ()
@@ -222,7 +222,7 @@ WHEN the stack section is inserted
 THEN nothing is written, so solo pull requests look as they always did."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (test-stack--with-backend
      (list :name "Stacked" :fetch-stack (lambda (&rest _) nil))
      (lambda ()
@@ -238,7 +238,7 @@ RET on the row needs; the section is found by text property rather
 than by matching its heading text."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (test-stack--with-backend
      (list :name "Stacked" :fetch-stack (lambda (&rest _) test-stack--normalized))
      (lambda ()
@@ -297,7 +297,7 @@ WHEN the row is hidden and expanded again
 THEN nothing is fetched again: a row washes once per render."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (let ((pr-fetches 0))
       (test-stack--with-backend
        (list :name "Stacked"
@@ -339,7 +339,7 @@ the child heading two columns in, its content deeper still, past the
 column the heading's icon and word occupy."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (test-stack--with-backend
      (list :name "Stacked"
            :fetch-stack (lambda (&rest _) test-stack--normalized)
@@ -371,7 +371,7 @@ everywhere else, under both icon variants."
   (dolist (shipit-use-svglib-icons '(nil t))
     (with-temp-buffer
       (magit-section-mode)
-      (setq inhibit-read-only t)
+      (setq-local inhibit-read-only t)
       (test-stack--with-backend
        (list :name "Stacked" :fetch-stack (lambda (&rest _) test-stack--normalized))
        (lambda ()
@@ -398,7 +398,7 @@ shipit, which is where RET on this row used to fall back to the magit
 integration and look like nothing happened."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (setq major-mode 'shipit-mode)
     (test-stack--with-backend
      (list :name "Stacked" :fetch-stack (lambda (&rest _) test-stack--normalized))
@@ -485,7 +485,7 @@ the red x, and one with no checks nothing extra, so whether the stack
 is green can be read without opening each sibling."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (let ((shipit-use-svglib-icons nil)
           (asked nil))
       (test-stack--with-backend
@@ -521,7 +521,7 @@ hourglass, so where the stack stands with its reviewers can be read
 without opening each sibling."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (let ((shipit-use-svglib-icons nil))
       (test-stack--with-backend
        (list :name "Stacked"
@@ -551,7 +551,7 @@ THEN the rows still render, without glyphs: the rollup is a nicety
 and its failure belongs in the debug log, not across the buffer."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (let ((shipit-use-svglib-icons nil))
       (test-stack--with-backend
        (list :name "Stacked"
@@ -596,7 +596,7 @@ text there read as not working."
   (require 'shipit-actions)
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (test-stack--with-backend
      (list :name "Stacked"
            :fetch-stack (lambda (&rest _) test-stack--normalized)

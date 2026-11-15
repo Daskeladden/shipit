@@ -831,7 +831,7 @@ THEN it is shown, commits and all: the preview exists to look at the
 division, and a layer born shut made every reader press TAB first."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (magit-insert-section (shipit-pr-buffer)
       (magit-insert-section (shipit-stack-layer "work")
         (magit-insert-heading "  HEAD 1 work")
@@ -1098,7 +1098,7 @@ THEN each row wears its own glyphs: the approved layer the green
 check, the one still waiting the hourglass."
   (with-temp-buffer
     (magit-section-mode)
-    (setq inhibit-read-only t)
+    (setq-local inhibit-read-only t)
     (setq shipit-stacked-preview--repo "owner/repo"
           shipit-stacked-preview--base "origin/master")
     (let ((shipit-use-svglib-icons nil)

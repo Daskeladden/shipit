@@ -2590,30 +2590,37 @@ window."
                                        'font-lock-face 'shipit-timestamp-face
                                        'shipit-raw-timestamp raw-date))
                  (metadata-str (format "%s | %s" author-col date-col))
-                 ;; Calculate window width for right alignment
-                 (window-width (max 80 (or (window-width) 80)))
-                 ;; Calculate available width for title
-                 ;; Reserve: indent (1) + unread (2) + SHA (8) + space (1) + metadata + space (1) + magit indicator (3)
+                 ;; The width of the window that shows this buffer, for
+                 ;; right alignment.  The selected window can be another
+                 ;; one, such as an undo tree that redraws the buffer.
+                 (window-width (max 80 (window-width
+                                        (or (get-buffer-window (current-buffer) t)
+                                            (selected-window)))))
                  (metadata-width (string-width metadata-str))
                  (magit-indicator-width 3)  ; Space for "..." or similar magit section indicator
                  (indent-str (make-string (or indent 0) ?\s))
-                 (reserved-width (+ (or indent 0)
-                                    1 2 8 1 metadata-width 1 magit-indicator-width))
-                 (available-title-width (max 50 (- window-width reserved-width)))
-                 (title-str (truncate-string-to-width first-line available-title-width))
-                 ;; Build left part with SHA and title
-                 (title-with-avatar (format "%s%s"
-                                           (if shipit-show-avatars
-                                               (concat (shipit--create-avatar-display author-github-username
-                                                                                      (or author-avatar-url
-                                                                                          (shipit--generate-avatar-url author-github-username)) 16) " ")
-                                             "")
-                                           (propertize title-str 'font-lock-face 'markdown-metadata-value-face)))
-                 (left-part (format "%s %s" (propertize short-sha 'font-lock-face 'magit-hash) title-with-avatar))
-                 ;; Calculate dynamic padding to right-align metadata to screen width
-                 ;; Leave space for magit section indicator at the end
-                 (left-width (string-width left-part))
-                 (total-left (+ (or indent 0) 1 2 left-width))  ; caller indent + 1 space + 2 unread + left part
+                 (sha-part (concat (propertize short-sha 'font-lock-face 'magit-hash) " "))
+                 (avatar-part (if shipit-show-avatars
+                                  (concat (shipit--create-avatar-display
+                                           author-github-username
+                                           (or author-avatar-url
+                                               (shipit--generate-avatar-url author-github-username))
+                                           16)
+                                          " ")
+                                ""))
+                 ;; The title gets what the window leaves after the other
+                 ;; parts and one space of padding, so the metadata of
+                 ;; every row starts in the same column.  Before the SHA
+                 ;; come the caller's indent, one space and the unread mark.
+                 (fixed-left (+ (or indent 0) 1 2
+                                (string-width sha-part) (string-width avatar-part)))
+                 (title-width (max 10 (- window-width fixed-left 1
+                                         metadata-width magit-indicator-width)))
+                 (title-str (truncate-string-to-width first-line title-width))
+                 (left-part (concat sha-part avatar-part
+                                    (propertize title-str 'font-lock-face
+                                                'markdown-metadata-value-face)))
+                 (total-left (+ (or indent 0) 1 2 (string-width left-part)))
                  (padding-needed (max 1 (- window-width total-left metadata-width magit-indicator-width)))
                  (padding (make-string padding-needed ?\s))
                  (heading-line (format "%s %s%s%s%s"

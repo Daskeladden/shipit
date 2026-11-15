@@ -1559,5 +1559,78 @@ only said."
           (should-error (execute-kbd-macro (kbd "C-o")) :type 'buffer-read-only))
         (should (equal before (buffer-string)))))))
 
+(defun test-stacked--line-of (buffer text)
+  "Return the line of BUFFER that holds TEXT, without properties."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (search-forward text)
+      (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))
+
+(ert-deftest test-shipit-stacked-preview-redraw-from-another-window-keeps-columns ()
+  ;; GIVEN the preview shown in a window 150 columns wide
+  ;; AND a window 50 columns wide beside it, selected, as the window of
+  ;;   an undo tree is while it takes a step
+  ;; WHEN the preview is drawn again
+  ;; THEN each commit row is as wide as when the preview's own window
+  ;;   was selected
+  (shipit-sandbox-with-repo
+    (set-frame-size nil 200 40)
+    (delete-other-windows)
+    (shipit-stacked-preview)
+    (let* ((preview (get-buffer "*shipit-stacked-preview: work*"))
+           (narrow (split-window nil 150 t)))
+      (unwind-protect
+          (progn
+            (set-window-buffer (selected-window) preview)
+            (with-current-buffer preview (shipit-stacked-preview--render))
+            (let ((row (test-stacked--line-of preview "writer: emit the header")))
+              (with-temp-buffer
+                (set-window-buffer narrow (current-buffer))
+                (with-selected-window narrow
+                  (with-current-buffer preview (shipit-stacked-preview--render))))
+              (should (equal row (test-stacked--line-of preview "writer: emit the header")))))
+        (delete-other-windows)))))
+
+(defun test-stacked--commit-row-bars (buffer)
+  "Return the column of the bar between author and date in each commit row.
+BUFFER is the preview; a commit row starts with its short id."
+  (with-current-buffer buffer
+    (save-excursion
+      (goto-char (point-min))
+      (let (columns)
+        (while (re-search-forward "^ +[0-9a-f]\\{7\\} " nil t)
+          (let ((line (buffer-substring (line-beginning-position) (line-end-position))))
+            (push (string-width (substring line 0 (string-match " | " line)))
+                  columns))
+          (forward-line 1))
+        (nreverse columns)))))
+
+(ert-deftest test-shipit-stacked-preview-commit-rows-align-in-a-narrow-window ()
+  ;; GIVEN the sandbox stack with a fifth commit whose subject is 57
+  ;;   characters long
+  ;; WHEN the preview is drawn in windows from 80 to 120 columns wide
+  ;; THEN at each width the author and date of every commit row start in
+  ;;   the same column, inside the window
+  (shipit-sandbox-with-repo
+    (shipit-sandbox--git "commit" "-q" "--allow-empty" "-m"
+                         "writer: emit the footer with the totals of the whole order")
+    (set-frame-size nil 200 40)
+    (delete-other-windows)
+    (shipit-stacked-preview)
+    (let ((preview (get-buffer "*shipit-stacked-preview: work*")))
+      (unwind-protect
+          (dolist (width '(80 90 95 100 110 120))
+            (delete-other-windows)
+            (split-window nil width t)
+            (set-window-buffer (selected-window) preview)
+            (with-current-buffer preview (shipit-stacked-preview--render))
+            (let ((bars (test-stacked--commit-row-bars preview)))
+              (should (= 5 (length bars)))
+              (should (equal (list width 1)
+                             (list width (length (delete-dups (copy-sequence bars))))))
+              (should (< (car bars) (window-width)))))
+        (delete-other-windows)))))
+
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

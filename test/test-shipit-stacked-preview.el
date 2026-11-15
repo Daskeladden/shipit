@@ -372,14 +372,19 @@ would be refused at creation, after the description had been written."
                  (lambda () (nth 1 layers)))
                 ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
                  (lambda (_layer) nil))
-                ;; the branches exist here, but nothing is on the remote
+                ;; the branches exist here, and only the base is on the remote
                 ((symbol-function 'shipit-stack--rev)
-                 (lambda (ref) (unless (string-prefix-p "origin/" ref) "abc1234")))
+                 (lambda (ref)
+                   (when (or (not (string-prefix-p "origin/" ref))
+                             (equal ref "origin/master"))
+                     "abc1234")))
                 ((symbol-function 'shipit-preview-branch)
                  (lambda (&rest _) (setq handed-over t))))
-        (should-error (shipit-test-http-answering test-stacked--no-pull-requests
-                        (shipit-stacked-preview-visit-layer))
-                      :type 'user-error)
+        (let ((refusal (should-error
+                        (shipit-test-http-answering test-stacked--no-pull-requests
+                          (shipit-stacked-preview-visit-layer))
+                        :type 'user-error)))
+          (should (string-match-p "one not on the remote yet" (cadr refusal))))
         (should-not handed-over)))))
 
 (ert-deftest test-shipit-stacked-preview-bottom-layer-needs-nothing-below ()
@@ -398,8 +403,12 @@ whole stack sits on, which is already there."
                  (lambda () (nth 0 layers)))
                 ((symbol-function 'shipit-stacked-preview--refuse-when-broken)
                  (lambda (_layer) nil))
+                ;; the branches exist here, and only the base is on the remote
                 ((symbol-function 'shipit-stack--rev)
-                 (lambda (ref) (unless (string-prefix-p "origin/" ref) "abc1234")))
+                 (lambda (ref)
+                   (when (or (not (string-prefix-p "origin/" ref))
+                             (equal ref "origin/master"))
+                     "abc1234")))
                 ((symbol-function 'shipit-preview-branch)
                  (lambda (&rest _) (setq handed-over t))))
         (shipit-test-http-answering test-stacked--no-pull-requests

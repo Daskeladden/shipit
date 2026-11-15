@@ -5,10 +5,11 @@
 ;;; Commentary:
 
 ;; The branch menu on `b' and the rebase menu on `r' of the stacked
-;; preview, RET on its base, and the line that names the next step, as
-;; a user meets them: keys pressed in the preview of a real repository,
-;; whose remote is a bare repository beside it.  Only the forge stands
-;; in.  The design of the menus is in
+;; preview, RET on its base, the line that names the next step, and the
+;; offer to push a base that the remote lacks, as a user meets them:
+;; keys pressed in the preview of a real repository, whose remote is a
+;; bare repository beside it.  Only the forge stands in.  The design of
+;; the menus is in
 ;; docs/superpowers/specs/2026-11-14-stack-rebase-menu-design.md.
 
 ;;; Code:
@@ -496,6 +497,103 @@ PAIRS alternate a branch name and a number."
       (test-stack-menus--press preview "g")
       ;; THEN the preview shows no line that names a next step
       (should-not (test-stack-menus--next-step-shown-p preview)))))
+
+;;;; A base that the remote lacks
+
+(defun test-stack-menus--open-on-a-local-base (base)
+  "Open the pushed sandbox stack, then make BASE its base with RET on Base:.
+BASE is a ref made here at main and never pushed.  Returns the preview."
+  (let ((preview (test-stacked--open-pushed-stack)))
+    (test-stack-menus--press-on-line preview test-stack-menus--base-line
+                                     (format "RET %s RET" base))
+    preview))
+
+(defun test-stack-menus--draft-buffer (branch)
+  "Return the buffer of the pull request description for BRANCH, or nil."
+  (get-buffer (format "*shipit-preview: %s @ %s*" shipit-sandbox-repo branch)))
+
+(defun test-stack-menus--open-bottom-layer-answering (preview answer)
+  "Press RET on the bottom layer of PREVIEW and answer each question ANSWER.
+Return (QUESTIONS . REFUSAL): the questions asked, oldest first, and
+the words of the refusal, or nil when there was none."
+  (let ((draft (test-stack-menus--draft-buffer "work-parser"))
+        asked refusal)
+    (when draft (kill-buffer draft))
+    (set-window-buffer (selected-window) preview)
+    (with-current-buffer preview
+      (goto-char (shipit-stacked-preview--layer-position "work-parser"))
+      (cl-letf (((symbol-function 'y-or-n-p)
+                 (lambda (prompt) (push prompt asked) answer)))
+        (condition-case err
+            (execute-kbd-macro (kbd "RET"))
+          (user-error (setq refusal (cadr err))))))
+    (cons (nreverse asked) refusal)))
+
+(defun test-stack-menus--remote-branch (name)
+  "Return the commit of the branch NAME on the remote, or nil."
+  (car (split-string (shipit-sandbox--git "ls-remote" "--heads" "origin" name))))
+
+(ert-deftest test-shipit-stack-menus-yes-pushes-the-missing-base ()
+  ;; GIVEN a pushed stack whose base release is a branch made here at
+  ;;   main and never pushed
+  ;; WHEN RET is pressed on the bottom layer and the question is
+  ;;   answered with y
+  ;; THEN shipit asked "The base release is not on the remote.  Push it?"
+  ;; AND the remote has release at the same commit as here
+  ;; AND the process log shows the push
+  ;; AND the description of work-parser opens
+  (shipit-sandbox-with-repo
+    (shipit-sandbox--git "branch" "release" "main")
+    (let* ((preview (test-stack-menus--open-on-a-local-base "release"))
+           (answer (test-stack-menus--open-bottom-layer-answering preview t)))
+      (unwind-protect
+          (progn
+            (should (string-match-p "The base release is not on the remote\\.  Push it\\?"
+                                    (or (car (car answer)) "")))
+            (should-not (cdr answer))
+            (should (equal (shipit-sandbox--git "rev-parse" "release")
+                           (test-stack-menus--remote-branch "release")))
+            (should (with-current-buffer shipit-process-buffer-name
+                      (string-match-p "git push .*origin release"
+                                      (buffer-string))))
+            (should (test-stack-menus--draft-buffer "work-parser")))
+        (when-let* ((draft (test-stack-menus--draft-buffer "work-parser")))
+          (kill-buffer draft))))))
+
+(ert-deftest test-shipit-stack-menus-no-keeps-the-base-off-the-remote ()
+  ;; GIVEN a pushed stack whose base release is a branch made here at
+  ;;   main and never pushed
+  ;; WHEN RET is pressed on the bottom layer and the question is
+  ;;   answered with n
+  ;; THEN shipit asked whether to push the base
+  ;; AND it stops with "The base release is not on the remote yet"
+  ;; AND the remote still has no branch release
+  ;; AND no description opens
+  (shipit-sandbox-with-repo
+    (shipit-sandbox--git "branch" "release" "main")
+    (let* ((preview (test-stack-menus--open-on-a-local-base "release"))
+           (answer (test-stack-menus--open-bottom-layer-answering preview nil)))
+      (should (string-match-p "The base release is not on the remote\\.  Push it\\?"
+                              (or (car (car answer)) "")))
+      (should (string-match-p "The base release is not on the remote yet"
+                              (or (cdr answer) "")))
+      (should-not (test-stack-menus--remote-branch "release"))
+      (should-not (test-stack-menus--draft-buffer "work-parser")))))
+
+(ert-deftest test-shipit-stack-menus-tag-as-base-is-refused-without-a-question ()
+  ;; GIVEN a pushed stack whose base is the tag v1, made here at main
+  ;; WHEN RET is pressed on the bottom layer
+  ;; THEN shipit asks nothing
+  ;; AND it stops with "The base v1 is not a branch on the remote"
+  ;; AND no description opens
+  (shipit-sandbox-with-repo
+    (shipit-sandbox--git "tag" "v1" "main")
+    (let* ((preview (test-stack-menus--open-on-a-local-base "v1"))
+           (answer (test-stack-menus--open-bottom-layer-answering preview t)))
+      (should-not (car answer))
+      (should (string-match-p "The base v1 is not a branch on the remote"
+                              (or (cdr answer) "")))
+      (should-not (test-stack-menus--draft-buffer "work-parser")))))
 
 (provide 'test-shipit-stack-menus)
 ;;; test-shipit-stack-menus.el ends here

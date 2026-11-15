@@ -1584,12 +1584,36 @@ layer itself: each is the base of the next."
     (when problems
       (user-error "Not a stack yet: %s" (string-join problems "; ")))))
 
+(defun shipit-stacked-preview--push-stack-base (name)
+  "Offer to push NAME, the branch the stack sits on, and signal unless it lands.
+NAME must be a branch here.  The push is the one the layers get."
+  (unless (y-or-n-p (format "The base %s is not on the remote.  Push it? " name))
+    (user-error "The base %s is not on the remote yet -- push it, or press RET on the base to pick another"
+                name))
+  (unless (shipit--push-branch name)
+    (user-error "Pushing the base %s failed -- $ shows what git said" name)))
+
+(defun shipit-stacked-preview--ensure-stack-base-on-remote ()
+  "Make sure that the branch the stack sits on is on the remote, or signal.
+The bottom layer is raised against it.  A base picked with RET or a
+prefix argument can be a branch made here and never pushed, and `P'
+pushes only the layers, so the push is offered here.  A tag or a
+single commit as the base cannot become a branch on the remote by a
+push of its name, so it is refused without a question."
+  (let ((name (shipit-stacked-preview--base-name shipit-stacked-preview--base)))
+    (unless (shipit-stack--rev (concat "origin/" name))
+      (unless (shipit-stack--rev (concat "refs/heads/" name))
+        (user-error "The base %s is not a branch on the remote -- press RET on the base to pick a branch"
+                    name))
+      (shipit-stacked-preview--push-stack-base name))))
+
 (defun shipit-stacked-preview--refuse-when-base-is-absent (layer)
-  "Signal when a layer below LAYER has not reached the remote.
+  "Signal when the base or a layer below LAYER has not reached the remote.
 A pull request is raised against a branch the remote already has, and
 LAYER is raised against the layer below it.  Caught here rather than
 left to the remote, which would refuse the created pull request with a
 message about a base ref, well after the description had been written."
+  (shipit-stacked-preview--ensure-stack-base-on-remote)
   (let* ((below (butlast (shipit-stacked-preview--branches-through layer)))
          (absent (seq-remove (lambda (branch)
                                (shipit-stack--rev (concat "origin/" branch)))

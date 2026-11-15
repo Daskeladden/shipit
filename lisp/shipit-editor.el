@@ -470,12 +470,18 @@ CONTEXT is a plist with:
           (goto-char (point-min)))
         ;; Trigger initial preview update
         (shipit-editor--update-preview (current-buffer)))
-      ;; Display the editor in a split below
-      (let ((window (display-buffer-in-side-window
-                     editor-buffer
-                     '((side . bottom)
-                       (window-height . 0.3)))))
-        (select-window window)))))
+      (select-window (shipit-editor--display editor-buffer)))))
+
+(defun shipit-editor--display (buffer)
+  "Show BUFFER, the editor, at the bottom of the frame; return its window.
+Windows on the bottom side share one height, side by side.  So when a
+window holds that side already, such as the legend of review mode, the
+editor goes below the other windows, above that side, or it would be as
+low as the legend and show no line of text."
+  (let ((alist '((side . bottom) (window-height . 0.3))))
+    (if (window-with-parameter 'window-side 'bottom)
+        (display-buffer-at-bottom buffer alist)
+      (display-buffer-in-side-window buffer alist))))
 
 ;;; Live preview
 

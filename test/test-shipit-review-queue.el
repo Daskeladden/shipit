@@ -441,5 +441,41 @@ THEN the draft is in the queue of the pull request, and it shows below
 line 2 of the file, because a forge does not tell names apart by case."
   (test-review-queue--check-draft-from-review-mode "O/R"))
 
+(defmacro test-review-queue--in-frame-of-size (columns lines &rest body)
+  "Run BODY with the frame COLUMNS wide and LINES high, then size it back."
+  (declare (indent 2))
+  `(let ((old-columns (frame-width))
+         (old-lines (frame-height)))
+     (unwind-protect
+         (progn (set-frame-size (selected-frame) ,columns ,lines)
+                ,@body)
+       (set-frame-size (selected-frame) old-columns old-lines))))
+
+(ert-deftest test-review-queue-c-a-opens-an-editor-with-room-to-write ()
+  "GIVEN a file of a pull request open in review mode, in a frame of 40
+lines, with the legend of review mode at the bottom of the frame
+WHEN the user presses `c a' in the legend
+THEN the editor shows at least 5 lines of text, so the user sees what
+they type, and the legend stays at the bottom."
+  (test-review-queue--in-frame-of-size 120 40
+    (test-review-queue--in-closed-pr-buffer
+      (let* ((clone (test-review-queue--make-clone))
+             (file-buffer (test-review-queue--open-in-review-mode clone "o/r"))
+             (legend (get-buffer shipit-review--actions-buffer-name)))
+        (unwind-protect
+            (progn
+              (select-window (get-buffer-window legend))
+              (call-interactively (key-binding (kbd "c a")))
+              (should (<= 5 (window-body-height
+                             (get-buffer-window shipit-editor--buffer-name))))
+              (should (eq 'bottom (window-parameter (get-buffer-window legend)
+                                                    'window-side))))
+          (when (get-buffer shipit-editor--buffer-name)
+            (with-current-buffer shipit-editor--buffer-name
+              (shipit-editor-cancel)))
+          (with-current-buffer file-buffer (shipit-review-mode -1))
+          (kill-buffer file-buffer)
+          (delete-directory clone t))))))
+
 (provide 'test-shipit-review-queue)
 ;;; test-shipit-review-queue.el ends here

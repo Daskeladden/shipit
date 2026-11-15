@@ -1515,5 +1515,49 @@ only said."
         (should (string-match-p "Fetch from origin failed" (buffer-string)))
         (should (shipit-stacked-preview--layer-named "work"))))))
 
+;;;; The undo history
+
+(defun test-stacked--press-on (buffer text keys)
+  "Put point at the first TEXT in BUFFER and press KEYS there."
+  (set-window-buffer (selected-window) buffer)
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (search-forward text)
+    (goto-char (match-beginning 0))
+    (execute-kbd-macro (kbd keys))))
+
+(ert-deftest test-shipit-stacked-preview-opened-commit-stays-out-of-undo ()
+  ;; GIVEN the preview of the sandbox stack, with s pressed on "writer:
+  ;;   emit the header", so the stack has three layers
+  ;; AND the commit "parser: read the body" opened with TAB, which puts
+  ;;   its message into the buffer
+  ;; WHEN C-/ is pressed
+  ;; THEN the division made with s is gone, and the stack has two layers
+  (shipit-sandbox-with-repo
+    (shipit-stacked-preview)
+    (let ((buffer (get-buffer "*shipit-stacked-preview: work*")))
+      (test-stacked--press-on buffer "writer: emit the header" "s")
+      (should (= 3 (length (with-current-buffer buffer
+                             (shipit-stacked-preview--current-layers)))))
+      (test-stacked--press-on buffer "parser: read the body" "TAB")
+      (test-stacked--press-on buffer "Base:" "C-/")
+      (should (= 2 (length (with-current-buffer buffer
+                             (shipit-stacked-preview--current-layers))))))))
+
+(ert-deftest test-shipit-stacked-preview-text-refuses-typing-at-both-ends ()
+  ;; GIVEN the preview of the sandbox stack
+  ;; WHEN a new line is typed with C-o at the start and at the end of the
+  ;;   buffer, the two places where text has a neighbour on one side only
+  ;; THEN each is refused as read-only, and the text stays as it was
+  (shipit-sandbox-with-repo
+    (shipit-stacked-preview)
+    (set-window-buffer (selected-window) "*shipit-stacked-preview: work*")
+    (with-current-buffer "*shipit-stacked-preview: work*"
+      (let ((before (buffer-string)))
+        (dolist (position (list (point-min) (point-max)))
+          (goto-char position)
+          (should-error (execute-kbd-macro (kbd "C-o")) :type 'buffer-read-only))
+        (should (equal before (buffer-string)))))))
+
 (provide 'test-shipit-stacked-preview)
 ;;; test-shipit-stacked-preview.el ends here

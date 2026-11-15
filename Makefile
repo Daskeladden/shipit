@@ -21,11 +21,14 @@ CANVAS_KEYS = ../canvas-keys
 CANVAS_MERMAID = ../canvas-mermaid
 CANVAS_SEQUENCE = ../canvas-sequence
 CANVAS_MINDMAP = ../canvas-mindmap
+# canvas-undo-tree draws the undo tree of a buffer, and the undo tests
+# of the stacked preview open it there.  Optional like the others.
+CANVAS_UNDO_TREE = ../canvas-undo-tree
 # The directories of packages on top of shipit whose files `make compile'
 # is given, so that those files find each other.  shipit-reload sets it.
 EXTRA_LOAD_PATH ?=
 
-.PHONY: all compile clean test test-older install autoloads package
+.PHONY: all compile clean test test-older install autoloads package test-packages
 
 all: compile autoloads
 
@@ -79,8 +82,18 @@ TEST_HOME = -eval "(setq user-emacs-directory (file-name-as-directory (make-temp
 # Nor does any test reach another machine: see test/shipit-test-offline.el.
 TEST_OFFLINE = -l test/shipit-test-offline.el
 
+# The undo tests of the stacked preview press the keys of undo-tree and
+# vundo, as a user who has them does.  Both are installed here, since
+# the tests themselves run offline.
+test-packages:
+	$(EMACS) -batch -Q \
+		-eval "(setq package-user-dir \"$(PWD)/.packages\")" \
+		-eval "(package-initialize)" \
+		-eval "(unless (package-installed-p 'undo-tree) (package-install 'undo-tree))" \
+		-eval "(unless (package-installed-p 'vundo) (package-install 'vundo))"
+
 # Run unit tests
-test-unit: compile
+test-unit: compile test-packages
 	$(EMACS) -batch -Q \
 		-eval "(setq package-user-dir \"$(PWD)/.packages\")" \
 		$(TEST_HOME) \
@@ -96,6 +109,7 @@ test-unit: compile
 		-L $(CANVAS_MERMAID) \
 		-L $(CANVAS_SEQUENCE) \
 		-L $(CANVAS_MINDMAP) \
+		-L $(CANVAS_UNDO_TREE) \
 		-l test/test-shipit.el \
 		-l test/test-shipit-editor.el \
 		-l test/test-shipit-magit-requires.el \

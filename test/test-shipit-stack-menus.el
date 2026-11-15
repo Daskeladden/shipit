@@ -5,8 +5,9 @@
 ;;; Commentary:
 
 ;; The branch menu on `b' and the rebase menu on `r' of the stacked
-;; preview, RET on its base, the line that names the next step, and the
-;; offer to push a base that the remote lacks, as a user meets them:
+;; preview, RET on its base, the line that names the next step, the
+;; offer to push a base that the remote lacks, and undo of the
+;; divisions with the undo keys and undo trees, as a user meets them:
 ;; keys pressed in the preview of a real repository, whose remote is a
 ;; bare repository beside it.  Only the forge stands in.  The design of
 ;; the menus is in
@@ -860,6 +861,204 @@ work-parser and work.  Returns the preview."
     (let ((preview (test-stack-menus--open-stack-under-another-layer)))
       (test-stack-menus--press preview "R")
       (should (equal '(101 102 103) (test-stack-menus--remote-stack))))))
+
+;;;; Undo
+
+(defconst test-stack-menus--real-pop-to-buffer (symbol-function 'pop-to-buffer)
+  "`pop-to-buffer' as Emacs has it.  The sandbox replaces it.")
+
+(defconst test-stack-menus--real-switch-to-buffer (symbol-function 'switch-to-buffer)
+  "`switch-to-buffer' as Emacs has it.  The sandbox replaces it.")
+
+(defmacro test-stack-menus--with-windows (&rest body)
+  "Run BODY with the window functions that the sandbox replaces.
+An undo tree opens in a window of its own, and its keys work there."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'pop-to-buffer) test-stack-menus--real-pop-to-buffer)
+             ((symbol-function 'switch-to-buffer) test-stack-menus--real-switch-to-buffer))
+     ,@body))
+
+(defmacro test-stack-menus--with-undo-tree (&rest body)
+  "Run BODY with undo-tree on in each new buffer, as an Emacs set up with it."
+  (declare (indent 0))
+  `(progn
+     (require 'undo-tree)
+     (global-undo-tree-mode 1)
+     (unwind-protect (progn ,@body)
+       (global-undo-tree-mode -1))))
+
+(defun test-stack-menus--open-preview ()
+  "Open the preview of the sandbox stack and return it.
+The subjects divide its four commits into work-parser, with the two
+parser commits, and work, with the two writer commits."
+  (shipit-stacked-preview)
+  (get-buffer "*shipit-stacked-preview: work*"))
+
+(defun test-stack-menus--commits-in (buffer branch)
+  "Return how many commits the layer BRANCH holds, as BUFFER shows it."
+  (let ((row (test-stack-menus--row buffer branch)))
+    (unless (string-match (concat (regexp-quote branch) " +\\([0-9]+\\) commit") row)
+      (error "No count of commits in the row %S" row))
+    (string-to-number (match-string 1 row))))
+
+(defun test-stack-menus--divide-after-the-writer-header (preview)
+  "Press s on \"writer: emit the header\" in PREVIEW, so work holds 1 commit."
+  (test-stack-menus--press-on-line preview "writer: emit the header" "s"))
+
+(defun test-stack-menus--press-on-the-base-line (preview keys)
+  "Press KEYS in PREVIEW with point on the Base: line, on no commit."
+  (test-stack-menus--press-on-line preview test-stack-menus--base-line keys))
+
+(defun test-stack-menus--press-in-buffer (name keys)
+  "Press KEYS in the buffer called NAME, shown in the selected window."
+  (let ((buffer (or (get-buffer name) (error "No buffer %s" name))))
+    (set-window-buffer (selected-window) buffer)
+    (with-current-buffer buffer
+      (execute-kbd-macro (kbd keys)))))
+
+(defun test-stack-menus--text (buffer)
+  "Return the text of BUFFER."
+  (with-current-buffer buffer
+    (buffer-substring-no-properties (point-min) (point-max))))
+
+(ert-deftest test-shipit-stack-menus-s-joins-at-a-division ()
+  ;; GIVEN the preview of a stack whose subjects divide it into
+  ;;   work-parser with 2 commits and work with 2 commits
+  ;; WHEN s is pressed on "parser: read the body", the commit that ends
+  ;;   work-parser
+  ;; THEN the division goes away, and work holds all 4 commits
+  ;; WHEN s is pressed on that commit again
+  ;; THEN work-parser holds 2 commits again
+  ;; AND the key hints say "s divide or join", and offer no u
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-preview)))
+      (test-stack-menus--press-on-line preview "parser: read the body" "s")
+      (should-not (test-stack-menus--has-row-p preview "work-parser"))
+      (should (= 4 (test-stack-menus--commits-in preview "work")))
+      (test-stack-menus--press-on-line preview "parser: read the body" "s")
+      (should (= 2 (test-stack-menus--commits-in preview "work-parser")))
+      (let ((text (test-stack-menus--text preview)))
+        (should (string-match-p "\\_<s +divide or join" text))
+        (should-not (string-match-p "\\_<u +undo" text))))))
+
+(ert-deftest test-shipit-stack-menus-undo-and-redo-a-division-anywhere ()
+  ;; GIVEN the preview of a stack, with s pressed on "writer: emit the
+  ;;   header", so work holds 1 commit
+  ;; WHEN C-/ is pressed with the cursor on the Base: line, on no commit
+  ;; THEN work holds 2 commits again
+  ;; WHEN C-? is pressed there
+  ;; THEN work holds 1 commit again
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-preview)))
+      (test-stack-menus--divide-after-the-writer-header preview)
+      (should (= 1 (test-stack-menus--commits-in preview "work")))
+      (test-stack-menus--press-on-the-base-line preview "C-/")
+      (should (= 2 (test-stack-menus--commits-in preview "work")))
+      (test-stack-menus--press-on-the-base-line preview "C-?")
+      (should (= 1 (test-stack-menus--commits-in preview "work"))))))
+
+(ert-deftest test-shipit-stack-menus-undo-a-new-base ()
+  ;; GIVEN the preview of a stack of four commits over main, with s
+  ;;   pressed on "writer: emit the header", so work holds 1 commit
+  ;; AND the base changed to origin/release with RET on the Base: line,
+  ;;   which divides the commits again
+  ;; WHEN C-/ is pressed
+  ;; THEN the header says 4 commits over main again
+  ;; AND work holds 1 commit: the division made with s is back
+  (shipit-sandbox-with-repo
+    (let ((preview (test-stack-menus--open-with-a-release-branch)))
+      (test-stack-menus--divide-after-the-writer-header preview)
+      (test-stack-menus--press-on-the-base-line preview "RET origin/release RET")
+      (should (string-match-p "3 commits over release"
+                              (test-stack-menus--header preview)))
+      (test-stack-menus--press-on-the-base-line preview "C-/")
+      (should (string-match-p "4 commits over main"
+                              (test-stack-menus--header preview)))
+      (should (= 1 (test-stack-menus--commits-in preview "work"))))))
+
+(ert-deftest test-shipit-stack-menus-undo-tree-keys-undo-and-redo ()
+  ;; GIVEN undo-tree on in every buffer
+  ;; AND the preview of a stack, with s pressed on "writer: emit the
+  ;;   header", so work holds 1 commit
+  ;; WHEN C-/ is pressed on the Base: line
+  ;; THEN work holds 2 commits again
+  ;; WHEN C-? is pressed
+  ;; THEN work holds 1 commit again
+  (shipit-sandbox-with-repo
+    (test-stack-menus--with-undo-tree
+      (let ((preview (test-stack-menus--open-preview)))
+        (should (buffer-local-value 'undo-tree-mode preview))
+        (test-stack-menus--divide-after-the-writer-header preview)
+        (test-stack-menus--press-on-the-base-line preview "C-/")
+        (should (= 2 (test-stack-menus--commits-in preview "work")))
+        (test-stack-menus--press-on-the-base-line preview "C-?")
+        (should (= 1 (test-stack-menus--commits-in preview "work")))))))
+
+(ert-deftest test-shipit-stack-menus-undo-tree-drawing-steps-back ()
+  ;; GIVEN undo-tree on in every buffer
+  ;; AND the preview of a stack, with s pressed on "writer: emit the
+  ;;   header", so work holds 1 commit
+  ;; WHEN C-x u opens the undo tree, and p steps back in it
+  ;; THEN work holds 2 commits again in the preview
+  (shipit-sandbox-with-repo
+    (test-stack-menus--with-undo-tree
+      (test-stack-menus--with-windows
+        (let ((preview (test-stack-menus--open-preview)))
+          (test-stack-menus--divide-after-the-writer-header preview)
+          (unwind-protect
+              (progn
+                (test-stack-menus--press-on-the-base-line preview "C-x u")
+                (test-stack-menus--press-in-buffer undo-tree-visualizer-buffer-name "p")
+                (should (= 2 (test-stack-menus--commits-in preview "work"))))
+            (when (get-buffer undo-tree-visualizer-buffer-name)
+              (kill-buffer undo-tree-visualizer-buffer-name))
+            (delete-other-windows)))))))
+
+(ert-deftest test-shipit-stack-menus-canvas-undo-tree-steps-back ()
+  ;; GIVEN undo-tree on in every buffer, with canvas-undo-tree as its
+  ;;   drawing
+  ;; AND the preview of a stack, with s pressed on "writer: emit the
+  ;;   header", so work holds 1 commit
+  ;; WHEN C-x u opens the canvas, and [ steps back in it
+  ;; THEN work holds 2 commits again in the preview
+  (skip-unless (and (shipit-canvas-available-p)
+                    (require 'canvas-undo-tree nil t)))
+  (shipit-sandbox-with-repo
+    (test-stack-menus--with-undo-tree
+      (test-stack-menus--with-windows
+        (let ((preview (test-stack-menus--open-preview)))
+          (test-stack-menus--divide-after-the-writer-header preview)
+          (canvas-undo-tree-visualizer-mode 1)
+          (unwind-protect
+              (progn
+                (test-stack-menus--press-on-the-base-line preview "C-x u")
+                (test-stack-menus--press-in-buffer "*canvas-undo-tree*" "[")
+                (should (= 2 (test-stack-menus--commits-in preview "work"))))
+            (canvas-undo-tree-visualizer-mode -1)
+            (when (get-buffer "*canvas-undo-tree*")
+              (kill-buffer "*canvas-undo-tree*"))
+            (delete-other-windows)))))))
+
+(ert-deftest test-shipit-stack-menus-vundo-steps-back-and-typing-stays-refused ()
+  ;; GIVEN the preview of a stack, with s pressed on "writer: emit the
+  ;;   header", so work holds 1 commit
+  ;; WHEN M-x vundo opens the undo tree, b steps back, and RET confirms
+  ;; THEN work holds 2 commits again in the preview
+  ;; AND a new line typed with C-o in the preview is refused, and the
+  ;;   text stays
+  (shipit-sandbox-with-repo
+    (require 'vundo)
+    (test-stack-menus--with-windows
+      (let ((preview (test-stack-menus--open-preview)))
+        (test-stack-menus--divide-after-the-writer-header preview)
+        (unwind-protect
+            (test-stack-menus--press-on-the-base-line preview "M-x vundo RET b RET")
+          (delete-other-windows))
+        (should (= 2 (test-stack-menus--commits-in preview "work")))
+        (let ((before (test-stack-menus--text preview)))
+          (should-error (test-stack-menus--press-on-the-base-line preview "C-o")
+                        :type 'buffer-read-only)
+          (should (equal before (test-stack-menus--text preview))))))))
 
 (provide 'test-shipit-stack-menus)
 ;;; test-shipit-stack-menus.el ends here

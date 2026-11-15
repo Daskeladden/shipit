@@ -462,14 +462,15 @@ Its branches divide the commits, and without them the subjects do."
 (defun shipit-stacked-preview-set-base (base)
   "Measure the stack from BASE, and divide its commits again.
 The commits are divided as when the preview opens, so a division made
-by hand is proposed again.  When BASE leaves no commits, the stack
-stays as it was."
+by hand is proposed again, and undo brings it back.  When BASE leaves
+no commits, the stack stays as it was."
   (interactive (list (shipit-stacked-preview--read-base
                       shipit-stacked-preview--base)))
-  (shipit-stacked-preview--set-stack
-   base (shipit-stacked-preview--commits-over base)
-   (shipit-stacked-preview--from-existing-stack))
-  (shipit-stacked-preview--render))
+  (let ((commits (shipit-stacked-preview--commits-over base)))
+    (shipit-stacked-preview--record-step)
+    (shipit-stacked-preview--set-stack
+     base commits (shipit-stacked-preview--from-existing-stack))
+    (shipit-stacked-preview--render)))
 
 (defun shipit-stacked-preview--remote-tips ()
   "Alist of commit sha to the remote branch names standing there."
@@ -645,7 +646,7 @@ within a layer history grows upward too."
             width))))
 
 (defconst shipit-stacked-preview--key-columns
-  '((("RET" . "open layer, set base") ("s" . "divide here") ("u" . "undo"))
+  '((("RET" . "open layer, set base") ("s" . "divide or join"))
     (("b" . "branch") ("r" . "rebase") ("P" . "push"))
     (("R" . "register stack") ("v" . "draw on canvas"))
     (("g" . "refresh") ("q" . "quit") ("$" . "process log")))
@@ -893,24 +894,101 @@ STATUSES are the pull request statuses of the stack."
         (when (and section (eq (oref section type) 'shipit-commit))
           (oref section value)))))
 
-(defun shipit-stacked-preview-divide ()
-  "Make the commit at point the end of a layer."
+(defun shipit-stacked-preview--toggled-boundaries (sha)
+  "Return the divisions without the one at SHA, or with it when it is absent."
+  (cond ((member sha shipit-stacked-preview--boundaries)
+         (remove sha shipit-stacked-preview--boundaries))
+        ((equal sha (plist-get (car (last shipit-stacked-preview--commits)) :sha))
+         (user-error "The newest commit already ends the top layer"))
+        (t (cons sha shipit-stacked-preview--boundaries))))
+
+(defun shipit-stacked-preview-toggle-division ()
+  "End a layer at the commit at point, or join the two layers that meet there.
+Each press is one step of the undo history."
   (interactive)
-  (let ((sha (shipit-stacked-preview--sha-at-point)))
-    (unless sha (user-error "No commit at point"))
-    (when (equal sha (plist-get (car (last shipit-stacked-preview--commits)) :sha))
-      (user-error "The newest commit already ends the top layer"))
-    (cl-pushnew sha shipit-stacked-preview--boundaries :test #'equal)
+  (let ((boundaries (shipit-stacked-preview--toggled-boundaries
+                     (or (shipit-stacked-preview--sha-at-point)
+                         (user-error "No commit at point")))))
+    (shipit-stacked-preview--record-step)
+    (setq shipit-stacked-preview--boundaries boundaries)
     (shipit-stacked-preview--render)))
 
-(defun shipit-stacked-preview-undivide ()
-  "Remove the division at the commit at point."
-  (interactive)
-  (let ((sha (shipit-stacked-preview--sha-at-point)))
-    (unless sha (user-error "No commit at point"))
-    (setq shipit-stacked-preview--boundaries
-          (delete sha shipit-stacked-preview--boundaries))
-    (shipit-stacked-preview--render)))
+;;;; The undo history
+;;
+;; Each change of the base or of the divisions is one step of the undo
+;; history of the buffer, so the undo keys and the undo trees take it
+;; back.  A step is an `apply' entry that puts the earlier base and
+;; divisions back and draws the buffer again.  The text never enters
+;; the history: an undone change of text would cut into a newer drawing.
+;;
+;; Every undo command and undo tree refuses a read-only buffer.  So the
+;; buffer is writable, and its text carries the `read-only' property
+;; instead, as a customize buffer does.
+
+(defun shipit-stacked-preview--plan ()
+  "Return the base and the divisions, which one step of undo puts back."
+  (list shipit-stacked-preview--base shipit-stacked-preview--boundaries))
+
+(defun shipit-stacked-preview--record-step ()
+  "Add a step to the undo history that puts back the base and divisions of now.
+Called before a change of either, so undo takes that change back."
+  (push (list 'apply #'shipit-stacked-preview--restore-plan
+              (shipit-stacked-preview--plan))
+        buffer-undo-list))
+
+(defun shipit-stacked-preview--restore-plan (plan)
+  "Put back PLAN, a base and its divisions from the undo history, and redraw.
+The base and the divisions it replaces go to the history in turn, so
+redo brings them back.  A base other than the one shown reads its
+commits again, since git may have moved them meanwhile, and does so
+first: a base without commits stops the undo before anything changes."
+  (pcase-let* ((`(,base ,boundaries) plan)
+               (commits (unless (equal base shipit-stacked-preview--base)
+                          (shipit-stacked-preview--commits-over base))))
+    (shipit-stacked-preview--record-step)
+    (when commits
+      (shipit-stacked-preview--set-stack
+       base commits (shipit-stacked-preview--from-existing-stack)))
+    (setq shipit-stacked-preview--boundaries boundaries))
+  (shipit-stacked-preview--render))
+
+(defun shipit-stacked-preview--step-p (entry)
+  "Return non-nil when ENTRY of an undo list is a step of this buffer."
+  (and (eq (car-safe entry) 'apply)
+       (eq (car-safe (cdr entry)) #'shipit-stacked-preview--restore-plan)))
+
+(defun shipit-stacked-preview--text-change-p (entry)
+  "Return non-nil when ENTRY of an undo list records a change of the text.
+The node Undo of the Emacs Lisp manual lists the kinds of entries.  A
+boundary is nil, and undo-tree marks the end of the list with a symbol.
+Every other entry but a step of this buffer is about the text: Emacs
+records how deleted text moved the markers in it as `apply' entries
+too."
+  (and entry
+       (not (symbolp entry))
+       (not (shipit-stacked-preview--step-p entry))))
+
+(defun shipit-stacked-preview--drop-text-changes ()
+  "Take each change of the text out of the undo history of this buffer.
+The entries that stay keep their cells, since `undo' finds the steps it
+undid before by those cells."
+  (when (consp buffer-undo-list)
+    (while (shipit-stacked-preview--text-change-p (car buffer-undo-list))
+      (setq buffer-undo-list (cdr buffer-undo-list)))
+    (let ((cell buffer-undo-list))
+      (while (cdr cell)
+        (if (shipit-stacked-preview--text-change-p (cadr cell))
+            (setcdr cell (cddr cell))
+          (setq cell (cdr cell)))))))
+
+(defun shipit-stacked-preview--after-change (beg end _length)
+  "Make the text from BEG to END read-only, and keep it out of the undo history.
+Text comes in with each drawing, and with each commit opened later.
+The text is sticky at both ends, so nothing can be typed before the
+first character either."
+  (let ((inhibit-read-only t))
+    (add-text-properties beg end '(read-only t front-sticky (read-only))))
+  (shipit-stacked-preview--drop-text-changes))
 
 (defun shipit-stacked-preview--rename (layer name)
   "Give LAYER the branch NAME.
@@ -1689,8 +1767,7 @@ leaves the buffer as it is; the canvas file is not loaded until then."
 ;; The keys are set at top level, not inside the `defvar': a reload of
 ;; this file keeps a keymap that already exists, but runs these again.
 (set-keymap-parent shipit-stacked-preview-mode-map magit-section-mode-map)
-(define-key shipit-stacked-preview-mode-map (kbd "s") #'shipit-stacked-preview-divide)
-(define-key shipit-stacked-preview-mode-map (kbd "u") #'shipit-stacked-preview-undivide)
+(define-key shipit-stacked-preview-mode-map (kbd "s") #'shipit-stacked-preview-toggle-division)
 (define-key shipit-stacked-preview-mode-map (kbd "RET") #'shipit-stacked-preview-visit)
 (define-key shipit-stacked-preview-mode-map (kbd "P") #'shipit-stacked-preview-push)
 (define-key shipit-stacked-preview-mode-map (kbd "R") #'shipit-stacked-preview-register)
@@ -1709,7 +1786,11 @@ leaves the buffer as it is; the canvas file is not loaded until then."
   ;; request buffer do not, and the two stop looking alike.
   (shipit--apply-section-defaults)
   (setq-local revert-buffer-function
-              (lambda (&rest _) (shipit-stacked-preview-refresh))))
+              (lambda (&rest _) (shipit-stacked-preview-refresh)))
+  ;; Writable with read-only text, and undo on: see "The undo history".
+  (setq buffer-read-only nil)
+  (buffer-enable-undo)
+  (add-hook 'after-change-functions #'shipit-stacked-preview--after-change nil t))
 
 ;;;###autoload
 (defun shipit-stacked-preview (&optional choose-base)

@@ -2532,6 +2532,14 @@ The :raw-date contains the ISO timestamp for property storage."
           :date date-str
           :raw-date author-date)))
 
+(defun shipit--commit-row-width ()
+  "Return the width that a commit row of the current buffer fills, 80 at least.
+It is the width of the window that shows the buffer, for right
+alignment.  The selected window can be another one, such as an undo
+tree that redraws the buffer."
+  (max 80 (window-width (or (get-buffer-window (current-buffer) t)
+                            (selected-window)))))
+
 (defun shipit--insert-processed-commit-section (commit-data repo pr-number &optional indent)
   "Insert a processed commit as a magit section (UI part).
 INDENT is extra columns to the left of the whole row, for a caller
@@ -2590,12 +2598,7 @@ window."
                                        'font-lock-face 'shipit-timestamp-face
                                        'shipit-raw-timestamp raw-date))
                  (metadata-str (format "%s | %s" author-col date-col))
-                 ;; The width of the window that shows this buffer, for
-                 ;; right alignment.  The selected window can be another
-                 ;; one, such as an undo tree that redraws the buffer.
-                 (window-width (max 80 (window-width
-                                        (or (get-buffer-window (current-buffer) t)
-                                            (selected-window)))))
+                 (window-width (shipit--commit-row-width))
                  (metadata-width (string-width metadata-str))
                  (magit-indicator-width 3)  ; Space for "..." or similar magit section indicator
                  (indent-str (make-string (or indent 0) ?\s))

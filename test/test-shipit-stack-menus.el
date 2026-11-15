@@ -6,8 +6,9 @@
 
 ;; The branch menu on `b' and the rebase menu on `r' of the stacked
 ;; preview, RET on its base, the line that names the next step, the
-;; offer to push a base that the remote lacks, and undo of the
-;; divisions with the undo keys and undo trees, as a user meets them:
+;; offer to push a base that the remote lacks, undo of the divisions
+;; with the undo keys and undo trees, and a preview that fits its window
+;; again when the window changes width, as a user meets them:
 ;; keys pressed in the preview of a real repository, whose remote is a
 ;; bare repository beside it.  Only the forge stands in.  The design of
 ;; the menus is in
@@ -1059,6 +1060,293 @@ parser commits, and work, with the two writer commits."
           (should-error (test-stack-menus--press-on-the-base-line preview "C-o")
                         :type 'buffer-read-only)
           (should (equal before (test-stack-menus--text preview))))))))
+
+;;;; Fitting the window, and checks asked for once
+
+(defvar test-stack-menus--checks nil
+  "Pull request number to its checks and review, as the forge tells them.")
+
+(defvar test-stack-menus--forge-asks nil
+  "The operations that the forge was asked for, newest first.")
+
+(defun test-stack-menus--answer-checks (_config numbers)
+  "Answer the checks and reviews of NUMBERS from `test-stack-menus--checks'."
+  (delq nil (mapcar (lambda (number) (assq number test-stack-menus--checks))
+                    numbers)))
+
+(defun test-stack-menus--recording (key operation)
+  "Return OPERATION, which now records KEY each time the forge is asked for it."
+  (lambda (&rest args)
+    (push key test-stack-menus--forge-asks)
+    (apply operation args)))
+
+(defun test-stack-menus--recorded-forge (backend)
+  "Return BACKEND, recording each operation, with checks and reviews to tell.
+They come from `test-stack-menus--checks'."
+  (let ((operations (append (list :fetch-stack-statuses #'test-stack-menus--answer-checks)
+                            backend))
+        (forge nil))
+    (while operations
+      (let ((key (pop operations))
+            (value (pop operations)))
+        (unless (plist-member forge key)
+          (setq forge (plist-put forge key (if (functionp value)
+                                               (test-stack-menus--recording key value)
+                                             value))))))
+    forge))
+
+(defmacro test-stack-menus--with-forge-checks (checks &rest body)
+  "Run BODY with a forge that tells CHECKS and records what it is asked.
+CHECKS maps a pull request number to its checks and review.  BODY sets
+`test-stack-menus--checks' when the checks change on the forge.  Icons
+are off, so checks that pass show as ✅ and checks that fail as ❌."
+  (declare (indent 1))
+  (let ((original (make-symbol "original")))
+    `(let ((,original (symbol-function 'shipit-sandbox-backend))
+           (test-stack-menus--checks ,checks)
+           (test-stack-menus--forge-asks nil)
+           (shipit-use-svglib-icons nil))
+       (cl-letf (((symbol-function 'shipit-sandbox-backend)
+                  (lambda () (test-stack-menus--recorded-forge (funcall ,original)))))
+         ,@body))))
+
+(defun test-stack-menus--git-p (program)
+  "Return non-nil when PROGRAM is git."
+  (and (stringp program) (equal "git" (file-name-nondirectory program))))
+
+(defun test-stack-menus--asked-during (fn)
+  "Call FN and return what it asked for, as (OPERATIONS . RUNS).
+OPERATIONS are the forge operations, oldest first, and RUNS is how many
+git processes started."
+  (let* ((runs 0)
+         (on-call (lambda (program &rest _)
+                    (when (test-stack-menus--git-p program) (cl-incf runs))))
+         (on-make (lambda (&rest args)
+                    (when (test-stack-menus--git-p (car (plist-get args :command)))
+                      (cl-incf runs)))))
+    (setq test-stack-menus--forge-asks nil)
+    (advice-add 'call-process :before on-call)
+    (advice-add 'make-process :before on-make)
+    (unwind-protect (funcall fn)
+      (advice-remove 'call-process on-call)
+      (advice-remove 'make-process on-make))
+    (cons (reverse test-stack-menus--forge-asks) runs)))
+
+(defmacro test-stack-menus--in-a-wide-frame (&rest body)
+  "Run BODY in a frame 160 columns wide with one window.
+The commit rows never get narrower than 80 columns, so the widths in
+these scenarios stay above that."
+  (declare (indent 0))
+  (let ((width (make-symbol "width"))
+        (height (make-symbol "height")))
+    `(let ((,width (frame-width))
+           (,height (frame-height)))
+       ;; A batch frame takes the size of its terminal at the first wait,
+       ;; and a size set before that wait is lost then.
+       (sleep-for 0.01)
+       (set-frame-size nil 160 40)
+       (delete-other-windows)
+       (unwind-protect (progn ,@body)
+         (delete-other-windows)
+         (set-frame-size nil ,width ,height)))))
+
+(defun test-stack-menus--let-emacs-redisplay ()
+  "Run the window size hooks, as redisplay does after a window changes.
+Batch Emacs has no redisplay, so nothing else runs them in a test.
+Redisplay calls a buffer's own hook functions with each window that
+shows the buffer, and the global ones with the frame.  It calls them
+only for a window whose size changed; this calls them for every window.
+No buffer of a window is current, as in redisplay."
+  (with-temp-buffer
+    (dolist (window (window-list nil 'no-minibuf))
+      (let ((buffer (window-buffer window)))
+        (when (local-variable-p 'window-size-change-functions buffer)
+          (dolist (fn (buffer-local-value 'window-size-change-functions buffer))
+            (unless (eq fn t) (funcall fn window))))))
+    (dolist (fn (default-value 'window-size-change-functions))
+      (funcall fn (selected-frame)))))
+
+(defun test-stack-menus--pause ()
+  "Let Emacs redisplay and then wait half a second, as when a user stops."
+  (test-stack-menus--let-emacs-redisplay)
+  (sleep-for 0.5))
+
+(defun test-stack-menus--show (preview)
+  "Show PREVIEW alone in the selected window, and return that window."
+  (delete-other-windows)
+  (set-window-buffer (selected-window) preview)
+  (selected-window))
+
+(defun test-stack-menus--open-beside (width)
+  "Open a window beside the selected one, which keeps WIDTH columns.
+The new window shows a buffer of its own, as the canvas does.  Return
+the new window."
+  (let ((window (split-window nil width t)))
+    (set-window-buffer window (get-buffer-create " *test-stack-menus-beside*"))
+    window))
+
+(defun test-stack-menus--close-beside (window)
+  "Close every window but WINDOW, as the canvas does when it closes."
+  (delete-other-windows window))
+
+(defun test-stack-menus--drag-border-to (window width)
+  "Drag the right border of WINDOW until it is WIDTH columns wide.
+Emacs redisplays at each move of the mouse."
+  (adjust-window-trailing-edge window (- width (window-width window)) t)
+  (test-stack-menus--let-emacs-redisplay))
+
+(defun test-stack-menus--commit-row-widths (preview)
+  "Return the width of each commit row of PREVIEW.
+A commit row starts with its short id."
+  (with-current-buffer preview
+    (save-excursion
+      (goto-char (point-min))
+      (let (widths)
+        (while (re-search-forward "^ +[0-9a-f]\\{7\\} " nil t)
+          (push (string-width (buffer-substring (line-beginning-position)
+                                                (line-end-position)))
+                widths)
+          (forward-line 1))
+        (nreverse widths)))))
+
+(defun test-stack-menus--rows-fit-p (preview)
+  "Return non-nil when each commit row of PREVIEW ends at the right of its window.
+The date of a commit ends a few columns before the edge, which leaves
+room for a fold mark."
+  (let ((width (window-width (get-buffer-window preview t)))
+        (widths (test-stack-menus--commit-row-widths preview)))
+    (and widths
+         (seq-every-p (lambda (row) (<= (- width 4) row (1- width))) widths))))
+
+(defun test-stack-menus--explain-rows-fit (preview)
+  "Tell how wide the commit rows of PREVIEW are, and how wide its window is."
+  (list 'rows (test-stack-menus--commit-row-widths preview)
+        'window (window-width (get-buffer-window preview t))))
+
+(put 'test-stack-menus--rows-fit-p 'ert-explainer #'test-stack-menus--explain-rows-fit)
+
+(defun test-stack-menus--put-cursor-on (window text)
+  "Put the cursor of WINDOW on the first TEXT in its buffer."
+  (with-current-buffer (window-buffer window)
+    (goto-char (point-min))
+    (search-forward text)
+    (goto-char (match-beginning 0))
+    (set-window-point window (point))))
+
+(defun test-stack-menus--cursor-line (window)
+  "Return the line that the cursor of WINDOW is on."
+  (with-current-buffer (window-buffer window)
+    (save-excursion
+      (goto-char (window-point window))
+      (buffer-substring-no-properties (line-beginning-position) (line-end-position)))))
+
+(ert-deftest test-shipit-stack-menus-preview-fits-its-window-again ()
+  ;; GIVEN the preview of a stack, alone in a window 160 columns wide
+  ;; WHEN another window opens beside it and leaves it 100 columns, as
+  ;;   the canvas does, and a moment passes
+  ;; THEN each commit row ends inside the 100 columns
+  ;; WHEN the other window closes, and a moment passes
+  ;; THEN each commit row reaches out to 160 columns again, without g
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let* ((preview (test-stack-menus--open-preview))
+             (window (test-stack-menus--show preview)))
+        (test-stack-menus--open-beside 100)
+        (test-stack-menus--pause)
+        (should (test-stack-menus--rows-fit-p preview))
+        (test-stack-menus--close-beside window)
+        (test-stack-menus--pause)
+        (should (= 160 (window-width window)))
+        (should (test-stack-menus--rows-fit-p preview))))))
+
+(ert-deftest test-shipit-stack-menus-fitting-asks-neither-forge-nor-git ()
+  ;; GIVEN the preview of a stack whose layers have pull requests: #101,
+  ;;   whose checks pass, and #102
+  ;; WHEN another window opens beside it and leaves it 100 columns, and
+  ;;   a moment passes
+  ;; THEN each commit row ends inside the 100 columns
+  ;; AND the forge was asked nothing, and no git command ran
+  ;; AND the row of work-parser still shows #101 with checks that pass
+  (shipit-sandbox-with-repo
+    (test-stack-menus--with-forge-checks '((101 (checks . "success")))
+      (test-stack-menus--in-a-wide-frame
+        (let ((preview (test-stack-menus--open-submitted-stack)))
+          (test-stack-menus--show preview)
+          (let ((asked (test-stack-menus--asked-during
+                        (lambda ()
+                          (test-stack-menus--open-beside 100)
+                          (test-stack-menus--pause)))))
+            (should (test-stack-menus--rows-fit-p preview))
+            (should (equal '(nil . 0) asked))
+            (should (string-match-p "PR #101 ✅"
+                                    (test-stack-menus--row preview "work-parser")))))))))
+
+(ert-deftest test-shipit-stack-menus-fitting-waits-for-the-drag-to-stop ()
+  ;; GIVEN the preview of a stack in a window 100 columns wide, beside
+  ;;   another window, drawn for that width with g
+  ;; WHEN the border between the windows is dragged to 95, 90 and 85
+  ;;   columns, with no pause between
+  ;; THEN the preview stays as it was drawn while the border moves
+  ;; WHEN a moment passes
+  ;; THEN each commit row ends inside the 85 columns
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let* ((preview (test-stack-menus--open-preview))
+             (window (test-stack-menus--show preview)))
+        (test-stack-menus--open-beside 100)
+        (test-stack-menus--press preview "g")
+        (let ((drawn (test-stack-menus--text preview)))
+          (dolist (width '(95 90 85))
+            (test-stack-menus--drag-border-to window width))
+          (should (equal drawn (test-stack-menus--text preview)))
+          (test-stack-menus--pause)
+          (should (test-stack-menus--rows-fit-p preview)))))))
+
+(ert-deftest test-shipit-stack-menus-fitting-keeps-the-cursor-on-its-commit ()
+  ;; GIVEN the preview of a stack in a window 160 columns wide, with its
+  ;;   cursor on "writer: emit the body"
+  ;; WHEN another window opens beside it, takes the focus and leaves the
+  ;;   preview 100 columns, as the canvas does, and a moment passes
+  ;; THEN each commit row ends inside the 100 columns
+  ;; AND the cursor of the preview is still on "writer: emit the body"
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let* ((preview (test-stack-menus--open-preview))
+             (window (test-stack-menus--show preview)))
+        (test-stack-menus--put-cursor-on window "writer: emit the body")
+        (select-window (test-stack-menus--open-beside 100))
+        (test-stack-menus--pause)
+        (should (test-stack-menus--rows-fit-p preview))
+        (should (string-match-p "writer: emit the body"
+                                (test-stack-menus--cursor-line window)))))))
+
+(ert-deftest test-shipit-stack-menus-s-and-undo-keep-the-checks-g-asks-again ()
+  ;; GIVEN the preview of a stack whose layers have pull requests: #101,
+  ;;   whose checks pass, and #102
+  ;; AND the checks of #101 failed on the forge since the preview was
+  ;;   drawn
+  ;; WHEN s is pressed on "writer: emit the header", and C-/ undoes it
+  ;; THEN the forge was not asked for checks and reviews
+  ;; AND the row of work-parser still shows #101 with checks that pass
+  ;; WHEN g is pressed
+  ;; THEN the forge was asked for checks and reviews
+  ;; AND the row of work-parser shows #101 with checks that failed
+  (shipit-sandbox-with-repo
+    (test-stack-menus--with-forge-checks '((101 (checks . "success")))
+      (let ((preview (test-stack-menus--open-submitted-stack)))
+        (setq test-stack-menus--checks '((101 (checks . "failure"))))
+        (let ((asked (test-stack-menus--asked-during
+                      (lambda ()
+                        (test-stack-menus--divide-after-the-writer-header preview)
+                        (test-stack-menus--press-on-the-base-line preview "C-/")))))
+          (should-not (memq :fetch-stack-statuses (car asked)))
+          (should (string-match-p "PR #101 ✅"
+                                  (test-stack-menus--row preview "work-parser"))))
+        (let ((asked (test-stack-menus--asked-during
+                      (lambda () (test-stack-menus--press preview "g")))))
+          (should (memq :fetch-stack-statuses (car asked)))
+          (should (string-match-p "PR #101 ❌"
+                                  (test-stack-menus--row preview "work-parser"))))))))
 
 (provide 'test-shipit-stack-menus)
 ;;; test-shipit-stack-menus.el ends here

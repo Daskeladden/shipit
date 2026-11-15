@@ -98,6 +98,35 @@ Working out a state asks git and the forge.  The stack canvas reads
 this buffer again after every redraw, so it reads these instead of
 asking again.")
 
+(defvar-local shipit-stacked-preview--layers-shown nil
+  "The layers the buffer was last drawn with.
+Naming a new layer asks git, so a drawing for a new window width
+reads these.")
+
+(defvar-local shipit-stacked-preview--refs-shown nil
+  "Where HEAD, its upstream and the base pointed when last looked up.
+A plist, as `shipit-stacked-preview--refs' returns it.")
+
+(defvar-local shipit-stacked-preview--problems-shown nil
+  "What stopped the stack being submitted when last looked up.")
+
+(defvar-local shipit-stacked-preview--known-statuses nil
+  "Pull request number to its checks and review, as the forge told them.
+A number the forge told nothing about maps to nil.  Kept until the
+next refresh: the checks and reviews change on the forge, not with a
+division or an undo here.")
+
+(defvar-local shipit-stacked-preview--drawn-width nil
+  "The width that the commit rows were last drawn for.")
+
+(defvar-local shipit-stacked-preview--fit-timer nil
+  "The timer that draws the buffer for a new window width, or nil.")
+
+(defconst shipit-stacked-preview--fit-delay 0.2
+  "Seconds without a change of width before the buffer fits its window.
+A drag of a window border changes the width many times a second, and
+the buffer is drawn once, after the drag.")
+
 (defvar-local shipit-stacked-preview--stack-to-rebuild nil
   "Non-nil when shipit could not build the stack in the order of the layers.
 Set when a step of the rebuild after a split failed, and cleared when
@@ -418,16 +447,32 @@ decision."
   (shipit-stacked-preview--state-text
    (shipit-stacked-preview--layer-state layer statuses)))
 
+(defun shipit-stacked-preview--learn-statuses (numbers)
+  "Ask the forge for the checks and reviews of NUMBERS, and keep the answer.
+One quiet fetch answers for all of them, and a forge that cannot
+answer right now leaves their rows bare until the next refresh."
+  (let ((answer (shipit-pr--stack-statuses-quietly shipit-stacked-preview--repo
+                                                   numbers)))
+    (dolist (number numbers)
+      (push (cons number (cdr (assq number answer)))
+            shipit-stacked-preview--known-statuses))))
+
 (defun shipit-stacked-preview--statuses (layers)
   "Return the statuses of LAYERS\=' pull requests, keyed by number.
-One quiet fetch answers for the whole stack; a layer without a pull
-request asks for nothing, and a forge that cannot answer right now
-leaves every row bare."
-  (shipit-pr--stack-statuses-quietly
-   shipit-stacked-preview--repo
-   (mapcar (lambda (layer)
-             (shipit-stacked-preview--pr-number (cdr (assq 'branch layer))))
-           layers)))
+The forge is asked only for a pull request that it was not asked about
+since the last refresh, and a layer without a pull request asks for
+nothing."
+  (let* ((numbers (delq nil (mapcar (lambda (layer)
+                                      (shipit-stacked-preview--pr-number
+                                       (cdr (assq 'branch layer))))
+                                    layers)))
+         (unknown (seq-remove (lambda (number)
+                                (assq number shipit-stacked-preview--known-statuses))
+                              numbers)))
+    (when unknown
+      (shipit-stacked-preview--learn-statuses unknown))
+    (seq-filter (lambda (entry) (and (cdr entry) (memq (car entry) numbers)))
+                shipit-stacked-preview--known-statuses)))
 
 (defun shipit-stacked-preview--pr-number (branch)
   "Return the number of the open pull request whose head is BRANCH.
@@ -715,21 +760,33 @@ are level."
                                   (format "%d behind" behind))))))
       (and words (string-join words ", ")))))
 
-(defun shipit-stacked-preview--insert-refs ()
+(defun shipit-stacked-preview--refs ()
+  "Return where HEAD, its upstream and the base point now, as a plist.
+`:branch' and `:subject' are those of HEAD, `:upstream' is its
+upstream, `:counts' says how far HEAD and the upstream are apart, and
+`:base-pr' is the pull request the stack sits on."
+  (let ((upstream (car (shipit-stack--git-lines
+                        "rev-parse" "--abbrev-ref" "--symbolic-full-name" "@{u}"))))
+    (list :branch (or (shipit-stack--current-branch) "detached HEAD")
+          :subject (car (shipit-stack--git-lines "log" "--format=%s" "-1"))
+          :upstream upstream
+          :counts (and upstream (shipit-stacked-preview--ahead-behind upstream))
+          :base-pr (shipit-stacked-preview--base-pr-number))))
+
+(defun shipit-stacked-preview--insert-refs (&optional refs)
   "Say where HEAD, its upstream and the base actually point.
-The stack is measured over the base, not over the branch\='s
-upstream, and when the two differ a reader can believe they stand on
-one branch while standing on another."
-  (let* ((branch (or (shipit-stack--current-branch) "detached HEAD"))
-         (subject (car (shipit-stack--git-lines "log" "--format=%s" "-1")))
-         (upstream (car (shipit-stack--git-lines
-                         "rev-parse" "--abbrev-ref"
-                         "--symbolic-full-name" "@{u}")))
-         (counts (and upstream
-                      (shipit-stacked-preview--ahead-behind upstream))))
+REFS is a plist as `shipit-stacked-preview--refs' returns it; without
+it, git and the forge are asked now.  The stack is measured over the
+base, not over the branch\='s upstream, and when the two differ a
+reader can believe they stand on one branch while standing on
+another."
+  (let* ((refs (or refs (shipit-stacked-preview--refs)))
+         (upstream (plist-get refs :upstream))
+         (counts (plist-get refs :counts)))
     (insert (format "  %-9s %s  %s\n" "Head:"
-                    (propertize branch 'font-lock-face 'magit-branch-local)
-                    (or subject "")))
+                    (propertize (plist-get refs :branch)
+                                'font-lock-face 'magit-branch-local)
+                    (or (plist-get refs :subject) "")))
     (when upstream
       (insert (format "  %-9s %s%s\n" "Upstream:"
                       (propertize upstream
@@ -742,7 +799,7 @@ one branch while standing on another."
      (format "  %-9s %s%s\n" "Base:"
              (propertize (or shipit-stacked-preview--base "")
                          'font-lock-face 'magit-branch-remote)
-             (if-let* ((pr (shipit-stacked-preview--base-pr-number)))
+             (if-let* ((pr (plist-get refs :base-pr)))
                  (propertize (format "  PR #%s" pr)
                              'font-lock-face 'font-lock-comment-face)
                "")))))
@@ -847,7 +904,7 @@ STATES maps the branch of each layer to its state, bottom first."
                    (shipit-stacked-preview--base-name
                     shipit-stacked-preview--base))
            'font-lock-face '(:foreground "orange" :weight bold)))
-  (shipit-stacked-preview--insert-refs)
+  (shipit-stacked-preview--insert-refs shipit-stacked-preview--refs-shown)
   (shipit-stacked-preview--insert-next-step states)
   (shipit-stacked-preview--insert-keys))
 
@@ -859,14 +916,23 @@ STATUSES are the pull request statuses of the stack."
                   (shipit-stacked-preview--layer-state layer statuses)))
           layers))
 
-(defun shipit-stacked-preview--render ()
-  "Draw the buffer from the state it holds."
-  (let* ((inhibit-read-only t)
-         (position (point))
-         (layers (shipit-stacked-preview--current-layers))
-         (states (shipit-stacked-preview--layer-states
-                  layers (shipit-stacked-preview--statuses layers))))
-    (setq shipit-stacked-preview--states-shown states)
+(defun shipit-stacked-preview--look-up ()
+  "Ask git and the forge for what the buffer shows, and keep the answers."
+  (let ((layers (shipit-stacked-preview--current-layers)))
+    (setq shipit-stacked-preview--layers-shown layers
+          shipit-stacked-preview--states-shown
+          (shipit-stacked-preview--layer-states
+           layers (shipit-stacked-preview--statuses layers))
+          shipit-stacked-preview--refs-shown (shipit-stacked-preview--refs)
+          shipit-stacked-preview--problems-shown
+          (shipit-stacked-preview--problems layers))))
+
+(defun shipit-stacked-preview--draw ()
+  "Draw the buffer from what the last look-up found, and ask nothing."
+  (let ((inhibit-read-only t)
+        (layers shipit-stacked-preview--layers-shown)
+        (states shipit-stacked-preview--states-shown))
+    (setq shipit-stacked-preview--drawn-width (shipit--commit-row-width))
     (erase-buffer)
     (magit-insert-section (shipit-stack-root)
       (shipit-stacked-preview--insert-header states)
@@ -882,8 +948,72 @@ STATUSES are the pull request statuses of the stack."
            layer index width count-width (= index (length layers))
            (cdr (assoc (cdr (assq 'branch layer)) states)))
           (setq index (1- index)))
-        (shipit-stacked-preview--insert-base width)))
+        (shipit-stacked-preview--insert-base width)))))
+
+(defun shipit-stacked-preview--render ()
+  "Look up the stack again, and draw the buffer from it."
+  (let ((position (point)))
+    (shipit-stacked-preview--look-up)
+    (shipit-stacked-preview--draw)
     (goto-char (min position (point-max)))))
+
+;;;; Fitting the window
+
+(defun shipit-stacked-preview--width-changed-p ()
+  "Return non-nil when the commit rows were drawn for another width."
+  (not (eql shipit-stacked-preview--drawn-width (shipit--commit-row-width))))
+
+(defun shipit-stacked-preview--window-resized (window)
+  "Fit the buffer of WINDOW to its window once the resize stops.
+Called from `window-size-change-functions' after a window that shows
+the buffer changed its size.  A change of height alone draws nothing."
+  (let ((buffer (window-buffer window)))
+    (with-current-buffer buffer
+      (when (shipit-stacked-preview--width-changed-p)
+        (when (timerp shipit-stacked-preview--fit-timer)
+          (cancel-timer shipit-stacked-preview--fit-timer))
+        (setq shipit-stacked-preview--fit-timer
+              (run-at-time shipit-stacked-preview--fit-delay nil
+                           #'shipit-stacked-preview--fit buffer))))))
+
+(defun shipit-stacked-preview--line-start (line)
+  "Return the position where LINE of the buffer starts."
+  (save-excursion
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (point)))
+
+(defun shipit-stacked-preview--window-lines ()
+  "Return each window on the buffer with the line of its cursor and its top."
+  (mapcar (lambda (window)
+            (list window
+                  (line-number-at-pos (window-point window))
+                  (line-number-at-pos (window-start window))))
+          (get-buffer-window-list nil nil t)))
+
+(defun shipit-stacked-preview--draw-in-place ()
+  "Draw the buffer, and keep the cursor and the top of each window on their line.
+A new width changes no line, only the columns of the commit rows.
+Without this the cursor of a window that is not selected goes to the
+start of the buffer."
+  (let ((windows (shipit-stacked-preview--window-lines))
+        (line (line-number-at-pos)))
+    (shipit-stacked-preview--draw)
+    (goto-char (shipit-stacked-preview--line-start line))
+    (pcase-dolist (`(,window ,cursor ,top) windows)
+      (set-window-start window (shipit-stacked-preview--line-start top) t)
+      (set-window-point window (shipit-stacked-preview--line-start cursor)))))
+
+(defun shipit-stacked-preview--fit (buffer)
+  "Draw BUFFER for the width of its window, when that width is new.
+The drawing reuses what the last look-up found, so it asks neither git
+nor the forge."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq shipit-stacked-preview--fit-timer nil)
+      (when (and (get-buffer-window buffer t)
+                 (shipit-stacked-preview--width-changed-p))
+        (shipit-stacked-preview--draw-in-place)))))
 
 ;;;; Commands
 
@@ -1124,8 +1254,10 @@ the remembered answer that the branch had no pull request."
   "Drop what is remembered about which pull request each layer has.
 A pull request made outside this buffer, on the web page or from
 another preview, is otherwise hidden behind a miss remembered from
-before it existed.  A merge on the forge is asked again too."
-  (setq shipit-stacked-preview--merged-prs nil)
+before it existed.  A merge on the forge is asked again too, and so
+are the checks and reviews."
+  (setq shipit-stacked-preview--merged-prs nil
+        shipit-stacked-preview--known-statuses nil)
   (dolist (branch (cons (shipit-stacked-preview--base-branch)
                         (shipit-stacked-preview--branch-names
                          (shipit-stacked-preview--current-layers))))
@@ -1790,7 +1922,8 @@ leaves the buffer as it is; the canvas file is not loaded until then."
   ;; Writable with read-only text, and undo on: see "The undo history".
   (setq buffer-read-only nil)
   (buffer-enable-undo)
-  (add-hook 'after-change-functions #'shipit-stacked-preview--after-change nil t))
+  (add-hook 'after-change-functions #'shipit-stacked-preview--after-change nil t)
+  (add-hook 'window-size-change-functions #'shipit-stacked-preview--window-resized nil t))
 
 ;;;###autoload
 (defun shipit-stacked-preview (&optional choose-base)
@@ -1903,20 +2036,22 @@ message about a base ref, well after the description had been written."
                   (string-join absent ", ")
                   (if (cdr absent) "them" "it")))))
 
-(defun shipit-stacked-preview--insert-problems ()
-  "Say what stops this stack being submitted, when anything does.
+(defun shipit-stacked-preview--problems (layers)
+  "Return what stops LAYERS being submitted, or nil when nothing does.
 Only once every layer has a branch: before that the layer rows already
 say which ones are still to be made, and a branch not yet made is not a
 fault."
-  (let ((branches (shipit-stacked-preview--branch-names
-                   (shipit-stacked-preview--current-layers))))
+  (let ((branches (shipit-stacked-preview--branch-names layers)))
     (when (seq-every-p #'shipit-stack--rev branches)
-      (let ((problems (shipit-stack-problems
-                       branches shipit-stacked-preview--base)))
-        (dolist (problem problems)
-          (insert (propertize (format "   %s\n" problem)
-                              'font-lock-face 'font-lock-warning-face)))
-        (when problems (insert "\n"))))))
+      (shipit-stack-problems branches shipit-stacked-preview--base))))
+
+(defun shipit-stacked-preview--insert-problems ()
+  "Say what stops this stack being submitted, as the last look-up found it."
+  (let ((problems shipit-stacked-preview--problems-shown))
+    (dolist (problem problems)
+      (insert (propertize (format "   %s\n" problem)
+                          'font-lock-face 'font-lock-warning-face)))
+    (when problems (insert "\n"))))
 
 (provide 'shipit-stacked-preview)
 ;;; shipit-stacked-preview.el ends here

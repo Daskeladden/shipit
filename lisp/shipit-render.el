@@ -3751,6 +3751,48 @@ table in code is text, and stays."
     (while (re-search-forward shipit--html-tag-regexp nil t)
       (shipit--convert-html-tag-at-match))))
 
+(defun shipit--picture-source (picture)
+  "Return the address of the source of PICTURE for this colour scheme.
+PICTURE is the HTML inside a <picture> element.  Its <source> whose
+media asks for the colour scheme of the selected frame names the
+address in its srcset.  Nil when no source does."
+  (let ((scheme (if (eq (frame-parameter nil 'background-mode) 'dark) "dark" "light"))
+        (start 0)
+        (found nil))
+    (while (and (not found) (string-match "<source\\([^>]*\\)>" picture start))
+      (let ((attributes (match-string 1 picture)))
+        (setq start (match-end 0))
+        (when (string-match-p (concat "prefers-color-scheme:[ \t]*" scheme)
+                              (or (shipit--html-attribute attributes "media") ""))
+          (setq found (car (split-string (or (shipit--html-attribute attributes "srcset") "")
+                                         "[ ,]" t))))))
+    found))
+
+(defun shipit--html-with-src (img src)
+  "Return the <img> tag IMG with SRC as its address."
+  (replace-regexp-in-string
+   "\\([ \t\n]src[ \t\n]*=[ \t\n]*\\)\\(?:\"[^\"]*\"\\|'[^']*'\\)"
+   (lambda (match) (concat (match-string 1 match) "\"" src "\""))
+   img t t))
+
+(defun shipit--html-collapse-pictures ()
+  "Put the <img> of each <picture> of this buffer in place of the <picture>.
+The <img> shows the source for the colour scheme of the selected frame,
+when the picture has one, as GitHub picks it.  The <img> takes one line,
+so a link around the picture stays one markdown link: the <source> tags
+alone left empty lines, and an empty line ends a link."
+  (goto-char (point-min))
+  (while (re-search-forward "<picture[^>]*>\\(\\(?:.\\|\n\\)*?\\)</picture>" nil t)
+    (let* ((start (match-beginning 0))
+           (end (match-end 0))
+           (inner (match-string 1))
+           (img (and (string-match "<img[^>]*>" inner) (match-string 0 inner)))
+           (source (shipit--picture-source inner)))
+      (when img
+        (delete-region start end)
+        (goto-char start)
+        (insert (if source (shipit--html-with-src img source) img))))))
+
 (defun shipit--convert-inline-html (text)
   "Return markdown TEXT with its HTML tags as markdown.
 `shipit--html-tag-converters' names the tags and what each becomes.
@@ -3759,6 +3801,7 @@ that an entity such as &lt;b&gt; is no tag."
   (with-temp-buffer
     (insert text)
     (let ((case-fold-search t))
+      (shipit--html-collapse-pictures)
       (shipit--html-unwrap-layout-tables)
       (shipit--convert-html-tags))
     (shipit--decode-html-entities (point-min) (point-max))

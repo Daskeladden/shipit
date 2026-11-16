@@ -967,6 +967,26 @@ THEN it is a markdown link around the image."
                           "<img src=\"https://example.com/badge.svg\" alt=\"License\">"
                           "</a>")))))
 
+(ert-deftest test-shipit-html-picture-in-a-link-becomes-one-image ()
+  "GIVEN an <a> tag around a <picture> with a logo for a dark scheme and
+one for a light scheme, AND an <img> in it with the logo for the dark
+scheme, each on a line of its own, as the logo of a README is
+WHEN the HTML tags are converted
+THEN it is one markdown link around one image, on one line, AND the
+image is the logo for the scheme of this frame, as GitHub picks it."
+  (let ((logo (if (eq (frame-parameter nil 'background-mode) 'dark)
+                  "https://example.com/logo-dark.svg"
+                "https://example.com/logo-light.svg")))
+    (should (equal (format "[<img src=\"%s\" alt=\"Coffee\" width=\"500\">](https://example.com)" logo)
+                   (shipit--convert-inline-html
+                    (concat "<a href=\"https://example.com\">\n"
+                            "  <picture>\n"
+                            "    <source media=\"(prefers-color-scheme: dark)\" srcset=\"https://example.com/logo-dark.svg\">\n"
+                            "    <source media=\"(prefers-color-scheme: light)\" srcset=\"https://example.com/logo-light.svg\">\n"
+                            "    <img src=\"https://example.com/logo-dark.svg\" alt=\"Coffee\" width=\"500\">\n"
+                            "  </picture>\n"
+                            "</a>"))))))
+
 (ert-deftest test-shipit-html-link-takes-its-address-from-any-place-in-the-tag ()
   "GIVEN an <a> tag with an attribute before its address, AND the
 address in single quotes

@@ -784,12 +784,21 @@ If CALLBACK is provided, make an async request."
          ;; Re-throw the error instead of silently returning nil
          (signal (car err) (cdr err)))))))
 
+(defun shipit--api-error-details-message (response-data)
+  "Return the `message' inside the `details' object of RESPONSE-DATA, or nil."
+  (let ((details (cdr (assq 'details response-data))))
+    (when (listp details)
+      (cdr (assq 'message details)))))
+
 (defun shipit--api-error-detail (response-data)
   "Extract a human-readable error message from RESPONSE-DATA.
 GitHub error bodies carry `message' plus an optional `errors' list
-with per-field details.  Return nil when nothing usable is found."
+with per-field details.  The asynchronous merge API puts its `message'
+inside a `details' object instead.  Return nil when nothing usable is
+found."
   (when (listp response-data)
-    (let* ((msg (cdr (assq 'message response-data)))
+    (let* ((msg (or (cdr (assq 'message response-data))
+                    (shipit--api-error-details-message response-data)))
            (errors (cdr (assq 'errors response-data)))
            (details (delq nil
                           (mapcar

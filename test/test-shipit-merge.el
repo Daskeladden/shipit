@@ -395,7 +395,8 @@ Each page opened in BODY is killed at its end."
 
 (defun test-merge-async--squash-merge (page)
   "Press M-m and s on PAGE, answer yes, and return the question asked.
-Then wait until shipit says how the merge ended, five seconds at most."
+Then wait until shipit says how the merge ended, or that GitHub refused
+it, five seconds at most."
   (let ((questions nil)
         (start (with-current-buffer (messages-buffer) (point-max))))
     (with-current-buffer page
@@ -404,7 +405,8 @@ Then wait until shipit says how the merge ended, five seconds at most."
                  (lambda (question) (push question questions) t)))
         (execute-kbd-macro (kbd "M-m s"))))
     (let ((deadline (+ (float-time) 5)))
-      (while (and (not (test-merge-async--said-since start "#12 \\(merged\\|was added\\|failed\\)"))
+      (while (and (not (test-merge-async--said-since
+                        start "#12 \\(merged\\|was added\\|failed\\)\\|^API error"))
                   (< (float-time) deadline))
         (accept-process-output nil 0.05)))
     (car questions)))
@@ -487,6 +489,29 @@ Then wait until shipit says how the merge ended, five seconds at most."
       (test-merge-async--squash-merge page)
       (should (test-merge-async--last-said
                "Merge of PR #12 failed: Head branch was modified\\."))
+      (should (equal "open" (test-merge-async--state-shown page))))))
+
+(ert-deftest test-merge-async-says-why-github-refused-at-once ()
+  ;; GIVEN the page of pull request #12, drawn when its head was abc,
+  ;;   and a new commit pushed to its branch since then
+  ;; WHEN M-m and s are pressed and the question is answered with yes,
+  ;;   and GitHub refuses the merge at once with HTTP 400
+  ;; THEN shipit says GitHub's reason, "API error: HTTP 400: Pull request
+  ;;   head branch was modified."
+  ;; AND the page still shows #12 as open
+  (test-merge-async--on-github
+      (list (list "/pulls/12/merge-async\\'" 400
+                  '((status . "failed")
+                    (details (message . "Pull request head branch was modified."))))
+            (list "/repos/o/r/pulls/12\\'" 200 (test-merge-async--pull-request)))
+    (let ((page (test-page-views--open-pr 12))
+          (start (with-current-buffer (messages-buffer) (point-max)))
+          ;; The debug log line "API ERROR: <address> ..." carries the
+          ;; same text, and only the line the user sees counts.
+          (case-fold-search nil))
+      (test-merge-async--squash-merge page)
+      (should (test-merge-async--said-since
+               start "^API error: HTTP 400: Pull request head branch was modified\\.$"))
       (should (equal "open" (test-merge-async--state-shown page))))))
 
 (ert-deftest test-merge-async-names-the-pull-requests-below ()

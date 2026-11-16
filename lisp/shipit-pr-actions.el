@@ -2458,16 +2458,30 @@ MERGE is as `shipit--merge-follow' takes it."
    ((string= method "squash") "s")
    ((string= method "rebase") "r")))
 
+(defun shipit--merge-open-entries-below (repo number pr-data)
+  "Return the stack entries of the open pull requests below PR NUMBER.
+REPO holds NUMBER, and PR-DATA is its pull request.  The forge merges
+these pull requests together with NUMBER."
+  (let ((entries (cdr (assq 'entries (shipit-pr--fetch-stack repo number pr-data)))))
+    (seq-filter (lambda (entry) (equal (cdr (assq 'state entry)) "open"))
+                (seq-take-while (lambda (entry) (not (cdr (assq 'current entry))))
+                                entries))))
+
 (defun shipit--merge-open-below (repo number)
   "Return the open pull requests below PR NUMBER of REPO in its stack.
 The forge merges them together with NUMBER."
-  (let ((entries (cdr (assq 'entries (shipit-pr--fetch-stack
-                                     repo number
-                                     (bound-and-true-p shipit-buffer-pr-data))))))
-    (mapcar (lambda (entry) (cdr (assq 'number entry)))
-            (seq-filter (lambda (entry) (equal (cdr (assq 'state entry)) "open"))
-                        (seq-take-while (lambda (entry) (not (cdr (assq 'current entry))))
-                                        entries)))))
+  (mapcar (lambda (entry) (cdr (assq 'number entry)))
+          (shipit--merge-open-entries-below
+           repo number (bound-and-true-p shipit-buffer-pr-data))))
+
+(defun shipit--merge-drafts (repo number pr-data)
+  "Return the drafts that a merge of PR NUMBER of REPO takes, bottom first.
+They are the open drafts below NUMBER in its stack, and NUMBER itself
+when PR-DATA says that it is a draft.  The forge merges no draft."
+  (append (mapcar (lambda (entry) (cdr (assq 'number entry)))
+                  (seq-filter (lambda (entry) (cdr (assq 'draft entry)))
+                              (shipit--merge-open-entries-below repo number pr-data)))
+          (when (shipit--pr-draft-p pr-data) (list number))))
 
 (defun shipit--merge-numbers-words (numbers)
   "Return NUMBERS as words, such as \"#10 and #11\"."
@@ -2578,22 +2592,36 @@ Checks reviews, status checks, and mergeable state from PR-DATA."
       (push "Branch is behind base — update required" reasons))
     (or (nreverse reasons) (list "Merge is blocked"))))
 
-(defun shipit--merge-out-of-draft ()
-  "Offer to mark the draft of this buffer ready for review, so it can merge.
-The forge refuses to merge a draft.  Return non-nil when the pull
-request is ready for review now; the buffer then shows it so."
-  (let ((number (bound-and-true-p shipit-buffer-pr-number)))
-    (if (yes-or-no-p (format "PR #%d is a draft.  Mark it ready for review and merge it? "
-                             number))
-        (progn
-          (shipit--set-pr-draft number (bound-and-true-p shipit-buffer-repo) nil)
-          t)
-      (message "PR #%d stays a draft" number)
-      nil)))
+(defun shipit--merge-drafts-question (number drafts)
+  "Return the question whether to mark DRAFTS ready, so PR NUMBER merges."
+  (if (equal drafts (list number))
+      (format "PR #%d is a draft.  Mark it ready for review and merge it? " number)
+    (format "%s %s.  Mark %s ready for review and merge PR #%d? "
+            (shipit--merge-numbers-words drafts)
+            (if (cdr drafts) "are drafts" "is a draft")
+            (if (cdr drafts) "them" "it")
+            number)))
+
+(defun shipit--merge-out-of-draft (number drafts)
+  "Offer to mark DRAFTS ready for review, so PR NUMBER of this buffer merges.
+DRAFTS are NUMBER and the pull requests below it that are drafts.
+The forge refuses to merge a draft.  Return non-nil when they are ready
+for review now; the buffer then shows it so."
+  (if (yes-or-no-p (shipit--merge-drafts-question number drafts))
+      (progn
+        (dolist (draft drafts)
+          (shipit--set-pr-draft draft (bound-and-true-p shipit-buffer-repo) nil))
+        t)
+    (message "%s %s" (if (equal drafts (list number))
+                         (format "PR #%d" number)
+                       (shipit--merge-numbers-words drafts))
+             (if (cdr drafts) "stay drafts" "stays a draft"))
+    nil))
 
 (transient-define-prefix shipit-merge ()
   "Merge the current pull request.
-A draft is marked ready for review first, when the user says so."
+A draft is marked ready for review first, when the user says so.  So
+is each draft below it in its stack, as the forge merges those too."
   [:class transient-column
    :description
    (lambda ()
@@ -2645,10 +2673,12 @@ A draft is marked ready for review first, when the user says so."
   (interactive)
   (unless (derived-mode-p 'shipit-mode)
     (user-error "Not in a shipit buffer"))
-  (when (or (not (shipit--pr-draft-p (bound-and-true-p shipit-buffer-pr-data)))
-            (shipit--merge-out-of-draft))
-    (shipit--merge-guard (bound-and-true-p shipit-buffer-pr-data))
-    (transient-setup 'shipit-merge)))
+  (let* ((number (bound-and-true-p shipit-buffer-pr-number))
+         (drafts (shipit--merge-drafts (bound-and-true-p shipit-buffer-repo) number
+                                       (bound-and-true-p shipit-buffer-pr-data))))
+    (when (or (null drafts) (shipit--merge-out-of-draft number drafts))
+      (shipit--merge-guard (bound-and-true-p shipit-buffer-pr-data))
+      (transient-setup 'shipit-merge))))
 
 (provide 'shipit-pr-actions)
 ;;; shipit-pr-actions.el ends here

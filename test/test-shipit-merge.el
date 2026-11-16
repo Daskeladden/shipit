@@ -583,5 +583,53 @@ merge ended, five seconds at most."
         (should-not (test-merge-async--merge-request))
         (should (test-merge-async--last-said "PR #12 stays a draft"))))))
 
+;;; Merging on top of a draft
+
+(defvar test-merge-below--ready nil
+  "The pull requests that GitHub marked ready for review in a scenario.")
+
+(defun test-merge-below--stack-resource (_sent)
+  "The stack 7 of o/r: the draft #11 at the bottom, #12 on top of it.
+#11 is a draft until GitHub marked it ready."
+  (let ((stack (copy-tree test-merge-async--stack-resource)))
+    (setf (alist-get 'draft (aref (alist-get 'pull_requests stack) 0))
+          (if (memq 11 test-merge-below--ready) :json-false t))
+    stack))
+
+(defun test-merge-below--graphql (sent)
+  "GitHub's answer to the GraphQL request SENT, which can mark a pull
+request ready for review."
+  (cond ((string-match "markPullRequestReadyForReview" sent)
+         (when (string-match "PR_\\([0-9]+\\)" sent)
+           (push (string-to-number (match-string 1 sent)) test-merge-below--ready))
+         '((data (markPullRequestReadyForReview (pullRequest (isDraft . :json-false))))))
+        ((string-match "GetPullRequestId" sent)
+         (string-match "\"number\":\\([0-9]+\\)" sent)
+         `((data (repository (pullRequest (id . ,(format "PR_%s" (match-string 1 sent))))))))
+        (t (funcall (test-page-views--graphql '((12 :title "Brew the coffee"))) sent))))
+
+(ert-deftest test-merge-below-a-draft-below-is-marked-ready-first ()
+  ;; GIVEN the page of pull request #12, ready for review, the upper of a
+  ;;   stack of two, on top of the draft #11
+  ;; WHEN M-m is pressed
+  ;; THEN shipit asks whether to mark #11 ready for review, because
+  ;;   GitHub merges #11 with #12 and refuses to merge a draft
+  ;; WHEN that is answered with yes, s is pressed, the merge question is
+  ;;   answered with yes, and GitHub merges
+  ;; THEN #11 was marked ready for review on GitHub
+  ;; AND shipit says "PR #12 merged via squash"
+  (let ((test-merge-below--ready nil))
+    (test-merge-async--on-github
+        (append (test-merge-async--merge-answers "merged" "Pull request was merged.")
+                (list (list "/repos/o/r/pulls/12\\'" 200
+                            (test-merge-async--pull-request test-merge-async--stack))
+                      (list "/repos/o/r/stacks/7\\'" 200 #'test-merge-below--stack-resource)
+                      (list "/graphql\\'" 200 #'test-merge-below--graphql)))
+      (let* ((page (test-page-views--open-pr 12))
+             (questions (test-merge-draft--press page "M-m s" t)))
+        (should (string-match-p "#11.*draft.*ready for review" (car questions)))
+        (should (equal '(11) test-merge-below--ready))
+        (should (test-merge-async--last-said "PR #12 merged via squash"))))))
+
 (provide 'test-shipit-merge)
 ;;; test-shipit-merge.el ends here

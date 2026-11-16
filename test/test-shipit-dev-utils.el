@@ -226,5 +226,20 @@ is in it."
       (should-not (memq 'shipit-compile-and-reload unbound))
       (should (memq 'shipit-test-reload-first unbound)))))
 
+(ert-deftest test-shipit-dev-reload-makes-the-autoloads-without-a-load-error ()
+  "GIVEN the checkout of shipit, whose shipit-preview.el autoloads a
+`cl-defun'
+WHEN the reload makes the autoloads again, with `make autoloads'
+THEN make reports no load error, and the autoload of that function is
+written.  The batch Emacs of make has no packages, so a file that it
+loads fails at its first require of one."
+  (let ((default-directory (file-name-directory (shipit-dev--file))))
+    (with-temp-buffer
+      (should (zerop (call-process "make" nil t nil "autoloads")))
+      (should-not (string-match-p "load error" (buffer-string))))
+    (with-temp-buffer
+      (insert-file-contents "lisp/shipit-autoloads.el")
+      (should (search-forward "(autoload 'shipit-preview-branch" nil t)))))
+
 (provide 'test-shipit-dev-utils)
 ;;; test-shipit-dev-utils.el ends here

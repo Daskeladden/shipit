@@ -59,8 +59,11 @@ compile: $(LISP_FILES)
 # `package-generate-autoloads' was called with the package name wrapped
 # in a stray trailing quote, so it produced a file under the wrong name
 # and lisp/shipit-autoloads.el was never refreshed.
+# cl-lib goes first: without `cl-defun' defined, loaddefs-gen loads each
+# file that autoloads one, and that load fails at its first package.
 autoloads: $(PACKAGE_FILE)
 	$(EMACS) -batch -Q \
+		-eval "(require 'cl-lib)" \
 		-eval "(require 'loaddefs-gen)" \
 		-eval "(loaddefs-generate \"lisp\" \"lisp/$(AUTOLOADS_FILE)\")"
 

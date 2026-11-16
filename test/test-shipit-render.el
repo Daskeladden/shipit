@@ -787,41 +787,89 @@ is hidden, as markdown-mode hides the backslash of an escape."
 (ert-deftest test-shipit-a-table-cell-with-hidden-text-is-as-wide-as-its-column ()
   "GIVEN a table that pandoc aligned, whose data cell has two escapes of
 a backslash, AND markdown-mode hid both backslashes
-WHEN the cells are widened by their hidden text
-THEN the data row is shown as wide as the head row, AND the cell got
-two spaces before its bar, so its bar stands below the bar of the head."
+WHEN the columns are fitted
+THEN the data row is shown as wide as the head row, AND the column is as
+wide as the shown text of the cell, so its bar stands below the bar of
+the head."
   (with-temp-buffer
     (test-shipit-render--insert-fontified
      "| Name | Range         |\n"
      "|------|---------------|\n"
      "| cup  | " '("\\" . t) "[>= 1, < 2" '("\\" . t) "] |")
-    (shipit--widen-table-cells)
+    (shipit--fit-table-columns)
     (let ((shown (test-shipit-render--shown-lines)))
-      (should (equal "| cup  | [>= 1, < 2]   |" (nth 2 shown)))
+      (should (equal "| cup  | [>= 1, < 2] |" (nth 2 shown)))
       (should (= (length (nth 0 shown)) (length (nth 2 shown)))))))
 
 (ert-deftest test-shipit-an-escaped-bar-stays-in-its-table-cell ()
   "GIVEN a fontified table row whose first cell has an escaped bar, whose
 backslash is hidden
-WHEN the cells are widened by their hidden text
-THEN the space goes before the bar that ends the first cell: the escaped
+WHEN the columns are fitted
+THEN the first cell ends at the bar after the escaped bar: the escaped
 bar is text of the cell."
   (with-temp-buffer
     (test-shipit-render--insert-fontified "| x" '("\\" . t) "|y | z |")
-    (shipit--widen-table-cells)
-    (should (equal "| x\\|y  | z |" (buffer-substring-no-properties (point-min) (point-max))))))
+    (shipit--fit-table-columns)
+    (should (equal "| x\\|y | z |" (buffer-substring-no-properties (point-min) (point-max))))))
 
 (ert-deftest test-shipit-a-table-row-in-a-code-block-keeps-its-width ()
   "GIVEN a line that looks like a table row with hidden text, in a code
 block
-WHEN the cells are widened by their hidden text
+WHEN the columns are fitted
 THEN the line is as it was."
   (with-temp-buffer
     (insert (propertize "| a" 'face 'markdown-pre-face)
             (propertize "\\" 'face 'markdown-pre-face 'invisible t)
             (propertize "[ | b |" 'face 'markdown-pre-face))
-    (shipit--widen-table-cells)
+    (shipit--fit-table-columns)
     (should (equal "| a\\[ | b |" (buffer-substring-no-properties (point-min) (point-max))))))
+
+(ert-deftest test-shipit-a-table-column-of-links-is-as-wide-as-its-names ()
+  "GIVEN a table that pandoc aligned by its text, whose column holds a
+link, AND markdown-mode hid the brackets and the address of the link
+WHEN the columns are fitted
+THEN the column is as wide as its widest shown cell, the name of the
+recipe, and not as wide as the address, AND the bars of each column
+stand below each other."
+  (with-temp-buffer
+    (test-shipit-render--insert-fontified
+     (concat "| Recipe" (make-string 42 ?\s) " | Note   |\n")
+     (concat "|" (make-string 50 ?-) "|--------|\n")
+     "| " '("[" . t) "espresso" '("](https://example.com/recipes/espresso)" . t) " | Strong |")
+    (shipit--fit-table-columns)
+    (should (equal '("| Recipe   | Note   |" "|----------|--------|" "| espresso | Strong |")
+                   (test-shipit-render--shown-lines)))))
+
+(ert-deftest test-shipit-a-table-cell-with-a-picture-keeps-it ()
+  "GIVEN a fontified table row whose first cell holds a picture, which is
+a space with a display, as a drawn picture is
+WHEN the columns are fitted
+THEN the picture stays in its cell, AND the cell is as wide as the
+picture shows."
+  (with-temp-buffer
+    (test-shipit-render--insert-fontified "| Button | Note |\n|--------|------|\n| ")
+    (insert (propertize " " 'face '(markdown-table-face) 'display "[cup]"))
+    (test-shipit-render--insert-fontified "      | Tall |")
+    (shipit--fit-table-columns)
+    (should (equal "[cup]" (get-text-property (text-property-not-all (point-min) (point-max) 'display nil)
+                                              'display)))
+    (should (equal "| Button | Note |" (car (test-shipit-render--shown-lines))))))
+
+(ert-deftest test-shipit-a-rendered-table-of-links-fits-its-names ()
+  "GIVEN a markdown table whose first column holds links
+WHEN it is rendered
+THEN the column is as wide as the longest name of a link, and each line
+of the table is as wide as the others."
+  (skip-unless (and (require 'markdown-mode nil t) (boundp 'markdown-mode-version)
+                    (executable-find "pandoc")))
+  (let ((shipit--markdown-render-cache (make-hash-table :test 'equal)))
+    (with-temp-buffer
+      (insert (string-trim-right
+               (shipit--render-markdown
+                "| Recipe | Note |\n| --- | --- |\n| [espresso](https://example.com/recipes/espresso) | Strong |\n| [latte](https://example.com/recipes/latte) | Milk |\n")))
+      (let ((shown (test-shipit-render--shown-lines)))
+        (should (equal "| espresso | Strong |" (nth 2 shown)))
+        (should (= 1 (length (delete-dups (mapcar #'length shown)))))))))
 
 (ert-deftest test-shipit-rendered-table-with-escapes-keeps-its-columns ()
   "GIVEN a markdown table whose cell has brackets and angle brackets,

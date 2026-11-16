@@ -2461,39 +2461,158 @@ backslash is text of its cell."
           (push (1- (point)) bars))))
     bars))
 
-(defun shipit--hidden-count (start end)
-  "Return how many characters from START to END of this buffer are hidden."
-  (cl-count-if (lambda (pos) (get-text-property pos 'invisible))
-               (number-sequence start (1- end))))
+(defun shipit--display-columns (display)
+  "Return the columns that the `display' property DISPLAY takes.
+A string takes its width.  A picture takes its width, or the width of
+its slice, when this Emacs shows pictures, else one column."
+  (if (stringp display)
+      (string-width display)
+    (let ((image (if (eq (car-safe display) 'image)
+                     display
+                   (seq-find (lambda (part) (eq (car-safe part) 'image)) display)))
+          (slice (and (consp display) (assq 'slice display))))
+      (cond ((not (and image (display-images-p))) 1)
+            (slice (ceiling (nth 3 slice) (frame-char-width)))
+            (t (ceiling (car (image-size image t)) (frame-char-width)))))))
 
-(defun shipit--widen-table-row (start end)
-  "Give each cell of the table row from START to END its hidden width back.
-A space goes before the bar that ends a cell for each hidden character
-of the cell."
-  (let ((bars (shipit--table-bars start end)))
-    (while (cdr bars)
-      (let ((hidden (shipit--hidden-count (1+ (cadr bars)) (car bars))))
-        (when (> hidden 0)
-          (save-excursion
-            (goto-char (car bars))
-            (insert (propertize (make-string hidden ?\s)
-                                'face (get-text-property (1- (point)) 'face))))))
-      (setq bars (cdr bars)))))
+(defun shipit--shown-width (start end)
+  "Return the columns that the text from START to END of this buffer shows.
+Hidden text takes none, and text under a `display' property takes what
+the display takes."
+  (let ((width 0)
+        (pos start))
+    (while (< pos end)
+      (let ((display (get-text-property pos 'display)))
+        (cond ((get-text-property pos 'invisible)
+               (setq pos (1+ pos)))
+              (display
+               (setq width (+ width (shipit--display-columns display))
+                     pos (next-single-property-change pos 'display nil end)))
+              (t
+               (setq width (+ width (char-width (char-after pos)))
+                     pos (1+ pos))))))
+    width))
 
-(defun shipit--widen-table-cells ()
-  "Show each table cell of this buffer as wide as it is in its text.
-The buffer is fontified by markdown-mode.  pandoc aligned each table,
-so the cells of a column are as wide in the text.  markdown-mode hides
-some of that text: the backslash of an escape, which pandoc puts before
-a bracket, and the address of a link.  Such a cell is shown narrower,
-and its bar stands left of the bars above and below it.  A line of a
-code block that looks like a table row has no face of a table, and
-stays."
+(defun shipit--skip-padding (from limit step)
+  "Return the place after the padding spaces from FROM toward LIMIT.
+STEP is 1 to go forward and -1 to go back.  A space with a display is
+no padding: a drawn picture is such a space."
+  (let ((pos from))
+    (while (and (if (> step 0) (< pos limit) (> pos limit))
+                (let ((at (if (> step 0) pos (1- pos))))
+                  (and (eq (char-after at) ?\s)
+                       (not (get-text-property at 'display)))))
+      (setq pos (+ pos step)))
+    pos))
+
+(defun shipit--table-cells (start end)
+  "Return (FROM TO TEXT-FROM TEXT-TO WIDTH) of each cell of a table row.
+The row runs from START to END of this buffer.  A cell lies between two
+bars, FROM after the first and TO on the second.  Its text lies from
+TEXT-FROM to TEXT-TO, without the padding around it, and shows WIDTH
+columns.  The first cell comes first."
+  (let ((bars (reverse (shipit--table-bars start end))))
+    (cl-loop for (left right) on bars while right
+             collect (let* ((from (1+ left))
+                            (text-from (shipit--skip-padding from right 1))
+                            (text-to (shipit--skip-padding right text-from -1)))
+                       (list from right text-from text-to
+                             (shipit--shown-width text-from text-to))))))
+
+(defun shipit--separator-row-p (cells)
+  "Non-nil when CELLS, from `shipit--table-cells', are a separator row."
+  (seq-every-p (lambda (cell)
+                 (string-match-p "\\`:?-+:?\\'"
+                                 (buffer-substring-no-properties (nth 2 cell) (nth 3 cell))))
+               cells))
+
+(defun shipit--column-widths (rows)
+  "Return an alist of the index of each column of ROWS and its width.
+ROWS are lists of cells from `shipit--table-cells'.  A column is as wide
+as its widest cell outside the separator row."
+  (let ((widths nil))
+    (dolist (cells rows widths)
+      (unless (shipit--separator-row-p cells)
+        (cl-loop for cell in cells
+                 for index from 0
+                 do (setf (alist-get index widths)
+                          (max (nth 4 cell) (alist-get index widths 0))))))))
+
+(defun shipit--fit-table-cell (cell width separator)
+  "Give CELL, from `shipit--table-cells', the WIDTH of its column.
+Its text gets one space before it and enough spaces after it.  In a
+SEPARATOR row the cell becomes dashes, and keeps its colons."
+  (pcase-let* ((`(,from ,to ,text-from ,text-to ,shown) cell)
+               (face (get-text-property to 'face)))
+    (if separator
+        (let ((dashes (buffer-substring-no-properties text-from text-to)))
+          (delete-region from to)
+          (goto-char from)
+          (insert (propertize (concat (if (string-prefix-p ":" dashes) ":" "-")
+                                      (make-string width ?-)
+                                      (if (string-suffix-p ":" dashes) ":" "-"))
+                              'face face)))
+      (delete-region text-to to)
+      (goto-char text-to)
+      (insert (propertize (make-string (1+ (- width shown)) ?\s) 'face face))
+      (delete-region from text-from)
+      (goto-char from)
+      (insert (propertize " " 'face face)))))
+
+(defun shipit--fit-table (rows)
+  "Make each column of the table with ROWS as wide as its widest shown cell.
+ROWS are (START . END) of the lines of one table of this buffer, the
+first first."
+  (let* ((cells (mapcar (lambda (row) (shipit--table-cells (car row) (cdr row))) rows))
+         (widths (shipit--column-widths cells)))
+    (dolist (row (reverse cells))
+      (let ((separator (shipit--separator-row-p row)))
+        (cl-loop for cell in (reverse row)
+                 for index downfrom (1- (length row))
+                 do (shipit--fit-table-cell cell (alist-get index widths (nth 4 cell))
+                                            separator))))))
+
+(defun shipit--table-rows ()
+  "Return the tables of this buffer, each the (START . END) of its rows.
+A row is a line with the face of a table at its first bar.  A line of a
+code block that looks like a table row has no such face."
+  (let ((tables nil)
+        (rows nil)
+        (previous-end nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^[ \t]*\\(|\\).*|[ \t]*$" nil t)
+        (when (shipit--markdown-face-p (match-beginning 1) 'markdown-table-face)
+          (unless (eql (match-beginning 0) (and previous-end (1+ previous-end)))
+            (when rows (push (nreverse rows) tables))
+            (setq rows nil))
+          (push (cons (match-beginning 1) (match-end 0)) rows)
+          (setq previous-end (match-end 0)))))
+    (when rows (push (nreverse rows) tables))
+    (nreverse tables)))
+
+(defun shipit--fit-table-columns ()
+  "Make each column of each table of this buffer as wide as it shows.
+The buffer is fontified by markdown-mode.  pandoc aligned each table by
+its text, but a cell shows less than its text: no address of a link, no
+backslash of an escape, and a picture for the markdown of a picture.
+So a column of links was as wide as their addresses, and a table of
+pictures wrapped.  A line of a code block that looks like a table row
+has no face of a table, and stays."
   (save-excursion
-    (goto-char (point-min))
-    (while (re-search-forward "^[ \t]*\\(|\\).*|[ \t]*$" nil t)
-      (when (shipit--markdown-face-p (match-beginning 1) 'markdown-table-face)
-        (shipit--widen-table-row (match-beginning 1) (match-end 0))))))
+    (dolist (table (reverse (shipit--table-rows)))
+      (shipit--fit-table table))))
+
+(defun shipit--fit-table-columns-of (text)
+  "Return TEXT, rendered, with the columns of its tables fitted.
+It runs after the pictures of TEXT are in, so each counts as wide as it
+shows."
+  (if (string-match-p "|" text)
+      (with-temp-buffer
+        (insert text)
+        (shipit--fit-table-columns)
+        (buffer-string))
+    text))
 
 (defun shipit--draw-quoted-headings ()
   "Show each heading in a quote of this buffer as a heading.
@@ -6799,13 +6918,13 @@ This is the actual rendering implementation; callers should use
               (shipit--draw-horizontal-rules)
               (shipit--draw-quote-bars)
               (shipit--draw-quoted-headings)
-              (shipit--widen-table-cells)
+              (shipit--fit-table-columns)
               ;; Note: Code block backgrounds are applied via overlays AFTER
               ;; text is inserted into the final buffer (see shipit--apply-code-block-backgrounds-in-region)
               ;; because overlays don't transfer with buffer-string
               ;; Step 4: Process inline images AFTER markdown rendering
               ;; This preserves the display properties that would otherwise be lost
-              (shipit--process-inline-media (buffer-string)))
+              (shipit--fit-table-columns-of (shipit--process-inline-media (buffer-string))))
           ;; Fallback if markdown-mode not available
           text))
     (error

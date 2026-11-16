@@ -992,6 +992,22 @@ Consumed + cleared by `shipit-review-quit', which uses
 ediff-style teardown to restore the user\\='s pre-review
 layout.")
 
+;; Windows on the bottom side of a frame share one height, side by
+;; side.  A transient menu opens on that side, so while the legend
+;; shows, a menu stood beside it, as low as the legend, and showed 2
+;; of its 16 lines.  For the time of a review session, a menu opens
+;; above the legend instead, below the other windows.
+
+(defun shipit-review--menu-beside-legend-p (buffer-name _action)
+  "Non-nil when BUFFER-NAME is the menu of transient, and the legend shows."
+  (and (boundp 'transient--buffer-name)
+       (equal buffer-name transient--buffer-name)
+       (get-buffer-window shipit-review--actions-buffer-name)))
+
+(defconst shipit-review--menu-above-legend
+  '(shipit-review--menu-beside-legend-p (display-buffer-at-bottom))
+  "The entry of `display-buffer-alist' that opens a menu above the legend.")
+
 (defun shipit-review--show-actions-legend ()
   "Show the diff-actions legend in a small bottom window and focus it.
 Idempotent for the window pop (re-displaying when already
@@ -1012,6 +1028,7 @@ not the layout after the H side window opened."
       (unless shipit-review--saved-window-config
         (setq shipit-review--saved-window-config
               (current-window-configuration)))
+      (add-to-list 'display-buffer-alist shipit-review--menu-above-legend)
       (display-buffer
        buf
        '((display-buffer-in-side-window)
@@ -1119,6 +1136,8 @@ cleanly while shipit\\='s own state is still consistent."
               "QUIT: kill-buffer error on %s: %s"
               (buffer-name buf)
               (error-message-string err)))))))
+    (setq display-buffer-alist
+          (delete shipit-review--menu-above-legend display-buffer-alist))
     ;; Restore pre-review window layout.
     (when shipit-review--saved-window-config
       (set-window-configuration shipit-review--saved-window-config)

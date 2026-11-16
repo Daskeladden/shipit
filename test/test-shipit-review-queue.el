@@ -20,6 +20,11 @@
 (require 'shipit-review-mode)
 (require 'shipit-editor)
 (require 'shipit-pr-github)
+;; The commands that the menu of a page names, which shipit loads for a
+;; user.
+(require 'shipit-commands)
+(require 'shipit-pr-actions)
+(require 'shipit-repo-buffer)
 
 (defconst test-review-queue--pr
   `((number . 1) (head (sha . "abc123") (ref . "work")) (base (ref . "main"))
@@ -509,6 +514,40 @@ works, and the file is not changed."
           (when (get-buffer shipit-editor--buffer-name)
             (with-current-buffer shipit-editor--buffer-name
               (shipit-editor-cancel)))
+          (with-current-buffer file-buffer (shipit-review-mode -1))
+          (kill-buffer file-buffer)
+          (delete-directory clone t))))))
+
+(defun test-review-queue--menu-lines ()
+  "Return the number of lines of the open menu, and of its window."
+  (let ((buffer (get-buffer transient--buffer-name)))
+    (cons (with-current-buffer buffer
+            (count-lines (point-min) (point-max)))
+          (window-body-height (get-buffer-window buffer)))))
+
+(ert-deftest test-review-queue-a-menu-shows-all-its-lines-above-the-legend ()
+  "GIVEN a file of a pull request open in review mode, in a frame of 40
+lines, with the legend of review mode at the bottom of the frame, and
+the page of the pull request in the main window
+WHEN the user opens the menu of the page with SPC
+THEN the window of the menu shows each line of the menu, and the legend
+stays at the bottom."
+  (test-review-queue--in-frame-of-size 120 40
+    (test-review-queue--in-closed-pr-buffer
+      (let* ((page (current-buffer))
+             (clone (test-review-queue--make-clone))
+             (file-buffer (test-review-queue--open-in-review-mode clone "o/r"))
+             (legend (get-buffer shipit-review--actions-buffer-name)))
+        (unwind-protect
+            (progn
+              (set-window-buffer (window-main-window) page)
+              (select-window (window-main-window))
+              (test-review-queue--press "SPC")
+              (let ((lines (test-review-queue--menu-lines)))
+                (should (<= (car lines) (cdr lines))))
+              (should (eq 'bottom (window-parameter (get-buffer-window legend)
+                                                    'window-side))))
+          (transient--emergency-exit)
           (with-current-buffer file-buffer (shipit-review-mode -1))
           (kill-buffer file-buffer)
           (delete-directory clone t))))))

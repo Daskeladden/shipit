@@ -1555,7 +1555,11 @@ Arguments are for compatibility with `revert-buffer-function'."
             ;; Prefetch PR commits in background for faster ediff later
             (shipit--prefetch-pr-commits-async)))
       ;; unwind-protect cleanup: ALWAYS reset the flag (error, quit, throw, etc.)
-      (setq shipit-buffer--refresh-in-progress nil)))) ; Close the if statement and condition-case
+      (setq shipit-buffer--refresh-in-progress nil)
+      ;; The store of requests serves this refresh only.  Left open, it
+      ;; answers each later request with what GitHub said back then.
+      (when (fboundp 'shipit-gh-etag--clear-refresh-cache)
+        (shipit-gh-etag--clear-refresh-cache))))) ; Close the if statement and condition-case
 
 
 

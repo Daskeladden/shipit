@@ -535,5 +535,42 @@ The section is the last part of the overview."
           (test-page-views--press "v")
           (should (equal normal (test-page-views--shown))))))))
 
+;;; After the page is drawn
+
+(defun test-page-views--pr-in-stack (in-stack)
+  "The pull request 12 of o/r, in stack 5 when IN-STACK is non-nil."
+  (append (test-page-views--pull-request 12 test-page-views--quiet-pr)
+          (when in-stack
+            '((stack (number . 5) (position . 1) (size . 2)
+                     (base (ref . "main")))))))
+
+(defun test-page-views--stack-number (number)
+  "The number of the stack that shipit finds for pull request NUMBER of o/r."
+  (cdr (assq 'number (shipit-pr--fetch-stack "o/r" number))))
+
+(ert-deftest test-page-views-a-pr-fetched-after-the-page-is-drawn-is-new ()
+  "GIVEN the page of pull request 12, drawn while 12 is in no stack, and
+shipit asked once more for the stack of 12, as the stacked preview does
+WHEN 12 joins stack 5 on GitHub, and shipit asks again, as the stacked
+preview does before it adds the next layer
+THEN shipit finds stack 5.  It used to give the answer it got in the
+first place, kept since the page was drawn, and so made a second stack."
+  (let ((in-stack nil))
+    (test-page-views--as-me
+      (shipit-test-http-answering
+          (append `(("/repos/o/r/pulls/12\\'" 200
+                     ,(lambda (_sent) (test-page-views--pr-in-stack in-stack)))
+                    ("/repos/o/r/stacks/5\\'" 200
+                     ((number . 5) (open . t) (base (ref . "main"))
+                      (pull_requests . [((number . 12)) ((number . 13))]))))
+                  (test-page-views--github `((12 . ,test-page-views--quiet-pr))))
+        (let ((page (test-page-views--open-pr 12)))
+          (unwind-protect
+              (progn
+                (should-not (test-page-views--stack-number 12))
+                (setq in-stack t)
+                (should (equal 5 (test-page-views--stack-number 12))))
+            (kill-buffer page)))))))
+
 (provide 'test-shipit-page-views)
 ;;; test-shipit-page-views.el ends here

@@ -518,6 +518,36 @@ works, and the file is not changed."
           (kill-buffer file-buffer)
           (delete-directory clone t))))))
 
+(defun test-review-queue--said-since (start regexp)
+  "Non-nil when *Messages* has a line that matches REGEXP after START."
+  (with-current-buffer (messages-buffer)
+    (save-excursion
+      (goto-char start)
+      (re-search-forward regexp nil t))))
+
+(ert-deftest test-review-queue-two-drafts-in-review-mode-say-nothing-odd ()
+  "GIVEN a file of a pull request open in review mode, on line 2
+WHEN the user writes two drafts there, each with `c a' and `C-c C-c'
+THEN both drafts show below line 2, and shipit never says \"File
+section not visible\", which is about the pull request buffer."
+  (test-review-queue--in-closed-pr-buffer
+    (setq shipit-review-queue nil)
+    (let* ((clone (test-review-queue--make-clone))
+           (file-buffer (test-review-queue--open-in-review-mode clone "o/r"))
+           (start (with-current-buffer (messages-buffer) (point-max))))
+      (unwind-protect
+          (progn
+            (test-review-queue--write-comment-with-c-a "Read the header once.")
+            (test-review-queue--write-comment-with-c-a "And the body too.")
+            (should (test-review-queue--draft-shown-below-line-p
+                     file-buffer 2 "Read the header once."))
+            (should (test-review-queue--draft-shown-below-line-p
+                     file-buffer 2 "And the body too."))
+            (should-not (test-review-queue--said-since start "File section not visible")))
+        (with-current-buffer file-buffer (shipit-review-mode -1))
+        (kill-buffer file-buffer)
+        (delete-directory clone t)))))
+
 (defun test-review-queue--menu-lines ()
   "Return the number of lines of the open menu, and of its window."
   (let ((buffer (get-buffer transient--buffer-name)))

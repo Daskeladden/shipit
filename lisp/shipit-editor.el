@@ -2498,6 +2498,9 @@ Inserts literal @ if cancelled or no users found."
     ;; Refresh source buffer if needed (skip for preview types, callback handles it)
     ;; Also skip for general-comment, reply, close-pr-comment since they handle their own refresh
     (when (and (buffer-live-p source-buffer)
+               ;; Only a pull request page has sections to refresh.  A
+               ;; file in review mode shows its drafts through the queue.
+               (with-current-buffer source-buffer (derived-mode-p 'shipit-mode))
                (not (memq type '(preview-description preview-general-comment
                                  preview-inline-comment preview-file-comment
                                  general-comment reply close-pr-comment

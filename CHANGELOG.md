@@ -1,5 +1,154 @@
 # Changelog
 
+## v1.8.0 (2026-11-16)
+
+### Features
+
+#### Review mode and worktrees
+
+- `C-RET` on a file or on a diff line of a pull request opens the file in review mode. The file comes from the worktree of the pull request. Without a worktree, it asks to create one. shipit then makes the worktree in the background and opens the file at the line. If the clone is at the head of the pull request, `C-RET` does not ask.
+- shipit also uses a worktree that you made yourself: one with the head branch of the pull request checked out, or one at its head commit. The Worktree section names the worktree in use and says whether it is yours or made by shipit. "Sync worktree" and "Delete worktree" act only on a worktree that shipit made.
+- The worktree commands also work in a clone of your fork that has no remote for the repository of the pull request. "Checkout in worktree", `C-RET` and "Sync worktree" fetch the pull request from its own repository.
+
+#### Pull requests and issues
+
+- Views of a page. `v` shows the next view, and `V` asks for one by its name. The overview of a pull request shows the title, the State and Approval lines, the reviews and comments that need your answer, and the checks. The overview of an issue shows its title line, its assignees and the pull requests that link to it. `shipit-page-views` names the views.
+- `SPC` in a pull request buffer or an issue buffer opens a menu of the commands of the buffer, and `SPC` closes it again.
+- `O` toggles the order of the section at point between the oldest first and the newest first: the activity, the comments of an issue, or the general comments of a pull request. `shipit-comments-order` sets the order that a session starts with.
+- A review row under Activity opens to the line comments of the review, each one below its file and line.
+- A renamed file shows its old and its new path, as `R src/old.txt -> src/new.txt`. A text filter also finds the file by its old path.
+- `k` removes the draft comment at point, after a question.
+- The issue buffer changes the title, the state, the labels and the assignee of a GitHub issue. An open issue closes as completed or as not planned, and a closed issue opens again.
+- The issue buffer has an imenu index. In a pull request buffer, consult-imenu shows an entry before you choose it.
+- `C-u M-w` on a line of a code block copies the code of the block, without its fences and without the indent of the page. `M-;` offers Copy code block, and the `w` of embark copies the code too.
+- The preview of a pull request opens while the mouse rests on a link to it. The preview leaves the keyboard where it is. `shipit-pr-mouse-preview-delay` sets the wait. To leave this off, set `shipit-pr-mouse-preview-auto-enable` to nil. Only the GitHub backend has it.
+
+#### Branches
+
+- `shipit-branches`, `B` in the menu of shipit, shows the branches of a repository in the groups of the branches page of GitHub. `RET` opens the pull request of a branch, or it shows how the branch differs from the default branch. `f` filters the branches as you type. Only the GitHub backend lists branches.
+- `w` in that buffer watches the repository. A new branch whose last commit someone else made then gives a notification. `shipit-branches-watched-repos` holds the watched repositories.
+- In the view of a branch, `o` opens its compare page in the browser.
+
+#### Explore
+
+- `shipit-explore`, `e` in the menu of shipit, shows what the people you follow and the repositories you watch do on GitHub: stars, forks, new repositories and releases. `RET` opens the repository in shipit, and `SPC` or `f` opens a menu of what is shown.
+- With `shipit-explore-notify`, one notification says how many entries of the feed are new.
+
+#### Notifications
+
+- An expanded notification stays expanded after a redraw, and the cursor stays on its notification.
+- `SPC` opens and closes the filter menu of the notifications buffer.
+- Another package can put a notification among those of shipit with `shipit-notifications-push`. Such a notification can count as a mention, and shipit keeps the newest read ones for the session.
+- The subscriptions buffer lists your own repositories that you do not watch, in the section "Yours, not watched".
+
+#### Stacked pull requests
+
+- The stacked preview fetches from `origin` each time it opens, and on `g`. A row says "rebased on the remote", "new commits on the remote" or "merged into" its base.
+- `b` in the stacked preview opens a branch menu, and `r` opens a rebase menu, as in magit. The branch menu holds what `c`, `r` and `a` did before, so `b c` puts a branch on each layer and `b m` renames a layer.
+- The rebase menu shows its plan first: which layers move onto the base, and which ones it leaves out as merged. It rebases the stack onto the newest base. It also follows the copies on the remote after a bot rebased them, and folds fixup commits into their layers. shipit works out each rebase and magit runs it with `--update-refs`, so a stop on a conflict goes to the usual flow of magit.
+- If GitHub or GitLab says that the pull request of a layer merged, the layer counts as merged. Else git decides. So a layer that was squash-merged no longer shows as "not pushed".
+- `RET` on the base, on the `Base:` line or on the base row, picks another base. The preview then divides the commits again, as it does at the start.
+- A `Next:` line under the base names the next step of making the stack: `b c`, then `P`, then `RET` on the lowest layer without a pull request.
+- `s` divides a layer at the commit at point, or joins the layer with the one above. `C-/`, `C-?`, undo-tree and vundo take back each `s` and each change of the base.
+- `s` also splits a layer that has a pull request. When you submit the new lower layer, or press `R`, shipit takes the pull requests out of the stack on GitHub. Then it sets the new base of the pull request above and makes the stack again. The stack then has a new number.
+- `RET` on a layer offers to push a base that the remote does not have. Before, GitHub refused the pull request of the bottom layer with "HTTP 422: Validation Failed (base invalid)".
+- If the width of its window changes, the preview draws again. It asks GitHub for the checks and the reviews once, and again on `g`. So `s` and undo no longer wait about 0.5 s for GitHub.
+
+#### Merge
+
+- `M-m` on GitHub merges through the asynchronous merge API, so a pull request in a stack merges too. shipit says whether the pull request merged, went into the merge queue, or failed, with the reason of GitHub. For a pull request in a stack, the question names the open pull requests below it, because GitHub merges them too.
+- `M-m` on a draft asks whether to mark it ready for review and merge it. For a pull request in a stack, the question also names the drafts below it, because GitHub merges no draft. Yes marks them ready too.
+
+#### Confluence
+
+- If someone else changes a page of Confluence Cloud that mentions you or that you watch, the change shows as a notification. An entry with `:backend confluence` in `shipit-issue-repo-backends` switches this on. The README section Notifications from Confluence tells the limits.
+- `shipit-confluence-search`, `w` in the menu of shipit, finds the pages of Confluence that hold the words that you type. `RET` opens the page in the browser.
+- With marginalia on, each page that the search of Confluence finds has three columns beside its title. They show the space, the user who made the last change, and the time. `marginalia-cycle` adds the text around the words found, cut to the room in the window.
+
+#### Issues with embark
+
+- With embark, a row of the issue search has five actions: `o` opens the issue, `b` shows it in the browser, `u` copies its address, `w` copies its key and `s` changes its status. Each action works on one row, the marked rows, all rows or the rows of the region. This also works in a buffer that embark exported.
+- `s` on several rows asks one time for the new status. If Jira wants a resolution, `s` asks for it too. The last message says how many issues moved and which ones did not.
+
+#### Rendering
+
+- A markdown heading hides its hashes, a rule draws as a horizontal line, and the marks of a quote draw as bars.
+- The HTML of a README shows as a forge shows it: paragraphs, headings, lists, quotes, centered blocks and links around pictures. An HTML table draws as a table, with its cells side by side and placed as the table says.
+- A README joins the lines of each paragraph, as a forge does.
+- If the package canvas-mermaid loads, it draws a mermaid block in the colors of the Emacs theme. Without it, `mmdc` draws the block as before.
+- A video that was uploaded to GitHub gets a Play button, in a section that folds as on GitHub. The repository buffer shows the videos of a README as the other buffers do.
+- The GIFs of a buffer move only while they are in view, at most `shipit-image-max-frame-rate` times a second.
+
+#### Other
+
+- The page of a repository shows the number of its stars.
+- With embark, a link to a pull request or an issue in any buffer is a target, and `RET` or `o` opens it in shipit. The line of a move on a kanban board is a target too.
+- The README has a section Extending shipit. It names the hook points for other packages, and a wiki page builds a small package with them.
+- New hook points: `shipit-delete-at-point-functions`, `shipit-file-diff-refreshed-hook`, `shipit-notifications-poll-hook`, `shipit-code-block-copy-functions`, `shipit-video-url-functions` and `shipit-video-fold-functions`. A backend can have the new operations `:fetch-pr-async` and `:fetch-review-comments`, and `shipit-issue-register-notification-source` registers a backend that only gives notifications. A notification of a backend can carry a `revision`. If a poll brings a read notification with another revision, it comes back as unread.
+- `shipit-reload` loads shipit compiled, so shipit runs faster after a reload.
+
+### Performance
+
+- An answer "304 Not Modified" from GitHub no longer leaves a buffer with a copy of the earlier answer. After four and a half days, one Emacs held 379 such buffers with 662 MB of text.
+- shipit kills the buffer of each answer to a cached request. A session that polls its notifications held more than 500 of these buffers after one day.
+- The auto-mark rules of the notifications no longer stall Emacs for about 2.6 seconds after each poll.
+- Four GIFs of a README took 99% of a CPU on a display over ssh. They now take 30% in view and none out of view.
+
+### Bug fixes
+
+- A pull request buffer runs its git commands in a clone of its own repository. Before, a buffer that opened from the notifications ran them in the directory of Emacs, and a force push there downloaded history into another repository.
+- A command on a page acts on the repository of the page. Before, a search, a new issue, the list of workflows and the comment actions went to the repository of the directory.
+- shipit knows the repository of a clone whose `origin` has an `ssh://` address.
+- A refused edit of an issue comment or of an issue description keeps the editor open with your text. Before, shipit said "Comment updated" and the text was lost.
+- A function on `shipit-issue-created-hook` that fails no longer makes shipit say that the creation failed.
+- Jira: an issue that opens from its key in a pull request buffer shows its comments. A long issue has the line that loads the comments between the first and the last. A reply on an issue goes to Jira. `RET` opens a linked pull request. Tables, bold, italic, code, quotes and code blocks in Jira text show as such.
+- The heading Linked PRs of an issue says why its lookup failed.
+- Review: each draft shows once in Pending Review, and the drafts stay in view after a comment is posted.
+- The stacked preview keeps every layer of a submitted stack that opens again.
+- The view of a branch shows every changed file with its diff, also for more than 300 files. A removed file has the mark D.
+- GitLab: a merge request has its Worktree section and its worktree commands.
+- Notifications: a redraw no longer fills the undo list, and a late answer no longer shows above the list.
+- A comment that GitHub does not know no longer leaves the comments section empty.
+- The first answer "304 Not Modified" no longer stops a request for good.
+- The preview draws the code blocks and the long lines of its description as the pull request buffer does. `RET` edits the description and opens its links.
+- Rendering: a table and a wrapped line inside a list item keep their place. A `<details>` block shows as the text around it. An HTML comment does not show. The background of a code block ends at its fence. A web address keeps each `_` of its text. An `<img>` tag is read with a width in px and with an address in single quotes. Without gifsicle, ImageMagick resizes a GIF. Pictures show in a graphic frame after a terminal frame. Tags show in the tag face of magit.
+- The preview popups keep their thin border, and `q` closes a popup under meow.
+- `shipit-reload` runs the after-load forms once every file is loaded, and it cleans the global hooks from any buffer.
+- `M-m` on GitHub no longer says "merged" after GitHub refused the merge.
+- A comment from `c a` in review mode shows as a draft below its line. Before, if GitHub spelled the name of the repository with other capitals than the git remote, as after a rename, the draft was lost. `C-c C-c` said "Draft queued" all the same.
+- The editor of `c a` in review mode opens above the legend, with room to write. Before, it opened beside the legend, two lines high, and showed only its header line.
+- `K` in a pull request buffer discards all review drafts, after a question. Before, the hints said "press `D` to discard", but `D` showed the diff with comments, and no key discarded the drafts. `D` keeps that meaning. The `SPC` menu now has `S` and `K`.
+- A description or a comment whose first line has a colon, such as "Request to the kitchen: make more coffee", shows that line as text. Before, the words before the colon were bold.
+- A poll of the notifications while a pull request page loads no longer puts the notifications into that page. Before, later polls failed with "Marker points into wrong buffer".
+- The authors and dates of commit rows line up in a narrow window.
+- After an aborted rebase, the stacked preview shows its old layers again. Before, it showed the whole stack as one layer.
+- Embark: an action on an issue key in a list acts on that key. The general actions of embark, such as export, stay on an issue key. Open goes to the tracker that claims the key.
+- Jira: a refused request shows the words of Jira, as in "failed (400): resolution: Field 'resolution' cannot be set." shipit sends the default resolution only with a transition that takes one. Before, Jira refused the other moves to a closed status with a 400.
+- While a review session shows its legend, a menu opens above the legend with all its lines. Before, it opened beside the legend at its height: `SPC` showed 4 of its 17 lines, and `Z` hid Delete.
+- After `C-c C-c` in the editor of review mode, the legend has the focus again, so the next key of review mode works. Before, the focus went to the file, and the next `c a` typed "ca" into it.
+- A review that only comments goes to your own pull request too. Before, `S` with "Comment only" said "Cannot review your own PR", although GitHub refuses only an approval or a request for changes from the author.
+- A pull request that is asked for after its page was drawn shows what GitHub says now. Before, shipit kept each answer from the drawing of a page until the next drawing. So the stacked preview made a new stack for the third layer, and GitHub refused it with "are already part of a stack".
+- After a layer is submitted from the stacked preview, the stacked preview shows in one window. Before, it showed in two windows side by side.
+- A new worktree of a pull request leaves the clone without a change. shipit adds the folder of the worktrees to the exclude file of the clone. Before, it wrote the folder into the `.gitignore` of the repository, so each repository where you reviewed got a change to commit.
+- A draft says "PENDING · not sent yet". Before, it said "local · won't publish", which reads like a draft that never goes to GitHub.
+- A draft in review mode no longer makes shipit say "File section not visible".
+- An uploaded video above a table shows as a video. Before, pandoc aligned the table by rewriting the whole text, which put the address of the video in angle brackets. Now only the rows of each table go to pandoc.
+- `TAB` and `RET` on the header of a video in a comment show and play the video. Before, the keymap of the comment covered the header, so `TAB` folded the comment.
+- Each column of a table is as wide as the widest text that it shows. Before, a column of links was as wide as their addresses, and a table of pictures wrapped.
+- A `<picture>` inside a link shows its picture, for the color scheme of the frame. Before, the link showed only its brackets.
+- `shipit-reload` no longer warns "loaddefs-gen: load error for shipit-preview".
+- When GitHub refuses `M-m` at once, shipit gives the reason, as in "API error: HTTP 400: Pull request head branch was modified.". Before, it said only "API error: HTTP 400".
+
+### Changed
+
+- In the stacked preview, `c` is now `b c`, `r` is now `b m`, `a` is now `b a`, and `b` is now `r o`. `u` is gone: `s` on the end of a layer joins it with the layer above, and `C-/` takes back the last `s`.
+
+### Removed
+
+- The user option `shipit-dwim-hook`. No code called it, so a configuration that sets it works as before.
+
+---
+
 ## v1.7.0 (2026-10-01)
 
 shipit now requires Emacs 29.1. The code already used functions of Emacs 29.1, and Emacs 29 is the oldest version that the tests run on.

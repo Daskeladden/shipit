@@ -126,6 +126,11 @@ posting a new comment or queueing a new draft.")
 (defvar-local shipit-editor--section-marker nil
   "Marker for preview updates in source buffer.")
 
+(defvar-local shipit-editor--return-window nil
+  "The window that was selected when the editor opened.
+Closing the editor selects it again.  In review mode it is the legend,
+the one window where the keys of review mode work.")
+
 (defvar-local shipit-editor--initial-content nil
   "Original content before editing.")
 
@@ -369,6 +374,7 @@ CONTEXT is a plist with:
       (with-current-buffer editor-buffer
         (erase-buffer)
         (shipit-editor-mode)
+        (setq shipit-editor--return-window (selected-window))
         ;; Store context
         (setq shipit-editor--type (plist-get context :type)
               shipit-editor--source-buffer source-buffer
@@ -2638,12 +2644,15 @@ If RESTORE-ORIGINAL is non-nil, restore the original preview content."
            (when restore-original shipit-editor--original-preview-content)
            keep-content)))))
   ;; Kill the buffer (which also closes the window)
-  (let ((buffer (get-buffer shipit-editor--buffer-name)))
+  (let ((buffer (get-buffer shipit-editor--buffer-name))
+        (return-window shipit-editor--return-window))
     (when buffer
       (let ((window (get-buffer-window buffer)))
         (when window
           (delete-window window)))
-      (kill-buffer buffer))))
+      (kill-buffer buffer))
+    (when (window-live-p return-window)
+      (select-window return-window))))
 
 (provide 'shipit-editor)
 ;;; shipit-editor.el ends here

@@ -451,6 +451,14 @@ line 2 of the file, because a forge does not tell names apart by case."
                 ,@body)
        (set-frame-size (selected-frame) old-columns old-lines))))
 
+(defun test-review-queue--press (keys)
+  "Press KEYS in the selected window, as the command loop runs a key.
+The command loop makes the buffer of the selected window current
+before the command, and again after it."
+  (set-buffer (window-buffer (selected-window)))
+  (call-interactively (key-binding (kbd keys)))
+  (set-buffer (window-buffer (selected-window))))
+
 (ert-deftest test-review-queue-c-a-opens-an-editor-with-room-to-write ()
   "GIVEN a file of a pull request open in review mode, in a frame of 40
 lines, with the legend of review mode at the bottom of the frame
@@ -470,6 +478,34 @@ they type, and the legend stays at the bottom."
                              (get-buffer-window shipit-editor--buffer-name))))
               (should (eq 'bottom (window-parameter (get-buffer-window legend)
                                                     'window-side))))
+          (when (get-buffer shipit-editor--buffer-name)
+            (with-current-buffer shipit-editor--buffer-name
+              (shipit-editor-cancel)))
+          (with-current-buffer file-buffer (shipit-review-mode -1))
+          (kill-buffer file-buffer)
+          (delete-directory clone t))))))
+
+(ert-deftest test-review-queue-after-c-c-c-c-the-legend-has-the-focus-again ()
+  "GIVEN a file of a pull request open in review mode in the main window,
+and the legend of review mode selected
+WHEN the user presses `c a', writes a comment and presses `C-c C-c'
+THEN the legend is selected again, so the next key of review mode
+works, and the file is not changed."
+  (test-review-queue--in-frame-of-size 120 40
+    (test-review-queue--in-closed-pr-buffer
+      (setq shipit-review-queue nil)
+      (let* ((clone (test-review-queue--make-clone))
+             (file-buffer (test-review-queue--open-in-review-mode clone "o/r"))
+             (legend (get-buffer shipit-review--actions-buffer-name)))
+        (unwind-protect
+            (let ((shipit-review-queue-persistence-file nil))
+              (set-window-buffer (window-main-window) file-buffer)
+              (select-window (get-buffer-window legend))
+              (test-review-queue--press "c a")
+              (insert "Read the header once.")
+              (test-review-queue--press "C-c C-c")
+              (should (eq legend (window-buffer (selected-window))))
+              (should-not (buffer-modified-p file-buffer)))
           (when (get-buffer shipit-editor--buffer-name)
             (with-current-buffer shipit-editor--buffer-name
               (shipit-editor-cancel)))

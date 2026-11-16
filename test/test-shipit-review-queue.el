@@ -518,6 +518,30 @@ works, and the file is not changed."
           (kill-buffer file-buffer)
           (delete-directory clone t))))))
 
+(ert-deftest test-review-queue-a-draft-says-it-is-not-sent-yet ()
+  "GIVEN a file of a pull request open in review mode, on line 2
+WHEN the user writes a draft there with `c a' and `C-c C-c'
+THEN the draft below line 2 says \"PENDING · not sent yet\", and so does
+its heading in the pull request page, because a submit sends it later."
+  (test-review-queue--in-closed-pr-buffer
+    (setq shipit-review-queue nil)
+    (let* ((page (current-buffer))
+           (clone (test-review-queue--make-clone))
+           (file-buffer (test-review-queue--open-in-review-mode clone "o/r")))
+      (unwind-protect
+          (progn
+            (test-review-queue--write-comment-with-c-a "Read the header once.")
+            (should (test-review-queue--draft-shown-below-line-p
+                     file-buffer 2 "PENDING · not sent yet"))
+            (should (string-match-p
+                     "PENDING · not sent yet · src/parser.el:2"
+                     (substring-no-properties
+                      (shipit-review-queue--section-heading
+                       (car (buffer-local-value 'shipit-review-queue page)))))))
+        (with-current-buffer file-buffer (shipit-review-mode -1))
+        (kill-buffer file-buffer)
+        (delete-directory clone t)))))
+
 (defun test-review-queue--said-since (start regexp)
   "Non-nil when *Messages* has a line that matches REGEXP after START."
   (with-current-buffer (messages-buffer)

@@ -404,7 +404,7 @@ displays."
          (hint (shipit-review-queue--draft-hint))
          (heading-text
           (concat "  📝 " label
-                  (propertize " · local · won't publish"
+                  (propertize " · not sent yet"
                               'font-lock-face
                               'shipit-review-queue-draft-face)
                   (propertize loc 'font-lock-face 'shipit-filename-face)))
@@ -572,7 +572,7 @@ when svg-lib isn't available."
                (file (format " · %s" file))
                (t ""))))
     (concat "     " (shipit-review-queue--icon) " " label
-            (propertize " · local · won't publish"
+            (propertize " · not sent yet"
                         'font-lock-face 'shipit-review-queue-draft-face)
             (propertize loc 'font-lock-face 'shipit-filename-face))))
 

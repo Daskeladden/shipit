@@ -2008,19 +2008,25 @@ is left as it is."
   "The timer that shows this buffer's videos, while one is pending.")
 
 (defun shipit--spread-video-header-keys ()
-  "Give the whole line of each video header of this buffer the header's keys.
-A body is indented after its text is made, so the indent before a
-header has no keys of its own, and TAB there would fold the section
-around it."
+  "Give each video button of this buffer its keys, and a header its line.
+A comment puts its own keymap over its whole body, the buttons in it
+too, so the keys of a button are made again from its address.  A body
+is indented after its text is made, so the indent before a header has
+no keys of its own, and TAB there would fold the section around it."
   (save-excursion
     (let ((pos (point-min)))
-      (while (setq pos (text-property-any pos (point-max) 'shipit-video-fold t))
-        (goto-char pos)
-        (with-silent-modifications
-          (add-text-properties (line-beginning-position) (line-end-position)
-                               (list 'keymap (get-text-property pos 'keymap)
-                                     'shipit-video-fold t)))
-        (setq pos (line-beginning-position 2))))))
+      (while (setq pos (text-property-any pos (point-max) 'shipit-video-button t))
+        (let* ((end (or (next-single-property-change pos 'shipit-video-button) (point-max)))
+               (folds (get-text-property pos 'shipit-video-fold))
+               (keymap (shipit--video-button-keymap (get-text-property pos 'shipit-video-url)
+                                                    folds)))
+          (goto-char pos)
+          (with-silent-modifications
+            (put-text-property pos end 'keymap keymap)
+            (when folds
+              (add-text-properties (line-beginning-position) (line-end-position)
+                                   (list 'keymap keymap 'shipit-video-fold t))))
+          (setq pos (if folds (line-beginning-position 2) end)))))))
 
 (defun shipit--show-inline-videos-in (buffer)
   "Show the videos of BUFFER, if it is still there."

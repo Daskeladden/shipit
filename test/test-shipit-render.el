@@ -3911,5 +3911,31 @@ THEN the user is told that there is no code block there."
     (goto-char (point-min))
     (should-error (shipit-copy-code-block) :type 'user-error)))
 
+(ert-deftest test-shipit-a-video-header-in-a-comment-plays-with-tab-and-ret ()
+  "GIVEN the header of a video that folds, in the body of a comment, AND
+the keymap of the comment put over the whole body, as a comment does
+WHEN the videos of the buffer are shown, and TAB and then RET is
+pressed on the header
+THEN each key plays the video, and neither does what the keymap of the
+comment says."
+  (let ((url "https://github.com/user-attachments/assets/0f3c2d4e-1a2b-4c3d-9e8f-123456789abc")
+        (played nil)
+        (shipit-video-inline-show nil)
+        (shipit-use-svglib-icons nil)
+        (shipit-video-fold-functions (list (lambda (_url) t)))
+        (comment-map (make-sparse-keymap)))
+    (define-key comment-map (kbd "TAB") #'ignore)
+    (define-key comment-map (kbd "RET") #'ignore)
+    (with-temp-buffer
+      (insert "A comment:\n\n" (shipit--render-video-link url) "\n")
+      (add-text-properties (point-min) (point-max) `(keymap ,comment-map))
+      (cl-letf (((symbol-function 'shipit--play-video-url)
+                 (lambda (played-url &rest _) (push played-url played))))
+        (shipit--show-inline-videos-in (current-buffer))
+        (goto-char (text-property-any (point-min) (point-max) 'shipit-video-fold t))
+        (call-interactively (key-binding (kbd "TAB")))
+        (call-interactively (key-binding (kbd "RET")))))
+    (should (equal (list url url) played))))
+
 (provide 'test-shipit-render)
 ;;; test-shipit-render.el ends here

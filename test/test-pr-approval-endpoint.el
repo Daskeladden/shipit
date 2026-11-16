@@ -193,6 +193,29 @@
    (should test-approval-captured-url)
    (should-not (string-match-p "/comments" test-approval-captured-url))))
 
+(ert-deftest test-commenting-review-of-own-pr-is-posted ()
+  "GIVEN a pull request whose author is the current user
+WHEN the user submits a review that only comments
+THEN the review is posted, as GitHub takes a comment from the author,
+and only approving or requesting changes is refused."
+  (test-with-approval-tracking
+   (cl-letf (((symbol-function 'shipit-get-pull-request)
+              (lambda (_pr-number &optional _repo)
+                '((user . ((login . "test-user")))))))
+     (shipit-post-review 123 "COMMENT" "Notes for the reader"))
+   (should (string= "COMMENT" (cdr (assq 'event test-approval-captured-payload))))))
+
+(ert-deftest test-requesting-changes-on-own-pr-is-rejected ()
+  "GIVEN a pull request whose author is the current user
+WHEN the user requests changes on it
+THEN nothing is posted, as GitHub refuses that from the author."
+  (test-with-approval-tracking
+   (cl-letf (((symbol-function 'shipit-get-pull-request)
+              (lambda (_pr-number &optional _repo)
+                '((user . ((login . "test-user")))))))
+     (should-error (shipit-post-review 123 "REQUEST_CHANGES" "Fix it")))
+   (should-not test-approval-captured-payload)))
+
 ;;;; Repository Context Tests
 
 (ert-deftest test-approval-uses-explicit-repo-when-provided ()

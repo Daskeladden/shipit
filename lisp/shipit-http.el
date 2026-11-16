@@ -2654,11 +2654,13 @@ Dispatches to the active PR backend's :submit-review."
       (setq target-repo shipit-current-repo))
     (unless target-repo
       (error "No repository context available"))
-    ;; Check if user is trying to review their own PR
     (let* ((pr-data (shipit-get-pull-request pr-number target-repo))
            (pr-author (when pr-data (cdr (assq 'login (cdr (assq 'user pr-data))))))
            (current-user (shipit--get-current-user)))
-      (when (and pr-author current-user (string= pr-author current-user))
+      ;; GitHub refuses an approval or a request for changes from the
+      ;; author of the pull request, but it takes a review that comments.
+      (when (and pr-author current-user (string= pr-author current-user)
+                 (member event '("APPROVE" "REQUEST_CHANGES")))
         (message "Cannot review your own PR - authors cannot approve/request changes on their own PRs")
         (error "Cannot review your own PR"))
       ;; Dispatch to backend

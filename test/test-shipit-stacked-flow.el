@@ -129,5 +129,24 @@ THEN the frame still has one window, and it shows the stacked preview."
       (should (= 1 (length (window-list))))
       (should (eq stack-buffer (window-buffer (selected-window)))))))
 
+(defun test-flow--commit-counts ()
+  "Return the number of commits of each layer, bottom first."
+  (mapcar (lambda (layer) (length (cdr (assq 'commits layer))))
+          (shipit-stacked-preview--current-layers)))
+
+(ert-deftest test-shipit-stacked-flow-a-base-inside-the-stack-divides-what-is-above ()
+  "GIVEN the stacked preview of four commits, two on the parser and two
+on the writer, and a branch at the first commit
+WHEN the user picks that branch as the new base, as RET on the Base
+line does
+THEN the three commits above it are divided by their subjects: one
+layer for the parser and one for the writer."
+  (shipit-sandbox-with-repo
+    (shipit-stacked-preview)
+    (with-current-buffer "*shipit-stacked-preview: work*"
+      (shipit-sandbox--git "branch" "first-step" "HEAD~3")
+      (shipit-stacked-preview-set-base "first-step")
+      (should (equal '(1 2) (test-flow--commit-counts))))))
+
 (provide 'test-shipit-stacked-flow)
 ;;; test-shipit-stacked-flow.el ends here

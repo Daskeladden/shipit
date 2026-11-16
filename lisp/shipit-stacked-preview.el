@@ -493,6 +493,12 @@ Signal when there are none, since a stack of nothing has no layers."
   (or (shipit--commits-in-range (format "%s..HEAD" base))
       (user-error "No commits between %s and HEAD" base)))
 
+(defun shipit-stacked-preview--divisions-among (boundaries commits)
+  "Return the BOUNDARIES that are commits of COMMITS.
+A branch at the base, or below it, divides nothing above the base."
+  (let ((shas (mapcar (lambda (commit) (plist-get commit :sha)) commits)))
+    (seq-filter (lambda (sha) (member sha shas)) boundaries)))
+
 (defun shipit-stacked-preview--set-stack (base commits existing)
   "Make this buffer describe COMMITS over BASE.
 EXISTING is what `shipit-stacked-preview--from-existing-stack' found.
@@ -500,7 +506,7 @@ Its branches divide the commits, and without them the subjects do."
   (setq shipit-stacked-preview--base base
         shipit-stacked-preview--commits commits
         shipit-stacked-preview--boundaries
-        (or (car existing)
+        (or (shipit-stacked-preview--divisions-among (car existing) commits)
             (shipit-stacked-preview--proposed-boundaries commits))
         shipit-stacked-preview--names (cdr existing)))
 

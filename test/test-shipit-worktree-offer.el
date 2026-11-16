@@ -524,5 +524,26 @@ shows at once can be read."
     (should-not (test-worktree-offer--in-review-mode-p (test-worktree-offer--in-worktree "brew.sh")))
     (should (test-worktree-offer--warned-p))))
 
+(defun test-worktree-offer--clone-with-a-gitignore ()
+  "Commit a .gitignore on main of the clone, and leave the clone on main."
+  (with-temp-file (test-worktree-offer--in-clone ".gitignore")
+    (insert "*.log\n"))
+  (test-worktree-offer--git "clone" "add" ".gitignore")
+  (test-worktree-offer--git "clone" "-c" "user.email=cook@example.com" "-c" "user.name=Cook"
+                            "commit" "-q" "-m" "Ignore the logs"))
+
+(ert-deftest test-worktree-offer-a-new-worktree-leaves-the-clone-unchanged ()
+  "A worktree that shipit makes changes no file that the clone tracks."
+  ;; GIVEN the page of pull request 8, which has no worktree, in a clone
+  ;;   on main, whose .gitignore is committed
+  ;; WHEN I press C-RET on brew.sh, answer yes, and the worktree is ready
+  ;; THEN git status of the clone shows no change
+  ;; AND git ignores the folder of the worktrees in the clone
+  (test-worktree-offer--on-the-page-of-pr-8 #'test-worktree-offer--clone-with-a-gitignore
+    (test-worktree-offer--press-c-ret-on-file 'yes)
+    (should (test-worktree-offer--in-review-mode-p (test-worktree-offer--in-worktree "brew.sh")))
+    (should (equal "" (test-worktree-offer--git "clone" "status" "--porcelain")))
+    (should (test-worktree-offer--git "clone" "check-ignore" ".worktrees/"))))
+
 (provide 'test-shipit-worktree-offer)
 ;;; test-shipit-worktree-offer.el ends here

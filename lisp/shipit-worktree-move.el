@@ -129,22 +129,10 @@ They would stay behind, in a checkout on another branch."
 
 ;;;; Moving
 
-(defun shipit-worktree-move--ignore-worktrees (root)
-  "Make git ignore the worktree directory of ROOT, when it does not.
-In the exclude file of the clone rather than a .gitignore, so the
-checkout gets no change to commit."
-  (let ((default-directory root))
-    (unless (zerop (process-file "git" nil nil nil "check-ignore" "-q" shipit-worktree-directory))
-      (let ((exclude (expand-file-name
-                      (string-trim (shipit--git-output "rev-parse" "--git-path" "info/exclude"))
-                      root)))
-        (make-directory (file-name-directory exclude) t)
-        (write-region (concat "\n" shipit-worktree-directory "\n") nil exclude t 'silent)))))
-
 (defun shipit-worktree-move--add (dir branch root)
   "Make the worktree DIR of the checkout ROOT, with BRANCH checked out."
   (let ((default-directory root))
-    (shipit-worktree-move--ignore-worktrees root)
+    (shipit--ignore-worktree-directory root)
     (make-directory (file-name-directory (directory-file-name dir)) t)
     (shipit--git-change "worktree" "add" dir branch)))
 

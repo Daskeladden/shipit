@@ -758,6 +758,18 @@ An error when git fails, with what it said."
         (error "shipit: git %s failed: %s" (string-join args " ") (buffer-string)))
       (buffer-string))))
 
+(defun shipit--ignore-worktree-directory (root)
+  "Make git ignore `shipit-worktree-directory' in the clone ROOT, when it does not.
+The entry goes into the exclude file of the clone rather than a
+.gitignore, so the clone gets no change to commit."
+  (let ((default-directory (file-name-as-directory root)))
+    (unless (zerop (process-file "git" nil nil nil "check-ignore" "-q" shipit-worktree-directory))
+      (let ((exclude (expand-file-name
+                      (string-trim (shipit--git-output "rev-parse" "--git-path" "info/exclude"))
+                      default-directory)))
+        (make-directory (file-name-directory exclude) t)
+        (write-region (concat "\n" shipit-worktree-directory "\n") nil exclude t 'silent)))))
+
 (defun shipit--git-worktree-entry (block)
   "The worktree BLOCK of `git worktree list --porcelain' as a plist.
 The keys are :path, a directory name, :head, the commit, and :branch,

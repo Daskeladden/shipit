@@ -1095,8 +1095,7 @@ git still lists a worktree whose folder is gone is used again."
     (unless repo-root
       (user-error "Not in a git repository"))
 
-    ;; Verify .gitignore includes worktree directory
-    (shipit--ensure-worktree-in-gitignore repo-root)
+    (shipit--ignore-worktree-directory repo-root)
 
     ;; Create worktree
     (condition-case err
@@ -1324,7 +1323,7 @@ used again."
          ;; then either skip-fetch -> start-add, or fetch -> start-add.
          (prep
           (lambda ()
-            (shipit--ensure-worktree-in-gitignore repo-root)
+            (shipit--ignore-worktree-directory repo-root)
             (make-directory (file-name-directory worktree-path) t)
             (when (funcall handle-existing)
               ;; Fetch if needed.
@@ -1474,27 +1473,6 @@ refreshes the Worktree section in PR-BUFFER on completion."
        (with-temp-buffer
          (insert-file-contents file-path)
          (string-match-p (regexp-quote pattern) (buffer-string)))))
-
-(defun shipit--ensure-worktree-in-gitignore (repo-root)
-  "Ensure shipit-worktree-directory is ignored in REPO-ROOT.
-Only adds to .gitignore if not already in .gitignore or .git/info/exclude."
-  (let ((gitignore-path (expand-file-name ".gitignore" repo-root))
-        (exclude-path (expand-file-name ".git/info/exclude" repo-root))
-        (pattern shipit-worktree-directory))
-    ;; Skip if already in private exclude file
-    (unless (shipit--worktree-pattern-in-file-p exclude-path pattern)
-      ;; Skip if already in .gitignore
-      (unless (shipit--worktree-pattern-in-file-p gitignore-path pattern)
-        ;; Add to .gitignore
-        (if (file-exists-p gitignore-path)
-            (with-temp-buffer
-              (insert-file-contents gitignore-path)
-              (goto-char (point-max))
-              (insert "\n" pattern)
-              (write-region (point-min) (point-max) gitignore-path))
-          ;; Create .gitignore if it doesn't exist
-          (with-temp-file gitignore-path
-            (insert pattern)))))))
 
 (defun shipit--worktree-exclude-pr-info (worktree-path)
   "Ensure `.shipit-pr-info.json' is in the worktree\\='s git exclude file.

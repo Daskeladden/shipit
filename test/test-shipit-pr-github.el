@@ -175,6 +175,23 @@ GitHub shows no video there."
     (should (string-match-p "^🎥 Video ▸$" out))
     (should (string-match-p "^\\[> Play Video\\]$" out))))
 
+(ert-deftest test-github-an-uploaded-video-folds-above-a-table ()
+  "GIVEN a body with a video uploaded to GitHub alone on a line, AND a
+table of two columns lower down
+WHEN the body is prepared for rendering, and its videos are processed
+THEN the address stays alone on its line and the upload gets its header
+with an arrow, as without the table, AND the table is aligned.  pandoc,
+which aligns tables, wrote the whole body again and put the address in
+angle brackets, which no video check knew."
+  (let* ((upload "https://github.com/user-attachments/assets/0f3c2d4e-1a2b-4c3d-9e8f-123456789abc")
+         (shipit-use-svglib-icons nil)
+         (prepared (shipit--prepare-markdown
+                    (concat "Intro.\n\n" upload "\n\n| Cup | Size |\n| --- | --- |\n| tall | 3 dl |\n")))
+         (out (substring-no-properties (shipit--process-inline-videos prepared))))
+    (should-not (string-match-p (regexp-quote (concat "<" upload ">")) prepared))
+    (should (string-match-p "^| tall | 3 dl |$" prepared))
+    (should (string-match-p "^🎥 Video ▸$" out))))
+
 ;;; Forks
 
 (defvar shipit--forked-from-cache)

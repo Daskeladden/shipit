@@ -3661,34 +3661,61 @@ that an entity such as &lt;b&gt; is no tag."
         (push line result)))
     (mapconcat 'identity (nreverse result) "\n")))
 
+(defconst shipit--table-separator-regexp "^\\s-*|[ \t|:-]*-[ \t|:-]*$"
+  "A separator line of a markdown table, as `|---|' or `| :--- | ---: |'.")
+
+(defun shipit--leading-blanks (line)
+  "Return the spaces and tabs at the start of LINE."
+  (string-match "\\`[ \t]*" line)
+  (match-string 0 line))
+
+(defun shipit--pandoc-align-table (lines)
+  "Return LINES, the rows of one markdown table, aligned by pandoc, or nil.
+The rows lose their common indent for pandoc and get it back after,
+so a table in a list item stays in the item.  Nil when pandoc fails."
+  (let* ((indent (car (seq-sort-by #'length #'< (mapcar #'shipit--leading-blanks lines))))
+         (table (mapconcat (lambda (line) (substring line (length indent))) lines "\n")))
+    (condition-case err
+        (with-temp-buffer
+          (insert table "\n")
+          (when (zerop (shell-command-on-region (point-min) (point-max)
+                                                "pandoc -f gfm -t gfm --columns=1000" t t))
+            ;; pandoc escapes a dash as \-; a dash and a space keep the column width.
+            (let ((aligned (replace-regexp-in-string
+                            "\\\\-" "- " (string-trim-right (buffer-string) "\n+"))))
+              (mapconcat (lambda (line) (concat indent line)) (split-string aligned "\n") "\n"))))
+      (error
+       (shipit--debug-log "Pandoc table alignment failed: %s" err)
+       nil))))
+
+(defun shipit--align-table-rows (lines)
+  "Return LINES, a run of lines that start with `|', as one string.
+A run with a separator line is a table, and pandoc aligns it."
+  (or (and (seq-some (lambda (line) (string-match-p shipit--table-separator-regexp line)) lines)
+           (shipit--pandoc-align-table lines))
+      (string-join lines "\n")))
+
 (defun shipit--align-markdown-tables-with-pandoc (text)
-  "Align markdown tables in TEXT using pandoc if available.
-Only invokes pandoc when TEXT contains an actual markdown table
-separator line (a line starting with `|' that contains only spaces,
-pipes, colons, and at least one dash — e.g. `|---|---|',
-`| --- | --- |', `|:---:|---:|').  Plain comments with stray pipes
-no longer trigger a pandoc subprocess."
+  "Align the markdown tables in TEXT with pandoc, if it is installed.
+Only the rows of each table go to pandoc.  Given the whole text, pandoc
+writes all of it again in its own way, and puts a bare address in angle
+brackets, so a video that stands alone on its line is no video any more.
+A text without a separator line starts no pandoc."
   (if (and (stringp text)
-           (string-match-p "^\\s-*|[ \t|:-]*-[ \t|:-]*$" text)
+           (string-match-p shipit--table-separator-regexp text)
            (executable-find "pandoc"))
-      (condition-case err
-          (with-temp-buffer
-            (insert text)
-            (let ((exit-code (shell-command-on-region
-                             (point-min) (point-max)
-                             "pandoc -f gfm -t gfm --columns=1000"
-                             t t)))
-              (if (= exit-code 0)
-                  (let* ((aligned (buffer-string))
-                         ;; Replace \- with "- " (dash + space) to preserve column width
-                         (cleaned (replace-regexp-in-string "\\\\-" "- " aligned)))
-                    ;; Escape underscores in table cells to prevent italic rendering
-                    (shipit--escape-underscores-in-table-cells cleaned))
-                text)))
-        (error
-         (when (fboundp 'shipit--debug-log)
-           (shipit--debug-log "Pandoc table alignment failed: %s" err))
-         text))
+      (let ((out nil)
+            (rows nil))
+        (dolist (line (split-string text "\n"))
+          (if (string-match-p "\\`[ \t]*|" line)
+              (push line rows)
+            (when rows
+              (push (shipit--align-table-rows (nreverse rows)) out)
+              (setq rows nil))
+            (push line out)))
+        (when rows
+          (push (shipit--align-table-rows (nreverse rows)) out))
+        (shipit--escape-underscores-in-table-cells (string-join (nreverse out) "\n")))
     text))
 
 (defconst shipit--underscore-keep-regexps

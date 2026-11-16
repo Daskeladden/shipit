@@ -86,14 +86,16 @@ TEST_HOME = -eval "(setq user-emacs-directory (file-name-as-directory (make-temp
 TEST_OFFLINE = -l test/shipit-test-offline.el
 
 # The undo tests of the stacked preview press the keys of undo-tree and
-# vundo, as a user who has them does.  Both are installed here, since
-# the tests themselves run offline.
+# vundo, as a user who has them does.  The tests of the Confluence
+# search show its columns with marginalia.  All three are installed
+# here, since the tests themselves run offline.
 test-packages:
 	$(EMACS) -batch -Q \
 		-eval "(setq package-user-dir \"$(PWD)/.packages\")" \
 		-eval "(package-initialize)" \
 		-eval "(unless (package-installed-p 'undo-tree) (package-install 'undo-tree))" \
-		-eval "(unless (package-installed-p 'vundo) (package-install 'vundo))"
+		-eval "(unless (package-installed-p 'vundo) (package-install 'vundo))" \
+		-eval "(unless (package-installed-p 'marginalia) (package-install 'marginalia))"
 
 # Run unit tests
 test-unit: compile test-packages
@@ -204,6 +206,7 @@ test-unit: compile test-packages
 		-l test/test-shipit-notifications-confluence-cases.el \
 		-l test/test-shipit-confluence-search.el \
 		-l test/test-shipit-confluence-search-cases.el \
+		-l test/test-shipit-confluence-search-marginalia.el \
 		-l test/test-shipit-explore.el \
 		-l test/test-shipit-explore-buffer.el \
 		-l test/test-shipit-branches.el \

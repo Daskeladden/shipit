@@ -357,13 +357,17 @@ stays a phrase."
   "The page of RESULT, a result of a search, as an alist.
 BASE is the address that the path of the page starts from.  The title
 is the one of the content, because the title of the result itself holds
-the marks with which the search shows the words that it found."
+the marks with which the search shows the words that it found.  The
+`editor' is the name of the user who made the last change, and the
+`excerpt' is the text around the words found, without those marks."
   (let-alist result
     `((id . ,.content.id)
       (title . ,.content.title)
       (space . ,(or .content.space.name .resultGlobalContainer.title))
       (url . ,(and .content._links.webui (concat base .content._links.webui)))
-      (changed . ,.lastModified))))
+      (changed . ,.lastModified)
+      (editor . ,.content.version.by.displayName)
+      (excerpt . ,(and .excerpt (shipit-confluence--without-highlight .excerpt))))))
 
 (defun shipit-confluence--pages (config answer)
   "The pages in ANSWER, the JSON of a search at the site of CONFIG.

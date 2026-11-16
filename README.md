@@ -260,6 +260,8 @@ Each poll asks the search of Confluence for the pages that changed since the pol
 
 Each row shows the title of a page and the name of its space. Next to the row is the time of the last change of the page. The rows are in the order that Confluence gives, the best match first.
 
+With marginalia on, each row shows only the title. Three columns next to it show the name of the space, the user who made the last change, and the time of that change. The time follows `shipit-timestamp-format`. `marginalia-cycle` adds the text around the words found before these three columns. The text is cut to the room that the widest row leaves in the window. A second `marginalia-cycle` turns the columns off, and from the next search on the rows show the space again.
+
 With consult there is one prompt. Its rows follow your typing from the third character on, which is the default of `consult-async-min-input`. Without consult there are two prompts: first you type the words, then you choose one of the pages that Confluence found for them.
 
 The words go to the search of Confluence as you typed them. So `"coffee menu"` in double quotes finds the phrase, and `coff*` finds the words that start with coff. `RET` on a row opens the page in the browser.

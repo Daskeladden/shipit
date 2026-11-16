@@ -36,12 +36,20 @@
 
 (declare-function consult--read "consult")
 (declare-function consult--dynamic-collection "consult")
+(defvar marginalia-annotators)
+(defvar marginalia-mode)
+(defvar marginalia-separator)
 
 (defconst shipit-confluence-search--limit 25
   "How many pages one search offers.")
 
 (defvar shipit-confluence-search--history nil
   "The words of the earlier searches of Confluence.")
+
+(defvar shipit-confluence-search--pages nil
+  "The table from the text of a row to its page, while a search asks.
+The annotators of marginalia get only the text of a row, so they find
+its page here.")
 
 ;;; The site
 
@@ -75,9 +83,10 @@ and a :base-url to `shipit-issue-repo-backends'"))
 ;;; The rows
 
 (defun shipit-confluence-search--row (page)
-  "The text of the row of PAGE: its title, then the name of its space, dim."
+  "The text of the row of PAGE: its title, then the name of its space, dim.
+When marginalia shows the space in a column, the row is the title only."
   (let-alist page
-    (if .space
+    (if (and .space (not (shipit-confluence-search--in-columns-p)))
         (concat .title "  " (propertize .space 'face 'shadow))
       .title)))
 
@@ -112,6 +121,121 @@ text of a row without its properties, so the page is found by the text."
    ((or (null row) (string-empty-p row)) nil)
    ((gethash row pages))
    (t (error "shipit: the prompt gave back %S, which is no row of a page" row))))
+
+;;; The columns of marginalia
+
+(defconst shipit-confluence-search--views
+  '(shipit-confluence-search-space-editor-and-time
+    shipit-confluence-search-text-space-editor-and-time)
+  "The annotators of marginalia for the rows of pages.
+`marginalia-cycle' shows them in this order, and then no columns.  Each
+of them shows the space, because the row then holds only the title.")
+
+(defconst shipit-confluence-search--space-width 25
+  "How many characters the column of the space holds.")
+
+(defconst shipit-confluence-search--editor-width 15
+  "How many characters the column of the last editor holds.")
+
+(defconst shipit-confluence-search--time-width 16
+  "How many characters the column of the time holds.
+A date and a time, as 2026-11-16 19:29, fill it.")
+
+(defun shipit-confluence-search--in-columns-p ()
+  "Whether marginalia shows the space of each page in a column.
+This is so when marginalia is on and its annotator of the pages is one
+of `shipit-confluence-search--views'.  `marginalia-cycle' changes which
+annotator that is."
+  (and (bound-and-true-p marginalia-mode)
+       (memq (cadr (assq 'shipit-confluence-page marginalia-annotators))
+             shipit-confluence-search--views)
+       t))
+
+(defun shipit-confluence-search--fields (&rest fields)
+  "FIELDS as columns of marginalia, each one as `marginalia--fields' takes it.
+`marginalia--fields' is a macro.  This file is compiled without
+marginalia, so the macro is expanded here, when marginalia calls an
+annotator and so is loaded."
+  (eval `(marginalia--fields ,@fields) t))
+
+(defun shipit-confluence-search--space-field (page)
+  "The column of the name of the space of PAGE."
+  `(,(or (alist-get 'space page) "")
+    :truncate ,shipit-confluence-search--space-width :face 'marginalia-type))
+
+(defun shipit-confluence-search--editor-field (page)
+  "The column of the name of the user who made the last change of PAGE."
+  `(,(or (alist-get 'editor page) "")
+    :truncate ,shipit-confluence-search--editor-width :face 'marginalia-value))
+
+(defun shipit-confluence-search--time-field (page)
+  "The column of the time of the last change of PAGE.
+The time follows `shipit-timestamp-format'."
+  `(,(shipit--format-timestamp (alist-get 'changed page))
+    :width ,(- shipit-confluence-search--time-width) :face 'marginalia-date))
+
+(defun shipit-confluence-search--window-width ()
+  "The width of the narrowest window that shows the prompt of pages.
+Without an active minibuffer, the width of the selected window."
+  (if-let* ((minibuffer (active-minibuffer-window)))
+      (cl-loop for window in (get-buffer-window-list (window-buffer minibuffer) nil t)
+               minimize (window-width window))
+    (window-width)))
+
+(defun shipit-confluence-search--text-width ()
+  "How many characters the column of the text holds.
+It is the room that the widest row of the search leaves in the window
+beside the space, the editor and the time, so that each row fits.  All
+rows get this width, so that their other columns stay under each other."
+  (let ((widest (cl-loop for row being the hash-keys of shipit-confluence-search--pages
+                         maximize (string-width row)))
+        (others (+ shipit-confluence-search--space-width
+                   shipit-confluence-search--editor-width
+                   shipit-confluence-search--time-width))
+        ;; Marginalia puts a separator before each of the four columns,
+        ;; and one character before all of them that aligns them.  The
+        ;; last column of the window stays free.
+        (gaps (+ 2 (* 4 (string-width marginalia-separator)))))
+    (max 0 (- (shipit-confluence-search--window-width) widest others gaps))))
+
+(defun shipit-confluence-search--text-field (page)
+  "The column of the text around the words found in PAGE, on one line.
+The text is cut to `shipit-confluence-search--text-width'."
+  `(,(string-join (split-string (or (alist-get 'excerpt page) "")) " ")
+    :truncate ,(shipit-confluence-search--text-width) :face 'marginalia-documentation))
+
+(defun shipit-confluence-search--columns (row &rest columns)
+  "The text beside ROW: the COLUMNS of its page, or nil when ROW has no page.
+Each of COLUMNS is a function that gives a field of the page."
+  (when-let* ((page (and shipit-confluence-search--pages
+                         (gethash row shipit-confluence-search--pages))))
+    (apply #'shipit-confluence-search--fields
+           (mapcar (lambda (column) (funcall column page)) columns))))
+
+(defun shipit-confluence-search-space-editor-and-time (row)
+  "Show beside ROW the space of its page, its last editor, and the time.
+An annotator of marginalia for the search of Confluence."
+  (shipit-confluence-search--columns row
+                                     #'shipit-confluence-search--space-field
+                                     #'shipit-confluence-search--editor-field
+                                     #'shipit-confluence-search--time-field))
+
+(defun shipit-confluence-search-text-space-editor-and-time (row)
+  "Show beside ROW the text found, the space, the last editor and the time.
+The text is the one around the words found in the page of ROW.  An
+annotator of marginalia for the search of Confluence."
+  (shipit-confluence-search--columns row
+                                     #'shipit-confluence-search--text-field
+                                     #'shipit-confluence-search--space-field
+                                     #'shipit-confluence-search--editor-field
+                                     #'shipit-confluence-search--time-field))
+
+;; Each load sets the views, so that a reload replaces those of the
+;; shipit loaded before, which can name a view that is gone.  To change
+;; them, set the entry after this file is loaded.
+(with-eval-after-load 'marginalia
+  (setf (alist-get 'shipit-confluence-page marginalia-annotators)
+        (append shipit-confluence-search--views '(none))))
 
 ;;; With consult
 
@@ -197,13 +321,17 @@ Each row that the prompt offers is added to PAGES."
 The prompt offers the pages and blog posts whose title or text holds the
 words, the best match first.  RET opens the page of a row in the
 browser.  The site is the entry of `shipit-issue-repo-backends' with
-`:backend confluence', or the one you choose when there are several."
+`:backend confluence', or the one you choose when there are several.
+With marginalia on, the space, the last editor and the time show in
+columns beside the title, and `marginalia-cycle' shows the text around
+the words found before them."
   (interactive)
   (let* ((config (shipit-confluence-search--site))
          ;; Each search adds the rows of its answer and removes none:
          ;; consult can still show the rows of an earlier answer while
          ;; the typing interrupts a newer request.
          (pages (make-hash-table :test 'equal))
+         (shipit-confluence-search--pages pages)
          (page (shipit-confluence-search--chosen
                 pages (shipit-confluence-search--choose config pages))))
     (when page

@@ -1195,8 +1195,15 @@ Result format is the same as shipit-gh-etag-get-json-with-refresh-cache."
     (let ((system-time-locale "C"))
       (url-retrieve url
                     (lambda (status)
-                      (shipit-gh-etag--handle-async-response
-                       status endpoint params token callback cache-key stored-etag force-fresh))
+                      ;; `url-retrieve' leaves the response buffer to
+                      ;; its callback.  Kill it however the handler
+                      ;; ends, or every poll leaves one behind.
+                      (let ((response-buffer (current-buffer)))
+                        (unwind-protect
+                            (shipit-gh-etag--handle-async-response
+                             status endpoint params token callback cache-key stored-etag force-fresh)
+                          (when (buffer-live-p response-buffer)
+                            (kill-buffer response-buffer)))))
                     nil t t))))
 
 (defun shipit-gh-etag--handle-async-response (status endpoint params token callback cache-key stored-etag force-fresh)

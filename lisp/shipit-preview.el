@@ -1464,15 +1464,16 @@ Returns the existing PR data if found, nil otherwise."
               ;; Clear saved state since PR was created successfully
               (shipit-preview--clear-saved-state)
               ;; Hand back to whatever opened this preview, then open the
-              ;; new PR.  The buffer that launched it is brought up to date
-              ;; before this one goes away, so a stack shows the pull
-              ;; request that was just made.
+              ;; new PR.  This buffer goes first: its window then falls
+              ;; back to the buffer that launched it, and the hand-back
+              ;; shows that buffer there.  The other way round, the
+              ;; hand-back finds that buffer in no window and splits one.
               (let* ((preview (current-buffer))
                      (done shipit-preview--on-done)
                      (repo shipit-preview--repo)
                      (open (y-or-n-p "Open PR in shipit? ")))
-                (when done (funcall done pr-number))
                 (when (or open done) (kill-buffer preview))
+                (when done (funcall done pr-number))
                 (when open (shipit-open-pr-buffer pr-number repo))))
           (user-error "Failed to create PR - check your permissions and try again"))))))
 

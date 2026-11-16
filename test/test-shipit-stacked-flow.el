@@ -94,5 +94,40 @@ git half real and only the remote's API standing in."
                        (shipit-stacked-preview--branch-names
                         (shipit-stacked-preview--current-layers))))))))
 
+(defmacro test-flow--with-real-windows (&rest body)
+  "Run BODY in the sandbox, with buffers shown in windows as for a user.
+The sandbox keeps buffers out of windows.  BODY gets the real
+`pop-to-buffer' and `switch-to-buffer' back, in one window of a frame
+169 columns wide, wide enough for `pop-to-buffer' to split it."
+  (declare (indent 0))
+  `(let ((real-pop (symbol-function 'pop-to-buffer))
+         (real-switch (symbol-function 'switch-to-buffer))
+         (old-columns (frame-width))
+         (old-lines (frame-height)))
+     (unwind-protect
+         (shipit-sandbox-with-repo
+           (cl-letf (((symbol-function 'pop-to-buffer) real-pop)
+                     ((symbol-function 'switch-to-buffer) real-switch))
+             (set-frame-size (selected-frame) 169 47)
+             (delete-other-windows)
+             ,@body))
+       (set-frame-size (selected-frame) old-columns old-lines))))
+
+(ert-deftest test-shipit-stacked-flow-a-submit-comes-back-in-one-window ()
+  "GIVEN the stacked preview in the one window of a wide frame, with its
+layers pushed
+WHEN the user presses RET on the lowest layer, which shows its preview
+in that window, and creates the pull request with C-c C-c
+THEN the frame still has one window, and it shows the stacked preview."
+  (test-flow--with-real-windows
+    (shipit-stacked-preview)
+    (let ((stack-buffer (current-buffer)))
+      (let ((layers (shipit-stacked-preview--current-layers)))
+        (shipit-stacked-preview-create-branches)
+        (shipit-stacked-preview--push-through (car (last layers)) nil)
+        (test-flow--submit (car (shipit-stacked-preview--branch-names layers))))
+      (should (= 1 (length (window-list))))
+      (should (eq stack-buffer (window-buffer (selected-window)))))))
+
 (provide 'test-shipit-stacked-flow)
 ;;; test-shipit-stacked-flow.el ends here

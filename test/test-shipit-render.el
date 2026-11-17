@@ -2613,12 +2613,16 @@ THEN returns (300 . 200)."
             (should (equal '(300 . 200) dim))))
       (delete-file tmp))))
 
+(defun test-shipit-render--moving-gif-at (file)
+  "Make a GIF of two frames, 40 by 20 pixels, as FILE; FILE."
+  (make-directory (file-name-directory file) t)
+  (call-process "convert" nil nil nil "-size" "40x20"
+                "xc:red" "xc:blue" "-loop" "0" file)
+  file)
+
 (defun test-shipit-render--moving-gif (directory)
   "Make a GIF of two frames, 40 by 20 pixels, in DIRECTORY; its file."
-  (let ((file (expand-file-name "cup.gif" directory)))
-    (call-process "convert" nil nil nil "-size" "40x20"
-                  "xc:red" "xc:blue" "-loop" "0" file)
-    file))
+  (test-shipit-render--moving-gif-at (expand-file-name "cup.gif" directory)))
 
 (defun test-shipit-render--gif-frames (file)
   "The number of frames of the GIF FILE, as ImageMagick counts them."
@@ -2626,25 +2630,236 @@ THEN returns (300 . 200)."
     (call-process "identify" nil t nil file)
     (count-lines (point-min) (point-max))))
 
+(defconst test-shipit-render--gif-url "https://example.com/cup.gif"
+  "The address of the GIF that the tests of GIF copies draw.")
+
+(defmacro test-shipit-render--with-gif-cache (&rest body)
+  "Run BODY with an empty image cache of its own.
+No GIF is being made smaller when BODY starts, and none is when it ends."
+  (declare (indent 0))
+  `(let* ((temporary-file-directory
+           (file-name-as-directory (make-temp-file "shipit-gif-cache" t)))
+          (shipit--gif-shrinks (make-hash-table :test 'equal))
+          (shipit--pictures-awaiting-copy
+           (make-hash-table :test 'eq :weakness 'key)))
+     (unwind-protect
+         (progn ,@body)
+       (test-shipit-render--stop-shrinks)
+       (delete-directory temporary-file-directory t))))
+
+(defun test-shipit-render--stop-shrinks ()
+  "Stop each process that makes a GIF smaller."
+  (maphash (lambda (_copy process)
+             (when (processp process)
+               (delete-process process)))
+           shipit--gif-shrinks))
+
+(defun test-shipit-render--cached-gif ()
+  "Put a moving GIF of two frames, 40 pixels wide, in the image cache.
+It is the image at `test-shipit-render--gif-url'.  Return its file."
+  (test-shipit-render--moving-gif-at
+   (shipit--image-cache-file test-shipit-render--gif-url)))
+
+(defun test-shipit-render--draw-gif ()
+  "Draw the GIF at `test-shipit-render--gif-url' 20 pixels wide; its picture."
+  (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t)))
+    (let ((shipit--image-target-width 20))
+      (shipit--display-image
+       (get-text-property
+        0 'display
+        (shipit--create-image-display test-shipit-render--gif-url "cup"))))))
+
+(defun test-shipit-render--await-shrinks ()
+  "Wait until no process makes a GIF smaller, at most ten seconds."
+  (let ((deadline (+ (float-time) 10)))
+    (while (and (< (float-time) deadline)
+                (seq-some #'processp (hash-table-values shipit--gif-shrinks)))
+      (accept-process-output nil 0.05))))
+
+(defun test-shipit-render--running-shrinks ()
+  "The number of processes that make a GIF smaller."
+  (seq-count #'process-live-p (hash-table-values shipit--gif-shrinks)))
+
+(defvar test-shipit-render--clock 1000.0
+  "The time of the clock of the pictures at the last look of a test.")
+
+(defun test-shipit-render--moves-p (image)
+  "Whether the moving picture IMAGE, set moving in this buffer, moves.
+The clock looks at the picture twice, half a second apart, ten seconds
+after its last look.  It looks ten seconds after the real time too:
+the clock of the buffer moves the picture at the real time while the
+test waits for a process."
+  (let ((now (setq test-shipit-render--clock
+                   (+ 10.0 (max test-shipit-render--clock (float-time))))))
+    (shipit--move-pictures-at now)
+    (shipit--move-pictures-at (+ now 0.5))
+    (and (test-shipit-render--frame image) t)))
+
+(defmacro test-shipit-render--with-gif-tool (script &rest body)
+  "Run BODY with a `convert' on the path that runs the shell SCRIPT.
+No other tool that resizes a GIF is on the path.  SCRIPT gets the
+arguments of `convert'; the last one is the file to write."
+  (declare (indent 1))
+  `(let ((tools (make-temp-file "shipit-gif-tool" t)))
+     (unwind-protect
+         (let ((convert (expand-file-name "convert" tools)))
+           (with-temp-file convert
+             (insert "#!/bin/sh\nfor last; do :; done\n" ,script "\n"))
+           (set-file-modes convert #o755)
+           (let ((exec-path (list tools)))
+             ,@body))
+       (delete-directory tools t))))
+
+(ert-deftest test-shipit-a-wide-gif-shows-at-once-and-its-smaller-copy-later ()
+  "GIVEN a moving GIF of two frames, 40 pixels wide, AND ImageMagick
+WHEN the GIF is drawn 20 pixels wide
+THEN the picture shows the GIF itself, scaled to 20 pixels: the drawing
+does not wait for the smaller copy, which can take ImageMagick 20
+seconds, AND the picture stands still, as Emacs would scale each frame
+as it draws it
+WHEN the process that makes the copy ends
+THEN the picture shows the copy, 20 pixels wide and of two frames, at
+its own size, AND it moves."
+  (skip-unless (and (executable-find "convert") (executable-find "identify")))
+  (test-shipit-render--with-gif-cache
+    (test-shipit-render--with-moving-pictures '(2 . 0.1) t
+      (let* ((gif (test-shipit-render--cached-gif))
+             (cup (test-shipit-render--draw-gif)))
+        (should (equal gif (image-property cup :file)))
+        (should (equal 0.5 (image-property cup :scale)))
+        (test-shipit-render--insert-picture cup)
+        (shipit--animate-images-in-region (point-min) (point-max))
+        (should-not (test-shipit-render--moves-p cup))
+        (test-shipit-render--await-shrinks)
+        (let ((copy (image-property cup :file)))
+          (should-not (equal gif copy))
+          (should (equal 20 (car (shipit--gif-pixel-dimensions copy))))
+          (should (= 2 (test-shipit-render--gif-frames copy))))
+        (should-not (equal 0.5 (image-property cup :scale)))
+        (should (test-shipit-render--moves-p cup))))))
+
+(ert-deftest test-shipit-a-gif-in-a-table-cell-shows-its-smaller-copy-later ()
+  "GIVEN a moving GIF 40 pixels wide, AND ImageMagick, AND a table row
+whose cell holds the GIF drawn 20 pixels wide, on a line of its own
+WHEN the table rows are laid out, which cuts the picture into strips
+THEN the strips show the GIF itself, as no smaller copy is made yet
+WHEN the process that makes the copy ends
+THEN each strip shows the copy, 20 pixels wide."
+  (skip-unless (executable-find "convert"))
+  (test-shipit-render--with-gif-cache
+    (test-shipit-render--with-picture-display
+      (let* ((gif (test-shipit-render--cached-gif))
+             (text (concat (test-shipit-render--cell 1 0 "Brew it")
+                           "\n\n"
+                           (test-shipit-render--cell
+                            1 1 (propertize " " 'display (test-shipit-render--draw-gif)))))
+             (strips (with-temp-buffer
+                       (insert (shipit--lay-out-table-rows text 43))
+                       (shipit--images-in-region (point-min) (point-max)))))
+        (should strips)
+        (should (equal (list gif) (seq-uniq (mapcar (lambda (strip)
+                                                       (image-property strip :file))
+                                                     strips))))
+        (test-shipit-render--await-shrinks)
+        (should (equal '(20) (seq-uniq (mapcar (lambda (strip)
+                                                 (car (shipit--gif-pixel-dimensions
+                                                       (image-property strip :file))))
+                                               strips))))))))
+
+(ert-deftest test-shipit-two-pictures-of-one-gif-wait-for-one-copy ()
+  "GIVEN a moving GIF 40 pixels wide, AND ImageMagick
+WHEN the GIF is drawn 20 pixels wide twice, before its smaller copy is
+made
+THEN one process makes the copy
+WHEN it ends
+THEN both pictures show the copy."
+  (skip-unless (executable-find "convert"))
+  (test-shipit-render--with-gif-cache
+    (let* ((gif (test-shipit-render--cached-gif))
+           (first (test-shipit-render--draw-gif))
+           (second (test-shipit-render--draw-gif)))
+      (should (= 1 (test-shipit-render--running-shrinks)))
+      (test-shipit-render--await-shrinks)
+      (should-not (equal gif (image-property first :file)))
+      (should (equal (image-property first :file)
+                     (image-property second :file))))))
+
+(ert-deftest test-shipit-a-stopped-gif-copy-leaves-no-broken-file ()
+  "GIVEN a moving GIF 40 pixels wide, AND a tool that writes part of the
+smaller copy and then works on
+WHEN the GIF is drawn 20 pixels wide, AND the tool is stopped before it
+ends, as when Emacs quits
+THEN the image cache holds the GIF alone: no half-written copy is left
+for a later drawing to take for a made one
+AND the picture moves, as no copy comes."
+  (skip-unless (executable-find "convert"))
+  (test-shipit-render--with-gif-cache
+    (test-shipit-render--with-moving-pictures '(2 . 0.1) t
+      (let ((gif (test-shipit-render--cached-gif)))
+        (test-shipit-render--with-gif-tool
+            "printf GIF89a > \"$last\"\nexec sleep 30"
+          (let ((cup (test-shipit-render--draw-gif)))
+            (test-shipit-render--insert-picture cup)
+            (shipit--animate-images-in-region (point-min) (point-max))
+            (maphash (lambda (_copy process)
+                       (when (processp process)
+                         (interrupt-process process)))
+                     shipit--gif-shrinks)
+            (test-shipit-render--await-shrinks)
+            (should (equal (list (file-name-nondirectory gif))
+                           (directory-files (file-name-directory gif) nil
+                                            "\\.gif\\'")))
+            (should (test-shipit-render--moves-p cup))))))))
+
+(ert-deftest test-shipit-a-gif-that-the-tool-fails-on-is-not-tried-again ()
+  "GIVEN a moving GIF 40 pixels wide, AND a tool that fails on it, as
+ImageMagick does on a GIF too large for its limits
+WHEN the GIF is drawn 20 pixels wide, AND the tool ends
+THEN the picture moves, scaled as it is, AND the image cache holds no copy
+WHEN the GIF is drawn again
+THEN the tool does not run again: it would fail again."
+  (skip-unless (executable-find "convert"))
+  (test-shipit-render--with-gif-cache
+    (test-shipit-render--with-moving-pictures '(2 . 0.1) t
+      (let* ((gif (test-shipit-render--cached-gif))
+             (runs (expand-file-name "runs" temporary-file-directory)))
+        (test-shipit-render--with-gif-tool
+            (format "echo run >> %s\nprintf GIF89a > \"$last\"\nexit 1"
+                    (shell-quote-argument runs))
+          (let ((cup (test-shipit-render--draw-gif)))
+            (test-shipit-render--insert-picture cup)
+            (shipit--animate-images-in-region (point-min) (point-max))
+            (test-shipit-render--await-shrinks)
+            (should (test-shipit-render--moves-p cup))
+            (should (equal (list (file-name-nondirectory gif))
+                           (directory-files (file-name-directory gif) nil
+                                            "\\.gif\\'")))
+            (test-shipit-render--draw-gif)
+            (test-shipit-render--await-shrinks)
+            (should (= 1 (with-temp-buffer
+                           (insert-file-contents runs)
+                           (count-lines (point-min) (point-max)))))))))))
+
 (ert-deftest test-shipit-a-gif-is-resized-by-imagemagick-without-gifsicle ()
   "GIVEN a moving GIF of two frames, 40 pixels wide, AND no gifsicle on
 the path, but ImageMagick
-WHEN the GIF is made ready to be shown 20 pixels wide
+WHEN the GIF is made ready to be shown 20 pixels wide, AND the process
+that makes it smaller ends
 THEN a new file is shown, 20 pixels wide and still of two frames, so
 that Emacs does not scale each frame as it draws it."
   (skip-unless (and (executable-find "convert") (executable-find "identify")))
-  (let ((directory (make-temp-file "shipit-gif-test" t))
-        (find (symbol-function 'executable-find)))
-    (unwind-protect
-        (cl-letf (((symbol-function 'executable-find)
-                   (lambda (name &rest args)
-                     (unless (equal name "gifsicle") (apply find name args)))))
-          (let* ((gif (test-shipit-render--moving-gif directory))
-                 (shown (shipit--prepare-gif-for-display gif 20)))
+  (let ((find (symbol-function 'executable-find)))
+    (test-shipit-render--with-gif-cache
+      (cl-letf (((symbol-function 'executable-find)
+                 (lambda (name &rest args)
+                   (unless (equal name "gifsicle") (apply find name args)))))
+        (let ((gif (test-shipit-render--moving-gif temporary-file-directory)))
+          (shipit--prepare-gif-for-display gif 20)
+          (test-shipit-render--await-shrinks)
+          (let ((shown (shipit--prepare-gif-for-display gif 20)))
             (should-not (equal gif shown))
             (should (equal 20 (car (shipit--gif-pixel-dimensions shown))))
-            (should (= 2 (test-shipit-render--gif-frames shown)))))
-      (delete-directory directory t))))
+            (should (= 2 (test-shipit-render--gif-frames shown)))))))))
 
 (ert-deftest test-shipit-a-gif-stays-without-a-tool-to-resize-it ()
   "GIVEN a GIF 40 pixels wide, AND neither gifsicle nor ImageMagick on

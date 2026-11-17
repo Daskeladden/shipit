@@ -1362,6 +1362,15 @@ has.  The strips of one image share it."
         ((consp display)
          (seq-find (lambda (part) (eq (car-safe part) 'image)) display))))
 
+(defvar shipit--gif-shrinks (make-hash-table :test 'equal)
+  "The smaller copies of GIFs that are being made, or that failed.
+Each file of a copy maps to the process that makes it, or to `failed'
+when the tool failed on the GIF, so that it does not run again.")
+
+(defvar shipit--pictures-awaiting-copy (make-hash-table :test 'eq :weakness 'key)
+  "The pictures that show a GIF scaled until its smaller copy is made.
+Each maps to the file of that copy.")
+
 (defvar-local shipit--moving-pictures nil
   "The moving pictures of this buffer, each with the time its next frame is due.
 A hash table with weak keys, so that a picture that a redraw of the
@@ -1473,10 +1482,13 @@ shows none."
 (defun shipit--move-picture (image now)
   "Show the frame of the moving picture IMAGE that is due at time NOW.
 Return non-nil when its frame changed.  A picture that waited more than
-a second, out of view, goes on from the frame it shows."
+a second, out of view, goes on from the frame it shows.  A picture that
+waits for the smaller copy of its GIF stands still, as Emacs would
+scale each of its frames, see `shipit--gif-picture'."
   (let ((due (gethash image shipit--moving-pictures))
         (moved nil))
-    (if (> (- now due) 1)
+    (if (or (> (- now due) 1)
+            (gethash image shipit--pictures-awaiting-copy))
         (setq due (+ now (shipit--picture-frame-seconds image)))
       (while (<= due now)
         (shipit--show-next-frame image)
@@ -1526,31 +1538,118 @@ holds only what changed, at its own place."
      ((executable-find "convert")
       (list "convert" file "-coalesce" "-resize" size dest)))))
 
+(defun shipit--gif-copy-file (file width)
+  "The file of the copy of the GIF FILE that is WIDTH pixels wide."
+  (concat (file-name-sans-extension file) (format "-w%d.gif" width)))
+
 (defun shipit--prepare-gif-for-display (file target-width)
-  "Return a path to a GIF FILE suitable for display, pre-resized if needed.
-Animated GIFs scaled at display time often hit Emacs's tardiness limit
-(2s cumulative) and the animation aborts, and each frame costs time to
-draw.  When FILE's natural width exceeds TARGET-WIDTH, and gifsicle or
-ImageMagick is available, this resizes the file once to a sibling cache
-path and returns that.  Otherwise returns FILE unchanged.  Failures
-fall back to the original file."
-  (let* ((dim (shipit--gif-pixel-dimensions file))
-         (dest (concat (file-name-sans-extension file)
-                       (format "-w%d.gif" target-width)))
-         (command (and dim (car dim) (> (car dim) target-width)
-                       (shipit--gif-resize-command file target-width dest))))
-    (if (not command)
-        file
-      (unless (file-exists-p dest)
-        (when (fboundp 'shipit--debug-log)
-          (shipit--debug-log "GIF-RESIZE: %s w=%d -> %s w=%d with %s"
-                             file (car dim) dest target-width (car command)))
-        (condition-case err
-            (apply #'call-process (car command) nil nil nil (cdr command))
-          (error
-           (when (fboundp 'shipit--debug-log)
-             (shipit--debug-log "GIF-RESIZE failed: %s" err)))))
-      (if (file-exists-p dest) dest file))))
+  "Return the GIF file to show for FILE, TARGET-WIDTH pixels wide.
+That is the smaller copy of FILE once it is made, else FILE itself.
+Emacs scales each frame of a GIF as it draws it, which costs time, and
+a GIF that falls too far behind stops moving.  So when FILE is wider
+than TARGET-WIDTH, this starts a process that makes the copy, see
+`shipit--start-gif-shrink'."
+  (let ((copy (shipit--gif-copy-file file target-width)))
+    (if (file-exists-p copy)
+        copy
+      (shipit--start-gif-shrink file target-width copy)
+      file)))
+
+(defun shipit--gif-shrink-wanted-p (file width copy)
+  "Whether a process is to make COPY, the GIF FILE WIDTH pixels wide.
+Not when FILE is no wider, nor when a process makes COPY already or
+the tool failed on FILE before."
+  (and (not (gethash copy shipit--gif-shrinks))
+       (when-let* ((dim (shipit--gif-pixel-dimensions file)))
+         (> (car dim) width))))
+
+(defun shipit--start-gif-shrink (file width copy)
+  "Start a process that makes COPY, the GIF FILE WIDTH pixels wide.
+It runs in the background: ImageMagick takes up to 20 seconds on an
+animated GIF, and a page with such GIFs would wait for each.  The tool
+writes to a file of its own, which becomes COPY only when the tool
+succeeds, so that a stopped tool leaves no broken COPY.  Nothing starts
+when no tool is on the path, see `shipit--gif-resize-command'."
+  (when (shipit--gif-shrink-wanted-p file width copy)
+    (let* ((part (concat (make-temp-name (concat (file-name-sans-extension copy) "-"))
+                         ".gif"))
+           (command (shipit--gif-resize-command file width part)))
+      (when command
+        (shipit--debug-log "GIF-RESIZE: %s to %d pixels with %s" file width (car command))
+        (puthash copy
+                 (make-process
+                  :name "shipit-gif-shrink"
+                  :command command
+                  :connection-type 'pipe
+                  :noquery t
+                  :sentinel (lambda (process _event)
+                              (shipit--gif-shrink-ended process part copy)))
+                 shipit--gif-shrinks)))))
+
+(defun shipit--gif-shrink-ended (process part copy)
+  "Make PART the file COPY when PROCESS made it, then show it.
+A tool that failed is noted, and runs on the GIF no more in this
+Emacs.  A tool that was stopped by a signal can run again."
+  (unless (process-live-p process)
+    (let ((made (and (eq (process-status process) 'exit)
+                     (zerop (process-exit-status process))
+                     (shipit--gif-pixel-dimensions part))))
+      (shipit--debug-log "GIF-RESIZE: %s ended with %s %s" copy
+                         (process-status process) (process-exit-status process))
+      (if made
+          (rename-file part copy t)
+        (when (file-exists-p part)
+          (delete-file part)))
+      (if (or made (eq (process-status process) 'signal))
+          (remhash copy shipit--gif-shrinks)
+        (puthash copy 'failed shipit--gif-shrinks))
+      (shipit--show-gif-copy copy))))
+
+(defun shipit--show-gif-copy (copy)
+  "Show COPY in each picture that waits for it, if it was made.
+Each such picture moves from now on: with COPY, or else scaled as it
+is, as no copy comes.  The picture itself changes, as it stands in
+text that shipit does not keep track of.  It keeps its other
+properties, such as those of a strip in a table cell."
+  (maphash (lambda (image file)
+             (when (equal file copy)
+               (remhash image shipit--pictures-awaiting-copy)
+               (when (file-exists-p copy)
+                 (setf (image-property image :file) copy
+                       (image-property image :scale)
+                       (image-property (create-image copy 'gif nil) :scale)))))
+           shipit--pictures-awaiting-copy)
+  (force-window-update))
+
+(defun shipit--await-copy-as (picture other)
+  "Let OTHER, a picture made from PICTURE, wait for what PICTURE waits for.
+That is the smaller copy of a GIF, see `shipit--gif-picture'.  Return
+OTHER."
+  (when-let* ((copy (gethash picture shipit--pictures-awaiting-copy)))
+    (puthash other copy shipit--pictures-awaiting-copy))
+  other)
+
+(defun shipit--gif-image (file target-width)
+  "A picture of the GIF FILE, scaled to TARGET-WIDTH pixels when wider."
+  (let ((width (car (shipit--gif-pixel-dimensions file))))
+    (if (and width (> width target-width))
+        (create-image file 'gif nil
+                      :scale (/ (float target-width) width)
+                      :transform-smoothing nil)
+      (create-image file 'gif nil :transform-smoothing nil))))
+
+(defun shipit--gif-picture (file target-width)
+  "A picture of the GIF FILE, TARGET-WIDTH pixels wide at most.
+It shows the smaller copy of FILE when that is made.  Else it shows
+FILE scaled, and stands still until a process made the copy: then it
+shows the copy, see `shipit--show-gif-copy'."
+  (let* ((image (shipit--gif-image
+                 (shipit--prepare-gif-for-display file target-width)
+                 target-width))
+         (copy (shipit--gif-copy-file file target-width)))
+    (when (processp (gethash copy shipit--gif-shrinks))
+      (puthash image copy shipit--pictures-awaiting-copy))
+    image))
 
 (defun shipit--gif-pixel-dimensions (file)
   "Return (WIDTH . HEIGHT) of GIF FILE in pixels by parsing its header.
@@ -2278,13 +2377,8 @@ window-body-width) applies."
                               (window-body-width nil t)))
                    (max-h (or shipit-image-max-height
                               (window-body-height nil t)))
-                   ;; GIFs: pre-resize the file with `gifsicle', or else
-                   ;; ImageMagick, so each frame is already at the target
-                   ;; size.  Asking Emacs to scale every frame at display
-                   ;; time was hitting the 2s tardiness cap and aborting
-                   ;; animation on the 414-frame demo gif.  Pre-resized
-                   ;; files decode fast enough to keep up.  If neither is
-                   ;; installed we fall back to in-Emacs `:scale'.
+                   ;; GIFs: shown from a copy of this width, made in the
+                   ;; background, see `shipit--gif-picture'.
                    ;; Width resolution order:
                    ;; 1. EXPLICIT-WIDTH from source (`<img width=N>').
                    ;; 2. `shipit--image-target-width' bound by the caller.
@@ -2304,29 +2398,11 @@ window-body-width) applies."
                           (if shipit-animated-gif-max-width
                               (min natural shipit-animated-gif-max-width)
                             natural))))
-                   (gif-file (when (eq image-type 'gif)
-                               (shipit--prepare-gif-for-display
-                                cached-file gif-target-w)))
-                   (gif-dim (when (eq image-type 'gif)
-                              (shipit--gif-pixel-dimensions
-                               (or gif-file cached-file))))
-                   (gif-scale (when (and gif-dim (car gif-dim)
-                                         (> (car gif-dim) gif-target-w))
-                                (/ (float gif-target-w) (car gif-dim))))
-                   (image (cond
-                           ((and (eq image-type 'gif) gif-scale)
-                            (create-image (or gif-file cached-file)
-                                          image-type nil
-                                          :scale gif-scale
-                                          :transform-smoothing nil))
-                           ((eq image-type 'gif)
-                            (create-image (or gif-file cached-file)
-                                          image-type nil
-                                          :transform-smoothing nil))
-                           (t
+                   (image (if (eq image-type 'gif)
+                              (shipit--gif-picture cached-file gif-target-w)
                             (create-image cached-file image-type nil
                                           :max-width max-w
-                                          :max-height max-h)))))
+                                          :max-height max-h))))
               ;; Note: do NOT set the picture moving here.  This function
               ;; runs inside `with-temp-buffer' (the markdown render path),
               ;; so `(current-buffer)' is a temp buffer that gets killed as
@@ -3290,11 +3366,12 @@ Spaces and hidden text do not count."
 (defun shipit--strip-picture (picture width)
   "Return PICTURE, an image, as its strips show it: no wider than WIDTH pixels.
 Each strip is centered on its line as the text is.  Then it makes its
-line no higher, and no gap shows between two strips."
+line no higher, and no gap shows between two strips.  When PICTURE
+waits for the smaller copy of its GIF, the strips wait for it too."
   (let ((properties (copy-sequence (cdr picture))))
     (when (> (car (image-size picture t)) width)
       (setq properties (plist-put properties :max-width width)))
-    (cons 'image (plist-put properties :ascent 'center))))
+    (shipit--await-copy-as picture (cons 'image (plist-put properties :ascent 'center)))))
 
 (defun shipit--picture-strip (picture size top height)
   "Return a space that shows the strip of PICTURE from TOP, HEIGHT pixels high.

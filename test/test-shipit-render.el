@@ -2735,7 +2735,7 @@ its own size, AND it moves."
           (should-not (equal gif copy))
           (should (equal 20 (car (shipit--gif-pixel-dimensions copy))))
           (should (= 2 (test-shipit-render--gif-frames copy))))
-        (should-not (equal 0.5 (image-property cup :scale)))
+        (should (equal '(20 . 10) (shipit--picture-size cup)))
         (should (test-shipit-render--moves-p cup))))))
 
 (ert-deftest test-shipit-a-gif-in-a-table-cell-shows-its-smaller-copy-later ()
@@ -2839,6 +2839,78 @@ THEN the tool does not run again: it would fail again."
             (should (= 1 (with-temp-buffer
                            (insert-file-contents runs)
                            (count-lines (point-min) (point-max)))))))))))
+
+(defun test-shipit-render--still-gif-at (file)
+  "Make a GIF of one frame, 40 by 20 pixels, as FILE; FILE."
+  (make-directory (file-name-directory file) t)
+  (call-process "convert" nil nil nil "-size" "40x20" "xc:red" file)
+  file)
+
+(defmacro test-shipit-render--without-gif-decoding (&rest body)
+  "Run BODY where Emacs shows pictures, but fails to decode one.
+Emacs decodes each frame of a GIF to tell its size or its frames, and
+a GIF of 500 frames takes it seconds.  A character is 8 pixels wide
+AND a line is 18 pixels high."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t))
+             ((symbol-function 'image-multi-frame-p)
+              (lambda (&rest _) (error "Emacs decoded a GIF")))
+             ((symbol-function 'image-size)
+              (lambda (&rest _) (error "Emacs decoded a GIF")))
+             ((symbol-function 'frame-char-width) (lambda (&rest _) 8))
+             ((symbol-function 'frame-char-height) (lambda (&rest _) 18))
+             ((symbol-function 'default-line-height) (lambda () 18)))
+     ,@body))
+
+(ert-deftest test-shipit-a-gif-tells-from-its-file-whether-it-moves ()
+  "GIVEN a GIF of two frames AND a GIF of one frame, each 40 pixels wide
+WHEN the pictures of them are set moving, where Emacs fails to decode a GIF
+THEN the GIF of two frames moves AND the GIF of one frame does not: the
+frames are counted in the file, as Emacs would decode each frame to
+count them."
+  (skip-unless (executable-find "convert"))
+  (let ((directory (make-temp-file "shipit-gif-test" t)))
+    (unwind-protect
+        (let ((moving (create-image (test-shipit-render--moving-gif directory)
+                                    'gif nil :scale 0.5))
+              (still (create-image (test-shipit-render--still-gif-at
+                                    (expand-file-name "plate.gif" directory))
+                                   'gif nil :scale 0.5)))
+          (test-shipit-render--without-gif-decoding
+            (should (shipit--picture-moves-p moving))
+            (should-not (shipit--picture-moves-p still))))
+      (delete-directory directory t))))
+
+(ert-deftest test-shipit-a-gif-in-a-table-cell-takes-its-size-from-its-file ()
+  "GIVEN a table row of a text of 7 characters, AND a cell of a GIF 40 by
+20 pixels, drawn at half its size, on a line of its own
+WHEN the table rows are laid out in 43 columns, where Emacs fails to
+decode a GIF
+THEN the picture stands in its column as one strip of 20 by 10 pixels:
+its size comes from the header of the file and its scale, as Emacs
+would decode each frame to tell it."
+  (skip-unless (executable-find "convert"))
+  (let ((directory (make-temp-file "shipit-gif-test" t)))
+    (unwind-protect
+        (let ((cup (create-image (test-shipit-render--moving-gif directory)
+                                 'gif nil :scale 0.5)))
+          (test-shipit-render--without-gif-decoding
+            (let* ((text (concat (test-shipit-render--cell 1 0 "Brew it")
+                                 "\n\n"
+                                 (test-shipit-render--cell
+                                  1 1 (propertize " " 'display cup))))
+                   (strips (with-temp-buffer
+                             (insert (shipit--lay-out-table-rows text 43))
+                             (let ((slices nil))
+                               (dolist (display (seq-uniq
+                                                 (mapcar (lambda (pos) (get-text-property pos 'display))
+                                                         (number-sequence (point-min) (1- (point-max))))))
+                                 (when-let* ((slice (and (consp (car-safe display))
+                                                         (assq 'slice display))))
+                                   (push slice slices)))
+                               slices))))
+              (should (equal '((slice 0 0 20 10)) strips)))))
+      (delete-directory directory t))))
 
 (ert-deftest test-shipit-a-gif-is-resized-by-imagemagick-without-gifsicle ()
   "GIVEN a moving GIF of two frames, 40 pixels wide, AND no gifsicle on

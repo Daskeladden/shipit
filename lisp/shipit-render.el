@@ -1399,14 +1399,19 @@ folded section."
 
 (defun shipit--picture-moves-p (image)
   "Return non-nil when the picture IMAGE has more than one frame.
-Only a frame that shows pictures can tell: in a terminal frame
-`image-multi-frame-p' signals an error.  So ask the selected frame, or
-else another frame that shows pictures, as when the terminal frame of
-an Emacs daemon is selected.  Return nil when no frame shows pictures."
+A GIF from a file tells it from its file, see `shipit--gif-frames'.
+For another picture only a frame that shows pictures can tell: in a
+terminal frame `image-multi-frame-p' signals an error.  So ask the
+selected frame, or else another frame that shows pictures, as when
+the terminal frame of an Emacs daemon is selected.  Return nil when no
+frame shows pictures."
   (when-let* ((frame (seq-find #'display-images-p
                                (cons (selected-frame) (frame-list)))))
-    (with-selected-frame frame
-      (image-multi-frame-p image))))
+    (if-let* ((frames (when-let* ((file (shipit--gif-file-of image)))
+                        (shipit--gif-frames file 2))))
+        (> frames 1)
+      (with-selected-frame frame
+        (image-multi-frame-p image)))))
 
 (defun shipit--animate-images-in-region (start end)
   "Set moving the moving pictures that the text from START to END shows.
@@ -1667,6 +1672,100 @@ isn't a GIF or the header can't be read."
             (cons (+ (aref bytes 6) (* 256 (aref bytes 7)))
                   (+ (aref bytes 8) (* 256 (aref bytes 9)))))))
     (error nil)))
+
+(defun shipit--gif-color-table-size (packed)
+  "The bytes of the color table that the PACKED byte of a GIF block names.
+Bit 7 says whether there is one, and bits 0 to 2 its size."
+  (if (zerop (logand packed #x80))
+      0
+    (* 3 (ash 1 (1+ (logand packed 7))))))
+
+(defun shipit--gif-skip-sub-blocks (pos)
+  "Return the position after the data sub-blocks of this buffer at POS.
+Each sub-block starts with the count of its bytes, and a count of 0
+ends them.  Return nil when the buffer ends first."
+  (let ((size (char-after pos)))
+    (while (and size (> size 0))
+      (setq pos (+ pos 1 size)
+            size (char-after pos)))
+    (and size (1+ pos))))
+
+(defun shipit--gif-skip-block (pos)
+  "Return the position after the GIF block of this buffer at POS, or nil.
+Nil at the end of the GIF, or of the buffer.  An image block (#x2C)
+has 9 bytes, a color table, the code size and sub-blocks.  An
+extension (#x21) has its label and sub-blocks."
+  (pcase (char-after pos)
+    (#x2C (when-let* ((packed (char-after (+ pos 9))))
+            (shipit--gif-skip-sub-blocks
+             (+ pos 11 (shipit--gif-color-table-size packed)))))
+    (#x21 (shipit--gif-skip-sub-blocks (+ pos 2)))))
+
+(defun shipit--gif-frames (file most)
+  "Return the number of frames of the GIF FILE, counted up to MOST.
+Return nil when FILE is no GIF.  The blocks of the file are skipped
+by their lengths, and none is decoded: Emacs decodes each frame of a
+GIF to count them, which takes seconds for a GIF of 500 frames."
+  (condition-case nil
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert-file-contents-literally file)
+        (when (looking-at "GIF8[79]a")
+          (let ((pos (+ 14 (shipit--gif-color-table-size (char-after 11))))
+                (frames 0))
+            (while (and pos (< frames most))
+              (when (eq (char-after pos) #x2C)
+                (setq frames (1+ frames)))
+              (setq pos (shipit--gif-skip-block pos)))
+            frames)))
+    (file-error nil)))
+
+(defun shipit--gif-file-of (image)
+  "The file of the GIF that the picture IMAGE shows, or nil."
+  (and (eq (image-property image :type) 'gif)
+       (image-property image :file)))
+
+(defun shipit--gif-size (image)
+  "Return the size of the GIF picture IMAGE in pixels, from its file.
+That is (WIDTH . HEIGHT), as Emacs computes it from the size in the
+header of the file and the :scale, :max-width and :max-height of
+IMAGE, without decoding each frame as `image-size' does.  Return nil
+when IMAGE is no GIF from a file, or has properties that change its
+size in other ways."
+  (when-let* ((file (shipit--gif-file-of image))
+              ((not (seq-some (lambda (property) (image-property image property))
+                              '(:width :height :margin :relief :rotation))))
+              (natural (shipit--gif-pixel-dimensions file)))
+    (shipit--fitted-image-size natural (shipit--image-scale image)
+                               (image-property image :max-width)
+                               (image-property image :max-height))))
+
+(defun shipit--image-scale (image)
+  "The factor by which Emacs scales the picture IMAGE, from its :scale."
+  (let ((scale (image-property image :scale)))
+    (cond ((numberp scale) scale)
+          ((eq scale 'default) (image-compute-scaling-factor image-scaling-factor))
+          (t 1))))
+
+(defun shipit--fitted-image-size (natural scale max-width max-height)
+  "Return the size of a picture of size NATURAL in pixels, shown at SCALE.
+It is made no wider than MAX-WIDTH and no higher than MAX-HEIGHT, when
+they are given, and keeps its shape.  Emacs rounds each side up, in
+`compute_image_size' of image.c."
+  (let* ((width (car natural))
+         (height (cdr natural))
+         (shown (cons (ceiling (* width scale)) (ceiling (* height scale)))))
+    (when (and max-width (< max-width (car shown)))
+      (setq shown (cons max-width (ceiling (* max-width height) width))))
+    (when (and max-height (< max-height (cdr shown)))
+      (setq shown (cons (ceiling (* max-height width) height) max-height)))
+    shown))
+
+(defun shipit--picture-size (image)
+  "Return the size of the picture IMAGE in pixels, (WIDTH . HEIGHT).
+A GIF from a file takes it from its file, see `shipit--gif-size'."
+  (or (shipit--gif-size image)
+      (image-size image t)))
 
 (defun shipit--detect-image-type-from-content (file)
   "Detect image type from FILE content by reading magic bytes.
@@ -2555,7 +2654,7 @@ its slice, when this Emacs shows pictures, else one column."
           (slice (and (consp display) (assq 'slice display))))
       (cond ((not (and image (display-images-p))) 1)
             (slice (ceiling (nth 3 slice) (frame-char-width)))
-            (t (ceiling (car (image-size image t)) (frame-char-width)))))))
+            (t (ceiling (car (shipit--picture-size image)) (frame-char-width)))))))
 
 (defun shipit--shown-width (start end)
   "Return the columns that the text from START to END of this buffer shows.
@@ -3287,7 +3386,7 @@ Hidden text takes none."
 A picture on a line of its own takes the columns of its width."
   (let ((picture (shipit--line-picture line)))
     (if picture
-        (ceiling (car (image-size picture t)) (frame-char-width))
+        (ceiling (car (shipit--picture-size picture)) (frame-char-width))
       (shipit--visible-width line))))
 
 (defun shipit--table-natural-width (parts)
@@ -3369,7 +3468,7 @@ Each strip is centered on its line as the text is.  Then it makes its
 line no higher, and no gap shows between two strips.  When PICTURE
 waits for the smaller copy of its GIF, the strips wait for it too."
   (let ((properties (copy-sequence (cdr picture))))
-    (when (> (car (image-size picture t)) width)
+    (when (> (car (shipit--picture-size picture)) width)
       (setq properties (plist-put properties :max-width width)))
     (shipit--await-copy-as picture (cons 'image (plist-put properties :ascent 'center)))))
 
@@ -3391,7 +3490,7 @@ above it, so it is raised to the top of the line."
 PICTURE is made no wider than WIDTH pixels.  Each line is a space that
 shows one strip, so that text can stand beside the picture."
   (let* ((fitted (shipit--strip-picture picture width))
-         (size (image-size fitted t))
+         (size (shipit--picture-size fitted))
          (height (default-line-height)))
     (mapcar (lambda (top) (shipit--picture-strip fitted size top height))
             (number-sequence 0 (max 0 (1- (cdr size))) height))))

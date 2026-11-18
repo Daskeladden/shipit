@@ -240,6 +240,7 @@ test-unit: compile test-packages
 		-l test/test-shipit-page-views.el \
 		-l test/test-shipit-page-views-cases.el \
 		-l test/test-shipit-merge.el \
+		-l test/test-shipit-close-pr.el \
 		-l test/test-shipit-pr-overview.el \
 		-l test/test-shipit-worktree-offer.el \
 		-l test/test-shipit-worktree-offer-cases.el \

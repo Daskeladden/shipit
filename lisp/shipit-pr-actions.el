@@ -605,6 +605,44 @@ Dispatches to the active PR backend's :update-pr and comment backend."
 Dispatches to the active PR backend's :update-pr with state=open."
   (shipit--update-pr-state pr-number repo "open"))
 
+(defconst shipit--pr-merged-message "PR #%s is merged — state cannot be changed"
+  "The refusal to change the state of a merged pull request, by its number.")
+
+(defun shipit--pr-author-p (pr-data)
+  "Return non-nil when the user of shipit wrote the pull request PR-DATA."
+  (let ((author (cdr (assq 'login (cdr (assq 'user pr-data)))))
+        (current-user (shipit--get-current-user)))
+    (and author current-user (string= author current-user))))
+
+(defun shipit--close-pr-refusal (pr-number pr-data)
+  "Return why the pull request PR-NUMBER, with PR-DATA, cannot close, or nil."
+  (let ((state (shipit--get-pr-actual-state pr-data)))
+    (cond ((string= state "merged") (format shipit--pr-merged-message pr-number))
+          ((string= state "closed") (format "PR #%s is already closed" pr-number))
+          ((not (shipit--pr-author-p pr-data)) "Only the PR author can close this PR"))))
+
+(defun shipit--open-close-pr-editor (pr-number repo)
+  "Open the editor for the comment with which PR-NUMBER in REPO closes.
+An empty editor closes the pull request without a comment."
+  (shipit-editor-open
+   (list :type 'close-pr-comment
+         :source-buffer (current-buffer)
+         :pr-number pr-number
+         :repo repo)))
+
+(defun shipit-close-pr ()
+  "Close the pull request of this buffer, with an optional comment.
+The editor opens for the comment.  It refuses a merged pull request, a
+closed one, and one that another user wrote."
+  (interactive)
+  (let ((pr-number (or (bound-and-true-p shipit-buffer-pr-number)
+                       (user-error "This buffer shows no pull request")))
+        (repo (bound-and-true-p shipit-buffer-repo)))
+    (when-let* ((refusal (shipit--close-pr-refusal
+                          pr-number (shipit-get-pull-request pr-number repo))))
+      (user-error "%s" refusal))
+    (shipit--open-close-pr-editor pr-number repo)))
+
 (defun shipit--pr-state-action-labels (pr-state is-author &optional is-draft)
   "Return state-changing action labels for PR-STATE and IS-AUTHOR.
 Open PRs offer close (author only) and merge; open drafts swap
@@ -639,11 +677,7 @@ Return non-nil when CHOICE was one of the state actions."
       (shipit--close-pr pr-number repo))
     t)
    ((string= choice "Close PR with comment")
-    (shipit-editor-open
-     (list :type 'close-pr-comment
-           :source-buffer (current-buffer)
-           :pr-number pr-number
-           :repo repo))
+    (shipit--open-close-pr-editor pr-number repo)
     t)
    ((string= choice "Reopen PR")
     (when (yes-or-no-p (format "Reopen PR #%d? " pr-number))
@@ -711,13 +745,11 @@ Return non-nil when CHOICE was one of the state actions."
     (let* ((pr-data (shipit-get-pull-request pr-number repo))
            (pr-state (shipit--get-pr-actual-state pr-data))
            (is-draft (shipit--pr-draft-p pr-data))
-           (pr-author (cdr (assq 'login (cdr (assq 'user pr-data)))))
-           (current-user (shipit--get-current-user))
-           (is-author (and pr-author current-user (string= pr-author current-user)))
+           (is-author (shipit--pr-author-p pr-data))
            (labels (shipit--pr-state-action-labels pr-state is-author is-draft)))
       (cond
        ((string= pr-state "merged")
-        (user-error "PR #%s is merged — state cannot be changed" pr-number))
+        (user-error shipit--pr-merged-message pr-number))
        ((null labels)
         (user-error "Only the PR author can %s this PR"
                     (cond ((string= pr-state "closed") "reopen")

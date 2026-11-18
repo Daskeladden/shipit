@@ -196,6 +196,12 @@ A pull request buffer shows the stack that the pull request belongs to. `RET` on
 
 For a pull request in a stack, the question names the open pull requests below it, because GitHub merges them too. If the pull request is a draft, `M-m` asks whether to mark it ready for review and merge it. GitLab merges in one request.
 
+### Close
+
+`x` in a pull request buffer, or in its `SPC` menu, closes the pull request. It opens the editor, so you can write a comment. `C-c C-c` asks whether to close the pull request with the comment. If the editor is empty, it asks whether to close the pull request without a comment. If you answer no, the editor stays open with your text. `C-c C-k` leaves the pull request open.
+
+shipit closes only a pull request that you wrote. It refuses a pull request that is merged or closed already.
+
 ### Issue buffers
 
 | Key | Action |

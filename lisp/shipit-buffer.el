@@ -582,6 +582,7 @@ its own making."
     (define-key map (kbd "M") #'shipit-mark-all-files-viewed)
     ;; Merge
     (define-key map (kbd "M-m") #'shipit-merge)
+    (define-key map (kbd "x") #'shipit-close-pr)
     ;; Worktree actions transient (`Z' to mirror magit\\='s
     ;; worktree-popup binding).
     (define-key map (kbd "Z") #'shipit-worktree)
@@ -647,6 +648,7 @@ SPC closes the menu again."
     ("S" "Submit review" shipit-review-submit)
     ("K" "Discard drafts" shipit-review-queue-discard)
     ("M-m" "Merge" shipit-merge)
+    ("x" "Close PR" shipit-close-pr)
     ("M-;" "Actions at point" shipit-dwim)]
    ["Files"
     ("e" "Ediff file" shipit--ediff-file-at-point)

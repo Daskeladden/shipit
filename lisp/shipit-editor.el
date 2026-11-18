@@ -2244,8 +2244,30 @@ Inserts literal @ if cancelled or no users found."
 ;;; Save and Cancel
 
 (defun shipit-editor-save ()
-  "Save the editor content and close."
+  "Save the editor content and close.
+Before a pull request closes, ask whether it may.  On no, the editor
+stays open with its text."
   (interactive)
+  (if (shipit-editor--confirmed-p)
+      (shipit-editor--save)
+    (message "PR #%d stays open" shipit-editor--pr-number)))
+
+(defun shipit-editor--close-question (pr-number content)
+  "Return the question before PR-NUMBER closes, with CONTENT as its comment."
+  (format (if (string-empty-p (string-trim content))
+              "Close PR #%d without a comment? "
+            "Close PR #%d with this comment? ")
+          pr-number))
+
+(defun shipit-editor--confirmed-p ()
+  "Return non-nil unless the user says no to what this editor does.
+Only the close of a pull request asks.  Each other kind goes ahead."
+  (or (not (eq shipit-editor--type 'close-pr-comment))
+      (yes-or-no-p (shipit-editor--close-question shipit-editor--pr-number
+                                                  (buffer-string)))))
+
+(defun shipit-editor--save ()
+  "Save the editor content and close."
   (let ((content (buffer-string))
         (type shipit-editor--type)
         (pr-number shipit-editor--pr-number)
@@ -2262,7 +2284,8 @@ Inserts literal @ if cancelled or no users found."
         (source-buffer shipit-editor--source-buffer))
     ;; Check for empty content (reviews and preview-description allow empty)
     (when (and (string-empty-p (string-trim content))
-               (not (memq type '(review preview-description issue-description))))
+               (not (memq type '(review preview-description issue-description
+                                        close-pr-comment))))
       (user-error "Cannot save empty content"))
     ;; For REQUEST_CHANGES, body is required
     (when (and (eq type 'review)
@@ -2484,15 +2507,14 @@ Inserts literal @ if cancelled or no users found."
        (let ((body (if (string-empty-p (string-trim content)) nil content)))
          (shipit-post-review pr-number review-event body nil repo)))
       ('close-pr-comment
-       ;; Close PR with the comment - ask for confirmation first
-       (when (yes-or-no-p (format "Close PR #%d with this comment? " pr-number))
-         (let ((comment (if (string-empty-p (string-trim content)) nil content)))
-           (shipit--close-pr pr-number repo comment)
-           ;; Refresh source buffer since shipit--close-pr won't do it from editor
-           (when (buffer-live-p source-buffer)
-             (with-current-buffer source-buffer
-               (when (fboundp 'shipit-buffer-refresh)
-                 (shipit-buffer-refresh))))))))
+       ;; `shipit-editor-save' asked whether the pull request may close.
+       (let ((comment (if (string-empty-p (string-trim content)) nil content)))
+         (shipit--close-pr pr-number repo comment)
+         ;; Refresh source buffer since shipit--close-pr won't do it from editor
+         (when (buffer-live-p source-buffer)
+           (with-current-buffer source-buffer
+             (when (fboundp 'shipit-buffer-refresh)
+               (shipit-buffer-refresh)))))))
     ;; Close the editor (don't restore - we're saving)
     (shipit-editor--close nil)
     ;; Refresh source buffer if needed (skip for preview types, callback handles it)

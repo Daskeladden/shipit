@@ -28,6 +28,7 @@
 
 ;;; Code:
 
+(require 'seq)
 (require 'shipit-core)
 (require 'shipit-issue-backends)
 (require 'shipit-gitlab-http)
@@ -150,14 +151,26 @@ Calls CALLBACK with normalized comment list."
 
 (defun shipit-issue-gitlab--search (config args)
   "Search GitLab issues using CONFIG with transient ARGS.
-Maps transient args to GitLab API query parameters."
-  (let* ((params (shipit-issue-gitlab--build-search-params args))
-         (path (concat "/projects/" (shipit-gitlab--project-path config)
-                       "/issues?" params))
-         (raw (shipit-gitlab--api-request config path))
-         (issues (append raw nil)))
+It gives as many issues as the limit of ARGS asks for, 100 when they
+name no limit."
+  (let ((issues (shipit-gitlab--api-request-up-to
+                 config
+                 (lambda (per-page page)
+                   (shipit-issue-gitlab--search-path config args per-page page))
+                 (shipit-gitlab--search-limit args))))
     (shipit--debug-log "GitLab issue backend: search returned %d results" (length issues))
     (mapcar #'shipit-issue-gitlab--normalize-issue issues)))
+
+(defun shipit-issue-gitlab--search-path (config args per-page page)
+  "The path of page PAGE of PER-PAGE issues that ARGS search for.
+The issues are those of the project of CONFIG.  The limit of ARGS is
+left out, because PER-PAGE sets the size of the page."
+  (format "/projects/%s/issues?%s&page=%d"
+          (shipit-gitlab--project-path config)
+          (shipit-issue-gitlab--build-search-params
+           (append (seq-remove (lambda (arg) (string-prefix-p "--limit=" arg)) args)
+                   (list (format "--limit=%d" per-page))))
+          page))
 
 (defun shipit-issue-gitlab--build-search-params (args)
   "Build GitLab API query string from transient ARGS."
@@ -202,12 +215,7 @@ Maps transient args to GitLab API query parameters."
 It is page PAGE of PER-PAGE issues of the project of CONFIG.  CALLBACK
 gets the page, as `shipit-gitlab--search-page-async' gives it."
   (shipit-gitlab--search-page-async
-   config
-   (format "/projects/%s/issues?%s&page=%d"
-           (shipit-gitlab--project-path config)
-           (shipit-issue-gitlab--build-search-params
-            (append args (list (format "--limit=%d" per-page))))
-           page)
+   config (shipit-issue-gitlab--search-path config args per-page page)
    #'shipit-issue-gitlab--normalize-issue callback))
 
 (defun shipit-issue-gitlab--create-issue (config title body)

@@ -747,21 +747,42 @@ Its lists have `test-repo-lists--sorted-counts' items."
     (should (equal (number-sequence 250 51 -1)
                    (test-repo-lists--numbers-shown forge "open-prs")))))
 
-(ert-deftest test-shipit-repo-buffer-loads-a-count-of-older-items ()
-  "C-u N + adds the N next older items below the newest ones.
-It runs on GitHub only.  On GitLab, C-u N + shows no more than the
-first 100 merge requests."
-  ;; GIVEN the repo buffer shows the open pull requests #250 down to #151
-  (let ((forge test-repo-lists--github))
-    (test-repo-lists--on-sorting forge
-      (test-repo-lists--open forge)
-      (shipit-test-http-release)
-      ;; WHEN the user types C-u 50 + in that list
-      (let ((current-prefix-arg 50))
-        (test-repo-lists--press forge "+" "open-prs "))
-      ;; THEN #150 down to #101 follow below #151
-      (should (equal (number-sequence 250 101 -1)
-                     (test-repo-lists--numbers-shown forge "open-prs"))))))
+(defun test-repo-lists--capped-address (address)
+  "ADDRESS with a per_page of at most 100.
+GitHub and GitLab give at most 100 items on a page."
+  (if (string-match "[?&]per_page=\\([0-9]+\\)" address)
+      (replace-match (number-to-string (min 100 (string-to-number (match-string 1 address))))
+                     t t address 1)
+    address))
+
+(defun test-repo-lists--capped (answer)
+  "ANSWER, with at most 100 items on a page."
+  (pcase-let ((`(,pattern ,status ,body . ,rest) answer))
+    `(,pattern ,status
+               ,(lambda (request)
+                  (let ((shipit-test-http-address
+                         (test-repo-lists--capped-address shipit-test-http-address)))
+                    (funcall body request)))
+               ,@rest)))
+
+(test-repo-lists--deftest test-shipit-repo-buffer-loads-a-count-of-older-items
+  "C-u N + adds the N next older items below the newest ones."
+  ;; GIVEN the repo buffer shows the open pull requests and the open
+  ;; issues #250 down to #151, from a forge that gives at most 100
+  ;; items on a page
+  (test-repo-lists--on-overriding forge test-repo-lists--sorted-counts
+      (mapcar #'test-repo-lists--capped (test-repo-lists--sorted-answers forge counts))
+    (test-repo-lists--open forge)
+    (shipit-test-http-release)
+    ;; WHEN the user types C-u 50 + in each of the two lists
+    (let ((current-prefix-arg 50))
+      (test-repo-lists--press forge "+" "open-prs ")
+      (test-repo-lists--press forge "+" "open-issues "))
+    ;; THEN #150 down to #101 follow below #151 in each list
+    (should (equal (number-sequence 250 101 -1)
+                   (test-repo-lists--numbers-shown forge "open-prs")))
+    (should (equal (number-sequence 250 101 -1)
+                   (test-repo-lists--numbers-shown forge "open-issues")))))
 
 (test-repo-lists--deftest test-shipit-repo-buffer-shows-the-newest-closed-items-first
   "The closed lists show their newest items first."

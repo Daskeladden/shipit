@@ -273,15 +273,16 @@ to plist via `shipit--transient-args-to-search-plist'."
     args))
 
 (defun shipit-pr-gitlab--search (config args)
-  "Search MRs using CONFIG with transient ARGS, or a plist of them."
-  (let* ((search-args (shipit-pr-gitlab--search-plist args))
-         (project (shipit-gitlab--project-path config))
-         (query-params (shipit-pr-gitlab--build-search-params search-args))
-         (path (format "/projects/%s/merge_requests?%s" project query-params))
-         (data (shipit-gitlab--api-request config path)))
-    (shipit--debug-log "GitLab PR backend: searching MRs with %s" query-params)
-    (when (and data (or (vectorp data) (listp data)))
-      (mapcar #'shipit-pr-gitlab--normalize-mr (append data nil)))))
+  "Search MRs using CONFIG with transient ARGS, or a plist of them.
+It gives as many MRs as the limit of ARGS asks for, 100 when they name
+no limit."
+  (let ((mrs (shipit-gitlab--api-request-up-to
+              config
+              (lambda (per-page page)
+                (shipit-pr-gitlab--search-path config args per-page page))
+              (shipit-gitlab--search-limit args))))
+    (shipit--debug-log "GitLab PR backend: search found %d MRs" (length mrs))
+    (mapcar #'shipit-pr-gitlab--normalize-mr mrs)))
 
 (defun shipit-pr-gitlab--build-search-params (args &optional per-page)
   "Build URL query params from search ARGS plist.
@@ -305,17 +306,21 @@ PER-PAGE is how many MRs a page has, 100 when it is nil."
     (push (format "per_page=%d" (or per-page 100)) params)
     (string-join (nreverse params) "&")))
 
+(defun shipit-pr-gitlab--search-path (config args per-page page)
+  "The path of page PAGE of PER-PAGE MRs that ARGS search for.
+The MRs are those of the project of CONFIG."
+  (format "/projects/%s/merge_requests?%s&page=%d"
+          (shipit-gitlab--project-path config)
+          (shipit-pr-gitlab--build-search-params
+           (shipit-pr-gitlab--search-plist args) per-page)
+          page))
+
 (defun shipit-pr-gitlab--search-page-async (config args page per-page callback)
   "Ask in the background for a page of the MRs that ARGS search for.
 It is page PAGE of PER-PAGE MRs of the project of CONFIG.  CALLBACK
 gets the page, as `shipit-gitlab--search-page-async' gives it."
   (shipit-gitlab--search-page-async
-   config
-   (format "/projects/%s/merge_requests?%s&page=%d"
-           (shipit-gitlab--project-path config)
-           (shipit-pr-gitlab--build-search-params
-            (shipit-pr-gitlab--search-plist args) per-page)
-           page)
+   config (shipit-pr-gitlab--search-path config args per-page page)
    #'shipit-pr-gitlab--normalize-mr callback))
 
 (defun shipit-pr-gitlab--strip-github-query-syntax (query)

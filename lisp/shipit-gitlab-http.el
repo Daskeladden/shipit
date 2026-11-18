@@ -22,6 +22,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'json)
 (require 'url)
 (require 'auth-source)
@@ -213,6 +214,40 @@ Returns combined list of items from all pages, or nil on failure."
     (shipit--debug-log "GitLab API paginated: collected %d items over %d pages"
                        (length all-items) page-count)
     (if (> (length all-items) 0) all-items nil)))
+
+;;; A count of items over several pages
+
+(defconst shipit-gitlab--max-per-page 100
+  "The most items that GitLab gives on one page.")
+
+(defun shipit-gitlab--search-limit (args)
+  "How many items the search ARGS ask for, or 100 when they do not say.
+ARGS are transient arguments such as \"--limit=150\", or a plist with
+`:limit'."
+  (if (and args (stringp (car args)))
+      (if-let* ((arg (seq-find (lambda (arg) (string-prefix-p "--limit=" arg)) args)))
+          (string-to-number (substring arg 8))
+        100)
+    (or (plist-get args :limit) 100)))
+
+(defun shipit-gitlab--api-request-up-to (config path-of-page limit)
+  "The first LIMIT items that GitLab lists for CONFIG.
+PATH-OF-PAGE takes the number of items on a page and the number of the
+page, and gives the path of that page.  GitLab gives at most 100 items
+on a page, so this asks page after page, until it has LIMIT items or a
+page comes back short."
+  (let ((per-page (min limit shipit-gitlab--max-per-page))
+        (page 1)
+        (items nil)
+        (more t))
+    (while more
+      (let ((arrived (append (shipit-gitlab--api-request
+                              config (funcall path-of-page per-page page))
+                             nil)))
+        (setq items (append items arrived)
+              page (1+ page)
+              more (and (= (length arrived) per-page) (< (length items) limit)))))
+    (seq-take items limit)))
 
 ;;; Async HTTP via url-retrieve
 

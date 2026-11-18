@@ -306,6 +306,29 @@ THEN the buffer shows the body."
        (magit-current-section) (shipit-notifications-buffer--activity-at-point))
       (should (string-match-p "From alice" (buffer-string))))))
 
+(ert-deftest test-external-unfolding-wraps-a-long-body ()
+  "The body of a pushed notification is wrapped at the wrap column."
+  ;; GIVEN a pushed notification whose body has 100 words, AND the wrap
+  ;; column set to 60
+  ;; WHEN you press TAB on its row
+  ;; THEN each line of the body is indented and at most 60 columns wide,
+  ;; AND the lines hold each word of the body, in order
+  (let ((shipit-render-wrap-column 60)
+        (body (mapconcat (lambda (n) (format "cup%d" n)) (number-sequence 1 100) " ")))
+    (test-external--fresh
+      (shipit-notifications-push :source "mail.example" :title "New mail" :body body)
+      (test-external--in-buffer
+        (call-interactively (key-binding (kbd "TAB")))
+        (let* ((section (magit-current-section))
+               (lines (split-string (buffer-substring-no-properties
+                                     (oref section content) (oref section end))
+                                    "\n" t)))
+          (should lines)
+          (dolist (line lines)
+            (should (string-prefix-p "    " line))
+            (should (<= (string-width line) 60)))
+          (should (equal body (mapconcat #'string-trim lines " "))))))))
+
 (ert-deftest test-external-the-action-menu-opens-and-marks-read ()
   "GIVEN a pushed notification in the notifications buffer
 WHEN its action menu is asked for

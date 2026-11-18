@@ -1537,10 +1537,16 @@ activity section so the look stays consistent (icon + Activity label
 
 (defun shipit-notifications-buffer--insert-description (description)
   "Insert DESCRIPTION as expandable body content.
-Strips HTML tags and renders as plain text."
-  (let ((text (shipit-notifications-buffer--html-to-text description)))
-    (dolist (line (split-string text "\n" t))
-      (insert "    " (string-trim line) "\n"))))
+Strips HTML tags and renders as plain text.  The lines are wrapped at
+`shipit-render-wrap-column', their indent included, as the text of a
+pull request is."
+  (let* ((indent "    ")
+         (text (shipit-notifications-buffer--html-to-text description))
+         (lines (mapcar #'string-trim (split-string text "\n" t)))
+         (wrapped (shipit--wrap-text (string-join lines "\n")
+                                     (- shipit-render-wrap-column (length indent)))))
+    (dolist (line (split-string wrapped "\n"))
+      (insert indent line "\n"))))
 
 (defun shipit-notifications-buffer--html-to-text (html)
   "Convert HTML string to plain text."

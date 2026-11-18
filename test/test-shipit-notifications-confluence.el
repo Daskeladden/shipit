@@ -250,6 +250,40 @@ The time in which the mark can be undone ends at once."
     (call-interactively #'shipit-notifications-buffer-mark-read)
     (shipit-notifications-buffer--commit-all-pending-marks)))
 
+(defun test-confluence--with-excerpt (page excerpt)
+  "A copy of PAGE, as the search gives it, whose excerpt is EXCERPT."
+  (cons (cons 'excerpt excerpt) (assq-delete-all 'excerpt (copy-alist page))))
+
+(defun test-confluence--words (count)
+  "A text of COUNT words, from cup1 to cupCOUNT."
+  (mapconcat (lambda (n) (format "cup%d" n)) (number-sequence 1 count) " "))
+
+(defun test-confluence--unfold (title)
+  "Press TAB on the row of the page TITLE; the lines of text that show.
+Each line is as the buffer shows it, with its indent."
+  (test-confluence--in-buffer title
+    (call-interactively (key-binding (kbd "TAB")))
+    (let ((section (magit-current-section)))
+      (split-string (buffer-substring-no-properties (oref section content) (oref section end))
+                    "\n" t))))
+
+(defun test-confluence--unfold-coffee-menu (excerpt)
+  "Poll with the page Coffee menu, whose excerpt is EXCERPT, and unfold it.
+Its newest change has the message Change 7.  Gives the lines of its
+text, as `test-confluence--unfold' does."
+  (test-confluence--with-pages
+      (list (test-confluence--with-excerpt (test-confluence--coffee-menu 7 "alice") excerpt))
+      nil
+    (test-confluence--poll)
+    (test-confluence--unfold "Coffee menu")))
+
+(defun test-confluence--should-fit (lines width)
+  "Check that each of LINES is indented and at most WIDTH columns wide."
+  (should lines)
+  (dolist (line lines)
+    (should (string-prefix-p "    " line))
+    (should (<= (string-width line) width))))
+
 ;;; The scenarios
 
 (ert-deftest test-confluence-a-page-that-mentions-you-is-a-notification ()
@@ -355,6 +389,47 @@ holds no notification."
     (test-confluence--poll)
     (should (test-confluence--searches))
     (should-not (test-confluence--notifications))))
+
+(ert-deftest test-confluence-the-text-of-a-page-wraps-at-the-wrap-column ()
+  "The text of an unfolded page is wrapped at the wrap column."
+  ;; GIVEN the page Coffee menu, whose newest change has the message
+  ;; Change 7 and whose excerpt has 100 words, AND the wrap column of 120
+  ;; WHEN you press TAB on its row
+  ;; THEN each line of the text is indented and at most 120 columns
+  ;; wide, AND the lines hold the message and then each word of the
+  ;; excerpt, in order
+  (let* ((shipit-render-wrap-column 120)
+         (excerpt (test-confluence--words 100))
+         (lines (test-confluence--unfold-coffee-menu excerpt)))
+    (test-confluence--should-fit lines 120)
+    (should (equal (concat "Change 7 " excerpt)
+                   (mapconcat #'string-trim lines " ")))))
+
+(ert-deftest test-confluence-the-text-of-a-page-follows-the-wrap-column ()
+  "A smaller wrap column gives narrower lines of text."
+  ;; GIVEN the page Coffee menu, whose excerpt has 100 words, AND the
+  ;; wrap column set to 60
+  ;; WHEN you press TAB on its row
+  ;; THEN each line of the text is indented and at most 60 columns wide
+  (let ((shipit-render-wrap-column 60))
+    (test-confluence--should-fit
+     (test-confluence--unfold-coffee-menu (test-confluence--words 100)) 60)))
+
+(ert-deftest test-confluence-a-long-address-in-the-text-stays-whole ()
+  "An address wider than the wrap column keeps a line of its own."
+  ;; GIVEN the page Coffee menu, whose excerpt has an address of 148
+  ;; characters between two parts of a sentence, AND the wrap column
+  ;; of 120
+  ;; WHEN you press TAB on its row
+  ;; THEN one line holds the whole address and nothing else, AND each
+  ;; other line is indented and at most 120 columns wide
+  (let* ((shipit-render-wrap-column 120)
+         (address (concat "https://example.com/kitchen/" (make-string 120 ?a)))
+         (address-line (concat "    " address))
+         (lines (test-confluence--unfold-coffee-menu
+                 (format "The new menu is at %s and it starts on Monday." address))))
+    (should (member address-line lines))
+    (test-confluence--should-fit (remove address-line lines) 120)))
 
 (provide 'test-shipit-notifications-confluence)
 ;;; test-shipit-notifications-confluence.el ends here

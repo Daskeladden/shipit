@@ -21,6 +21,7 @@
 (require 'shipit-editor nil t)
 (require 'shipit-test-clipboard)
 (require 'shipit-pr-github)
+(require 'shipit-pr-gitlab)
 (require 'shipit-issues)
 
 ;;; Test Utilities

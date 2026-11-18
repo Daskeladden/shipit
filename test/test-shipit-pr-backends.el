@@ -13,6 +13,7 @@
 (require 'shipit-http)
 (require 'shipit-pr-sections)
 (require 'shipit-diff)
+(require 'shipit-pr-github)
 (require 'shipit-pr-gitlab)
 (require 'shipit-test-http)
 

@@ -22,6 +22,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'magit-section)
 (require 'transient)
 (require 'shipit-core)
@@ -52,10 +53,10 @@
 ;; Forward declarations — issue/discussion backends (optional features)
 (declare-function shipit-issue--resolve-for-repo "shipit-issue-backends")
 (declare-function shipit-discussion--search "shipit-discussions-graphql")
+(declare-function shipit-discussion--search-page-async "shipit-discussions-graphql")
 (declare-function shipit-open-pr-buffer "shipit-buffer")
 (declare-function shipit-issues-open-buffer "shipit-issues-buffer")
 (declare-function shipit-discussions-open-buffer "shipit-discussions-buffer")
-(declare-function shipit--find-section-by-type "shipit-sections")
 (declare-function shipit--get-github-username "shipit-lib")
 (declare-function shipit-notifications-buffer--rerender "shipit-notifications-buffer")
 
@@ -168,6 +169,69 @@ Includes GitHub username and git user.name for cross-backend matching.")
 An alist from the API, nil for participating, or symbol
 `not-supported' when the backend lacks :get-repo-subscription.")
 
+(defvar-local shipit-repo-buffer--totals nil
+  "Alist of each list of this buffer and how many items it has in all.
+A list whose forge does not tell its total has none.")
+
+(defvar-local shipit-repo-buffer--failures nil
+  "Alist of each list of this buffer that failed to load, and why.")
+
+(defvar-local shipit-repo-buffer--loading nil
+  "The lists of this buffer whose first page has not arrived yet.")
+
+(defvar-local shipit-repo-buffer--fetching-more nil
+  "The lists of this buffer whose next page was asked for and has not arrived.")
+
+(defvar-local shipit-repo-buffer--generation 0
+  "How many times this buffer was refreshed.
+An answer to a request of an earlier refresh is dropped.")
+
+(defvar shipit-repo-buffer--kept-visibility nil
+  "Alist of section types and whether each was hidden.
+While a section is drawn again, its new sections take the visibility
+that the sections of the same type had.")
+
+(defconst shipit-repo-buffer--lists
+  '((open-prs :kind pr :state "open" :section repo-prs
+              :items shipit-repo-buffer-open-prs
+              :has-more shipit-repo-buffer-open-prs-has-more)
+    (closed-prs :kind pr :state "closed" :section repo-prs
+                :items shipit-repo-buffer-closed-prs
+                :has-more shipit-repo-buffer-closed-prs-has-more)
+    (open-issues :kind issue :state "open" :section repo-issues
+                 :items shipit-repo-buffer-open-issues
+                 :has-more shipit-repo-buffer-open-issues-has-more)
+    (closed-issues :kind issue :state "closed" :section repo-issues
+                   :items shipit-repo-buffer-closed-issues
+                   :has-more shipit-repo-buffer-closed-issues-has-more)
+    (discussions :kind discussion :section repo-discussions
+                 :items shipit-repo-buffer-discussions))
+  "The lists of the repo buffer.
+Each has its KIND, the STATE of its items, the SECTION it shows in, and
+the variables of its ITEMS and of whether it HAS-MORE.")
+
+(defconst shipit-repo-buffer--load-more-lists
+  '((open-prs . open-prs) (prs . closed-prs)
+    (open-issues . open-issues) (issues . closed-issues))
+  "The list of each type of \"load more\" line.")
+
+(defun shipit-repo-buffer--list-get (key property)
+  "PROPERTY of the list KEY of the repo buffer."
+  (plist-get (or (alist-get key shipit-repo-buffer--lists)
+                 (error "No list %s in the repo buffer" key))
+             property))
+
+(defun shipit-repo-buffer--list-items (key)
+  "The items of the list KEY that this buffer has."
+  (symbol-value (shipit-repo-buffer--list-get key :items)))
+
+(defun shipit-repo-buffer--page-size (key)
+  "How many items a page of the list KEY has."
+  (cond
+   ((eq key 'discussions) 25)
+   ((equal (shipit-repo-buffer--list-get key :state) "open") 100)
+   (t (or shipit-repo-buffer-closed-limit 5))))
+
 ;;; Mode definition
 
 (defvar shipit-repo-mode-map
@@ -202,10 +266,14 @@ An alist from the API, nil for participating, or symbol
 
 (defun shipit-repo-buffer--section-visibility (section)
   "Return initial visibility for SECTION in repo buffers.
-Languages, PRs, issues, and discussions sections are collapsed by default."
-  (when (memq (oref section type)
-              '(repo-languages repo-prs repo-issues repo-discussions))
-    'hide))
+Languages, PRs, issues, and discussions sections are collapsed by default.
+A section that is drawn again keeps the visibility it had."
+  (let ((kept (assq (oref section type) shipit-repo-buffer--kept-visibility)))
+    (cond
+     (kept (if (cdr kept) 'hide 'show))
+     ((memq (oref section type)
+            '(repo-languages repo-prs repo-issues repo-discussions))
+      'hide))))
 
 (define-derived-mode shipit-repo-mode magit-section-mode "Shipit-Repo"
   "Major mode for shipit repository landing page buffers.
@@ -272,102 +340,141 @@ Checks if the PR backend has discussion search support."
          (and backend-plist
               (plist-get backend-plist :browse-discussion-url)))))
 
-(defun shipit-repo-buffer--fetch-open-prs (repo)
-  "Fetch open PRs for REPO via backend :search.
-Returns list of PR alists, or nil on failure.
-Sets `shipit-repo-buffer-open-prs-has-more' as side effect."
-  (condition-case nil
-      (let* ((resolved (shipit-pr--resolve-for-repo repo))
-             (backend (car resolved))
-             (config (cdr resolved))
-             (search-fn (plist-get backend :search))
-             (limit 100))
-        (when search-fn
-          (let ((result (funcall search-fn config
-                                (list "--state=open" "--sort=updated"
-                                      (format "--limit=%d" limit)))))
-            (setq shipit-repo-buffer-open-prs-has-more
-                  (= (length result) limit))
-            (shipit--debug-log "REPO-BUFFER: fetch-open-prs count=%d limit=%d has-more=%s"
-                               (length result) limit shipit-repo-buffer-open-prs-has-more)
-            result)))
-    (error nil)))
+(defun shipit-repo-buffer--issues-offered-p ()
+  "Whether this buffer shows the issues of its repository."
+  (and (boundp 'shipit-issues-enabled) shipit-issues-enabled
+       (fboundp 'shipit-issue--resolve-for-repo)
+       (shipit-repo-buffer--issue-backend-available-p)))
 
-(defun shipit-repo-buffer--fetch-closed-prs (repo)
-  "Fetch closed PRs for REPO, up to `shipit-repo-buffer-closed-limit'.
-Returns list of PR alists, or nil on failure.
-Sets `shipit-repo-buffer-closed-prs-has-more' as side effect."
-  (condition-case nil
-      (let* ((resolved (shipit-pr--resolve-for-repo repo))
-             (backend (car resolved))
-             (config (cdr resolved))
-             (search-fn (plist-get backend :search))
-             (limit (or shipit-repo-buffer-closed-limit 5)))
-        (when search-fn
-          (let ((result (funcall search-fn config
-                                (list "--state=closed" "--sort=updated"
-                                      (format "--limit=%d" limit)))))
-            (setq shipit-repo-buffer-closed-prs-has-more
-                  (= (length result) limit))
-            result)))
-    (error nil)))
+(defun shipit-repo-buffer--offered-lists ()
+  "The lists that this buffer shows."
+  (append '(open-prs closed-prs)
+          (when (shipit-repo-buffer--issues-offered-p)
+            '(open-issues closed-issues))
+          (when (shipit-repo-buffer--discussions-available-p)
+            '(discussions))))
 
-(defun shipit-repo-buffer--fetch-open-issues (repo)
-  "Fetch open issues for REPO via issue backend :search.
-Returns list of issue alists, or nil on failure.
-Sets `shipit-repo-buffer-open-issues-has-more' as side effect."
-  (when (and (boundp 'shipit-issues-enabled) shipit-issues-enabled
-             (fboundp 'shipit-issue--resolve-for-repo)
-             (shipit-repo-buffer--issue-backend-available-p))
-    (condition-case nil
-        (let* ((resolved (shipit-issue--resolve-for-repo repo))
-               (backend (car resolved))
-               (config (cdr resolved))
-               (search-fn (plist-get backend :search))
-               (limit 100))
-          (when search-fn
-            (let ((result (funcall search-fn config
-                                  (list "--state=open" "--sort=updated"
-                                        (format "--limit=%d" limit)))))
-              (setq shipit-repo-buffer-open-issues-has-more
-                    (= (length result) limit))
-              (shipit--debug-log "REPO-BUFFER: fetch-open-issues count=%d limit=%d has-more=%s"
-                                 (length result) limit shipit-repo-buffer-open-issues-has-more)
-              result)))
-      (error nil))))
+(defun shipit-repo-buffer--search-args (key)
+  "The search arguments of the list KEY, with the newest items first."
+  (list (format "--state=%s" (shipit-repo-buffer--list-get key :state))
+        "--sort=created"))
 
-(defun shipit-repo-buffer--fetch-closed-issues (repo)
-  "Fetch closed issues for REPO, up to `shipit-repo-buffer-closed-limit'.
-Returns list of issue alists, or nil on failure.
-Sets `shipit-repo-buffer-closed-issues-has-more' as side effect."
-  (when (and (boundp 'shipit-issues-enabled) shipit-issues-enabled
-             (fboundp 'shipit-issue--resolve-for-repo)
-             (shipit-repo-buffer--issue-backend-available-p))
-    (condition-case nil
-        (let* ((resolved (shipit-issue--resolve-for-repo repo))
-               (backend (car resolved))
-               (config (cdr resolved))
-               (search-fn (plist-get backend :search))
-               (limit (or shipit-repo-buffer-closed-limit 5)))
-          (when search-fn
-            (let ((result (funcall search-fn config
-                                  (list "--state=closed" "--sort=updated"
-                                        (format "--limit=%d" limit)))))
-              (setq shipit-repo-buffer-closed-issues-has-more
-                    (= (length result) limit))
-              result)))
-      (error nil))))
+(defun shipit-repo-buffer--search-page-later (search config args page per-page callback)
+  "Ask SEARCH with CONFIG for page PAGE of PER-PAGE items that ARGS find.
+SEARCH is the `:search' of a backend without `:search-page-async'.
+SEARCH waits for its answer, so a timer runs it after the buffer is
+drawn.  CALLBACK gets the page, which tells no total."
+  (run-at-time
+   0 nil
+   (lambda ()
+     (funcall callback
+              (condition-case err
+                  (shipit--search-page
+                   (seq-drop (funcall search config
+                                      (append args (list (format "--limit=%d" (* page per-page)))))
+                             (* (1- page) per-page))
+                   nil)
+                (error (list :error (error-message-string err))))))))
 
-(defun shipit-repo-buffer--fetch-discussions (repo)
-  "Fetch recent discussions for REPO.
-Returns list of discussion alists, or nil on failure."
-  (when (and (boundp 'shipit-discussions-enabled) shipit-discussions-enabled
-             (fboundp 'shipit-discussion--search)
-             (shipit-repo-buffer--discussions-available-p))
-    (condition-case nil
-        (shipit-discussion--search
-         repo (list "--limit=25"))
-      (error nil))))
+(defun shipit-repo-buffer--backend-for (key)
+  "(BACKEND . CONFIG) of the forge or tracker of the list KEY."
+  (if (eq (shipit-repo-buffer--list-get key :kind) 'pr)
+      (shipit-pr--resolve-for-repo shipit-repo-buffer-repo)
+    (shipit-issue--resolve-for-repo shipit-repo-buffer-repo)))
+
+(defun shipit-repo-buffer--request-page (key page callback)
+  "Ask in the background for page PAGE of the list KEY.
+CALLBACK gets the page, as `shipit--search-page' or
+`shipit--search-page-failure' gives it."
+  (let ((per-page (shipit-repo-buffer--page-size key))
+        (args (shipit-repo-buffer--search-args key)))
+    (if (eq key 'discussions)
+        (shipit-discussion--search-page-async
+         shipit-repo-buffer-repo (list (format "--limit=%d" per-page)) callback)
+      (pcase-let* ((`(,backend . ,config) (shipit-repo-buffer--backend-for key))
+                   (page-fn (plist-get backend :search-page-async))
+                   (search (plist-get backend :search)))
+        (cond
+         (page-fn (funcall page-fn config args page per-page callback))
+         (search (shipit-repo-buffer--search-page-later
+                  search config args page per-page callback))
+         (t (error "Backend %s can search neither with :search-page-async nor :search"
+                   (plist-get backend :name))))))))
+
+(defun shipit-repo-buffer--fetch-page (key page)
+  "Ask for page PAGE of the list KEY, and show it when it arrives.
+An answer that arrives after the buffer was killed or refreshed is
+dropped.  A request that signals as it starts fails its list, so that
+the lists after it still load."
+  (let* ((buffer (current-buffer))
+         (generation shipit-repo-buffer--generation)
+         (callback (lambda (result)
+                     (when (buffer-live-p buffer)
+                       (with-current-buffer buffer
+                         (when (= generation shipit-repo-buffer--generation)
+                           (shipit-repo-buffer--take-page key page result)))))))
+    (condition-case err
+        (shipit-repo-buffer--request-page key page callback)
+      (error
+       (shipit--debug-log "REPO-BUFFER: request for %s page %d failed: %S" key page err)
+       (funcall callback (list :error (error-message-string err)))))))
+
+(defun shipit-repo-buffer--join-items (items more)
+  "ITEMS followed by each item of MORE whose number is not among them.
+A list sorted by its last update can move an item to a later page
+between two requests."
+  (let ((numbers (make-hash-table :test 'equal)))
+    (dolist (item items)
+      (puthash (cdr (assq 'number item)) t numbers))
+    (append items (seq-remove (lambda (item) (gethash (cdr (assq 'number item)) numbers))
+                              more))))
+
+(defun shipit-repo-buffer--add-items (key page result)
+  "Add the items of RESULT, page PAGE of the list KEY, to the list."
+  (let* ((arrived (plist-get result :items))
+         (items (shipit-repo-buffer--join-items
+                 (when (> page 1) (shipit-repo-buffer--list-items key))
+                 arrived))
+         (total (plist-get result :total))
+         (has-more (shipit-repo-buffer--list-get key :has-more)))
+    (set (shipit-repo-buffer--list-get key :items) items)
+    (setf (alist-get key shipit-repo-buffer--totals) total)
+    (when has-more
+      (set has-more (and (= (length arrived) (shipit-repo-buffer--page-size key))
+                         (or (null total) (< (length items) total)))))))
+
+(defun shipit-repo-buffer--take-page (key page result)
+  "Show RESULT, page PAGE of the list KEY, or why it failed.
+A first page that failed says so in the heading of its list.  A later
+one says so in the echo area, and the list stays as it was."
+  (setq shipit-repo-buffer--loading (delq key shipit-repo-buffer--loading)
+        shipit-repo-buffer--fetching-more (delq key shipit-repo-buffer--fetching-more))
+  (let ((failure (plist-get result :error)))
+    (cond
+     ((and failure (> page 1))
+      (message "Could not load more: %s" failure))
+     (failure
+      (setf (alist-get key shipit-repo-buffer--failures) failure))
+     (t
+      (shipit-repo-buffer--add-items key page result))))
+  (shipit-repo-buffer--redraw-section (shipit-repo-buffer--list-get key :section)))
+
+(defun shipit-repo-buffer--start-lists ()
+  "Forget the lists of this buffer, and mark those it shows as loading."
+  (cl-incf shipit-repo-buffer--generation)
+  (dolist (entry shipit-repo-buffer--lists)
+    (set (plist-get (cdr entry) :items) nil)
+    (when-let* ((has-more (plist-get (cdr entry) :has-more)))
+      (set has-more nil)))
+  (setq shipit-repo-buffer--totals nil
+        shipit-repo-buffer--failures nil
+        shipit-repo-buffer--fetching-more nil
+        shipit-repo-buffer--loading (shipit-repo-buffer--offered-lists)))
+
+(defun shipit-repo-buffer--fetch-lists ()
+  "Ask for the first page of each list that is loading."
+  (dolist (key (copy-sequence shipit-repo-buffer--loading))
+    (shipit-repo-buffer--fetch-page key 1)))
 
 ;;; Entry point
 
@@ -410,50 +517,46 @@ BACKEND-ID and BACKEND-CONFIG override auto-detection when provided."
 
 ;;; Refresh
 
+(defun shipit-repo-buffer--fetch-header-data (repo)
+  "Fetch what the header and the README of REPO show."
+  (let ((result (shipit-repo-buffer--fetch-repo-data repo)))
+    (setq shipit-repo-buffer-data (plist-get result :data))
+    (setq shipit-repo-buffer-readme (plist-get result :readme))
+    (setq shipit-repo-buffer-languages (plist-get result :languages))
+    (setq shipit-repo-buffer-subscription
+          (let* ((resolved (shipit-pr--resolve-for-repo repo))
+                 (fn (plist-get (car resolved) :get-repo-subscription)))
+            (if fn
+                (funcall fn (cdr resolved))
+              'not-supported)))))
+
+(defun shipit-repo-buffer--draw ()
+  "Draw this buffer from what it has fetched."
+  (let ((inhibit-read-only t)
+        (pos (point)))
+    (erase-buffer)
+    (magit-insert-section (repo-root)
+      (shipit-repo-buffer--insert-header-section
+       shipit-repo-buffer-data
+       (shipit-repo-buffer--format-language-percentages shipit-repo-buffer-languages))
+      (shipit-repo-buffer--insert-readme-section shipit-repo-buffer-readme)
+      (dolist (type '(repo-prs repo-issues repo-discussions))
+        (shipit-repo-buffer--insert-list-section type)))
+    (goto-char (min pos (point-max)))))
+
 (defun shipit-repo-buffer-refresh (&optional _ignore-auto _noconfirm)
-  "Refresh the repo buffer contents."
+  "Refresh the repo buffer contents.
+The header and the README show at once.  The lists of pull requests,
+issues and discussions load in the background, and each shows when it
+arrives."
   (interactive)
   (let ((repo shipit-repo-buffer-repo))
     (shipit--debug-log "Refreshing repo buffer for %s" repo)
     (message "Loading repo %s..." repo)
-    (let ((result (shipit-repo-buffer--fetch-repo-data repo)))
-      (setq shipit-repo-buffer-data (plist-get result :data))
-      (setq shipit-repo-buffer-readme (plist-get result :readme))
-      (setq shipit-repo-buffer-languages (plist-get result :languages))
-      (setq shipit-repo-buffer-subscription
-            (let* ((resolved (shipit-pr--resolve-for-repo repo))
-                   (backend (car resolved))
-                   (fn (plist-get backend :get-repo-subscription)))
-              (if fn
-                  (funcall fn (cdr resolved))
-                'not-supported)))
-      (setq shipit-repo-buffer-open-prs (shipit-repo-buffer--fetch-open-prs repo))
-      (setq shipit-repo-buffer-closed-prs (shipit-repo-buffer--fetch-closed-prs repo))
-      (setq shipit-repo-buffer-open-issues (shipit-repo-buffer--fetch-open-issues repo))
-      (setq shipit-repo-buffer-closed-issues (shipit-repo-buffer--fetch-closed-issues repo))
-      (setq shipit-repo-buffer-discussions (shipit-repo-buffer--fetch-discussions repo))
-      (let ((inhibit-read-only t)
-            (pos (point)))
-        (erase-buffer)
-        (magit-insert-section (repo-root)
-          (let ((lang-pcts (shipit-repo-buffer--format-language-percentages
-                            shipit-repo-buffer-languages)))
-            (shipit-repo-buffer--insert-header-section
-             shipit-repo-buffer-data lang-pcts))
-          (shipit-repo-buffer--insert-readme-section shipit-repo-buffer-readme)
-          (shipit-repo-buffer--insert-prs-section
-           shipit-repo-buffer-open-prs shipit-repo-buffer-closed-prs
-           shipit-repo-buffer-closed-prs-has-more repo
-           shipit-repo-buffer-open-prs-has-more)
-          (when (and (boundp 'shipit-issues-enabled) shipit-issues-enabled)
-            (shipit-repo-buffer--insert-issues-section
-             shipit-repo-buffer-open-issues shipit-repo-buffer-closed-issues
-             shipit-repo-buffer-closed-issues-has-more repo
-             shipit-repo-buffer-open-issues-has-more))
-          (when (and (boundp 'shipit-discussions-enabled) shipit-discussions-enabled)
-            (shipit-repo-buffer--insert-discussions-section
-             shipit-repo-buffer-discussions repo)))
-        (goto-char (min pos (point-max)))))
+    (shipit-repo-buffer--fetch-header-data repo)
+    (shipit-repo-buffer--start-lists)
+    (shipit-repo-buffer--draw)
+    (shipit-repo-buffer--fetch-lists)
     (message "Repo %s loaded" repo)))
 
 ;;; Section rendering
@@ -739,92 +842,190 @@ REPO is set as `shipit-repo-item-repo' text property."
                         text-prop number
                         'shipit-repo-item-repo repo))))
 
+(defun shipit-repo-buffer--list-shown-p (key items)
+  "Whether the list KEY shows, with ITEMS of it after the filter.
+It shows while it loads, when it failed, and when it has items.  With a
+filter that no item matches, it shows with none."
+  (or items
+      (memq key shipit-repo-buffer--loading)
+      (alist-get key shipit-repo-buffer--failures)
+      (and (shipit-repo-buffer--filter-active-p)
+           (shipit-repo-buffer--list-items key))))
+
+(defun shipit-repo-buffer--list-heading (label key shown)
+  "LABEL of the list KEY with its count, where SHOWN of its items show."
+  (let ((failure (alist-get key shipit-repo-buffer--failures))
+        (total (alist-get key shipit-repo-buffer--totals)))
+    (cond
+     (failure (format "%s (failed: %s)" label failure))
+     ((memq key shipit-repo-buffer--loading) (format "%s (loading…)" label))
+     ((and total (< shown total)) (format "%s (%d of %d)" label shown total))
+     (t (format "%s (%d)" label shown)))))
+
+(defun shipit-repo-buffer--group-count (keys)
+  "The count after the heading of the section of the lists KEYS.
+The first of KEYS is the list of the open items."
+  (let ((total (alist-get (car keys) shipit-repo-buffer--totals)))
+    (cond
+     ((seq-some (lambda (key) (memq key shipit-repo-buffer--loading)) keys)
+      " (loading…)")
+     (total (format " (%d open)" total))
+     (t ""))))
+
+(defun shipit-repo-buffer--insert-list (type key items repo text-prop has-more load-more-type)
+  "Insert the subsection TYPE of the list KEY with ITEMS of REPO.
+TEXT-PROP holds the number of each item.  HAS-MORE adds a \"load more\"
+line of LOAD-MORE-TYPE."
+  (when (shipit-repo-buffer--list-shown-p key items)
+    (magit-insert-section ((eval type) nil nil)
+      (magit-insert-heading
+        (propertize (concat "  " (shipit-repo-buffer--list-heading
+                                  (capitalize (shipit-repo-buffer--list-get key :state))
+                                  key (length items)))
+                    'font-lock-face 'magit-section-heading))
+      (dolist (item items)
+        (shipit-repo-buffer--insert-item-line item repo text-prop))
+      (when has-more
+        (shipit-repo-buffer--insert-load-more-line load-more-type)))))
+
+(defun shipit-repo-buffer--insert-group-heading (icon fallback label keys)
+  "Insert the heading LABEL with the ICON, or FALLBACK, and the count of KEYS."
+  (magit-insert-heading
+    (format "%s %s%s"
+            (shipit--get-pr-field-icon icon fallback)
+            (propertize label 'font-lock-face 'magit-section-heading)
+            (shipit-repo-buffer--group-count keys))))
+
 (defun shipit-repo-buffer--insert-prs-section (open-prs closed-prs closed-has-more repo
                                                        &optional open-has-more)
   "Insert PRs section with OPEN-PRS and CLOSED-PRS subsections for REPO.
 CLOSED-HAS-MORE, when non-nil, adds a \"load more\" line to the closed subsection.
 OPEN-HAS-MORE, when non-nil, adds a \"load more\" line to the open subsection."
-  (when (or open-prs closed-prs)
-    (shipit--debug-log "REPO-BUFFER: insert-prs-section open=%d closed=%d closed-has-more=%s open-has-more=%s"
-                       (length open-prs) (length closed-prs) closed-has-more open-has-more)
-    (let ((label (shipit-repo-buffer--pr-type-label)))
-      (magit-insert-section (repo-prs nil nil)
-        (magit-insert-heading
-          (format "%s %s"
-                  (shipit--get-pr-field-icon "pull-request" "\U0001f501")
-                  (propertize label 'font-lock-face 'magit-section-heading)))
-        (magit-insert-section-body
-          (when open-prs
-            (magit-insert-section (repo-prs-open nil nil)
-              (magit-insert-heading
-                (propertize (format "  Open (%d)" (length open-prs))
-                            'font-lock-face 'magit-section-heading))
-              (dolist (pr open-prs)
-                (shipit-repo-buffer--insert-item-line
-                 pr repo 'shipit-repo-pr-number))
-              (when open-has-more
-                (shipit-repo-buffer--insert-load-more-line 'open-prs))))
-          (when closed-prs
-            (magit-insert-section (repo-prs-closed nil nil)
-              (magit-insert-heading
-                (propertize (format "  Closed (%d)" (length closed-prs))
-                            'font-lock-face 'magit-section-heading))
-              (dolist (pr closed-prs)
-                (shipit-repo-buffer--insert-item-line
-                 pr repo 'shipit-repo-pr-number))
-              (when closed-has-more
-                (shipit-repo-buffer--insert-load-more-line 'prs))))
-          (insert "\n"))))))
+  (when (or (shipit-repo-buffer--list-shown-p 'open-prs open-prs)
+            (shipit-repo-buffer--list-shown-p 'closed-prs closed-prs))
+    (magit-insert-section (repo-prs nil nil)
+      (shipit-repo-buffer--insert-group-heading
+       "pull-request" "\U0001f501" (shipit-repo-buffer--pr-type-label)
+       '(open-prs closed-prs))
+      (magit-insert-section-body
+        (shipit-repo-buffer--insert-list 'repo-prs-open 'open-prs open-prs repo
+                                         'shipit-repo-pr-number open-has-more 'open-prs)
+        (shipit-repo-buffer--insert-list 'repo-prs-closed 'closed-prs closed-prs repo
+                                         'shipit-repo-pr-number closed-has-more 'prs)
+        (insert "\n")))))
 
 (defun shipit-repo-buffer--insert-issues-section (open-issues closed-issues closed-has-more repo
                                                              &optional open-has-more)
   "Insert issues section with OPEN-ISSUES and CLOSED-ISSUES subsections for REPO.
 CLOSED-HAS-MORE, when non-nil, adds a \"load more\" line to the closed subsection.
 OPEN-HAS-MORE, when non-nil, adds a \"load more\" line to the open subsection."
-  (when (or open-issues closed-issues)
+  (when (or (shipit-repo-buffer--list-shown-p 'open-issues open-issues)
+            (shipit-repo-buffer--list-shown-p 'closed-issues closed-issues))
     (magit-insert-section (repo-issues nil nil)
-      (magit-insert-heading
-        (format "%s %s"
-                (shipit--get-pr-field-icon "issue-open" "\U0001f41b")
-                (propertize "Issues" 'font-lock-face 'magit-section-heading)))
+      (shipit-repo-buffer--insert-group-heading
+       "issue-open" "\U0001f41b" "Issues" '(open-issues closed-issues))
       (magit-insert-section-body
-        (when open-issues
-          (magit-insert-section (repo-issues-open nil nil)
-            (magit-insert-heading
-              (propertize (format "  Open (%d)" (length open-issues))
-                          'font-lock-face 'magit-section-heading))
-            (dolist (issue open-issues)
-              (shipit-repo-buffer--insert-item-line
-               issue repo 'shipit-repo-issue-number))
-            (when open-has-more
-              (shipit-repo-buffer--insert-load-more-line 'open-issues))))
-        (when closed-issues
-          (magit-insert-section (repo-issues-closed nil nil)
-            (magit-insert-heading
-              (propertize (format "  Closed (%d)" (length closed-issues))
-                          'font-lock-face 'magit-section-heading))
-            (dolist (issue closed-issues)
-              (shipit-repo-buffer--insert-item-line
-               issue repo 'shipit-repo-issue-number))
-            (when closed-has-more
-              (shipit-repo-buffer--insert-load-more-line 'issues))))
+        (shipit-repo-buffer--insert-list 'repo-issues-open 'open-issues open-issues repo
+                                         'shipit-repo-issue-number open-has-more 'open-issues)
+        (shipit-repo-buffer--insert-list 'repo-issues-closed 'closed-issues closed-issues repo
+                                         'shipit-repo-issue-number closed-has-more 'issues)
         (insert "\n")))))
 
 (defun shipit-repo-buffer--insert-discussions-section (discussions repo)
   "Insert collapsible discussions section with DISCUSSIONS data for REPO.
 DISCUSSIONS is a list of alists with `number' and `title' keys."
-  (when discussions
+  (when (shipit-repo-buffer--list-shown-p 'discussions discussions)
     (magit-insert-section (repo-discussions nil nil)
       (magit-insert-heading
         (format "%s %s"
                 (shipit--get-pr-field-icon "discussion" "\U0001f4ac")
-                (propertize (format "Discussions (%d)" (length discussions))
+                (propertize (shipit-repo-buffer--list-heading
+                             "Discussions" 'discussions (length discussions))
                             'font-lock-face 'magit-section-heading)))
       (magit-insert-section-body
         (dolist (disc discussions)
           (shipit-repo-buffer--insert-item-line
            disc repo 'shipit-repo-discussion-number))
         (insert "\n")))))
+
+(defun shipit-repo-buffer--insert-list-section (type)
+  "Insert the section TYPE of the lists of this buffer, with the filter applied."
+  (let ((repo shipit-repo-buffer-repo))
+    (pcase type
+      ('repo-prs
+       (shipit-repo-buffer--insert-prs-section
+        (shipit-repo-buffer--filter-items shipit-repo-buffer-open-prs)
+        (shipit-repo-buffer--filter-items shipit-repo-buffer-closed-prs)
+        shipit-repo-buffer-closed-prs-has-more repo shipit-repo-buffer-open-prs-has-more))
+      ('repo-issues
+       (shipit-repo-buffer--insert-issues-section
+        (shipit-repo-buffer--filter-items shipit-repo-buffer-open-issues)
+        (shipit-repo-buffer--filter-items shipit-repo-buffer-closed-issues)
+        shipit-repo-buffer-closed-issues-has-more repo
+        shipit-repo-buffer-open-issues-has-more))
+      ('repo-discussions
+       (shipit-repo-buffer--insert-discussions-section
+        (shipit-repo-buffer--filter-items shipit-repo-buffer-discussions) repo)))))
+
+;;; Drawing a section again
+
+(defun shipit-repo-buffer--top-section (type)
+  "The section of type TYPE right below the root of this buffer, or nil."
+  (when magit-root-section
+    (seq-find (lambda (section) (eq (oref section type) type))
+              (oref magit-root-section children))))
+
+(defun shipit-repo-buffer--visibility-of (section)
+  "Alist of the types of SECTION and its subsections, and whether each is hidden."
+  (let ((visibility nil))
+    (magit-map-sections (lambda (each)
+                          (push (cons (oref each type) (oref each hidden)) visibility))
+                        section)
+    visibility))
+
+(defun shipit-repo-buffer--hide-hidden (section)
+  "Hide each part of SECTION that is to be hidden.
+A subsection gets its body when it is inserted, so it shows until it is
+hidden."
+  (magit-map-sections (lambda (each)
+                        (when (oref each hidden)
+                          (magit-section-hide each)))
+                      section))
+
+(defun shipit-repo-buffer--replace-child (root old index)
+  "Put the section that was inserted last below ROOT in the place of OLD.
+INDEX is where OLD was among the children of ROOT."
+  (let* ((others (delq old (oref root children)))
+         (new (car (last others)))
+         (rest (butlast others)))
+    (oset root children (append (seq-take rest index) (list new) (nthcdr index rest)))))
+
+(defun shipit-repo-buffer--redraw-section (type)
+  "Draw the section TYPE again from the lists of this buffer.
+It keeps its place, the visibility of its parts, and point in it."
+  (when-let* ((old (shipit-repo-buffer--top-section type)))
+    (let* ((inhibit-read-only t)
+           (root magit-root-section)
+           (start (marker-position (oref old start)))
+           (end (marker-position (oref old end)))
+           (offset (and (<= start (point)) (< (point) end) (- (point) start)))
+           (index (seq-position (oref root children) old))
+           (count (length (oref root children)))
+           (shipit-repo-buffer--kept-visibility (shipit-repo-buffer--visibility-of old)))
+      (save-excursion
+        (delete-region start end)
+        (goto-char start)
+        (let ((magit-insert-section--parent root))
+          (shipit-repo-buffer--insert-list-section type))
+        (when (< (oref root end) (point))
+          (set-marker (oref root end) (point))))
+      (if (> (length (oref root children)) count)
+          (progn
+            (shipit-repo-buffer--replace-child root old index)
+            (shipit-repo-buffer--hide-hidden (nth index (oref root children))))
+        (oset root children (delq old (oref root children))))
+      (when offset
+        (goto-char (min (+ start offset) (point-max)))))))
 
 ;;; Section detection helpers
 
@@ -901,126 +1102,53 @@ With prefix arg N, load N more items instead of the default."
     (message "No \"load more\" available at point")))
 
 (defun shipit-repo-buffer--fetch-more (type &optional count)
-  "Fetch more items of TYPE.
-TYPE is `prs', `issues', `open-prs', or `open-issues'.
-COUNT, if non-nil, overrides the default batch size.
-Updates the buffer-local item list and has-more flag."
-  (let* ((repo shipit-repo-buffer-repo)
-         (openp (memq type '(open-prs open-issues)))
-         (state (if openp "open" "closed"))
-         (default-batch (if openp 100 (or shipit-repo-buffer-closed-limit 5)))
-         (batch-size (or count default-batch)))
-    (pcase type
-      ((or 'prs 'open-prs)
-       (let* ((current (if openp shipit-repo-buffer-open-prs
-                         shipit-repo-buffer-closed-prs))
-              (current-count (length current))
-              (resolved (shipit-pr--resolve-for-repo repo))
-              (backend (car resolved))
-              (config (cdr resolved))
-              (search-fn (plist-get backend :search))
-              (new-limit (+ current-count batch-size)))
-         (when search-fn
-           (let ((result (funcall search-fn config
-                                 (list (format "--state=%s" state)
-                                       "--sort=updated"
-                                       (format "--limit=%d" new-limit)))))
-             (if openp
-                 (progn
-                   (setq shipit-repo-buffer-open-prs result)
-                   (setq shipit-repo-buffer-open-prs-has-more
-                         (= (length result) new-limit)))
-               (setq shipit-repo-buffer-closed-prs result)
-               (setq shipit-repo-buffer-closed-prs-has-more
-                     (= (length result) new-limit)))))))
-      ((or 'issues 'open-issues)
-       (when (and (boundp 'shipit-issues-enabled) shipit-issues-enabled
-                  (fboundp 'shipit-issue--resolve-for-repo))
-         (let* ((current (if openp shipit-repo-buffer-open-issues
-                           shipit-repo-buffer-closed-issues))
-                (current-count (length current))
-                (resolved (shipit-issue--resolve-for-repo repo))
-                (backend (car resolved))
-                (config (cdr resolved))
-                (search-fn (plist-get backend :search))
-                (new-limit (+ current-count batch-size)))
-           (when search-fn
-             (let ((result (funcall search-fn config
-                                   (list (format "--state=%s" state)
-                                         "--sort=updated"
-                                         (format "--limit=%d" new-limit)))))
-               (if openp
-                   (progn
-                     (setq shipit-repo-buffer-open-issues result)
-                     (setq shipit-repo-buffer-open-issues-has-more
-                           (= (length result) new-limit)))
-                 (setq shipit-repo-buffer-closed-issues result)
-                 (setq shipit-repo-buffer-closed-issues-has-more
-                       (= (length result) new-limit)))))))))))
+  "Ask for the list of the \"load more\" TYPE again, COUNT items longer.
+TYPE is `prs', `issues', `open-prs', or `open-issues'.  Without COUNT,
+the list grows by its page size.  The forge or tracker answers while
+the caller waits."
+  (pcase-let* ((key (alist-get type shipit-repo-buffer--load-more-lists))
+               (`(,backend . ,config) (shipit-repo-buffer--backend-for key))
+               (search (or (plist-get backend :search)
+                           (error "Backend %s cannot search" (plist-get backend :name))))
+               (limit (+ (length (shipit-repo-buffer--list-items key))
+                         (or count (shipit-repo-buffer--page-size key))))
+               (items (funcall search config
+                               (append (shipit-repo-buffer--search-args key)
+                                       (list (format "--limit=%d" limit))))))
+    (set (shipit-repo-buffer--list-get key :items) items)
+    (set (shipit-repo-buffer--list-get key :has-more) (= (length items) limit))))
 
 ;; Backward compat alias
 (defalias 'shipit-repo-buffer--fetch-more-closed
   'shipit-repo-buffer--fetch-more)
-
-(defun shipit-repo-buffer--refresh-closed-subsection (section-type items has-more repo text-prop load-more-type)
-  "Targeted refresh of an open or closed subsection.
-SECTION-TYPE is the magit section type (e.g., `repo-prs-closed').
-ITEMS is the new list of items.
-HAS-MORE controls whether to show the load-more line.
-REPO is the repository name for text properties.
-TEXT-PROP is the text property name for item numbers.
-LOAD-MORE-TYPE is the symbol for the load-more text property."
-  (when (fboundp 'shipit--find-section-by-type)
-    (let ((section (shipit--find-section-by-type section-type)))
-      (when section
-        (let* ((content-pos (marker-position (oref section content)))
-               (end-pos (marker-position (oref section end)))
-               (inhibit-read-only t))
-          (save-excursion
-            ;; Update heading count
-            (goto-char (oref section start))
-            (when (re-search-forward "\\(?:Open\\|Closed\\) (\\([0-9]+\\))" (line-end-position 2) t)
-              (replace-match (number-to-string (length items)) nil nil nil 1))
-            ;; Clear children and content
-            (oset section children nil)
-            (when (slot-boundp section 'washer)
-              (oset section washer nil))
-            (when (and content-pos end-pos (> end-pos content-pos))
-              (remove-overlays content-pos end-pos 'invisible t)
-              (delete-region content-pos end-pos))
-            ;; Insert new content
-            (goto-char content-pos)
-            (let ((magit-insert-section--parent section))
-              (dolist (item items)
-                (shipit-repo-buffer--insert-item-line item repo text-prop))
-              (when has-more
-                (shipit-repo-buffer--insert-load-more-line load-more-type)))
-            ;; Restore magit-section text property so magit-current-section
-            ;; can find this section from the newly inserted body text
-            (put-text-property content-pos (point) 'magit-section section)
-            ;; Update markers
-            (oset section end (point-marker))
-            (oset section content (copy-marker content-pos))))))))
 
 (defun shipit-repo-buffer--filter-active-p ()
   "Return non-nil if any item filter is currently active."
   (or shipit-repo-buffer--filter-mode
       (not (string-empty-p shipit-repo-buffer--filter-text))))
 
+(defun shipit-repo-buffer--load-next-page (key)
+  "Ask for the next page of the list KEY, and add it when it arrives."
+  (if (memq key shipit-repo-buffer--fetching-more)
+      (message "Still loading more")
+    (push key shipit-repo-buffer--fetching-more)
+    (message "Loading more...")
+    (shipit-repo-buffer--fetch-page
+     key (1+ (/ (length (shipit-repo-buffer--list-items key))
+                (shipit-repo-buffer--page-size key))))))
+
 (defun shipit-repo-buffer--load-more (type &optional count)
   "Load more items of TYPE.
 TYPE is `prs', `open-prs', `issues', or `open-issues'.
-COUNT, if non-nil, overrides the default batch size.
-Always rebuilds the full parent section to keep sibling markers consistent."
-  (let ((saved-pos (point)))
+Without COUNT, the next page loads in the background.  COUNT asks for
+the whole list again, COUNT items longer, and waits for it, because a
+page cannot start at any item."
+  (if (null count)
+      (shipit-repo-buffer--load-next-page
+       (alist-get type shipit-repo-buffer--load-more-lists))
     (message "Loading more...")
     (shipit-repo-buffer--fetch-more type count)
-    ;; Always rebuild the full parent section — targeted subsection refresh
-    ;; corrupts sibling section markers when earlier subsections grow.
     (shipit-repo-buffer--refresh-filtered-section)
-    ;; Restore cursor position — the refresh deletes and re-inserts content,
-    ;; which causes save-excursion marks to collapse to the section start.
-    (goto-char (min saved-pos (point-max)))
     (message "Loaded more items")))
 
 ;;; RET handler
@@ -1328,133 +1456,7 @@ to refresh, so this works correctly from minibuffer context."
   (let ((section-type (or shipit-repo-buffer--filter-section-type
                           (shipit-repo-buffer--section-type-at-point))))
     (when section-type
-      (pcase section-type
-        ('repo-prs
-         (shipit-repo-buffer--refresh-prs-section-filtered))
-        ('repo-issues
-         (shipit-repo-buffer--refresh-issues-section-filtered))
-        ('repo-discussions
-         (shipit-repo-buffer--refresh-discussions-section-filtered))))))
-
-(defun shipit-repo-buffer--refresh-prs-section-filtered ()
-  "Re-render the PRs section body with filtered items."
-  (when (fboundp 'shipit--find-section-by-type)
-    (let ((section (shipit--find-section-by-type 'repo-prs)))
-      (when section
-        (let* ((filtered-open (shipit-repo-buffer--filter-items
-                               shipit-repo-buffer-open-prs))
-               (filtered-closed (shipit-repo-buffer--filter-items
-                                 shipit-repo-buffer-closed-prs))
-               (content-pos (marker-position (oref section content)))
-               (end-pos (marker-position (oref section end)))
-               (inhibit-read-only t))
-          (save-excursion
-            (oset section children nil)
-            (when (and content-pos end-pos (> end-pos content-pos))
-              (delete-region content-pos end-pos))
-            (goto-char content-pos)
-            (let ((magit-insert-section--parent section)
-                  (repo shipit-repo-buffer-repo)
-                  (filter-active (shipit-repo-buffer--filter-active-p)))
-              (when (or filtered-open
-                        (and filter-active shipit-repo-buffer-open-prs))
-                (magit-insert-section (repo-prs-open nil nil)
-                  (magit-insert-heading
-                    (propertize (format "  Open (%d)" (length filtered-open))
-                                'font-lock-face 'magit-section-heading))
-                  (dolist (pr filtered-open)
-                    (shipit-repo-buffer--insert-item-line
-                     pr repo 'shipit-repo-pr-number))
-                  (when shipit-repo-buffer-open-prs-has-more
-                    (shipit-repo-buffer--insert-load-more-line 'open-prs))))
-              (when (or filtered-closed
-                        (and filter-active shipit-repo-buffer-closed-prs))
-                (magit-insert-section (repo-prs-closed nil nil)
-                  (magit-insert-heading
-                    (propertize (format "  Closed (%d)" (length filtered-closed))
-                                'font-lock-face 'magit-section-heading))
-                  (dolist (pr filtered-closed)
-                    (shipit-repo-buffer--insert-item-line
-                     pr repo 'shipit-repo-pr-number))
-                  (when shipit-repo-buffer-closed-prs-has-more
-                    (shipit-repo-buffer--insert-load-more-line 'prs))))
-              (insert "\n"))
-            (oset section end (point-marker))
-            (oset section content (copy-marker content-pos))))))))
-
-(defun shipit-repo-buffer--refresh-issues-section-filtered ()
-  "Re-render the issues section body with filtered items."
-  (when (fboundp 'shipit--find-section-by-type)
-    (let ((section (shipit--find-section-by-type 'repo-issues)))
-      (when section
-        (let* ((filtered-open (shipit-repo-buffer--filter-items
-                               shipit-repo-buffer-open-issues))
-               (filtered-closed (shipit-repo-buffer--filter-items
-                                 shipit-repo-buffer-closed-issues))
-               (content-pos (marker-position (oref section content)))
-               (end-pos (marker-position (oref section end)))
-               (inhibit-read-only t))
-          (save-excursion
-            (oset section children nil)
-            (when (and content-pos end-pos (> end-pos content-pos))
-              (delete-region content-pos end-pos))
-            (goto-char content-pos)
-            (let ((magit-insert-section--parent section)
-                  (repo shipit-repo-buffer-repo)
-                  (filter-active (shipit-repo-buffer--filter-active-p)))
-              (when (or filtered-open
-                        (and filter-active shipit-repo-buffer-open-issues))
-                (magit-insert-section (repo-issues-open nil nil)
-                  (magit-insert-heading
-                    (propertize (format "  Open (%d)" (length filtered-open))
-                                'font-lock-face 'magit-section-heading))
-                  (dolist (issue filtered-open)
-                    (shipit-repo-buffer--insert-item-line
-                     issue repo 'shipit-repo-issue-number))
-                  (when shipit-repo-buffer-open-issues-has-more
-                    (shipit-repo-buffer--insert-load-more-line 'open-issues))))
-              (when (or filtered-closed
-                        (and filter-active shipit-repo-buffer-closed-issues))
-                (magit-insert-section (repo-issues-closed nil nil)
-                  (magit-insert-heading
-                    (propertize (format "  Closed (%d)" (length filtered-closed))
-                                'font-lock-face 'magit-section-heading))
-                  (dolist (issue filtered-closed)
-                    (shipit-repo-buffer--insert-item-line
-                     issue repo 'shipit-repo-issue-number))
-                  (when shipit-repo-buffer-closed-issues-has-more
-                    (shipit-repo-buffer--insert-load-more-line 'issues))))
-              (insert "\n"))
-            (oset section end (point-marker))
-            (oset section content (copy-marker content-pos))))))))
-
-(defun shipit-repo-buffer--refresh-discussions-section-filtered ()
-  "Re-render the discussions section body with filtered items."
-  (when (fboundp 'shipit--find-section-by-type)
-    (let ((section (shipit--find-section-by-type 'repo-discussions)))
-      (when section
-        (let* ((filtered (shipit-repo-buffer--filter-items
-                          shipit-repo-buffer-discussions))
-               (content-pos (marker-position (oref section content)))
-               (end-pos (marker-position (oref section end)))
-               (inhibit-read-only t))
-          (save-excursion
-            (oset section children nil)
-            (when (and content-pos end-pos (> end-pos content-pos))
-              (delete-region content-pos end-pos))
-            (goto-char content-pos)
-            (let ((magit-insert-section--parent section)
-                  (repo shipit-repo-buffer-repo)
-                  (body-start (point)))
-              (dolist (disc filtered)
-                (shipit-repo-buffer--insert-item-line
-                 disc repo 'shipit-repo-discussion-number))
-              (insert "\n")
-              ;; Re-apply magit-section property so magit-current-section
-              ;; resolves correctly on re-inserted item lines.
-              (put-text-property body-start (point) 'magit-section section))
-            (oset section end (point-marker))
-            (oset section content (copy-marker content-pos))))))))
+      (shipit-repo-buffer--redraw-section section-type))))
 
 ;;; Subscription
 

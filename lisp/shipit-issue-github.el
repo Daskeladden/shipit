@@ -192,6 +192,14 @@ Builds GitHub search query from ARGS and delegates to the GitHub search API."
          (per-page (min 50 limit)))
     (shipit--search-prs-with-encoded-query repo query-parts per-page limit sort-by)))
 
+(defun shipit-issue-github--search-page-async (config args page per-page callback)
+  "Ask in the background for a page of the issues that ARGS search for.
+It is page PAGE of PER-PAGE issues of the repository of CONFIG.
+CALLBACK gets the page, as `shipit--search-page-async' gives it."
+  (shipit--search-page-async
+   (shipit-issues--build-search-query args (plist-get config :repo))
+   (shipit--extract-sort-from-args args) page per-page callback))
+
 (defun shipit-issue-github--create-issue (config title body)
   "Create a new issue in the repo specified by CONFIG.
 TITLE is the issue title, BODY is the issue body.
@@ -545,6 +553,7 @@ via the PR backend's mark-notification-read function."
        :fetch-timeline #'shipit-issue-github--fetch-timeline
        :fetch-timeline-async #'shipit-issue-github--fetch-timeline-async
        :search #'shipit-issue-github--search
+       :search-page-async #'shipit-issue-github--search-page-async
        :create-issue #'shipit-issue-github--create-issue
        :reference-patterns #'shipit-issue-github--reference-patterns
        :browse-url #'shipit-issue-github--browse-url

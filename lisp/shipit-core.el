@@ -1230,6 +1230,23 @@ life of Emacs, one for each request."
          (when (buffer-live-p ,response)
            (kill-buffer ,response))))))
 
+(defun shipit--request-failure-text (failure)
+  "FAILURE of a request in the background as text, such as \"HTTP 502\".
+url.el gives an answer with an error status as (error http STATUS)."
+  (pcase failure
+    (`(error http ,status) (format "HTTP %s" status))
+    ((pred stringp) failure)
+    (_ (format "%s" failure))))
+
+(defun shipit--search-page (items total)
+  "A page of search results: ITEMS, of TOTAL items in all.
+TOTAL is nil when the forge does not tell it."
+  (list :items items :total total))
+
+(defun shipit--search-page-failure (failure)
+  "A page of search results that FAILURE, a request failure, stopped."
+  (list :error (shipit--request-failure-text failure)))
+
 ;; Performance timing helpers
 
 (defmacro shipit--time-operation (description &rest body)

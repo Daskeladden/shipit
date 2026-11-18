@@ -188,6 +188,7 @@ test-unit: compile test-packages
 		-l test/test-shipit-render.el \
 		-l test/test-shipit-pr-actions.el \
 		-l test/test-shipit-repo-buffer.el \
+		-l test/test-shipit-repo-buffer-lists.el \
 		-l test/test-shipit-canvas.el \
 		-l test/test-shipit-atlassian-board-shared.el \
 		-l test/test-shipit-atlassian-history.el \

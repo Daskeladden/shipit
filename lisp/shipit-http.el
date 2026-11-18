@@ -784,6 +784,60 @@ If CALLBACK is provided, make an async request."
          ;; Re-throw the error instead of silently returning nil
          (signal (car err) (cdr err)))))))
 
+;;; Searches in the background
+
+(defun shipit--api-get-async (endpoint on-answer on-failure)
+  "Ask GitHub for ENDPOINT in the background.
+ON-ANSWER gets the JSON body of the answer.  ON-FAILURE gets the
+failure as text, such as \"HTTP 502\"."
+  (shipit--url-retrieve-async
+   (concat (or shipit-api-url "https://api.github.com") endpoint)
+   "GET"
+   (remove nil (list (shipit--get-auth-header)
+                     '("Accept" . "application/vnd.github.v3+json")))
+   nil
+   on-answer
+   (lambda (failure)
+     (shipit--debug-log "API ERROR (async): %s - %s" endpoint failure)
+     (funcall on-failure (shipit--request-failure-text failure)))))
+
+(defun shipit--search-query-part-string (part)
+  "PART of a GitHub search query, encoded for its address.
+The OR between the terms of a part stays as it is, so that GitHub
+reads it as OR, and its parentheses are encoded."
+  (if (string-match-p " OR " part)
+      (concat
+       (if (string-prefix-p "(" part) "%28" "")
+       (mapconcat (lambda (term)
+                    (if (string= term "OR") "OR" (url-hexify-string term)))
+                  (split-string (string-trim part "(" ")") " ")
+                  "+")
+       (if (string-suffix-p ")" part) "%29" ""))
+    (url-hexify-string part)))
+
+(defun shipit--search-query-string (query-parts)
+  "QUERY-PARTS of a GitHub search, encoded and joined for its address."
+  (mapconcat #'shipit--search-query-part-string query-parts "+"))
+
+(defun shipit--search-endpoint (query-parts sort-by page per-page)
+  "The address of a GitHub search for QUERY-PARTS, sorted by SORT-BY.
+It asks for page PAGE of PER-PAGE results."
+  (format "/search/issues?q=%s&sort=%s&order=desc&per_page=%d&page=%d&advanced_search=true"
+          (shipit--search-query-string query-parts) sort-by per-page page))
+
+(defun shipit--search-page-async (query-parts sort-by page per-page callback)
+  "Ask GitHub in the background for a page of a search for QUERY-PARTS.
+The results are sorted by SORT-BY, and it is page PAGE of PER-PAGE.
+CALLBACK gets the page, as `shipit--search-page' or
+`shipit--search-page-failure' gives it."
+  (shipit--api-get-async
+   (shipit--search-endpoint query-parts (or sort-by "created") page per-page)
+   (lambda (answer)
+     (funcall callback (shipit--search-page (cdr (assq 'items answer))
+                                            (cdr (assq 'total_count answer)))))
+   (lambda (failure)
+     (funcall callback (shipit--search-page-failure failure)))))
+
 (defun shipit--api-error-details-message (response-data)
   "Return the `message' inside the `details' object of RESPONSE-DATA, or nil."
   (let ((details (cdr (assq 'details response-data))))
@@ -883,9 +937,11 @@ the answer, or nil when GitHub refused."
   (car (shipit--api-request-post-response endpoint data method)))
 
 ;; GraphQL API functions
-(defun shipit--graphql-request (query &optional variables callback)
+(defun shipit--graphql-request (query &optional variables callback on-failure)
   "Execute a GraphQL QUERY with optional VARIABLES.
-If CALLBACK is provided, execute asynchronously. Otherwise, execute synchronously."
+If CALLBACK is provided, execute asynchronously. Otherwise, execute synchronously.
+ON-FAILURE, when given, gets the failure of an asynchronous request as
+text, such as \"HTTP 502\", and CALLBACK is not called then."
   (let* ((url (concat (or shipit-api-url "https://api.github.com") "/graphql"))
          (headers (list (shipit--get-auth-header)
                        '("Content-Type" . "application/json")))
@@ -905,8 +961,10 @@ If CALLBACK is provided, execute asynchronously. Otherwise, execute synchronousl
          callback
          (lambda (error-msg)
            (shipit--debug-log "GraphQL error: %s" error-msg)
-           (message "GraphQL API error: %s" error-msg)
-           (when callback (funcall callback nil))))
+           (if on-failure
+               (funcall on-failure (shipit--request-failure-text error-msg))
+             (message "GraphQL API error: %s" error-msg)
+             (funcall callback nil))))
       ;; Sync
       (condition-case err
           (let* ((result (shipit--url-retrieve-sync url "POST" headers json-data))

@@ -77,6 +77,11 @@
 ;;   :search-repos            — (config query) → list of repo alists ((full_name . "owner/repo") ...)
 ;;   :search-repos-request    — (config query) → (url headers normalizer) for curl-based live search
 ;;   :search-raw              — (config query page per-page) → search results
+;;   :search-page-async       — (config args page per-page callback); CALLBACK
+;;                              gets page PAGE of the PRs that ARGS search
+;;                              for, as (:items ITEMS :total TOTAL), TOTAL
+;;                              nil when the forge does not tell it, or as
+;;                              (:error TEXT) when the request failed
 ;;   :refspec-for-pr          — (config pr-number head-ref) → refspec string
 ;;   :remote-for-fetch        — (config repo) → remote name or URL
 ;;   :fetch-repo-info         — (config) → repository alist as GitHub

@@ -1075,40 +1075,19 @@ SORT-BY controls ordering: \"created\", \"updated\", or \"comments\" (default: \
          (page 1)
          (total-count 0)
          (items-per-page (min per-page 100)) ; GitHub API max per_page is 100
-         ;; Encode parts but preserve OR operators for GitHub search
-         (encoded-parts (mapcar (lambda (part)
-                                  (if (string-match-p " OR " part)
-                                      ;; For OR queries, encode individual terms but keep OR as-is
-                                      ;; Parentheses are encoded as %28 and %29
-                                      (let ((has-open-paren (string-prefix-p "(" part))
-                                            (has-close-paren (string-suffix-p ")" part))
-                                            (inner (string-trim part "(" ")")))
-                                        (concat
-                                         (if has-open-paren "%28" "")
-                                         (mapconcat (lambda (term)
-                                                      (if (string= term "OR")
-                                                          "OR"
-                                                        (url-hexify-string term)))
-                                                    (split-string inner " ")
-                                                    "+")
-                                         (if has-close-paren "%29" "")))
-                                    (url-hexify-string part)))
-                                query-parts))
-         ;; Join query parts with + (GitHub search uses + for spaces)
-         (encoded-query (mapconcat 'identity encoded-parts "+")))
+         (encoded-parts (mapcar #'shipit--search-query-part-string query-parts)))
 
     (shipit--debug-log "Starting efficient pagination: max-results=%d, items-per-page=%d" max-results items-per-page)
     (shipit--debug-log "Encoded query parts: %S" query-parts)
     (shipit--debug-log "After encoding: %S" encoded-parts)
-    (shipit--debug-log "Final encoded query: %s" encoded-query)
+    (shipit--debug-log "Final encoded query: %s" (shipit--search-query-string query-parts))
 
     (while (and page
                 (< (length all-items) max-results)
                 (or (= page 1) (and total-count (numberp total-count) (> total-count (* (1- page) items-per-page)))))
 
       (condition-case err
-          (let* ((endpoint (format "/search/issues?q=%s&sort=%s&order=desc&per_page=%d&page=%d&advanced_search=true"
-                                   encoded-query sort-by items-per-page page))
+          (let* ((endpoint (shipit--search-endpoint query-parts sort-by page items-per-page))
                  (response (shipit--api-request endpoint)))
 
             (shipit--debug-log "Page %d: fetching %d items" page items-per-page)

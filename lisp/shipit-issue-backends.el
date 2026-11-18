@@ -31,6 +31,13 @@
 ;;   :id-to-string      — (id) → display string (e.g. "#42" or "PRJ-42")
 ;;   :string-to-id      — (string) → id
 ;;
+;; Optional plist keys (for the lists of the repo buffer):
+;;   :search-page-async — (config args page per-page callback); CALLBACK gets
+;;                        page PAGE of the issues that ARGS search for, as
+;;                        (:items ITEMS :total TOTAL), TOTAL nil when the
+;;                        tracker does not tell it, or as (:error TEXT)
+;;                        when the request failed
+;;
 ;; Optional plist keys (for comment interactions):
 ;;   :add-comment       — (config issue-id body) → comment alist
 ;;   :edit-comment      — (config comment-id body &optional issue-id)

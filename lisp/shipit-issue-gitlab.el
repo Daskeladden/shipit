@@ -197,6 +197,19 @@ Maps transient args to GitLab API query parameters."
         (string-join (nreverse params) "&")
       "")))
 
+(defun shipit-issue-gitlab--search-page-async (config args page per-page callback)
+  "Ask in the background for a page of the issues that ARGS search for.
+It is page PAGE of PER-PAGE issues of the project of CONFIG.  CALLBACK
+gets the page, as `shipit-gitlab--search-page-async' gives it."
+  (shipit-gitlab--search-page-async
+   config
+   (format "/projects/%s/issues?%s&page=%d"
+           (shipit-gitlab--project-path config)
+           (shipit-issue-gitlab--build-search-params
+            (append args (list (format "--limit=%d" per-page))))
+           page)
+   #'shipit-issue-gitlab--normalize-issue callback))
+
 (defun shipit-issue-gitlab--create-issue (config title body)
   "Create a new GitLab issue using CONFIG with TITLE and BODY.
 Returns normalized issue alist."
@@ -936,6 +949,7 @@ Returns (\"gitlab.com\" . config-plist) when credentials found, nil otherwise."
        :fetch-comments #'shipit-issue-gitlab--fetch-comments
        :fetch-comments-async #'shipit-issue-gitlab--fetch-comments-async
        :search #'shipit-issue-gitlab--search
+       :search-page-async #'shipit-issue-gitlab--search-page-async
        :create-issue #'shipit-issue-gitlab--create-issue
        :reference-patterns #'shipit-issue-gitlab--reference-patterns
        :browse-url #'shipit-issue-gitlab--browse-url

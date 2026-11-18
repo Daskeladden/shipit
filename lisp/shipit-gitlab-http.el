@@ -274,5 +274,84 @@ Calls CALLBACK with parsed JSON alist or nil on failure."
                     (shipit-gitlab--handle-async-response status callback))
                   nil t)))
 
+;;; Searches in the background
+
+(defun shipit-gitlab--async-status ()
+  "The status code of the answer in this buffer, or nil."
+  (goto-char (point-min))
+  (when (looking-at "HTTP/[0-9.]+ \\([0-9]+\\)")
+    (string-to-number (match-string 1))))
+
+(defun shipit-gitlab--async-headers ()
+  "The headers of the answer in this buffer, with lowercase names.
+Point moves to the start of the body."
+  (let ((headers nil))
+    (goto-char (point-min))
+    (forward-line 1)
+    (while (looking-at "\\([^:\r\n]+\\):[ \t]*\\([^\r\n]*\\)\r?$")
+      (push (cons (downcase (match-string 1)) (match-string 2)) headers)
+      (forward-line 1))
+    (forward-line 1)
+    headers))
+
+(defun shipit-gitlab--async-json ()
+  "The JSON body of the answer in this buffer, from point."
+  (set-buffer-multibyte t)
+  (decode-coding-region (point) (point-max) 'utf-8)
+  (let ((json-array-type 'list)
+        (json-object-type 'alist)
+        (json-key-type 'symbol))
+    (json-read)))
+
+(defun shipit-gitlab--take-async-answer (status on-answer on-failure)
+  "Hand the answer in this buffer to ON-ANSWER, or its failure to ON-FAILURE.
+STATUS is the status that url.el gives.  The buffer is killed."
+  (let ((response (current-buffer)))
+    (unwind-protect
+        (let ((failure (plist-get status :error))
+              (code (shipit-gitlab--async-status)))
+          (cond
+           (failure (funcall on-failure (shipit--request-failure-text failure)))
+           ((not (and code (<= 200 code 299)))
+            (funcall on-failure (format "HTTP %s" code)))
+           (t (let ((headers (shipit-gitlab--async-headers)))
+                (funcall on-answer (shipit-gitlab--async-json) headers)))))
+      (kill-buffer response))))
+
+(defun shipit-gitlab--api-get-async (config path on-answer on-failure)
+  "Ask GitLab with CONFIG for PATH in the background.
+ON-ANSWER gets the JSON body and the headers, an alist with lowercase
+names.  ON-FAILURE gets the failure as text, such as \"HTTP 502\"."
+  (let* ((url (shipit-gitlab--build-url config path))
+         (auth (shipit-gitlab--auth-header config))
+         (url-request-method "GET")
+         (url-request-extra-headers
+          (append (when auth (list auth))
+                  '(("Content-Type" . "application/json")))))
+    (shipit--debug-log "GitLab API async: GET %s (auth=%s)" url (if auth "yes" "NO"))
+    (url-retrieve url
+                  (lambda (status)
+                    (shipit-gitlab--take-async-answer status on-answer on-failure))
+                  nil t)))
+
+(defun shipit-gitlab--total (headers)
+  "The number of items in all that HEADERS of a list tell, or nil.
+GitLab leaves the total out for a list of more than 10000."
+  (let ((total (cdr (assoc "x-total" headers))))
+    (when (and total (string-match-p "\\`[0-9]+\\'" total))
+      (string-to-number total))))
+
+(defun shipit-gitlab--search-page-async (config path normalize callback)
+  "Ask GitLab with CONFIG for the page of a list at PATH in the background.
+NORMALIZE turns each item into the form of shipit.  CALLBACK gets the
+page, as `shipit--search-page' or `shipit--search-page-failure' gives it."
+  (shipit-gitlab--api-get-async
+   config path
+   (lambda (body headers)
+     (funcall callback (shipit--search-page (mapcar normalize (append body nil))
+                                            (shipit-gitlab--total headers))))
+   (lambda (failure)
+     (funcall callback (shipit--search-page-failure failure)))))
+
 (provide 'shipit-gitlab-http)
 ;;; shipit-gitlab-http.el ends here

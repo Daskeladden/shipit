@@ -29,6 +29,7 @@
 
 (require 'cl-lib)
 (require 'json)
+(require 'seq)
 (require 'subr-x)
 (require 'url-parse)
 (require 'url-http)
@@ -52,6 +53,18 @@ In step with `shipit-test-http-requests'.")
 
 (defvar shipit-test-http--unanswered nil
   "The addresses asked for that no answer covered, newest first.")
+
+(defvar shipit-test-http-address nil
+  "The address of the request that is answered now.
+A function that gives a status, a body or headers reads it, so that one
+pattern can answer each page of a list.")
+
+(defvar shipit-test-http-hold nil
+  "Non-nil when a request that does not wait gets its answer only later.
+Such a request is held until `shipit-test-http-release'.")
+
+(defvar shipit-test-http--held nil
+  "The requests held, oldest first, as (ADDRESS RESPONSE CALLBACK CBARGS).")
 
 (defun shipit-test-http--address (url)
   "URL as a string, whether url.el was given a string or a parsed one."
@@ -130,6 +143,7 @@ It asks for the body only when that changed, and gets 304 Not Modified."
 (defun shipit-test-http--answer (answers url)
   "The response ANSWERS give to a request of URL, which is recorded."
   (let* ((address (shipit-test-http--address url))
+         (shipit-test-http-address address)
          (answer (shipit-test-http--find answers address))
          (headers (shipit-test-http--headers-for (nth 3 answer))))
     (shipit-test-http--record address)
@@ -145,13 +159,42 @@ It asks for the body only when that changed, and gets 304 Not Modified."
     (when (>= code 400)
       (list :error (list 'error 'http code)))))
 
+(defun shipit-test-http--deliver (response callback cbargs)
+  "Call CALLBACK with CBARGS in RESPONSE, as url.el does when it arrived."
+  (with-current-buffer response
+    (apply callback (shipit-test-http--status response) cbargs)))
+
 (defun shipit-test-http--retrieve (answers)
-  "A stand-in for `url-retrieve' that answers from ANSWERS at once."
+  "A stand-in for `url-retrieve' that answers from ANSWERS.
+It answers at once, or holds the answer when `shipit-test-http-hold'."
   (lambda (url callback &optional cbargs &rest _)
-    (let ((buffer (shipit-test-http--answer answers url)))
-      (with-current-buffer buffer
-        (apply callback (shipit-test-http--status buffer) cbargs))
-      buffer)))
+    (let ((response (shipit-test-http--answer answers url)))
+      (if shipit-test-http-hold
+          (setq shipit-test-http--held
+                (append shipit-test-http--held
+                        (list (list (shipit-test-http--address url)
+                                    response callback cbargs))))
+        (shipit-test-http--deliver response callback cbargs))
+      response)))
+
+(defun shipit-test-http-held-addresses ()
+  "The addresses of the requests that wait for their answer, oldest first."
+  (mapcar #'car shipit-test-http--held))
+
+(defun shipit-test-http-release (&optional pattern)
+  "Give the held requests whose address matches PATTERN their answer.
+Without PATTERN each held request gets it, oldest first.  A request
+whose response buffer the code killed, as it does to drop a request,
+gets none, as with url.el."
+  (let ((released (seq-filter (lambda (held)
+                                (or (null pattern)
+                                    (string-match-p pattern (car held))))
+                              shipit-test-http--held)))
+    (setq shipit-test-http--held
+          (seq-difference shipit-test-http--held released #'eq))
+    (dolist (held released)
+      (when (buffer-live-p (nth 1 held))
+        (shipit-test-http--deliver (nth 1 held) (nth 2 held) (nth 3 held))))))
 
 (defun shipit-test-http--check-answered ()
   "Signal when a request went unanswered, naming each address."
@@ -168,9 +211,18 @@ The responses are killed first, so that they do not fail the next form."
       (error "shipit-test-http: %d response buffers left alive after %s"
              alive (string-join (mapcar #'cadr shipit-test-http-requests) ", ")))))
 
+(defun shipit-test-http--check-released ()
+  "Signal when a request still waits for its answer, naming each address."
+  (let ((held (shipit-test-http-held-addresses)))
+    (setq shipit-test-http--held nil)
+    (when held
+      (error "shipit-test-http: no answer given to %s"
+             (string-join held ", ")))))
+
 (defun shipit-test-http--check ()
   "Signal when a request went unanswered or a response was left alive."
   (shipit-test-http--check-answered)
+  (shipit-test-http--check-released)
   (shipit-test-http--check-killed))
 
 (defmacro shipit-test-http-answering (answers &rest body)
@@ -186,13 +238,17 @@ answer, or a function of no arguments that gives it.  A request whose
 If-None-Match is the ETag of those headers gets 304 Not Modified and no
 body, as GitHub answers when nothing changed.  A request none covers
 signals, and fails the form when BODY ends.  A response that is still
-alive when BODY ends fails the form too."
+alive when BODY ends fails the form too.
+While `shipit-test-http-hold' is non-nil, a request that does not wait
+gets its answer at `shipit-test-http-release'.  One that got none when
+BODY ends fails the form."
   (declare (indent 1))
   (let ((table (make-symbol "answers")))
     `(let ((shipit-test-http-requests nil)
            (shipit-test-http-bodies nil)
            (shipit-test-http-headers nil)
            (shipit-test-http--unanswered nil)
+           (shipit-test-http--held nil)
            (,table ,answers))
        ;; A form that signalled left its responses: they are not of this one.
        (shipit-test-http--kill-responses)
@@ -212,18 +268,22 @@ alive when BODY ends fails the form too."
 
 (defun shipit-test-http--answer-curl (answers destination args)
   "Answer the request of curl with ARGS from ANSWERS, into the buffer DESTINATION.
-A request that asks with -D for the headers gets a status line there.
+A request that asks with -D for the headers gets a status line and the
+headers of the answer there.
 Curl exits with 0 for each status, as it does without --fail."
   (let* ((url-request-method (shipit-test-http--curl-option args "-X"))
          (url-request-data (shipit-test-http--curl-option args "-d"))
          (url-request-extra-headers nil)
          (address (car (last args)))
+         (shipit-test-http-address address)
          (answer (shipit-test-http--find answers address))
          (headers-file (shipit-test-http--curl-option args "-D")))
     (shipit-test-http--record address)
     (when headers-file
       (with-temp-file headers-file
-        (insert (format "HTTP/1.1 %d\n" (shipit-test-http--status-for (nth 1 answer))))))
+        (insert (format "HTTP/1.1 %d\n" (shipit-test-http--status-for (nth 1 answer))))
+        (dolist (header (shipit-test-http--headers-for (nth 3 answer)))
+          (insert (format "%s: %s\n" (car header) (cdr header))))))
     (with-current-buffer destination
       (insert (decode-coding-string
                (shipit-test-http--body (shipit-test-http--body-for (nth 2 answer)))

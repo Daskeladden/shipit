@@ -746,22 +746,23 @@ THEN both Child Work Items and Linked Work Items sections appear
                                         (summary . "Blocked task")
                                         (status . "Open")
                                         (assignee . "Bob")))))))
-      (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
-                 (lambda (_config) nil)))
-      (magit-insert-section (shipit-issue)
-        (shipit-issue--insert-metadata-section "test/repo" issue-data)
-        (shipit-issue--insert-child-items-section "test/repo" issue-data)
-        (let ((issuelinks (cdr (assq 'issuelinks issue-data))))
-          (shipit-issue--insert-linked-items-section issuelinks columns)))
-      (let ((buf-text (buffer-string)))
-        ;; THEN Child section exists (placeholder)
-        (should (string-match-p "Child Work Items" buf-text))
-        ;; THEN Linked section exists with item
-        (should (string-match-p "Linked Work Items" buf-text))
-        (should (string-match-p "PRJ-20" buf-text))
-        ;; THEN metadata section does NOT contain issuelink keys
-        ;; (issuelinks moved to their own section)
-        )))))
+      (shipit-test-http-answering (list shipit-test-http-not-starred)
+        (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
+                   (lambda (_config) nil)))
+          (magit-insert-section (shipit-issue)
+            (shipit-issue--insert-metadata-section "test/repo" issue-data)
+            (shipit-issue--insert-child-items-section "test/repo" issue-data)
+            (let ((issuelinks (cdr (assq 'issuelinks issue-data))))
+              (shipit-issue--insert-linked-items-section issuelinks columns)))
+          (let ((buf-text (buffer-string)))
+            ;; THEN Child section exists (placeholder)
+            (should (string-match-p "Child Work Items" buf-text))
+            ;; THEN Linked section exists with item
+            (should (string-match-p "Linked Work Items" buf-text))
+            (should (string-match-p "PRJ-20" buf-text))
+            ;; THEN metadata section does NOT contain issuelink keys
+            ;; (issuelinks moved to their own section)
+            ))))))
 
 (ert-deftest test-shipit-issue-metadata-section-renders-labels ()
   "GIVEN a Jira issue whose normalized data carries labels
@@ -782,15 +783,16 @@ THEN a Labels line lists each label name."
                         (comments . 0)
                         (created_at . "2024-01-15T10:30:00Z")
                         (updated_at . "2024-01-20T14:00:00Z"))))
-      (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
-                 (lambda (_config) nil)))
-        (magit-insert-section (shipit-issue)
-          (shipit-issue--insert-metadata-section "test/repo" issue-data))
-        (let ((buf-text (buffer-string)))
-          ;; THEN the Labels line is present with both names
-          (should (string-match-p "Labels:" buf-text))
-          (should (string-match-p "backend" buf-text))
-          (should (string-match-p "urgent" buf-text)))))))
+      (shipit-test-http-answering (list shipit-test-http-not-starred)
+        (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
+                   (lambda (_config) nil)))
+          (magit-insert-section (shipit-issue)
+            (shipit-issue--insert-metadata-section "test/repo" issue-data))
+          (let ((buf-text (buffer-string)))
+            ;; THEN the Labels line is present with both names
+            (should (string-match-p "Labels:" buf-text))
+            (should (string-match-p "backend" buf-text))
+            (should (string-match-p "urgent" buf-text))))))))
 
 (defun test-shipit-issue--metadata-text (issue-data)
   "Return the metadata section of ISSUE-DATA as text.
@@ -801,11 +803,12 @@ this is about the page, not about one tracker."
     (let ((magit-insert-section--parent nil)
           (shipit-issue-backends '((tracker :name "Tracker")))
           (shipit-issue-buffer-repo "test/repo"))
-      (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
-                 (lambda (_config) nil)))
-        (magit-insert-section (shipit-issue)
-          (shipit-issue--insert-metadata-section "test/repo" issue-data))
-        (buffer-string)))))
+      (shipit-test-http-answering (list shipit-test-http-not-starred)
+        (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
+                   (lambda (_config) nil)))
+          (magit-insert-section (shipit-issue)
+            (shipit-issue--insert-metadata-section "test/repo" issue-data))
+          (buffer-string))))))
 
 (defconst test-shipit-issue--plain-issue
   '((id . "PRJ-9") (number . "PRJ-9") (title . "Plain") (state . "Open")
@@ -848,16 +851,17 @@ is tagged for editing (consistent with how Assignee always renders)."
                         (comments . 0)
                         (created_at . "2024-01-15T10:30:00Z")
                         (updated_at . "2024-01-20T14:00:00Z"))))
-      (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
-                 (lambda (_config) nil)))
-        (magit-insert-section (shipit-issue)
-          (shipit-issue--insert-metadata-section "test/repo" issue-data))
-        ;; THEN the Labels line is present even with no labels
-        (should (string-match-p "Labels:[^\n]*None" (buffer-string)))
-        ;; AND the line carries the editable text property
-        (goto-char (point-min))
-        (should (re-search-forward "Labels:" nil t))
-        (should (get-text-property (match-beginning 0) 'shipit-issue-labels))))))
+      (shipit-test-http-answering (list shipit-test-http-not-starred)
+        (cl-letf (((symbol-function 'shipit-pr-github--get-repo-subscription)
+                   (lambda (_config) nil)))
+          (magit-insert-section (shipit-issue)
+            (shipit-issue--insert-metadata-section "test/repo" issue-data))
+          ;; THEN the Labels line is present even with no labels
+          (should (string-match-p "Labels:[^\n]*None" (buffer-string)))
+          ;; AND the line carries the editable text property
+          (goto-char (point-min))
+          (should (re-search-forward "Labels:" nil t))
+          (should (get-text-property (match-beginning 0) 'shipit-issue-labels)))))))
 
 (ert-deftest test-shipit-issue--change-labels-dispatches ()
   "GIVEN a backend exposing :fetch-labels and :update-labels

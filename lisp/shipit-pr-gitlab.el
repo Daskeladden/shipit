@@ -263,14 +263,18 @@ on when it merged."
       `((number . ,(cdr (assq 'iid merged)))
         (sha . ,(cdr (assq 'sha merged)))))))
 
-(defun shipit-pr-gitlab--search (config args)
-  "Search MRs using CONFIG with transient ARGS.
+(defun shipit-pr-gitlab--search-plist (args)
+  "ARGS of a search as a plist.
 ARGS may be raw transient args (list of strings like \"--state=open\")
 or a plist (:state \"open\" ...).  Raw transient args are converted
 to plist via `shipit--transient-args-to-search-plist'."
-  (let* ((search-args (if (and args (stringp (car args)))
-                          (shipit--transient-args-to-search-plist args)
-                        args))
+  (if (and args (stringp (car args)))
+      (shipit--transient-args-to-search-plist args)
+    args))
+
+(defun shipit-pr-gitlab--search (config args)
+  "Search MRs using CONFIG with transient ARGS, or a plist of them."
+  (let* ((search-args (shipit-pr-gitlab--search-plist args))
          (project (shipit-gitlab--project-path config))
          (query-params (shipit-pr-gitlab--build-search-params search-args))
          (path (format "/projects/%s/merge_requests?%s" project query-params))
@@ -279,9 +283,10 @@ to plist via `shipit--transient-args-to-search-plist'."
     (when (and data (or (vectorp data) (listp data)))
       (mapcar #'shipit-pr-gitlab--normalize-mr (append data nil)))))
 
-(defun shipit-pr-gitlab--build-search-params (args)
+(defun shipit-pr-gitlab--build-search-params (args &optional per-page)
   "Build URL query params from search ARGS plist.
-Recognized keys: :search, :state, :author, :label, :draft."
+Recognized keys: :search, :state, :author, :label, :draft.
+PER-PAGE is how many MRs a page has, 100 when it is nil."
   (let ((params '()))
     (when-let* ((search (plist-get args :search)))
       (push (format "search=%s" (url-hexify-string search)) params))
@@ -297,8 +302,21 @@ Recognized keys: :search, :state, :author, :label, :draft."
       (push (format "labels=%s" (url-hexify-string label)) params))
     (when (plist-get args :draft)
       (push "wip=yes" params))
-    (push "per_page=100" params)
+    (push (format "per_page=%d" (or per-page 100)) params)
     (string-join (nreverse params) "&")))
+
+(defun shipit-pr-gitlab--search-page-async (config args page per-page callback)
+  "Ask in the background for a page of the MRs that ARGS search for.
+It is page PAGE of PER-PAGE MRs of the project of CONFIG.  CALLBACK
+gets the page, as `shipit-gitlab--search-page-async' gives it."
+  (shipit-gitlab--search-page-async
+   config
+   (format "/projects/%s/merge_requests?%s&page=%d"
+           (shipit-gitlab--project-path config)
+           (shipit-pr-gitlab--build-search-params
+            (shipit-pr-gitlab--search-plist args) per-page)
+           page)
+   #'shipit-pr-gitlab--normalize-mr callback))
 
 (defun shipit-pr-gitlab--strip-github-query-syntax (query)
   "Strip GitHub-specific search syntax from QUERY, returning the plain term.
@@ -1929,6 +1947,7 @@ deduplicating by path. Returns normalized repo alists."
        :fetch-pr #'shipit-pr-gitlab--fetch-pr
        :fetch-merged-pr-for-branch #'shipit-pr-gitlab--fetch-merged-pr-for-branch
        :search #'shipit-pr-gitlab--search
+       :search-page-async #'shipit-pr-gitlab--search-page-async
        :search-raw #'shipit-pr-gitlab--search-raw
        :create-pr #'shipit-pr-gitlab--create-pr
        :merge-pr #'shipit-pr-gitlab--merge-pr

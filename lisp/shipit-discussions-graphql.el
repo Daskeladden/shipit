@@ -252,6 +252,7 @@ Converts GraphQL THUMBS_UP to REST +1 format."
 (defconst shipit-discussion--search-query
   "query($query: String!, $first: Int!) {
   search(query: $query, type: DISCUSSION, first: $first) {
+    discussionCount
     nodes {
       ... on Discussion {
         id number title
@@ -464,13 +465,16 @@ Calls CALLBACK with the normalized discussion alist."
       (when (string-prefix-p "--limit=" arg)
         (setq limit (string-to-number (substring arg 8)))))))
 
+(defun shipit-discussion--search-variables (repo args)
+  "The variables of the search for the discussions in REPO that ARGS ask for."
+  `((query . ,(shipit-discussion--build-search-query args repo))
+    (first . ,(min 50 (shipit-discussion--extract-limit-from-args args)))))
+
 (defun shipit-discussion--search (repo args)
   "Search discussions in REPO with transient ARGS.
 Returns a list of normalized discussion alists."
-  (let* ((query-str (shipit-discussion--build-search-query args repo))
-         (limit (shipit-discussion--extract-limit-from-args args))
-         (variables `((query . ,query-str)
-                      (first . ,(min 50 limit))))
+  (let* ((variables (shipit-discussion--search-variables repo args))
+         (query-str (cdr (assq 'query variables)))
          (result (shipit--graphql-query
                   shipit-discussion--search-query variables))
          (search-data (cdr (assq 'search result)))
@@ -479,6 +483,29 @@ Returns a list of normalized discussion alists."
                        query-str (length nodes))
     (when (and nodes (> (length nodes) 0))
       (mapcar #'shipit-discussion--normalize (append nodes nil)))))
+
+(defun shipit-discussion--search-answer-page (answer)
+  "The page of discussions in ANSWER, the answer to their search.
+An answer without the search gives the first error GitHub names."
+  (let ((search (cdr (assq 'search (cdr (assq 'data answer)))))
+        (errors (cdr (assq 'errors answer))))
+    (if (and (null search) errors)
+        (list :error (or (cdr (assq 'message (car errors))) "GraphQL error"))
+      (shipit--search-page
+       (mapcar #'shipit-discussion--normalize (append (cdr (assq 'nodes search)) nil))
+       (cdr (assq 'discussionCount search))))))
+
+(defun shipit-discussion--search-page-async (repo args callback)
+  "Ask in the background for the discussions in REPO that ARGS search for.
+CALLBACK gets the first page, as `shipit--search-page' or
+`shipit--search-page-failure' gives it."
+  (shipit--graphql-request
+   shipit-discussion--search-query
+   (shipit-discussion--search-variables repo args)
+   (lambda (answer)
+     (funcall callback (shipit-discussion--search-answer-page answer)))
+   (lambda (failure)
+     (funcall callback (shipit--search-page-failure failure)))))
 
 (defun shipit-discussion--fetch-categories (repo)
   "Fetch discussion categories for REPO.  Cached."

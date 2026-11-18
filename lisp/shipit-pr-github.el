@@ -76,6 +76,17 @@ plist crashed the builders, and the crash was swallowed upstream."
          (per-page (min 50 limit)))
     (shipit--search-prs-with-encoded-query repo query-parts per-page limit sort-by)))
 
+;; The repo buffer asks for the pages of its lists in the background, so
+;; that it shows the README before GitHub answers its searches.
+(defun shipit-pr-github--search-page-async (config args page per-page callback)
+  "Ask in the background for a page of the PRs that ARGS search for.
+It is page PAGE of PER-PAGE PRs of the repository of CONFIG.  CALLBACK
+gets the page, as `shipit--search-page-async' gives it."
+  (let ((args (shipit-pr-github--normalize-search-args args)))
+    (shipit--search-page-async
+     (shipit--build-advanced-search-query args (plist-get config :repo))
+     (shipit--extract-sort-from-args args) page per-page callback)))
+
 (defun shipit-pr-github--create-pr (config title body base head draft)
   "Create a new PR in REPO specified by CONFIG.
 TITLE, BODY, BASE branch, HEAD branch.  When DRAFT is non-nil the PR
@@ -2603,6 +2614,7 @@ data should pass it: this runs on every render of the section."
        :fetch-pr #'shipit-pr-github--fetch-pr
        :fetch-pr-async #'shipit-pr-github--fetch-pr-async
        :search #'shipit-pr-github--search
+       :search-page-async #'shipit-pr-github--search-page-async
        :create-pr #'shipit-pr-github--create-pr
        :merge-pr #'shipit-pr-github--merge-pr
        :fetch-merge-result #'shipit-pr-github--fetch-merge-result

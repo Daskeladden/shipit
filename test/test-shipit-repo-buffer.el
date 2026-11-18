@@ -930,42 +930,6 @@ THEN the icon function is called with 'discussion' (not 'comment')."
             (shipit-repo-buffer--insert-discussions-section discussions "test/repo"))
           (should (member "discussion" icon-names)))))))
 
-(ert-deftest test-repo-buffer-sections-hidden-when-features-disabled ()
-  "GIVEN shipit-issues-enabled and shipit-discussions-enabled are nil
-WHEN refreshing the repo buffer
-THEN no issues or discussions sections are present."
-  (require 'shipit-repo-buffer)
-  (let ((shipit-issues-enabled nil)
-        (shipit-discussions-enabled nil)
-        (shipit-pr-backend 'github)
-        (shipit-pr-backend-config nil))
-    (cl-letf (((symbol-function 'shipit-repo-buffer--fetch-repo-data)
-               (lambda (_repo)
-                 (list :data '((full_name . "test/repo")
-                               (owner . ((login . "test")))
-                               (html_url . "https://github.com/test/repo"))
-                       :readme nil :languages nil)))
-              ((symbol-function 'shipit-repo-buffer--fetch-open-prs)
-               (lambda (_repo) '(((number . 1) (title . "PR")))))
-              ((symbol-function 'shipit-repo-buffer--fetch-closed-prs)
-               (lambda (_repo) nil))
-              ((symbol-function 'shipit-repo-buffer--fetch-open-issues)
-               (lambda (_repo) '(((number . 2) (title . "Issue")))))
-              ((symbol-function 'shipit-repo-buffer--fetch-closed-issues)
-               (lambda (_repo) nil))
-              ((symbol-function 'shipit-repo-buffer--fetch-discussions)
-               (lambda (_repo) '(((number . 3) (title . "Discussion")))))
-              ((symbol-function 'shipit-pr-github--get-repo-subscription)
-               (lambda (_config) nil)))
-      (with-temp-buffer
-        (shipit-repo-mode)
-        (setq shipit-repo-buffer-repo "test/repo")
-        (shipit-test-http-answering (list shipit-test-http-not-starred)
-          (shipit-repo-buffer-refresh))
-        (let ((content (buffer-string)))
-          (should-not (string-match-p "Issues" content))
-          (should-not (string-match-p "Discussions" content)))))))
-
 (ert-deftest test-repo-buffer-ret-on-pr-item-dispatches ()
   "GIVEN a PR item with text property shipit-repo-pr-number
 WHEN invoking RET on the item
@@ -1222,26 +1186,6 @@ THEN the new limit is current-count + 50 (not the default)."
       ;; current-count=2 + count=50 = 52
       (should (member "--limit=52" search-args)))))
 
-(ert-deftest test-repo-buffer-load-more-preserves-filter ()
-  "GIVEN an active title filter 'bug'
-WHEN loading more closed PRs
-THEN the filter remains active after refresh."
-  (require 'shipit-repo-buffer)
-  (let ((refresh-called nil))
-    (cl-letf (((symbol-function 'shipit-repo-buffer--fetch-more) #'ignore)
-              ((symbol-function 'shipit-repo-buffer--refresh-filtered-section)
-               (lambda () (setq refresh-called t))))
-      (with-temp-buffer
-        (shipit-repo-mode)
-        (setq shipit-repo-buffer--filter-text "bug")
-        (setq shipit-repo-buffer-closed-prs '(((number . 1) (title . "Fix bug"))))
-        (setq shipit-repo-buffer-closed-prs-has-more t)
-        (shipit-repo-buffer--load-more 'prs)
-        (should refresh-called)
-        (should (equal shipit-repo-buffer--filter-text "bug"))))))
-
-;;; Filter tests
-
 (ert-deftest test-repo-buffer-filter-by-title ()
   "GIVEN items with various titles
 WHEN filtering by title text 'bug'
@@ -1368,38 +1312,6 @@ THEN a user-error is signaled."
     (goto-char (point-min))
     (should-error (shipit-repo-buffer-filter) :type 'user-error)))
 
-(ert-deftest test-repo-buffer-load-more-preserves-cursor-position ()
-  "GIVEN point at position 50 in the buffer
-WHEN loading more items (refresh moves point to beginning)
-THEN point is restored to the original position."
-  (require 'shipit-repo-buffer)
-  (with-temp-buffer
-    (magit-section-mode)
-    (let ((inhibit-read-only t))
-      (magit-insert-section (repo-root)
-        (magit-insert-heading "Test")
-        (shipit-repo-buffer--insert-prs-section
-         nil
-         `(((number . 1) (title . "PR one"))
-           ((number . 2) (title . "PR two"))
-           ((number . 3) (title . "PR three")))
-         t "test/repo")))
-    ;; Move to the 3rd PR item
-    (goto-char (point-min))
-    (text-property-search-forward 'shipit-repo-pr-number)
-    (text-property-search-forward 'shipit-repo-pr-number)
-    (text-property-search-forward 'shipit-repo-pr-number)
-    (let ((pos-before (point)))
-      (cl-letf (((symbol-function 'shipit-repo-buffer--fetch-more) #'ignore)
-                ((symbol-function 'shipit-repo-buffer--refresh-filtered-section)
-                 (lambda ()
-                   ;; Simulate what the real refresh does: move point to
-                   ;; beginning of section (save-excursion collapses to
-                   ;; content-pos after delete+reinsert)
-                   (goto-char (point-min)))))
-        (shipit-repo-buffer--load-more 'prs)
-        (should (= (point) pos-before))))))
-
 (ert-deftest test-repo-buffer-filter-mine-empty-shows-subsection-headers ()
   "GIVEN issues section with open and closed issues
 WHEN filtering by 'mine' and no items match
@@ -1426,18 +1338,11 @@ THEN Open (0) and Closed (0) subsection headers still appear."
       ;; Point is inside issues section
       (goto-char (point-min))
       (search-forward "placeholder")
-      (cl-letf (((symbol-function 'shipit--find-section-by-type)
-                 (lambda (type)
-                   (when (eq type 'repo-issues)
-                     (let ((section (magit-current-section)))
-                       (while (and section
-                                   (not (eq (oref section type) 'repo-issues)))
-                         (setq section (oref section parent)))
-                       section)))))
-        (shipit-repo-buffer--refresh-issues-section-filtered)
-        (let ((text (buffer-string)))
-          (should (string-match-p "Open (0)" text))
-          (should (string-match-p "Closed (0)" text)))))))
+      (let ((shipit-repo-buffer--filter-section-type 'repo-issues))
+        (shipit-repo-buffer--refresh-filtered-section))
+      (let ((text (buffer-string)))
+        (should (string-match-p "Open (0)" text))
+        (should (string-match-p "Closed (0)" text))))))
 
 ;;; Discussion filter tests
 

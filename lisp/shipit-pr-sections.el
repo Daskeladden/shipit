@@ -2532,13 +2532,33 @@ The :raw-date contains the ISO timestamp for property storage."
           :date date-str
           :raw-date author-date)))
 
+(defvar-local shipit--commit-row-min-width 80
+  "The fewest columns that a commit row of the current buffer fills.
+A buffer that often stands in a narrow window sets it lower.")
+
+(defconst shipit--commit-title-min-width 10
+  "The fewest columns that the title of a commit row gets.")
+
 (defun shipit--commit-row-width ()
-  "Return the width that a commit row of the current buffer fills, 80 at least.
+  "Return the width that a commit row of the current buffer fills.
 It is the width of the window that shows the buffer, for right
-alignment.  The selected window can be another one, such as an undo
-tree that redraws the buffer."
-  (max 80 (window-width (or (get-buffer-window (current-buffer) t)
-                            (selected-window)))))
+alignment, and `shipit--commit-row-min-width' at least.  The selected
+window can be another one, such as an undo tree that redraws the
+buffer."
+  (max shipit--commit-row-min-width
+       (window-width (or (get-buffer-window (current-buffer) t)
+                         (selected-window)))))
+
+(defun shipit--commit-row-metadata (author-col date-col room)
+  "Return the metadata of a commit row: AUTHOR-COL, a bar, then DATE-COL.
+ROOM is the width that the title and the metadata share.  When the
+author would leave the title fewer columns than
+`shipit--commit-title-min-width', the metadata is DATE-COL alone, so
+the row fits a narrow window."
+  (let ((full (format "%s | %s" author-col date-col)))
+    (if (>= (- room (string-width full)) shipit--commit-title-min-width)
+        full
+      date-col)))
 
 (defun shipit--insert-processed-commit-section (commit-data repo pr-number &optional indent)
   "Insert a processed commit as a magit section (UI part).
@@ -2597,9 +2617,7 @@ window."
                  (date-col (propertize (concat (make-string date-pad ?\s) date-text)
                                        'font-lock-face 'shipit-timestamp-face
                                        'shipit-raw-timestamp raw-date))
-                 (metadata-str (format "%s | %s" author-col date-col))
                  (window-width (shipit--commit-row-width))
-                 (metadata-width (string-width metadata-str))
                  (magit-indicator-width 3)  ; Space for "..." or similar magit section indicator
                  (indent-str (make-string (or indent 0) ?\s))
                  (sha-part (concat (propertize short-sha 'font-lock-face 'magit-hash) " "))
@@ -2617,8 +2635,13 @@ window."
                  ;; come the caller's indent, one space and the unread mark.
                  (fixed-left (+ (or indent 0) 1 2
                                 (string-width sha-part) (string-width avatar-part)))
-                 (title-width (max 10 (- window-width fixed-left 1
-                                         metadata-width magit-indicator-width)))
+                 (metadata-str (shipit--commit-row-metadata
+                                author-col date-col
+                                (- window-width fixed-left 1 magit-indicator-width)))
+                 (metadata-width (string-width metadata-str))
+                 (title-width (max shipit--commit-title-min-width
+                                   (- window-width fixed-left 1
+                                      metadata-width magit-indicator-width)))
                  (title-str (truncate-string-to-width first-line title-width))
                  (left-part (concat sha-part avatar-part
                                     (propertize title-str 'font-lock-face

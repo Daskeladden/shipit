@@ -453,14 +453,21 @@ the way a user types the answer."
 ;;;; The next step
 
 (defun test-stack-menus--line-under-base (buffer)
-  "Return the line of BUFFER right under the Base: line."
+  "Return the line of BUFFER right under the Base: line.
+A step too long for the window goes on in the lines below it, which
+start under its first word.  They are joined to it with one space each."
   (with-current-buffer buffer
     (save-excursion
       (goto-char (point-min))
       (let ((case-fold-search nil))
         (re-search-forward test-stack-menus--base-line))
       (forward-line 1)
-      (buffer-substring-no-properties (point) (line-end-position)))))
+      (let ((line (buffer-substring-no-properties (point) (line-end-position))))
+        (forward-line 1)
+        (while (looking-at " \\{12\\}\\([^ ].*\\)$")
+          (setq line (concat line " " (match-string-no-properties 1)))
+          (forward-line 1))
+        line))))
 
 (defun test-stack-menus--next-step-shown-p (buffer)
   "Return non-nil when BUFFER has a line that names the next step."
@@ -1168,9 +1175,7 @@ git processes started."
     (cons (reverse test-stack-menus--forge-asks) runs)))
 
 (defmacro test-stack-menus--in-a-wide-frame (&rest body)
-  "Run BODY in a frame 160 columns wide with one window.
-The commit rows never get narrower than 80 columns, so the widths in
-these scenarios stay above that."
+  "Run BODY in a frame 160 columns wide with one window."
   (declare (indent 0))
   (let ((width (make-symbol "width"))
         (height (make-symbol "height")))
@@ -1354,6 +1359,216 @@ room for a fold mark."
         (should (test-stack-menus--rows-fit-p preview))
         (should (string-match-p "writer: emit the body"
                                 (test-stack-menus--cursor-line window)))))))
+
+;;; A narrow window
+
+(defconst test-stack-menus--keys
+  '(("RET" . "open layer, set base") ("s" . "divide or join")
+    ("b" . "branch") ("r" . "rebase") ("P" . "push")
+    ("R" . "register stack") ("v" . "draw on canvas")
+    ("g" . "refresh") ("q" . "quit") ("$" . "process log"))
+  "The ten keys that the legend of the preview shows, each with its label.")
+
+(defun test-stack-menus--narrow (preview)
+  "Show PREVIEW alone, and open a window beside it that leaves it 58 columns.
+A moment passes, so the preview fits its window.  Return the window of
+PREVIEW."
+  (let ((window (test-stack-menus--show preview)))
+    (test-stack-menus--open-beside 59)
+    (test-stack-menus--pause)
+    (should (= 58 (window-width window)))
+    window))
+
+(defun test-stack-menus--widen (window)
+  "Close every window but WINDOW, and let a moment pass."
+  (test-stack-menus--close-beside window)
+  (test-stack-menus--pause)
+  (should (= 160 (window-width window))))
+
+(defun test-stack-menus--lines (preview)
+  "Return each line of PREVIEW, as text."
+  (with-current-buffer preview
+    (split-string (buffer-substring-no-properties (point-min) (point-max)) "\n")))
+
+(defun test-stack-menus--too-wide (preview)
+  "Return each line of PREVIEW that is wider than its window.
+The last column of a window holds the mark of a cut line, so a line
+fits when it leaves that column free."
+  (let ((width (window-width (get-buffer-window preview t))))
+    (seq-filter (lambda (line) (>= (string-width line) width))
+                (test-stack-menus--lines preview))))
+
+(defun test-stack-menus--key-shown-p (lines key)
+  "Return non-nil when one of LINES shows KEY, a key and its label."
+  (let ((regexp (concat "\\(?:^\\| \\)" (regexp-quote (car key))
+                        " +" (regexp-quote (cdr key)))))
+    (seq-some (lambda (line) (string-match-p regexp line)) lines)))
+
+(defun test-stack-menus--labels-beside (preview label)
+  "Return the labels of keys on the line of PREVIEW that shows LABEL.
+They are in the order of `test-stack-menus--keys'."
+  (let ((line (seq-find (lambda (line) (string-match-p (regexp-quote label) line))
+                        (test-stack-menus--lines preview))))
+    (should line)
+    (seq-filter (lambda (other) (string-match-p (regexp-quote other) line))
+                (mapcar #'cdr test-stack-menus--keys))))
+
+(defun test-stack-menus--next-step-lines (preview)
+  "Return the lines of PREVIEW that say the next step.
+The first starts with Next:, and each line after it starts under the
+first word of the step."
+  (let ((lines (seq-drop-while (lambda (line) (not (string-prefix-p "  Next:" line)))
+                               (test-stack-menus--lines preview))))
+    (should lines)
+    (cons (car lines)
+          (seq-take-while (lambda (line) (string-match-p "\\` \\{12\\}[^ ]" line))
+                          (cdr lines)))))
+
+(defun test-stack-menus--commit-rows (preview)
+  "Return each commit row of PREVIEW, as text.
+A commit row starts with its short id."
+  (seq-filter (lambda (line) (string-match-p "\\` +[0-9a-f]\\{7\\} " line))
+              (test-stack-menus--lines preview)))
+
+(defun test-stack-menus--row-dates (preview)
+  "Return the short id and the date of each commit row of PREVIEW.
+The date is the text after the bar that ends the author."
+  (mapcar (lambda (row)
+            (should (string-match "\\` +\\([0-9a-f]\\{7\\}\\) .* | +\\(.+?\\) *\\'" row))
+            (cons (match-string 1 row) (match-string 2 row)))
+          (test-stack-menus--commit-rows preview)))
+
+(ert-deftest test-shipit-stack-menus-a-narrow-preview-cuts-no-line ()
+  ;; GIVEN the preview of a stack, alone in a window 160 columns wide
+  ;; WHEN another window opens beside it and leaves it 58 columns, and a
+  ;;   moment passes
+  ;; THEN no line of the preview is wider than its window
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let ((preview (test-stack-menus--open-preview)))
+        (test-stack-menus--narrow preview)
+        (should-not (test-stack-menus--too-wide preview))))))
+
+(ert-deftest test-shipit-stack-menus-a-narrow-preview-puts-the-keys-in-two-blocks ()
+  ;; GIVEN the preview of a stack, alone in a window 160 columns wide
+  ;; THEN the line of "open layer, set base" also shows "branch",
+  ;;   "register stack" and "refresh": one block of four columns
+  ;; WHEN another window leaves the preview 58 columns, and a moment passes
+  ;; THEN each of the ten keys shows with its label
+  ;; AND the line of "open layer, set base" also shows "branch" and no
+  ;;   other label, and the line of "register stack" also shows "refresh"
+  ;;   and no other label: two blocks of two columns
+  ;; WHEN the other window closes, and a moment passes
+  ;; THEN the keys are one block of four columns again
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let* ((preview (test-stack-menus--open-preview))
+             (window (test-stack-menus--show preview))
+             (one-block '("open layer, set base" "branch" "register stack" "refresh")))
+        (should (equal one-block
+                       (test-stack-menus--labels-beside preview "open layer, set base")))
+        (test-stack-menus--narrow preview)
+        (let ((lines (test-stack-menus--lines preview)))
+          (dolist (key test-stack-menus--keys)
+            (should (test-stack-menus--key-shown-p lines key))))
+        (should (equal '("open layer, set base" "branch")
+                       (test-stack-menus--labels-beside preview "open layer, set base")))
+        (should (equal '("register stack" "refresh")
+                       (test-stack-menus--labels-beside preview "register stack")))
+        (test-stack-menus--widen window)
+        (should (equal one-block
+                       (test-stack-menus--labels-beside preview "open layer, set base")))))))
+
+(ert-deftest test-shipit-stack-menus-a-narrow-preview-wraps-the-next-step ()
+  ;; GIVEN the preview of a stack whose layers have no branches yet
+  ;; WHEN another window leaves the preview 58 columns, and a moment passes
+  ;; THEN the next step shows in full: "check the base and the divisions,
+  ;;   then press b c to give each layer a branch"
+  ;; AND it takes more than one line, and each of its lines fits the window
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let ((preview (test-stack-menus--open-preview)))
+        (test-stack-menus--narrow preview)
+        (let ((lines (test-stack-menus--next-step-lines preview)))
+          (should (cdr lines))
+          (should (equal (concat "Next: check the base and the divisions, then press"
+                                 " b c to give each layer a branch")
+                         (string-join (mapcar (lambda (line)
+                                                (string-join (split-string line) " "))
+                                              lines)
+                                      " ")))
+          (dolist (line lines)
+            (should (< (string-width line) 58))))))))
+
+(ert-deftest test-shipit-stack-menus-a-narrow-preview-leaves-out-the-author ()
+  ;; GIVEN the preview of a stack, alone in a window 160 columns wide
+  ;; THEN each commit row shows the author Sandbox and a date
+  ;; WHEN another window leaves the preview 58 columns, and a moment passes
+  ;; THEN each commit row fits the window, and shows its short id, the
+  ;;   start of its subject and its date, but not its author
+  ;; WHEN the other window closes, and a moment passes
+  ;; THEN each commit row shows the author Sandbox again
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let* ((preview (test-stack-menus--open-preview))
+             (window (test-stack-menus--show preview))
+             (dates (test-stack-menus--row-dates preview)))
+        (should (= 4 (length dates)))
+        (dolist (row (test-stack-menus--commit-rows preview))
+          (should (string-match-p "Sandbox" row)))
+        (test-stack-menus--narrow preview)
+        (let ((rows (test-stack-menus--commit-rows preview)))
+          (should (= 4 (length rows)))
+          (seq-mapn (lambda (row date)
+                      (should (< (string-width row) 58))
+                      (should (string-match-p (concat "\\` +" (car date)
+                                                      " .*\\(?:writer\\|parser\\): ")
+                                              row))
+                      (should (string-match-p (regexp-quote (cdr date)) row))
+                      (should-not (string-match-p "Sandbox" row)))
+                    rows dates))
+        (test-stack-menus--widen window)
+        (dolist (row (test-stack-menus--commit-rows preview))
+          (should (string-match-p "Sandbox" row)))))))
+
+(ert-deftest test-shipit-stack-menus-a-narrow-preview-puts-the-drift-below-the-row ()
+  ;; GIVEN a pushed stack whose copies on the remote were rebased onto a
+  ;;   newer base, and a preview that knows it
+  ;; WHEN another window leaves the preview 58 columns, and a moment passes
+  ;; THEN no line of the preview is wider than its window
+  ;; AND the line below the row of each layer says "behind, rebased on
+  ;;   the remote"
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let ((preview (test-stacked--open-pushed-stack)))
+        (test-stacked--rebase-the-stack-on-the-remote root)
+        (with-current-buffer preview (shipit-stacked-preview-refresh))
+        (test-stack-menus--narrow preview)
+        (should-not (test-stack-menus--too-wide preview))
+        (dolist (branch '("work-parser" "work"))
+          (let ((below (cadr (member (test-stack-menus--row preview branch)
+                                     (test-stack-menus--lines preview)))))
+            (should (string-match-p "behind, rebased on the remote" (or below "")))))))))
+
+(ert-deftest test-shipit-stack-menus-keys-one-column-too-narrow-make-two-even-blocks ()
+  ;; GIVEN the preview of a stack, alone in a window 160 columns wide
+  ;; WHEN another window leaves the preview 82 columns, one column too
+  ;;   few for the four key columns side by side, and a moment passes
+  ;; THEN the keys show in two blocks of two columns, not in three
+  ;;   columns and then one: the line of "open layer, set base" also
+  ;;   shows "branch" and no other label, and the line of "register
+  ;;   stack" also shows "refresh" and no other label
+  (shipit-sandbox-with-repo
+    (test-stack-menus--in-a-wide-frame
+      (let* ((preview (test-stack-menus--open-preview))
+             (window (test-stack-menus--show preview)))
+        (test-stack-menus--open-beside 83)
+        (test-stack-menus--pause)
+        (should (= 82 (window-width window)))
+        (should (equal '("open layer, set base" "branch")
+                       (test-stack-menus--labels-beside preview "open layer, set base")))
+        (should (equal '("register stack" "refresh")
+                       (test-stack-menus--labels-beside preview "register stack")))))))
 
 (ert-deftest test-shipit-stack-menus-s-and-undo-keep-the-checks-g-asks-again ()
   ;; GIVEN the preview of a stack whose layers have pull requests: #101,

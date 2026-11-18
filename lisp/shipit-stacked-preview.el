@@ -354,19 +354,19 @@ A pull request that the forge says merged the layer gives its number."
     ('rebased "rebased on the remote")
     ('new-commits "new commits on the remote")))
 
-(defun shipit-stacked-preview--with-drift (status drift &optional moved)
-  "Return STATUS with DRIFT, how far the branch left the remote, appended.
+(defun shipit-stacked-preview--drift-words (state)
+  "Return the words for how far the branch of STATE left the remote, or nil.
 A branch rewritten since it was pushed still has its remote copy, so
-without this it would read as pushed while the remote holds the old
-version of the stack.  MOVED says what the copy on the remote did when
-the drift is its doing, since the counts alone do not say which side
-moved, and the answer differs: a copy rebased onto a newer base is
-followed with a rebase here, one that gained commits is pulled."
-  (let ((words (delq nil (list drift (shipit-stacked-preview--movement-words moved)))))
-    (if words
-        (concat status "  " (propertize (string-join words ", ")
-                                        'font-lock-face 'font-lock-comment-face))
-      status)))
+without them it would read as pushed while the remote holds the old
+version of the stack.  The `:moved' of STATE says what the copy on the
+remote did when the drift is its doing, since the counts alone do not
+say which side moved, and the answer differs: a copy rebased onto a
+newer base is followed with a rebase here, one that gained commits is
+pulled."
+  (when-let* ((words (delq nil (list (plist-get state :drift)
+                                     (shipit-stacked-preview--movement-words
+                                      (plist-get state :moved))))))
+    (propertize (string-join words ", ") 'font-lock-face 'font-lock-comment-face)))
 
 (defun shipit-stacked-preview--remote-state (branch statuses)
   "Return the state of a layer whose BRANCH is on the remote.
@@ -421,24 +421,29 @@ two cannot disagree about a layer."
         (format "#%s %s" number into)
       into)))
 
-(defun shipit-stacked-preview--state-text (state)
-  "Return the status text of a layer in STATE, coloured by how far it got.
+(defun shipit-stacked-preview--status-text (state)
+  "Return the status of a layer in STATE without its drift words.
 Dim while the layer is still only local, orange while it is on its way,
 green once it is on the remote, and the branch colour once it has a
 pull request of its own; green with the name of the base once it is
-merged into it.  A layer on the remote also says how far its copy there
-came apart from this one and what that copy did, and a layer with a
-pull request wears its glyphs behind the number."
+merged into it.  A layer with a pull request wears its glyphs behind
+the number."
   (pcase (plist-get state :state)
     ('sending (propertize "sending…" 'font-lock-face 'warning))
     ('merged (propertize (shipit-stacked-preview--merged-text state)
                          'font-lock-face 'success))
     ('no-branch (propertize "no branch yet" 'font-lock-face 'font-lock-comment-face))
     ('not-pushed (propertize "not pushed" 'font-lock-face 'font-lock-comment-face))
-    (_ (shipit-stacked-preview--with-drift
-        (shipit-stacked-preview--remote-status state)
-        (plist-get state :drift)
-        (plist-get state :moved)))))
+    (_ (shipit-stacked-preview--remote-status state))))
+
+(defun shipit-stacked-preview--state-text (state)
+  "Return the status text of a layer in STATE, coloured by how far it got.
+A layer on the remote also says how far its copy there came apart from
+this one and what that copy did."
+  (let ((status (shipit-stacked-preview--status-text state)))
+    (if-let* ((drift (shipit-stacked-preview--drift-words state)))
+        (concat status "  " drift)
+      status)))
 
 (defun shipit-stacked-preview--layer-status (layer &optional statuses)
   "Return the status text of LAYER, as its row draws it.
@@ -622,6 +627,35 @@ name does.  A layer row spends its first twelve columns on the HEAD
 mark and the layer number; a commit has neither, and without this its
 hash sits to the left of the layer holding it.")
 
+(defconst shipit-stacked-preview--text-column 12
+  "The column where the text of a row starts.
+The branch name of a layer starts there, after the HEAD mark and the
+layer number, and so do the words after a label such as Next:.  A line
+that goes on below a row starts there too.")
+
+(defun shipit-stacked-preview--fits-p (columns)
+  "Return non-nil when a line of COLUMNS fits the width the buffer is drawn for.
+The last column of a window holds the mark of a cut line, so the line
+must leave it free.  Without a width, as in a drawing for no window,
+each line fits."
+  (or (null shipit-stacked-preview--drawn-width)
+      (< columns shipit-stacked-preview--drawn-width)))
+
+(defun shipit-stacked-preview--below (text)
+  "Return TEXT as a line that goes on below a row, at the text column."
+  (concat "\n" (make-string shipit-stacked-preview--text-column ?\s) text))
+
+(defun shipit-stacked-preview--layer-heading (start state)
+  "Return the heading of a layer: START, then the status text of STATE.
+When the heading is too wide for the window, the drift words of STATE
+go to a line of their own below it."
+  (let ((full (concat start (shipit-stacked-preview--state-text state)))
+        (drift (shipit-stacked-preview--drift-words state)))
+    (if (or (shipit-stacked-preview--fits-p (string-width full)) (null drift))
+        full
+      (concat start (shipit-stacked-preview--status-text state)
+              (shipit-stacked-preview--below drift)))))
+
 (defun shipit-stacked-preview--name-width (layers)
   "Return the column width the branch names of LAYERS need."
   (apply #'max 12 (mapcar (lambda (l) (length (cdr (assq 'branch l)))) layers)))
@@ -644,24 +678,25 @@ has got to, as `shipit-stacked-preview--layer-state' returns it."
   (let ((commits (cdr (assq 'commits layer))))
     (magit-insert-section (shipit-stack-layer (cdr (assq 'branch layer)))
       (magit-insert-heading
-        (format "  %-5s %2d  %s  %s commit%s  %s"
-                (if top-p
-                    ;; The colour of the current branch without its box.
-                    ;; A box adds pixels and no characters, so the row
-                    ;; carrying it sits a shade right of the rest while
-                    ;; being aligned to the column.
-                    (propertize "HEAD" 'font-lock-face
-                                '(:inherit magit-branch-current :box nil))
-                  "")
-                index
-                (shipit-sections--pad
-                 (propertize (cdr (assq 'branch layer))
-                             'font-lock-face 'magit-branch-local)
-                 width)
-                (let ((n (number-to-string (length commits))))
-                  (concat (make-string (- count-width (length n)) ?\s) n))
-                (if (cdr commits) "s" " ")
-                (shipit-stacked-preview--state-text state)))
+        (shipit-stacked-preview--layer-heading
+         (format "  %-5s %2d  %s  %s commit%s  "
+                 (if top-p
+                     ;; The colour of the current branch without its box.
+                     ;; A box adds pixels and no characters, so the row
+                     ;; carrying it sits a shade right of the rest while
+                     ;; being aligned to the column.
+                     (propertize "HEAD" 'font-lock-face
+                                 '(:inherit magit-branch-current :box nil))
+                   "")
+                 index
+                 (shipit-sections--pad
+                  (propertize (cdr (assq 'branch layer))
+                              'font-lock-face 'magit-branch-local)
+                  width)
+                 (let ((n (number-to-string (length commits))))
+                   (concat (make-string (- count-width (length n)) ?\s) n))
+                 (if (cdr commits) "s" " "))
+         state))
       (magit-insert-section-body
         ;; Each commit through the renderer the pull request buffer
         ;; uses, so a commit here opens onto its message and the files
@@ -719,30 +754,78 @@ columns line up on rows where one has run out."
                label-width))
     (make-string (+ key-width 2 label-width) ?\s)))
 
-(defun shipit-stacked-preview--key-row (row key-width label-widths)
-  "Return line ROW of the key columns, padded to LABEL-WIDTHS."
+(defun shipit-stacked-preview--key-row (columns row key-width label-widths)
+  "Return line ROW of the key COLUMNS, padded to LABEL-WIDTHS."
   (string-trim-right
    (mapconcat #'identity
               (seq-mapn (lambda (column label-width)
                           (shipit-stacked-preview--key-cell
                            (nth row column) key-width label-width))
-                        shipit-stacked-preview--key-columns label-widths)
+                        columns label-widths)
               "   ")))
 
+(defun shipit-stacked-preview--key-width ()
+  "Return the width of the widest key that this buffer offers."
+  (apply #'max (mapcar (lambda (entry) (length (car entry)))
+                       (apply #'append shipit-stacked-preview--key-columns))))
+
+(defun shipit-stacked-preview--label-width (column)
+  "Return the width of the widest label of COLUMN, 0 when there is none."
+  (apply #'max 0 (mapcar (lambda (entry) (length (cdr entry))) column)))
+
+(defun shipit-stacked-preview--key-blocks (count)
+  "Return the key columns in blocks of COUNT columns, one block below the other."
+  (seq-partition shipit-stacked-preview--key-columns count))
+
+(defun shipit-stacked-preview--block-label-widths (blocks)
+  "Return the label width of each place of a column in BLOCKS.
+The columns in the same place of each block share a width, so the
+blocks line up."
+  (mapcar (lambda (place)
+            (apply #'max (mapcar (lambda (block)
+                                   (shipit-stacked-preview--label-width (nth place block)))
+                                 blocks)))
+          (number-sequence 0 (1- (length (car blocks))))))
+
+(defun shipit-stacked-preview--blocks-width (blocks)
+  "Return the width of the widest line that the key BLOCKS can have."
+  (let ((cells (mapcar (lambda (label-width)
+                         (+ (shipit-stacked-preview--key-width) 2 label-width))
+                       (shipit-stacked-preview--block-label-widths blocks))))
+    (+ 3 (apply #'+ cells) (* 3 (1- (length cells))))))
+
+(defun shipit-stacked-preview--fitting-key-blocks ()
+  "Return the key columns in as few blocks as fit, one below the other.
+The columns are spread evenly over the blocks, so four columns that do
+not fit side by side become two blocks of two, not three and one.  A
+window too narrow for even two gets one column in each block."
+  (let* ((columns (length shipit-stacked-preview--key-columns))
+         (counts (mapcar (lambda (blocks) (ceiling columns blocks))
+                         (number-sequence 1 columns))))
+    (shipit-stacked-preview--key-blocks
+     (or (seq-find (lambda (count)
+                     (shipit-stacked-preview--fits-p
+                      (shipit-stacked-preview--blocks-width
+                       (shipit-stacked-preview--key-blocks count))))
+                   counts)
+         1))))
+
+(defun shipit-stacked-preview--insert-key-block (block key-width label-widths)
+  "Insert the key columns of BLOCK side by side, padded to LABEL-WIDTHS."
+  (dotimes (row (apply #'max (mapcar #'length block)))
+    (insert "   "
+            (shipit-stacked-preview--key-row block row key-width label-widths)
+            "\n")))
+
 (defun shipit-stacked-preview--insert-keys ()
-  "Insert the keys this buffer offers, in aligned columns."
-  (let* ((entries (apply #'append shipit-stacked-preview--key-columns))
-         (key-width (apply #'max (mapcar (lambda (e) (length (car e))) entries)))
-         (label-widths (mapcar (lambda (column)
-                                 (apply #'max (mapcar (lambda (e) (length (cdr e)))
-                                                      column)))
-                               shipit-stacked-preview--key-columns))
-         (rows (apply #'max (mapcar #'length
-                                    shipit-stacked-preview--key-columns))))
-    (dotimes (row rows)
-      (insert "   "
-              (shipit-stacked-preview--key-row row key-width label-widths)
-              "\n"))
+  "Insert the keys this buffer offers, in aligned columns.
+A window too narrow for all columns side by side gets them in blocks,
+one below the other."
+  (let* ((blocks (shipit-stacked-preview--fitting-key-blocks))
+         (key-width (shipit-stacked-preview--key-width))
+         (label-widths (shipit-stacked-preview--block-label-widths blocks)))
+    (dolist (block blocks)
+      (shipit-stacked-preview--insert-key-block block key-width label-widths))
     (insert "\n")))
 
 (defun shipit-stacked-preview--ahead-behind-counts (upstream &optional local)
@@ -779,6 +862,23 @@ upstream, `:counts' says how far HEAD and the upstream are apart, and
           :counts (and upstream (shipit-stacked-preview--ahead-behind upstream))
           :base-pr (shipit-stacked-preview--base-pr-number))))
 
+(defun shipit-stacked-preview--labelled-line (label text)
+  "Return a line with LABEL, then TEXT, that fits the window.
+When the line is too wide, TEXT is wrapped, and its lines after the
+first start under its first word, at the text column."
+  (let* ((head (format "  %-9s " label))
+         (line (concat head text)))
+    (concat
+     (if (shipit-stacked-preview--fits-p (string-width line))
+         line
+       (concat head
+               (replace-regexp-in-string
+                "\n" (concat "\n" (make-string shipit-stacked-preview--text-column ?\s))
+                (shipit--wrap-text text (- shipit-stacked-preview--drawn-width
+                                           shipit-stacked-preview--text-column 1))
+                t t)))
+     "\n")))
+
 (defun shipit-stacked-preview--insert-refs (&optional refs)
   "Say where HEAD, its upstream and the base actually point.
 REFS is a plist as `shipit-stacked-preview--refs' returns it; without
@@ -789,26 +889,29 @@ another."
   (let* ((refs (or refs (shipit-stacked-preview--refs)))
          (upstream (plist-get refs :upstream))
          (counts (plist-get refs :counts)))
-    (insert (format "  %-9s %s  %s\n" "Head:"
-                    (propertize (plist-get refs :branch)
-                                'font-lock-face 'magit-branch-local)
-                    (or (plist-get refs :subject) "")))
+    (insert (shipit-stacked-preview--labelled-line
+             "Head:"
+             (concat (propertize (plist-get refs :branch)
+                                 'font-lock-face 'magit-branch-local)
+                     "  " (or (plist-get refs :subject) ""))))
     (when upstream
-      (insert (format "  %-9s %s%s\n" "Upstream:"
-                      (propertize upstream
-                                  'font-lock-face 'magit-branch-remote)
-                      (if counts
-                          (propertize (concat "  " counts) 'font-lock-face
-                                      'font-lock-comment-face)
-                        ""))))
+      (insert (shipit-stacked-preview--labelled-line
+               "Upstream:"
+               (concat (propertize upstream
+                                   'font-lock-face 'magit-branch-remote)
+                       (if counts
+                           (propertize (concat "  " counts) 'font-lock-face
+                                       'font-lock-comment-face)
+                         "")))))
     (shipit-stacked-preview--insert-base-line
-     (format "  %-9s %s%s\n" "Base:"
-             (propertize (or shipit-stacked-preview--base "")
-                         'font-lock-face 'magit-branch-remote)
-             (if-let* ((pr (plist-get refs :base-pr)))
-                 (propertize (format "  PR #%s" pr)
-                             'font-lock-face 'font-lock-comment-face)
-               "")))))
+     (shipit-stacked-preview--labelled-line
+      "Base:"
+      (concat (propertize (or shipit-stacked-preview--base "")
+                          'font-lock-face 'magit-branch-remote)
+              (if-let* ((pr (plist-get refs :base-pr)))
+                  (propertize (format "  PR #%s" pr)
+                              'font-lock-face 'font-lock-comment-face)
+                ""))))))
 
 (defconst shipit-stacked-preview--done-states '(pull-request merged)
   "The states of a layer that needs no further step to become a pull request.")
@@ -898,7 +1001,7 @@ the layers is the last step."
   "Insert the line that names the next step to make the stack, if one is left.
 STATES maps the branch of each layer to its state, bottom first."
   (when-let* ((words (shipit-stacked-preview--next-step states)))
-    (insert (format "  %-9s %s\n" "Next:" words))))
+    (insert (shipit-stacked-preview--labelled-line "Next:" words))))
 
 (defun shipit-stacked-preview--insert-header (states)
   "Insert the banner saying what this buffer is.
@@ -1933,7 +2036,11 @@ leaves the buffer as it is; the canvas file is not loaded until then."
   (setq buffer-read-only nil)
   (buffer-enable-undo)
   (add-hook 'after-change-functions #'shipit-stacked-preview--after-change nil t)
-  (add-hook 'window-size-change-functions #'shipit-stacked-preview--window-resized nil t))
+  (add-hook 'window-size-change-functions #'shipit-stacked-preview--window-resized nil t)
+  ;; The preview often stands beside the canvas of a stack or an undo
+  ;; tree, so its commit rows follow a window narrower than the 80
+  ;; columns of a pull request buffer.
+  (setq-local shipit--commit-row-min-width 40))
 
 ;;;###autoload
 (defun shipit-stacked-preview (&optional choose-base)

@@ -1371,6 +1371,17 @@ when the tool failed on the GIF, so that it does not run again.")
   "The pictures that show a GIF scaled until its smaller copy is made.
 Each maps to the file of that copy.")
 
+(defvar shipit--gif-frame-makers (make-hash-table :test 'equal)
+  "The frame files of GIFs that ffmpeg writes, or that it failed on.
+Each folder of frame files maps to the process of ffmpeg that writes
+them, or to `failed' when ffmpeg failed on the GIF, so that it does not
+run on that GIF again.")
+
+(defvar shipit--gif-frame-pictures (make-hash-table :test 'eq :weakness 'key)
+  "The pictures that play a GIF from its frame files.
+Each maps to a cons: the frames, see `shipit--gif-film', and the
+number of the frame that the picture shows, from 0.")
+
 (defvar-local shipit--moving-pictures nil
   "The moving pictures of this buffer, each with the time its next frame is due.
 A hash table with weak keys, so that a picture that a redraw of the
@@ -1399,19 +1410,28 @@ folded section."
 
 (defun shipit--picture-moves-p (image)
   "Return non-nil when the picture IMAGE has more than one frame.
-A GIF from a file tells it from its file, see `shipit--gif-frames'.
-For another picture only a frame that shows pictures can tell: in a
-terminal frame `image-multi-frame-p' signals an error.  So ask the
-selected frame, or else another frame that shows pictures, as when
-the terminal frame of an Emacs daemon is selected.  Return nil when no
-frame shows pictures."
+A GIF tells it from its file or its frame files, see
+`shipit--known-frame-count'.  For another picture only a frame that
+shows pictures can tell: in a terminal frame `image-multi-frame-p'
+signals an error.  So ask the selected frame, or else another frame
+that shows pictures, as when the terminal frame of an Emacs daemon is
+selected.  Return nil when no frame shows pictures."
   (when-let* ((frame (seq-find #'display-images-p
                                (cons (selected-frame) (frame-list)))))
-    (if-let* ((frames (when-let* ((file (shipit--gif-file-of image)))
-                        (shipit--gif-frames file 2))))
+    (if-let* ((frames (shipit--known-frame-count image)))
         (> frames 1)
       (with-selected-frame frame
         (image-multi-frame-p image)))))
+
+(defun shipit--known-frame-count (image)
+  "Return the number of frames of the picture IMAGE, or nil.
+shipit knows it without decoding for a picture that plays frame files,
+see `shipit--gif-frame-pictures', and for a GIF from a file, which it
+counts up to 2, see `shipit--gif-frames'."
+  (if-let* ((entry (gethash image shipit--gif-frame-pictures)))
+      (plist-get (car entry) :count)
+    (when-let* ((file (shipit--gif-file-of image)))
+      (shipit--gif-frames file 2))))
 
 (defun shipit--animate-images-in-region (start end)
   "Set moving the moving pictures that the text from START to END shows.
@@ -1489,7 +1509,7 @@ shows none."
 Return non-nil when its frame changed.  A picture that waited more than
 a second, out of view, goes on from the frame it shows.  A picture that
 waits for the smaller copy of its GIF stands still, as Emacs would
-scale each of its frames, see `shipit--gif-picture'."
+scale each of its frames, see `shipit--gif-plain-picture'."
   (let ((due (gethash image shipit--moving-pictures))
         (moved nil))
     (if (or (> (- now due) 1)
@@ -1503,15 +1523,21 @@ scale each of its frames, see `shipit--gif-picture'."
     moved))
 
 (defun shipit--picture-frame-seconds (image)
-  "Return the seconds that the moving picture IMAGE shows its frame."
-  (max (or (cdr (image-multi-frame-p image)) image-default-frame-delay)
-       image-minimum-frame-delay))
+  "Return the seconds that the moving picture IMAGE shows its frame.
+A picture that plays frame files takes them from its GIF, see
+`shipit--gif-frame-delays'."
+  (if-let* ((entry (gethash image shipit--gif-frame-pictures)))
+      (aref (plist-get (car entry) :delays) (cdr entry))
+    (max (or (cdr (image-multi-frame-p image)) image-default-frame-delay)
+         image-minimum-frame-delay)))
 
 (defun shipit--show-next-frame (image)
   "Make the moving picture IMAGE show its next frame, the first after the last."
-  (plist-put (cdr image) :index
-             (mod (1+ (or (plist-get (cdr image) :index) 0))
-                  (car (image-multi-frame-p image)))))
+  (if-let* ((entry (gethash image shipit--gif-frame-pictures)))
+      (shipit--show-next-gif-frame image entry)
+    (plist-put (cdr image) :index
+               (mod (1+ (or (plist-get (cdr image) :index) 0))
+                    (car (image-multi-frame-p image))))))
 
 (defun shipit--next-picture-tick (images now)
   "Return the seconds from time NOW until a frame of IMAGES is due.
@@ -1628,8 +1654,8 @@ properties, such as those of a strip in a table cell."
 
 (defun shipit--await-copy-as (picture other)
   "Let OTHER, a picture made from PICTURE, wait for what PICTURE waits for.
-That is the smaller copy of a GIF, see `shipit--gif-picture'.  Return
-OTHER."
+That is the smaller copy of a GIF, see `shipit--gif-plain-picture'.
+Return OTHER."
   (when-let* ((copy (gethash picture shipit--pictures-awaiting-copy)))
     (puthash other copy shipit--pictures-awaiting-copy))
   other)
@@ -1645,6 +1671,13 @@ OTHER."
 
 (defun shipit--gif-picture (file target-width)
   "A picture of the GIF FILE, TARGET-WIDTH pixels wide at most.
+It plays from frame files when ffmpeg is on the path, see
+`shipit--gif-frames-picture', else see `shipit--gif-plain-picture'."
+  (or (shipit--gif-frames-picture file target-width)
+      (shipit--gif-plain-picture file target-width)))
+
+(defun shipit--gif-plain-picture (file target-width)
+  "A picture of the GIF FILE itself, TARGET-WIDTH pixels wide at most.
 It shows the smaller copy of FILE when that is made.  Else it shows
 FILE scaled, and stands still until a process made the copy: then it
 shows the copy, see `shipit--show-gif-copy'."
@@ -1655,6 +1688,196 @@ shows the copy, see `shipit--show-gif-copy'."
     (when (processp (gethash copy shipit--gif-shrinks))
       (puthash image copy shipit--pictures-awaiting-copy))
     image))
+
+(defun shipit--gif-frames-picture (file target-width)
+  "A picture of the GIF FILE that plays from its frame files, or nil.
+Emacs decodes all frames of a GIF to show one, which takes seconds for
+a GIF of 500 frames.  A browser decodes each frame as it shows it.
+ffmpeg writes each frame of FILE, TARGET-WIDTH pixels wide at most, to
+a file of its own, in the background, and the picture shows one frame
+file after the other, which Emacs reads in milliseconds.  Until ffmpeg
+wrote them, the picture shows the first frame of FILE, see
+`shipit--gif-first-frame-file'.
+
+Return nil when ffmpeg is not on the path, when Emacs shows no WebP
+picture, when FILE does not move, or when ffmpeg failed on FILE."
+  (when-let* (((executable-find "ffmpeg"))
+              ((image-type-available-p 'webp))
+              (film (shipit--gif-film file target-width))
+              ((> (plist-get film :count) 1))
+              ((not (eq 'failed (gethash (plist-get film :dir)
+                                         shipit--gif-frame-makers)))))
+    (let ((picture (if (file-exists-p (shipit--gif-frames-done-file
+                                       (plist-get film :dir)))
+                       (shipit--gif-frame-picture film 0)
+                     (shipit--start-gif-frames film)
+                     (shipit--gif-image (shipit--gif-first-frame-file file)
+                                        target-width))))
+      (puthash picture (cons film 0) shipit--gif-frame-pictures)
+      picture)))
+
+(defun shipit--gif-film (file target-width)
+  "Return the frames of the GIF FILE that ffmpeg writes to files, a plist.
+They are TARGET-WIDTH pixels wide, or as wide as FILE when it is
+narrower.  The plist holds:
+  :gif     FILE
+  :target  TARGET-WIDTH
+  :dir     the folder of the frame files
+  :count   the number of frames
+  :delays  a vector of the seconds that each frame shows
+  :size    the size of a frame in pixels, (WIDTH . HEIGHT)
+Return nil when FILE is no GIF."
+  (when-let* ((natural (shipit--gif-pixel-dimensions file))
+              (delays (shipit--gif-frame-delays file)))
+    (let ((width (min target-width (car natural))))
+      (list :gif file
+            :target target-width
+            :dir (shipit--gif-frames-dir file width)
+            :count (length delays)
+            :delays delays
+            :size (cons width (ceiling (* width (cdr natural)) (car natural)))))))
+
+(defun shipit--gif-frames-dir (file width)
+  "The folder of the frame files of the GIF FILE, WIDTH pixels wide."
+  (file-name-as-directory
+   (concat (file-name-sans-extension file) (format "-w%d-frames" width))))
+
+(defun shipit--gif-frame-file (dir index)
+  "The file of the frame INDEX, counted from 0, in the folder DIR.
+ffmpeg counts its files from 1."
+  (expand-file-name (format "f%05d.webp" (1+ index)) dir))
+
+(defun shipit--gif-frames-done-file (dir)
+  "The file that marks the frame files in the folder DIR as complete."
+  (expand-file-name "done" dir))
+
+(defun shipit--gif-frame-picture (film index)
+  "A picture of the frame INDEX of FILM, from its file."
+  (create-image (shipit--gif-frame-file (plist-get film :dir) index) 'webp nil))
+
+(defun shipit--start-gif-frames (film)
+  "Start ffmpeg on the GIF of FILM, to write its frame files.
+Nothing starts when ffmpeg writes them already.  The frame files that
+a stopped ffmpeg left are removed first."
+  (let ((dir (plist-get film :dir)))
+    (unless (gethash dir shipit--gif-frame-makers)
+      (when (file-directory-p dir)
+        (delete-directory dir t))
+      (make-directory dir t)
+      (shipit--debug-log "GIF-FRAMES: %s into %s" (plist-get film :gif) dir)
+      (puthash dir
+               (make-process
+                :name "shipit-gif-frames"
+                :command (shipit--gif-frames-command film)
+                :connection-type 'pipe
+                :noquery t
+                :sentinel (lambda (process _event)
+                            (shipit--gif-frames-ended process film)))
+               shipit--gif-frame-makers))))
+
+(defun shipit--gif-frames-command (film)
+  "The ffmpeg command that writes the frame files of FILM.
+`-fps_mode passthrough' makes one file of each frame; without it,
+ffmpeg repeats frames to keep a fixed rate.  ffmpeg knows the option
+since version 5.1, and an older one fails on it: then the GIF plays
+as without ffmpeg."
+  (let ((size (plist-get film :size)))
+    (list (executable-find "ffmpeg") "-nostdin" "-loglevel" "error"
+          "-i" (plist-get film :gif)
+          "-vf" (format "scale=%d:%d:flags=bilinear" (car size) (cdr size))
+          "-fps_mode" "passthrough"
+          "-c:v" "libwebp" "-quality" "70" "-compression_level" "0"
+          (expand-file-name "f%05d.webp" (plist-get film :dir)))))
+
+(defun shipit--gif-frames-ended (process film)
+  "Note that PROCESS of ffmpeg ended on FILM, and show what it wrote.
+When it wrote each frame, a file marks the frames as complete, for
+later sessions too.  Else its frame files are removed.  A GIF that
+ffmpeg failed on plays as without ffmpeg, and ffmpeg does not run on
+it again in this Emacs.  A GIF whose ffmpeg a signal stopped can be
+given to ffmpeg again."
+  (unless (process-live-p process)
+    (let* ((dir (plist-get film :dir))
+           (made (shipit--gif-frames-made-p process film)))
+      (shipit--debug-log "GIF-FRAMES: %s ended with %s %s" dir
+                         (process-status process) (process-exit-status process))
+      (if made
+          (write-region "" nil (shipit--gif-frames-done-file dir) nil 'silent)
+        (delete-directory dir t))
+      (if (or made (eq (process-status process) 'signal))
+          (remhash dir shipit--gif-frame-makers)
+        (puthash dir 'failed shipit--gif-frame-makers))
+      (shipit--show-gif-frames dir made))))
+
+(defun shipit--gif-frames-made-p (process film)
+  "Whether PROCESS ended well, and wrote a file of each frame of FILM."
+  (and (eq (process-status process) 'exit)
+       (zerop (process-exit-status process))
+       (= (plist-get film :count)
+          (length (directory-files (plist-get film :dir) nil "\\.webp\\'")))))
+
+(defun shipit--show-gif-frames (dir made)
+  "Show in each picture of the frame files in DIR what ffmpeg made.
+When MADE, a picture that shows the first frame of its GIF shows the
+file of that frame from now on.  Else each picture shows its GIF as
+without ffmpeg.  The picture itself changes, as it stands in text that
+shipit does not keep track of."
+  (maphash (lambda (picture entry)
+             (when (equal dir (plist-get (car entry) :dir))
+               (cond ((not made)
+                      (shipit--show-gif-without-frames picture (car entry)))
+                     ((not (eq (image-property picture :type) 'webp))
+                      (shipit--show-gif-frame picture entry (cdr entry))))))
+           shipit--gif-frame-pictures)
+  (force-window-update))
+
+(defun shipit--show-next-gif-frame (picture entry)
+  "Make PICTURE show its next frame file, once ffmpeg wrote it.
+ENTRY is what `shipit--gif-frame-pictures' holds for PICTURE.  A frame
+that is not written yet leaves PICTURE on the frame it shows."
+  (let* ((film (car entry))
+         (next (mod (1+ (cdr entry)) (plist-get film :count))))
+    (when (shipit--gif-frame-written-p film next)
+      (shipit--show-gif-frame picture entry next))))
+
+(defun shipit--gif-frame-written-p (film index)
+  "Whether ffmpeg wrote all of the file of the frame INDEX of FILM.
+ffmpeg writes the frames in turn, so a frame is written when the file
+of the next one is begun, or when the frames are complete."
+  (let ((dir (plist-get film :dir)))
+    (or (file-exists-p (shipit--gif-frames-done-file dir))
+        (file-exists-p (shipit--gif-frame-file dir (1+ index))))))
+
+(defun shipit--show-gif-frame (picture entry index)
+  "Make PICTURE show the frame INDEX of its frame files.
+ENTRY is what `shipit--gif-frame-pictures' holds for PICTURE.  Emacs
+forgets what PICTURE showed before: else its image cache would keep
+each frame that the picture showed."
+  (let ((frame (shipit--gif-frame-picture (car entry) index)))
+    (image-flush picture t)
+    (setf (image-property picture :type) 'webp
+          (image-property picture :file) (image-property frame :file)
+          (image-property picture :scale) (image-property frame :scale))
+    (setcdr entry index)))
+
+(defun shipit--show-gif-without-frames (picture film)
+  "Make PICTURE show the GIF of FILM as without ffmpeg.
+See `shipit--gif-plain-picture'."
+  (let ((plain (shipit--gif-plain-picture (plist-get film :gif)
+                                          (plist-get film :target))))
+    (image-flush picture t)
+    (setf (image-property picture :type) 'gif
+          (image-property picture :file) (image-property plain :file)
+          (image-property picture :scale) (image-property plain :scale))
+    (shipit--await-copy-as plain picture)
+    (remhash picture shipit--gif-frame-pictures)))
+
+(defun shipit--play-frames-as (picture other)
+  "Let OTHER, a picture made from PICTURE, play the frame files of PICTURE.
+OTHER starts at the frame that PICTURE shows.  Return OTHER."
+  (when-let* ((entry (gethash picture shipit--gif-frame-pictures)))
+    (puthash other (cons (car entry) (cdr entry)) shipit--gif-frame-pictures))
+  other)
 
 (defun shipit--gif-pixel-dimensions (file)
   "Return (WIDTH . HEIGHT) of GIF FILE in pixels by parsing its header.
@@ -1701,24 +1924,87 @@ extension (#x21) has its label and sub-blocks."
              (+ pos 11 (shipit--gif-color-table-size packed)))))
     (#x21 (shipit--gif-skip-sub-blocks (+ pos 2)))))
 
-(defun shipit--gif-frames (file most)
-  "Return the number of frames of the GIF FILE, counted up to MOST.
-Return nil when FILE is no GIF.  The blocks of the file are skipped
-by their lengths, and none is decoded: Emacs decodes each frame of a
-GIF to count them, which takes seconds for a GIF of 500 frames."
+(defun shipit--gif-visit-blocks (file visit)
+  "Call VISIT with the position of each block of the GIF FILE.
+VISIT runs in a buffer of the bytes of FILE, and the walk stops when
+it returns non-nil.  Return nil when FILE is no GIF, else non-nil.
+The blocks are skipped by their lengths, and none is decoded: Emacs
+decodes each frame of a GIF to tell about its frames, which takes
+seconds for a GIF of 500 frames."
   (condition-case nil
       (with-temp-buffer
         (set-buffer-multibyte nil)
         (insert-file-contents-literally file)
         (when (looking-at "GIF8[79]a")
-          (let ((pos (+ 14 (shipit--gif-color-table-size (char-after 11))))
-                (frames 0))
-            (while (and pos (< frames most))
-              (when (eq (char-after pos) #x2C)
-                (setq frames (1+ frames)))
+          (let ((pos (+ 14 (shipit--gif-color-table-size (char-after 11)))))
+            (while (and pos (not (funcall visit pos)))
               (setq pos (shipit--gif-skip-block pos)))
-            frames)))
+            t)))
     (file-error nil)))
+
+(defun shipit--gif-frames (file most)
+  "Return the number of frames of the GIF FILE, counted up to MOST.
+Return nil when FILE is no GIF."
+  (let ((frames 0))
+    (and (shipit--gif-visit-blocks
+          file (lambda (pos)
+                 (when (eq (char-after pos) #x2C)
+                   (setq frames (1+ frames)))
+                 (>= frames most)))
+         frames)))
+
+(defun shipit--gif-delay-seconds (hundredths)
+  "Return the seconds that a GIF frame shows, from the HUNDREDTHS its file names.
+A frame without a delay, or with a delay of 0, shows as long as Emacs
+shows such a frame."
+  (max (if (and hundredths (> hundredths 0))
+           (/ hundredths 100.0)
+         image-default-frame-delay)
+       image-minimum-frame-delay))
+
+(defun shipit--gif-frame-delays (file)
+  "Return the seconds that each frame of the GIF FILE shows, as a vector.
+Return nil when FILE is no GIF.  A frame takes its delay from the
+graphic control extension (#x21 #xF9) before it."
+  (let ((delays nil)
+        (delay nil))
+    (when (shipit--gif-visit-blocks
+           file (lambda (pos)
+                  (pcase (char-after pos)
+                    (#x21 (when (eq (char-after (1+ pos)) #xF9)
+                            (setq delay (+ (or (char-after (+ pos 4)) 0)
+                                           (* 256 (or (char-after (+ pos 5)) 0))))))
+                    (#x2C (push (shipit--gif-delay-seconds delay) delays)
+                          (setq delay nil)))
+                  nil))
+      (vconcat (nreverse delays)))))
+
+(defun shipit--gif-first-frame-file (file)
+  "Return a GIF file of the first frame of the GIF FILE, or nil.
+The bytes of FILE up to the end of its first frame are copied, with
+the end mark of a GIF after them, so no frame is decoded.  The file is
+made once, next to FILE."
+  (let ((first (concat (file-name-sans-extension file) "-first.gif")))
+    (or (and (file-exists-p first) first)
+        (and (shipit--gif-visit-blocks
+              file (lambda (pos)
+                     (when (eq (char-after pos) #x2C)
+                       (when-let* ((end (shipit--gif-skip-block pos)))
+                         (shipit--write-gif-start end first))
+                       t)))
+             (file-exists-p first)
+             first))))
+
+(defun shipit--write-gif-start (end target)
+  "Write the bytes of this buffer before END as the GIF TARGET.
+The end mark of a GIF follows them.  A file of its own becomes TARGET
+when it is written, so no part of TARGET is seen."
+  (let ((part (concat (make-temp-name (concat (file-name-sans-extension target) "-"))
+                      ".gif"))
+        (coding-system-for-write 'no-conversion))
+    (write-region 1 end part nil 'silent)
+    (write-region ";" nil part t 'silent)
+    (rename-file part target t)))
 
 (defun shipit--gif-file-of (image)
   "The file of the GIF that the picture IMAGE shows, or nil."
@@ -1727,18 +2013,28 @@ GIF to count them, which takes seconds for a GIF of 500 frames."
 
 (defun shipit--gif-size (image)
   "Return the size of the GIF picture IMAGE in pixels, from its file.
-That is (WIDTH . HEIGHT), as Emacs computes it from the size in the
-header of the file and the :scale, :max-width and :max-height of
-IMAGE, without decoding each frame as `image-size' does.  Return nil
-when IMAGE is no GIF from a file, or has properties that change its
-size in other ways."
-  (when-let* ((file (shipit--gif-file-of image))
+That is (WIDTH . HEIGHT), as Emacs computes it from the size that
+shipit knows, see `shipit--known-natural-size', and the :scale,
+:max-width and :max-height of IMAGE, without decoding each frame as
+`image-size' does.  Return nil when shipit does not know the size, or
+when IMAGE has properties that change its size in other ways."
+  (when-let* ((natural (shipit--known-natural-size image))
               ((not (seq-some (lambda (property) (image-property image property))
-                              '(:width :height :margin :relief :rotation))))
-              (natural (shipit--gif-pixel-dimensions file)))
+                              '(:width :height :margin :relief :rotation)))))
     (shipit--fitted-image-size natural (shipit--image-scale image)
                                (image-property image :max-width)
                                (image-property image :max-height))))
+
+(defun shipit--known-natural-size (image)
+  "Return the size of the picture IMAGE in pixels before scaling, or nil.
+shipit knows it without decoding for a frame file of a GIF, which
+ffmpeg wrote at a size that shipit chose, and for a GIF from a file,
+from its header."
+  (if-let* ((entry (gethash image shipit--gif-frame-pictures))
+            ((eq (image-property image :type) 'webp)))
+      (plist-get (car entry) :size)
+    (when-let* ((file (shipit--gif-file-of image)))
+      (shipit--gif-pixel-dimensions file))))
 
 (defun shipit--image-scale (image)
   "The factor by which Emacs scales the picture IMAGE, from its :scale."
@@ -2476,8 +2772,9 @@ window-body-width) applies."
                               (window-body-width nil t)))
                    (max-h (or shipit-image-max-height
                               (window-body-height nil t)))
-                   ;; GIFs: shown from a copy of this width, made in the
-                   ;; background, see `shipit--gif-picture'.
+                   ;; GIFs: shown from frame files or a copy of this
+                   ;; width, made in the background, see
+                   ;; `shipit--gif-picture'.
                    ;; Width resolution order:
                    ;; 1. EXPLICIT-WIDTH from source (`<img width=N>').
                    ;; 2. `shipit--image-target-width' bound by the caller.
@@ -3466,11 +3763,14 @@ Spaces and hidden text do not count."
   "Return PICTURE, an image, as its strips show it: no wider than WIDTH pixels.
 Each strip is centered on its line as the text is.  Then it makes its
 line no higher, and no gap shows between two strips.  When PICTURE
-waits for the smaller copy of its GIF, the strips wait for it too."
+waits for the smaller copy of its GIF, the strips wait for it too, and
+when it plays frame files, the strips play them too."
   (let ((properties (copy-sequence (cdr picture))))
     (when (> (car (shipit--picture-size picture)) width)
       (setq properties (plist-put properties :max-width width)))
-    (shipit--await-copy-as picture (cons 'image (plist-put properties :ascent 'center)))))
+    (shipit--play-frames-as
+     picture
+     (shipit--await-copy-as picture (cons 'image (plist-put properties :ascent 'center))))))
 
 (defun shipit--picture-strip (picture size top height)
   "Return a space that shows the strip of PICTURE from TOP, HEIGHT pixels high.
